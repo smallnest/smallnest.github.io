@@ -4,7 +4,7 @@
   <subtitle><![CDATA[大道至简 衍化至繁]]></subtitle>
   <link href="/atom.xml" rel="self"/>
   <link href="http://colobu.com/"/>
-  <updated>2014-10-13T07:27:34.153Z</updated>
+  <updated>2014-10-16T01:07:48.615Z</updated>
   <id>http://colobu.com/</id>
   
   <author>
@@ -15,18 +15,128 @@
   <generator uri="http://zespia.tw/hexo/">Hexo</generator>
   
   <entry>
+    <title><![CDATA[分布式系统原理--日志技术Redo Log]]></title>
+    <link href="http://colobu.com/2014/10/16/redo-log-in-distribution-systems/"/>
+    <id>http://colobu.com/2014/10/16/redo-log-in-distribution-systems/</id>
+    <published>2014-10-16T00:56:10.000Z</published>
+    <updated>2014-10-16T01:07:31.000Z</updated>
+    <content type="html"><![CDATA[<h1 id="问题概述">问题概述</h1>
+<p>在分布式系统中，宕机是需要考虑的重要组成部分。日志技术是宕机恢复的重要技术之一。日志技术应用广泛，早些更是广泛应用在数据库设计实现中。本文先介绍基本原理概念，最后通过redis介绍生产环境中的实现方法。</p>
+<p><a id="more"></a><br>转载: <a href="http://studentdeng.github.io/blog/2014/10/13/log-system/" target="_blank" rel="external">分布式系统原理—日志技术Redo Log</a></p>
+<h1 id="Redo_Log">Redo Log</h1>
+<p>数据库设计中，需要满足ACID，尤其是在支持事务的系统中。当系统遇到未知错误时，可以恢复到一个稳定可靠的状态。有一个很简单的思路，就是记录所有对数据库的写操作日志。那么一旦发生故障，即使丢失掉内存中所有数据，当下一次启动时，通过复现已经记录的数据库写操作日志，依然可以回到故障之前的状态（如果在写操作作日志的时候发生故障，那么这次数据库操作失败）。</p>
+<p>操作流程简单如下（假设每次数据变化，都提交）：</p>
+<ol>
+<li>更新的操作方式依次记录到磁盘日志文件。</li>
+<li>更新内存中的数据。</li>
+<li>返回更新成功结果。</li>
+</ol>
+<p>恢复流程：</p>
+<ol>
+<li>读取日志文件，依次修改内存中的数据。</li>
+</ol>
+<p>优点：</p>
+<ol>
+<li>日志文件有序，可以通过append的方式写入磁盘，性能很高。</li>
+<li>简单可靠，应用广泛。可以把内存中的数据，做备份在磁盘中。</li>
+</ol>
+<p>缺点：</p>
+<ol>
+<li>使用时间一长，恢复宕机的时间很慢。</li>
+</ol>
+<h1 id="解决办法">解决办法</h1>
+<p>先具体化下，如果我们内存中保留一个a的值，记录了写操作比如 a = 4; a++; a—; 当这些操作上千万、亿之后，恢复非常慢。甚至可能最后一条就是a=0，按照之前的算法，我们却跑了很长时间。<br>那么根据这个场景，很容易想到一个解决方案。</p>
+<p>操作流程：</p>
+<ol>
+<li>日志文件记录<code>begin check point</code></li>
+<li>在某个时刻，把内存中的数值，直接snapshot或dump到磁盘上。（比如直接记录a=4）</li>
+<li>日志文件记录<code>end check point</code></li>
+</ol>
+<p>恢复流程：</p>
+<ol>
+<li>扫描日志文件，找到最后的<code>end check point</code>中配对的<code>begin check point</code>。</li>
+<li>读入dump文件。</li>
+<li>依次回放记录的日志操作。</li>
+</ol>
+<p>优点：</p>
+<ol>
+<li>应用广泛，包括 mysql，oracle。</li>
+</ol>
+<p>一些棘手的问题：</p>
+<ol>
+<li>在做snapshot的时候，往往不能停止数据库的服务，那么很可能记录了<code>begin check point</code>之后的日志。那么在重新<code>load begin check</code> point之后的日志时，最后恢复的数据很有可能不对。比如我们记录的是a++这样的日志, 那么重复一条日志，就会让a的值加1。反之如果我们记录是幂等的，比如一直是 a=5 这种操作，那么就对最后结果没有影响。很显然，设计幂等操作系统很麻烦。</li>
+<li>设计一个支持snapshot的内存数据结构，也比较麻烦。</li>
+</ol>
+<p>典型的是通过<code>copy-on-write</code>机制。和操作系统中的概念一样。当这个数据结构被修改，就创建一份真正的copy。老数据增加一份dirty flag。如果没有修改就继续使用之前的内存。这样在做snapshot的时候，保证我们的dump数据是<code>begin check point</code>这个时刻的数据。显然这个也比较麻烦。</p>
+<p>还有一种支持snapshot的思路是begin check point后，不动老的数据。内存中的数据在新的地方，日志也写在新的地方。最后在<code>end check point</code>做一次merge。这个实现起来简单，但是内存消耗不小。</p>
+<h1 id="Redis是如何解决日志问题的">Redis是如何解决日志问题的</h1>
+<p>Redis 是一个基于内存的database，不同于memcached，他支持持久化。另外由于redis处理client request 和 response 都是在一个thread里面，也没有抢占式的调度系统，核心业务都是按照event loop顺序执行，而磁盘写日志又开销很大，所以redis实现日志功能做了很多优化。并且提供2种持久化方案。我们需要在不同的场景下，采用不同的方式配置。</p>
+<p><strong>snapshotting</strong><br>某个时刻，redis会把内存中的所有数据snapshot到磁盘文件。更通俗的说法是fork一个child process，把内存中的数据序列化到临时文件，然后在main event loop 中原子的更换文件名。redis，利用了操作系统VM的copy-on-write机制，在不阻塞主线程的情况下，利用子进程和父进程共享的data segment实现snapshot。具体是代码实现在<code>rdb.c</code>, <code>function at rdbSaveBackground</code></p>
+<p>优点：</p>
+<ol>
+<li>简单可靠，如果database 不大，执行的效果非常好。</li>
+</ol>
+<p>缺点：</p>
+<ol>
+<li>如果database size 很大，每一次snapshot时间非常长。不得不配置大的间隔，提高了宕机时数据丢失的风险。</li>
+</ol>
+<p>为了解决上面的问题，redis增加了AOF。</p>
+<h1 id="Append_Only_File（AOF）">Append Only File（AOF）</h1>
+<p>在database术语中，也被叫做WAL。如果开启的AOF的配置，redis会记录所有写操作到日志文件中。那么redis同样会遇到之前我们提到过的问题。</p>
+<ol>
+<li>即便是追加写，磁盘的操作依然比内存慢好几个数量级，频繁的操作容易产生瓶颈。</li>
+<li>如果数据量操作频繁，会产生大量的重复日志数据，导致恢复时间太长。比如记录一条微博的浏览量，会记录大量重复的<code>+1</code>日志。</li>
+</ol>
+<p>那么redis是如何解决的呢？</p>
+<ol>
+<li>文件写操作消耗的时间很长，redis会先把记录日志写在内存buffer中，在每一次event loop 结束之后，根据配置判断是否做写操作。每个buffer的大小有限制，这样每次写操作时间不会太长。</li>
+<li>即便是调用write操作，OS并没有立即写入磁盘，redis 同样提供了一些方案决定刷新OS IO buffer的时机（1秒、从不、每次）。</li>
+<li>redis 提供一种AOF重写的方式<code>rewriteAppendOnlyFile</code>来处理AOF文件过大情况。</li>
+</ol>
+<p>前面我们知道了，这种<code>check point</code>的机制还是比较麻烦的。那么redis是这么设计的。</p>
+<p><img src="http://i.gyazo.com/314a668a8443b0de126685cfb4197fbc.png" alt=""></p>
+<ol>
+<li>为了避免加锁，redis 依然创建了一个child process，利用VM的copy-on-write，共享数据。同时保证主线程依然可以处理client请求。</li>
+<li>根据KV的类型，先从内存读取数据，然后再写数据到磁盘，和之前的AOF文件无关。</li>
+<li>那么当子进程rewrite AOF的过程中，main thread依然可以处理新的client request。新增的数据会被放在rewrite buffer中，而且写到原有的AOF文件中。</li>
+<li>child process完成后会通知主线程。主线程有一个定时任务，也就是会不断轮询child process是否已经完成（通过信号量）。</li>
+<li>主线程会merge 变化的数据到temp file。</li>
+<li>主线程原子的rename到一个新的AOF文件，之前的AOF就不起作用了。</li>
+</ol>
+<p>优点：</p>
+<ol>
+<li>除了merge 和 rename需要阻塞主线程，rewrite不会阻塞主线程。（前提是使用bgrewrite command）。</li>
+</ol>
+<h1 id="最后">最后</h1>
+<p>这些都是性能和稳定性之间做的权衡，根据不同场景需要调整。</p>
+<h1 id="参考">参考</h1>
+<ul>
+<li><a href="http://redis.io/topics/latency" target="_blank" rel="external">Redis latency problems troubleshooting</a></li>
+<li><a href="http://wenku.baidu.com/view/53b7505777232f60ddcca1e0.html" target="_blank" rel="external">分布式系统原理介绍</a></li>
+<li><a href="http://blog.kennejima.com/post/1226487020/thoughts-on-redis#" target="_blank" rel="external">Thoughts on Redis</a></li>
+</ul>
+]]></content>
+    <summary type="html"><![CDATA[<h1 id="问题概述">问题概述</h1>
+<p>在分布式系统中，宕机是需要考虑的重要组成部分。日志技术是宕机恢复的重要技术之一。日志技术应用广泛，早些更是广泛应用在数据库设计实现中。本文先介绍基本原理概念，最后通过redis介绍生产环境中的实现方法。</p>
+<p>]]></summary>
+    
+      <category term="高并发编程" scheme="http://colobu.com/categories/%E9%AB%98%E5%B9%B6%E5%8F%91%E7%BC%96%E7%A8%8B/"/>
+    
+  </entry>
+  
+  <entry>
     <title><![CDATA[Hexo 同时支持Github和Gitcafe]]></title>
     <link href="http://colobu.com/2014/10/13/hexo-supports-both-github-and-gitcafe/"/>
     <id>http://colobu.com/2014/10/13/hexo-supports-both-github-and-gitcafe/</id>
     <published>2014-10-13T07:16:23.000Z</published>
-    <updated>2014-10-13T07:27:23.000Z</updated>
+    <updated>2014-10-13T07:44:06.000Z</updated>
     <content type="html"><![CDATA[<p>Hexo支持同时发布到多个git仓库中。需要修改<code>_config.yml</code>。<br>原来的配置:</p>
 <figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line"><span class="label">deploy:</span></div><div class="line"><span class="label">type:</span> github</div><div class="line"><span class="label">repo:</span> github: https://github.com/&lt;username&gt;/&lt;username&gt;.github.io.git</div><div class="line"><span class="label">branch:</span> master</div></pre></td></tr></table></figure>
 
 <p>改成</p>
 <figure class="highlight javascript"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div></pre></td><td class="code"><pre><div class="line">deploy:</div><div class="line">   type: git</div><div class="line">   repo: </div><div class="line">      github: https:<span class="comment">//github.com/&lt;username&gt;/&lt;username&gt;.github.io.git,master</span></div><div class="line">      gitcafe: https:<span class="comment">//gitcafe.com/&lt;username&gt;/&lt;username&gt;.git,gitcafe-pages</span></div></pre></td></tr></table></figure>
 
-<p>首先需要你在gitcafe创建一个和用户名相同的项目，并为此项目创建一个<code>gitcafe-pages</code>。 静态站点发布到这个分支上。<br>这和<code>github</code>有点不同。 <code>github</code>要求创建一个<code>&lt;username&gt;.github.io</code>的项目，站点发布到master分支即可。</p>
+<p>首先需要你在gitcafe创建一个和用户名相同的项目，并为此项目创建一个<code>gitcafe-pages</code>。 静态站点发布到这个分支上。 同时需要绑定你的域名在此项目上。<br>这和<code>github</code>有点不同。 <code>github</code>要求创建一个<code>&lt;username&gt;.github.io</code>的项目，站点发布到master分支即可。</p>
 <p><strong>dnspod</strong><br>之所以发布到两个站点， 主要是想让国内的用户直接访问g<code>gircafe</code>上的站点，这样速度快一点。<br>你可以在dnspod上针对不同的线路配置不同的A记录。</p>
 <p>参考文档：</p>
 <ul>
@@ -1048,14 +1158,14 @@
 
 <h1 id="View">View</h1>
 <h3 id="_定义view"><i class="fa fa-lightbulb-o"></i>  定义view</h3>
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div></pre></td><td class="code"><pre><div class="line">{{#view <span class="string">"clickable"</span>}}</div><div class="line">This <span class="keyword">is</span> a clickable area!</div><div class="line">{{/view}}</div><div class="line"></div><div class="line">App.ClickableView = Ember.View.extend({</div><div class="line">  click: <span class="function"><span class="keyword">function</span><span class="params">(evt)</span> </span>{</div><div class="line">    <span class="keyword">this</span>.<span class="keyword">get</span>(<span class="string">'controller'</span>).send(<span class="string">'turnItUp'</span>, <span class="number">11</span>);</div><div class="line">  }</div><div class="line">});</div><div class="line"></div><div class="line">App.PlaybackController = Ember.ObjectController.extend({</div><div class="line">  actions: {</div><div class="line">    turnItUp: <span class="function"><span class="keyword">function</span><span class="params">(level)</span></span>{</div><div class="line">      <span class="comment">//Do your thing</span></div><div class="line">    }</div><div class="line">  }</div><div class="line">});</div></pre></td></tr></table></figure>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div></pre></td><td class="code"><pre><div class="line"><span class="xml"><span class="php"></span></span><span class="expression">{{<span class="begin-block">#<span class="keyword">view</span> </span><span class="string">"clickable"</span>}}</span><span class="xml"><span class="php"></span></span></div><div class="line">This is a clickable area!</div><div class="line"><span class="expression">{{<span class="end-block">/<span class="keyword">view</span></span>}}</span><span class="xml"><span class="php"></span></span></div><div class="line"></div><div class="line">App.ClickableView = Ember.View.extend({</div><div class="line">  click: <span class="function"><span class="keyword">function</span><span class="params">(evt)</span> </span>{</div><div class="line">    this.get(<span class="string">'controller'</span>).send(<span class="string">'turnItUp'</span>, <span class="number">11</span>);</div><div class="line">  }</div><div class="line">});</div><div class="line"></div><div class="line">App.PlaybackController = Ember.ObjectController.extend({</div><div class="line">  actions: {</div><div class="line">    turnItUp: <span class="function"><span class="keyword">function</span><span class="params">(level)</span></span>{</div><div class="line">      <span class="comment">//Do your thing</span></div><div class="line">    }</div><div class="line">  }</div><div class="line">});</div></pre></td></tr></table></figure>
 
 <h3 id="_定制view元素"><i class="fa fa-lightbulb-o"></i>  定制view元素</h3>
 <figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div></pre></td><td class="code"><pre><div class="line"><span class="filename">App.MyView = Ember.View.extend({</span></div><div class="line">  tagName: <span class="string">'span'</span></div><div class="line">});</div><div class="line"></div><div class="line"><span class="filename">App.MyView = Ember.View.extend({</span></div><div class="line">  classNames: [<span class="string">'my-view'</span>]</div><div class="line">});</div><div class="line"></div><div class="line"><span class="filename">App.MyView = Ember.View.extend({</span></div><div class="line">  classNameBindings: [<span class="string">'isUrgent'</span>],</div><div class="line">  isUrgent: true</div><div class="line">});</div><div class="line"></div><div class="line">&lt;div class=<span class="string">"ember-view is-urgent"</span>&gt;</div><div class="line"></div><div class="line"><span class="filename">App.MyView = Ember.View.extend({</span></div><div class="line">  classNameBindings: [<span class="string">'isUrgent:urgent'</span>],</div><div class="line">  isUrgent: true</div><div class="line">});</div><div class="line"></div><div class="line"><span class="filename">App.MyView = Ember.View.extend({</span></div><div class="line">  classNameBindings: [<span class="string">'isEnabled:enabled:disabled'</span>],</div><div class="line">  isEnabled: false</div><div class="line">});</div><div class="line"></div><div class="line"><span class="filename">App.MyView = Ember.View.extend({</span></div><div class="line">  tagName: <span class="string">'a'</span>,</div><div class="line">  attributeBindings: [<span class="string">'href'</span>],</div><div class="line">  href: <span class="string">"http://emberjs.com"</span></div><div class="line">});</div></pre></td></tr></table></figure>
 
 
 
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line"><span class="xml"></span><span class="expression">{{<span class="variable"><span class="keyword">view</span></span> <span class="string">"info"</span> <span class="variable">tagName</span>=<span class="string">"span"</span>}}</span><span class="xml"></span></div><div class="line"><span class="expression">{{<span class="variable"><span class="keyword">view</span></span> <span class="string">"info"</span> <span class="variable">id</span>=<span class="string">"info-view"</span>}}</span><span class="xml"></span></div><div class="line"><span class="expression">{{<span class="variable"><span class="keyword">view</span></span> <span class="string">"alert"</span> <span class="variable">classBinding</span>=<span class="string">"isUrgent priority"</span>}}</span><span class="xml"></span></div></pre></td></tr></table></figure>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line"><span class="xml"><span class="php"></span></span><span class="expression">{{<span class="variable"><span class="keyword">view</span></span> <span class="string">"info"</span> <span class="variable">tagName</span>=<span class="string">"span"</span>}}</span><span class="xml"><span class="php"></span></span></div><div class="line"><span class="expression">{{<span class="variable"><span class="keyword">view</span></span> <span class="string">"info"</span> <span class="variable">id</span>=<span class="string">"info-view"</span>}}</span><span class="xml"><span class="php"></span></span></div><div class="line"><span class="expression">{{<span class="variable"><span class="keyword">view</span></span> <span class="string">"alert"</span> <span class="variable">classBinding</span>=<span class="string">"isUrgent priority"</span>}}</span><span class="xml"><span class="php"></span></span></div></pre></td></tr></table></figure>
 
 <h3 id="_内建的view"><i class="fa fa-lightbulb-o"></i>  内建的view</h3>
 <ul>
@@ -1104,33 +1214,33 @@
 </ul>
 <p>复合型: <code>&lt;img \{\{bind-attr \class=&quot;:class-name-to-always-apply view.someBool:class-name-if-true view.someProperty&quot;}}&gt;</code></p>
 <h3 id="_each_helper"><i class="fa fa-lightbulb-o"></i>  <code>each</code> helper</h3>
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div></pre></td><td class="code"><pre><div class="line"><span class="xml"><span class="tag"><span class="attribute">Developers</span> = [{<span class="attribute">name:</span> '<span class="attribute">Yehuda</span>'},{<span class="attribute">name:</span> '<span class="attribute">Tom</span>'}, {<span class="attribute">name:</span> '<span class="attribute">Paul</span>'}];</span></span></div><div class="line"></div><div class="line"><span class="expression">{{<span class="begin-block">#<span class="keyword">each</span> Developers</span>}}</span><span class="xml"><span class="tag"></span></span></div><div class="line">  <span class="expression">{{<span class="variable">name</span>}}</span><span class="xml"><span class="tag"></span></span></div><div class="line"><span class="expression">{{<span class="end-block">/<span class="keyword">each</span></span>}}</span><span class="xml"><span class="tag"></span></span></div><div class="line"></div><div class="line"><span class="expression">{{<span class="begin-block">#<span class="keyword">each</span> person <span class="keyword">in</span> Developers</span>}}</span><span class="xml"><span class="tag"></span></span></div><div class="line">  <span class="expression">{{<span class="variable">person.name</span>}}</span><span class="xml"><span class="tag"></span></span></div><div class="line"><span class="expression">{{<span class="end-block">/<span class="keyword">each</span></span>}}</span><span class="xml"><span class="tag"></span></span></div><div class="line"></div><div class="line"><span class="expression">{{<span class="begin-block">#<span class="keyword">each</span> DeveloperNames</span>}}</span><span class="xml"><span class="tag"></span></span></div><div class="line">  <span class="expression">{{<span class="variable">this</span>}}</span><span class="xml"><span class="tag"></span></span></div><div class="line"><span class="expression">{{<span class="end-block">/<span class="keyword">each</span></span>}}</span><span class="xml"><span class="tag"></span></span></div></pre></td></tr></table></figure>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div></pre></td><td class="code"><pre><div class="line"><span class="xml"><span class="php">Developers = [{name: <span class="string">'Yehuda'</span>},{name: <span class="string">'Tom'</span>}, {name: <span class="string">'Paul'</span>}];</span></span></div><div class="line"></div><div class="line"><span class="expression">{{<span class="begin-block">#<span class="keyword">each</span> Developers</span>}}</span><span class="xml"><span class="php"></span></span></div><div class="line">  <span class="expression">{{<span class="variable">name</span>}}</span><span class="xml"><span class="php"></span></span></div><div class="line"><span class="expression">{{<span class="end-block">/<span class="keyword">each</span></span>}}</span><span class="xml"><span class="php"></span></span></div><div class="line"></div><div class="line"><span class="expression">{{<span class="begin-block">#<span class="keyword">each</span> person <span class="keyword">in</span> Developers</span>}}</span><span class="xml"><span class="php"></span></span></div><div class="line">  <span class="expression">{{<span class="variable">person.name</span>}}</span><span class="xml"><span class="php"></span></span></div><div class="line"><span class="expression">{{<span class="end-block">/<span class="keyword">each</span></span>}}</span><span class="xml"><span class="php"></span></span></div><div class="line"></div><div class="line"><span class="expression">{{<span class="begin-block">#<span class="keyword">each</span> DeveloperNames</span>}}</span><span class="xml"><span class="php"></span></span></div><div class="line">  <span class="expression">{{<span class="variable">this</span>}}</span><span class="xml"><span class="php"></span></span></div><div class="line"><span class="expression">{{<span class="end-block">/<span class="keyword">each</span></span>}}</span><span class="xml"><span class="php"></span></span></div></pre></td></tr></table></figure>
 
 <p>集合为空时使用<code>\{\{#each}}</code></p>
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div></pre></td><td class="code"><pre><div class="line"><span class="xml"><span class="tag"></span></span><span class="expression">{{<span class="begin-block">#<span class="keyword">each</span> person <span class="keyword">in</span> Developers</span>}}</span><span class="xml"><span class="tag"></span></span></div><div class="line">  <span class="expression">{{<span class="variable">person.name</span>}}</span><span class="xml"><span class="tag"></span></span></div><div class="line"><span class="expression">{{<span class="variable"><span class="keyword">else</span></span>}}</span><span class="xml"><span class="tag"></span></span></div><div class="line">  &lt;<span class="attribute">p</span>&gt;Sorry, nobody is available for this task.<span class="tag">&lt;/<span class="title">p</span>&gt;</span></div><div class="line"><span class="expression">{{<span class="end-block">/<span class="keyword">each</span></span>}}</span><span class="xml"></span></div></pre></td></tr></table></figure>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div></pre></td><td class="code"><pre><div class="line"><span class="xml"><span class="php"></span></span><span class="expression">{{<span class="begin-block">#<span class="keyword">each</span> person <span class="keyword">in</span> Developers</span>}}</span><span class="xml"><span class="php"></span></span></div><div class="line">  <span class="expression">{{<span class="variable">person.name</span>}}</span><span class="xml"><span class="php"></span></span></div><div class="line"><span class="expression">{{<span class="variable"><span class="keyword">else</span></span>}}</span><span class="xml"><span class="php"></span></span></div><div class="line">  &lt;p&gt;Sorry, nobody is available <span class="keyword">for</span> this task.&lt;/p&gt;</div><div class="line"><span class="expression">{{<span class="end-block">/<span class="keyword">each</span></span>}}</span><span class="xml"><span class="php"></span></span></div></pre></td></tr></table></figure>
 
 <p>指定渲染用的view</p>
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line"><span class="xml"></span><span class="expression">{{<span class="begin-block">#<span class="keyword">view</span> App.MyView </span>}}</span><span class="xml"></span></div><div class="line">  <span class="expression">{{<span class="variable"><span class="keyword">each</span></span> <span class="variable"><span class="keyword">view</span>.items</span> <span class="variable">itemView</span>\<span class="variable">class</span>=<span class="string">"App.AnItemView"</span>}}</span><span class="xml"></span></div><div class="line"><span class="expression">{{<span class="end-block">/<span class="keyword">view</span></span>}}</span><span class="xml"></span></div></pre></td></tr></table></figure>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line"><span class="xml"><span class="php"></span></span><span class="expression">{{<span class="begin-block">#<span class="keyword">view</span> App.MyView </span>}}</span><span class="xml"><span class="php"></span></span></div><div class="line">  <span class="expression">{{<span class="variable"><span class="keyword">each</span></span> <span class="variable"><span class="keyword">view</span>.items</span> <span class="variable">itemView</span>\<span class="variable">class</span>=<span class="string">"App.AnItemView"</span>}}</span><span class="xml"><span class="php"></span></span></div><div class="line"><span class="expression">{{<span class="end-block">/<span class="keyword">view</span></span>}}</span><span class="xml"><span class="php"></span></span></div></pre></td></tr></table></figure>
 
 <p>默认遍历controller的属性，可以指定<code>itemController</code>:</p>
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div></pre></td><td class="code"><pre><div class="line">App.DeveloperController = Ember.ObjectController.extend({</div><div class="line">  isAvailableForHire: <span class="function"><span class="keyword">function</span><span class="params">()</span> </span>{</div><div class="line">    <span class="keyword">return</span> !<span class="keyword">this</span>.<span class="keyword">get</span>(<span class="string">'model.isEmployed'</span>) && <span class="keyword">this</span>.<span class="keyword">get</span>(<span class="string">'model.isSeekingWork'</span>);</div><div class="line">  }.property(<span class="string">'isEmployed'</span>, <span class="string">'isSeekingWork'</span>)</div><div class="line">})</div><div class="line"></div><div class="line"></div><div class="line">{{#<span class="keyword">each</span> person <span class="keyword">in</span> developers itemController=<span class="string">"developer"</span>}}</div><div class="line">  {{person.name}} {{#<span class="keyword">if</span> person.isAvailableForHire}}Hire me!{{/<span class="keyword">if</span>}}</div><div class="line">{{/<span class="keyword">each</span>}}</div></pre></td></tr></table></figure>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div></pre></td><td class="code"><pre><div class="line"><span class="xml"><span class="php">App.DeveloperController = Ember.ObjectController.extend({</span></span></div><div class="line">  isAvailableForHire: <span class="function"><span class="keyword">function</span><span class="params">()</span> </span>{</div><div class="line">    <span class="keyword">return</span> !this.get(<span class="string">'model.isEmployed'</span>) && this.get(<span class="string">'model.isSeekingWork'</span>);</div><div class="line">  }.property(<span class="string">'isEmployed'</span>, <span class="string">'isSeekingWork'</span>)</div><div class="line">})</div><div class="line"></div><div class="line"></div><div class="line"><span class="expression">{{<span class="begin-block">#<span class="keyword">each</span> person <span class="keyword">in</span> developers itemController</span>=<span class="string">"developer"</span>}}</span><span class="xml"><span class="php"></span></span></div><div class="line">  <span class="expression">{{<span class="variable">person.name</span>}}</span><span class="xml"><span class="php"> </span></span><span class="expression">{{<span class="begin-block">#<span class="keyword">if</span> person.isAvailableForHire</span>}}</span><span class="xml"><span class="php">Hire me!</span></span><span class="expression">{{<span class="end-block">/<span class="keyword">if</span></span>}}</span><span class="xml"><span class="php"></span></span></div><div class="line"><span class="expression">{{<span class="end-block">/<span class="keyword">each</span></span>}}</span><span class="xml"><span class="php"></span></span></div></pre></td></tr></table></figure>
 
 <h3 id="_if-else"><i class="fa fa-lightbulb-o"></i>  if-else</h3>
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div></pre></td><td class="code"><pre><div class="line"><span class="xml"></span><span class="expression">{{<span class="begin-block">#<span class="keyword">if</span> message.isTypeSuccess</span>}}</span><span class="xml"></span></div><div class="line">	......</div><div class="line"> <span class="expression">{{<span class="variable"><span class="keyword">else</span></span>}}</span><span class="xml"></span></div><div class="line">	......</div><div class="line"><span class="expression">{{<span class="end-block">/<span class="keyword">if</span></span>}}</span><span class="xml"></span></div></pre></td></tr></table></figure>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div></pre></td><td class="code"><pre><div class="line"><span class="xml"><span class="php"></span></span><span class="expression">{{<span class="begin-block">#<span class="keyword">if</span> message.isTypeSuccess</span>}}</span><span class="xml"><span class="php"></span></span></div><div class="line">	......</div><div class="line"> <span class="expression">{{<span class="variable"><span class="keyword">else</span></span>}}</span><span class="xml"><span class="php"></span></span></div><div class="line">	......</div><div class="line"><span class="expression">{{<span class="end-block">/<span class="keyword">if</span></span>}}</span><span class="xml"><span class="php"></span></span></div></pre></td></tr></table></figure>
 
 <p>另外还提供了<code>unless</code></p>
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line"><span class="xml"></span><span class="expression">{{<span class="begin-block">#<span class="keyword">unless</span> hasPaid</span>}}</span><span class="xml"></span></div><div class="line">  You owe: $<span class="expression">{{<span class="variable">total</span>}}</span><span class="xml"></span></div><div class="line"><span class="expression">{{<span class="end-block">/<span class="keyword">unless</span></span>}}</span><span class="xml"></span></div></pre></td></tr></table></figure>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line"><span class="xml"><span class="php"></span></span><span class="expression">{{<span class="begin-block">#<span class="keyword">unless</span> hasPaid</span>}}</span><span class="xml"><span class="php"></span></span></div><div class="line">  You owe: $<span class="expression">{{<span class="variable">total</span>}}</span><span class="xml"><span class="php"></span></span></div><div class="line"><span class="expression">{{<span class="end-block">/<span class="keyword">unless</span></span>}}</span><span class="xml"><span class="php"></span></span></div></pre></td></tr></table></figure>
 
 <h3 id="_outlet"><i class="fa fa-lightbulb-o"></i>  <code>outlet</code></h3>
 <p>一个模版占位符。<br>或</p>
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div></pre></td><td class="code"><pre><div class="line">{{outlet <span class="string">'favoritePost'</span>}}</div><div class="line">{{outlet <span class="string">'posts'</span>}}</div><div class="line"></div><div class="line">App.PostsRoute = Ember.Route.extend({</div><div class="line">  renderTemplate: <span class="function"><span class="keyword">function</span><span class="params">()</span> </span>{</div><div class="line">    <span class="keyword">this</span>.render(<span class="string">'favoritePost'</span>, { outlet: <span class="string">'favoritePost'</span> });</div><div class="line">    <span class="keyword">this</span>.render(<span class="string">'posts'</span>, { outlet: <span class="string">'posts'</span> });</div><div class="line">  }</div><div class="line">});</div></pre></td></tr></table></figure>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div></pre></td><td class="code"><pre><div class="line"><span class="xml"><span class="php"></span></span><span class="expression">{{<span class="variable"><span class="keyword">outlet</span></span> '<span class="variable">favoritePost</span>'}}</span><span class="xml"><span class="php"></span></span></div><div class="line"><span class="expression">{{<span class="variable"><span class="keyword">outlet</span></span> '<span class="variable">posts</span>'}}</span><span class="xml"><span class="php"></span></span></div><div class="line"></div><div class="line">App.PostsRoute = Ember.Route.extend({</div><div class="line">  renderTemplate: <span class="function"><span class="keyword">function</span><span class="params">()</span> </span>{</div><div class="line">    this.render(<span class="string">'favoritePost'</span>, { outlet: <span class="string">'favoritePost'</span> });</div><div class="line">    this.render(<span class="string">'posts'</span>, { outlet: <span class="string">'posts'</span> });</div><div class="line">  }</div><div class="line">});</div></pre></td></tr></table></figure>
 
 
 
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div></pre></td><td class="code"><pre><div class="line"><span class="xml"></span><span class="expression">{{<span class="variable"><span class="keyword">outlet</span></span> <span class="variable"><span class="keyword">view</span></span>='<span class="variable">sectionContainer</span>'}}</span><span class="xml"></span></div><div class="line"></div><div class="line">App.SectionContainer = Ember.ContainerView.extend({</div><div class="line">  tagName: 'section',</div><div class="line">  classNames: ['special']</div><div class="line">});</div></pre></td></tr></table></figure>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div></pre></td><td class="code"><pre><div class="line"><span class="xml"><span class="php"></span></span><span class="expression">{{<span class="variable"><span class="keyword">outlet</span></span> <span class="variable"><span class="keyword">view</span></span>='<span class="variable">sectionContainer</span>'}}</span><span class="xml"><span class="php"></span></span></div><div class="line"></div><div class="line">App.SectionContainer = Ember.ContainerView.extend({</div><div class="line">  tagName: <span class="string">'section'</span>,</div><div class="line">  classNames: [<span class="string">'special'</span>]</div><div class="line">});</div></pre></td></tr></table></figure>
 
 <h3 id="_partial_渲染另外一个页面而不改变上下文"><i class="fa fa-lightbulb-o"></i>  <code>partial</code> 渲染另外一个页面而不改变上下文</h3>
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div></pre></td><td class="code"><pre><div class="line"><span class="xml"></span><span class="expression">{{<span class="variable">foo</span>}}</span><span class="xml"></span></div><div class="line"><span class="expression">{{<span class="variable">partial</span> <span class="string">"nav"</span>}}</span><span class="xml"></span></div></pre></td></tr></table></figure>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div></pre></td><td class="code"><pre><div class="line"><span class="xml"><span class="php"></span></span><span class="expression">{{<span class="variable">foo</span>}}</span><span class="xml"><span class="php"></span></span></div><div class="line"><span class="expression">{{<span class="variable">partial</span> <span class="string">"nav"</span>}}</span><span class="xml"><span class="php"></span></span></div></pre></td></tr></table></figure>
 
 <h3 id="_render_使用包含的上下文"><i class="fa fa-lightbulb-o"></i>  <code>render</code> 使用包含的上下文</h3>
 <p>{{render “navigation”}}</p>
@@ -1208,7 +1318,7 @@
 </tbody>
 </table>
 <h3 id="_with_changes_scope,_as"><i class="fa fa-lightbulb-o"></i>  <code>with</code> changes scope, <code>as</code></h3>
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line"><span class="xml"></span><span class="expression">{{<span class="begin-block">#<span class="keyword">with</span> person</span>}}</span><span class="xml"></span></div><div class="line">  Welcome back, <span class="tag">&lt;<span class="title">b</span>&gt;</span><span class="expression">{{<span class="variable">firstName</span>}}</span><span class="xml"> </span><span class="expression">{{<span class="variable">lastName</span>}}</span><span class="xml"><span class="tag">&lt;/<span class="title">b</span>&gt;</span>!</span></div><div class="line"><span class="expression">{{<span class="end-block">/<span class="keyword">with</span></span>}}</span><span class="xml"></span></div></pre></td></tr></table></figure>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line"><span class="xml"><span class="php"></span></span><span class="expression">{{<span class="begin-block">#<span class="keyword">with</span> person</span>}}</span><span class="xml"><span class="php"></span></span></div><div class="line">  Welcome back, &lt;b&gt;<span class="expression">{{<span class="variable">firstName</span>}}</span><span class="xml"><span class="php"> </span></span><span class="expression">{{<span class="variable">lastName</span>}}</span><span class="xml"><span class="php">&lt;/b&gt;!</span></span></div><div class="line"><span class="expression">{{<span class="end-block">/<span class="keyword">with</span></span>}}</span><span class="xml"><span class="php"></span></span></div></pre></td></tr></table></figure>
 
 <h3 id="_link-to"><i class="fa fa-lightbulb-o"></i>  <code>link-to</code></h3>
 <p><code>link-to (routeName, context, options) String</code><br>提供tagName: <code>\{\{#link-to &#39;photoGallery&#39; tagName=&quot;li&quot;}}  Great Hamster Photos\{\{/link-to}}</code><br>自动添加<code>\class=&quot;active&quot;</code><br>指定model: <code>\{\{#link-to &#39;photoGallery&#39; aPhoto}}  \{\{aPhoto.title}}\{\{/link-to}}</code>,  for dynamic segments或者多个model或者model id: <code>\{\{#link-to &#39;photoGallery&#39; aPhotoId}}  \{\{aPhoto.title}}\{\{/link-to}}</code></p>
@@ -1253,11 +1363,11 @@
 
 
 
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div></pre></td><td class="code"><pre><div class="line"><span class="xml"></span><span class="expression">{{! <span class="variable">templates</span><span class="end-block">/components</span><span class="end-block">/confirm-button.handlebars </span>}}</span><span class="xml"></span></div><div class="line"></div><div class="line"><span class="expression">{{<span class="begin-block">#<span class="keyword">if</span> isShowingConfirmation</span>}}</span><span class="xml"></span></div><div class="line">  <span class="tag">&lt;<span class="title">button</span> </span><span class="expression">{{<span class="variable"><span class="keyword">action</span></span> <span class="string">"confirm"</span>}}</span><span class="xml"><span class="tag">&gt;</span>Click again to confirm<span class="tag">&lt;/<span class="title">button</span>&gt;</span></span></div><div class="line"><span class="expression">{{<span class="variable"><span class="keyword">else</span></span>}}</span><span class="xml"></span></div><div class="line">  <span class="tag">&lt;<span class="title">button</span> </span><span class="expression">{{<span class="variable"><span class="keyword">action</span></span> <span class="string">"showConfirmation"</span>}}</span><span class="xml"><span class="tag">&gt;</span></span><span class="expression">{{<span class="variable">title</span>}}</span><span class="xml"><span class="tag">&lt;/<span class="title">button</span>&gt;</span></span></div><div class="line"><span class="expression">{{<span class="end-block">/<span class="keyword">if</span></span>}}</span><span class="xml"></span></div></pre></td></tr></table></figure>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div></pre></td><td class="code"><pre><div class="line"><span class="xml"><span class="php"></span></span><span class="expression">{{! <span class="variable">templates</span><span class="end-block">/components</span><span class="end-block">/confirm-button.handlebars </span>}}</span><span class="xml"><span class="php"></span></span></div><div class="line"></div><div class="line"><span class="expression">{{<span class="begin-block">#<span class="keyword">if</span> isShowingConfirmation</span>}}</span><span class="xml"><span class="php"></span></span></div><div class="line">  &lt;button <span class="expression">{{<span class="variable"><span class="keyword">action</span></span> <span class="string">"confirm"</span>}}</span><span class="xml"><span class="php">&gt;Click again to confirm&lt;/button&gt;</span></span></div><div class="line"><span class="expression">{{<span class="variable"><span class="keyword">else</span></span>}}</span><span class="xml"><span class="php"></span></span></div><div class="line">  &lt;button <span class="expression">{{<span class="variable"><span class="keyword">action</span></span> <span class="string">"showConfirmation"</span>}}</span><span class="xml"><span class="php">&gt;</span></span><span class="expression">{{<span class="variable">title</span>}}</span><span class="xml"><span class="php">&lt;/button&gt;</span></span></div><div class="line"><span class="expression">{{<span class="end-block">/<span class="keyword">if</span></span>}}</span><span class="xml"><span class="php"></span></span></div></pre></td></tr></table></figure>
 
 
 
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div></pre></td><td class="code"><pre><div class="line"><span class="xml"></span><span class="expression">{{! <span class="variable">index.handlebars</span> }}</span><span class="xml"></span></div><div class="line"></div><div class="line">    <span class="expression">{{<span class="begin-block">#<span class="keyword">each</span> todo <span class="keyword">in</span> todos</span>}}</span><span class="xml"></span></div><div class="line">      <span class="tag">&lt;<span class="title">p</span>&gt;</span><span class="expression">{{<span class="variable">todo.title</span>}}</span><span class="xml"> </span><span class="expression">{{<span class="variable">confirm-button</span> <span class="variable">title</span>=<span class="string">"Delete"</span> <span class="variable">deleteAction</span>=<span class="string">"deleteTodo"</span> <span class="variable">param</span>=<span class="variable">todo</span>}}</span><span class="xml"><span class="tag">&lt;/<span class="title">p</span>&gt;</span></span></div><div class="line">    <span class="expression">{{<span class="end-block">/<span class="keyword">each</span></span>}}</span><span class="xml"></span></div></pre></td></tr></table></figure>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div></pre></td><td class="code"><pre><div class="line"><span class="xml"><span class="php"></span></span><span class="expression">{{! <span class="variable">index.handlebars</span> }}</span><span class="xml"><span class="php"></span></span></div><div class="line"></div><div class="line">    <span class="expression">{{<span class="begin-block">#<span class="keyword">each</span> todo <span class="keyword">in</span> todos</span>}}</span><span class="xml"><span class="php"></span></span></div><div class="line">      &lt;p&gt;<span class="expression">{{<span class="variable">todo.title</span>}}</span><span class="xml"><span class="php"> </span></span><span class="expression">{{<span class="variable">confirm-button</span> <span class="variable">title</span>=<span class="string">"Delete"</span> <span class="variable">deleteAction</span>=<span class="string">"deleteTodo"</span> <span class="variable">param</span>=<span class="variable">todo</span>}}</span><span class="xml"><span class="php">&lt;/p&gt;</span></span></div><div class="line">    <span class="expression">{{<span class="end-block">/<span class="keyword">each</span></span>}}</span><span class="xml"><span class="php"></span></span></div></pre></td></tr></table></figure>
 
 <p>多action: <code>\{\{user-form submit=&quot;createUser&quot; cancel=&quot;cancelUserCreation&quot;}}</code></p>
 ]]></content>
@@ -1812,7 +1922,7 @@
 ]]></content>
     <summary type="html"><![CDATA[<p>最近在测试系统的Benchmark的时候，遇到一个奇怪的现象： 有少许请求的总处理时间特别长。后来发现耗时基本处在connect to server上。<br><img src="/images/2014-09-18/benchmark_connect.jpg" alt=""><br>奇怪的是，耗时较长的连接所用的时间基本还有规律， 大概是1秒，3秒，7秒，15秒…..这样有规律的数列，而且耗时越长的连接数量越少。<br>]]></summary>
     
-      <category term="TCP/IP" scheme="http://colobu.com/tags/TCPIP/"/>
+      <category term="TCP/IP" scheme="http://colobu.com/tags/TCP-IP/"/>
     
       <category term="Linux" scheme="http://colobu.com/tags/Linux/"/>
     
@@ -1868,7 +1978,7 @@
     
       <category term="sysctl" scheme="http://colobu.com/tags/sysctl/"/>
     
-      <category term="TCP/IP" scheme="http://colobu.com/tags/TCPIP/"/>
+      <category term="TCP/IP" scheme="http://colobu.com/tags/TCP-IP/"/>
     
       <category term="Linux" scheme="http://colobu.com/tags/Linux/"/>
     
@@ -2236,106 +2346,6 @@ gulp.task(<span class="string">'css'</span>, <span class="function"><span class=
       <category term="epoll" scheme="http://colobu.com/tags/epoll/"/>
     
       <category term="Java" scheme="http://colobu.com/categories/Java/"/>
-    
-  </entry>
-  
-  <entry>
-    <title><![CDATA[Apache Curator Client]]></title>
-    <link href="http://colobu.com/2014/09/11/curator-doc-client/"/>
-    <id>http://colobu.com/2014/09/11/curator-doc-client/</id>
-    <published>2014-09-11T04:58:14.000Z</published>
-    <updated>2014-09-12T00:21:49.000Z</updated>
-    <content type="html"><![CDATA[<p>Curator client使用底层的API， 强烈推荐你是用Curator Framework代替使用CuratorZookeeperClient<br><a id="more"></a></p>
-<h1 id="背景">背景</h1>
-<p>CuratorZookeeperClient 是ZOoKeeper client的包装类。但是提供了更简单方式， 而且可以减少错误的发生。它提供了下列的特性：</p>
-<ul>
-<li>持续的连接管理 - ZooKeeper有很多的关于连接管理的警告（你可以到ZooKeeper FAQ查看细节）。CuratorZookeeperClient 可以自动的管理这些事情。</li>
-<li>retry - 提供一个方式处理retry。</li>
-<li>Test ZooKeeper server - 提供一个进程内的ZooKeeper测试服务器用来测试和实验。</li>
-</ul>
-<h1 id="方法">方法</h1>
-<table>
-<thead>
-<tr>
-<th>Method</th>
-<th>Description</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>Constructor</td>
-<td>创建一个给定ZooKeeper集群的连接。 你可以传入一个可选的watcher. 必须提供Retry策略</td>
-</tr>
-<tr>
-<td>getZooKeeper()</td>
-<td>返回管理的ZooKeeper实例. <strong>重要提示</strong>: a) 它会花费些许时间等待连接来完成， 在使用其它方法之前你应该校验连接是否完成. b) 管理的ZooKeeper实例可以根据特定的事件而改变。 不要持有实例太长时间. 总是调用getZooKeeper()得到一个新的实例.</td>
-</tr>
-<tr>
-<td>isConnected()</td>
-<td>返回ZooKeeper client当前连接状态</td>
-</tr>
-<tr>
-<td>blockUntilConnectedOrTimedOut()</td>
-<td>block知道连接成功或者超时</td>
-</tr>
-<tr>
-<td>close()</td>
-<td>关闭连接</td>
-</tr>
-<tr>
-<td>setRetryPolicy()</td>
-<td>改变retry策略</td>
-</tr>
-<tr>
-<td>newRetryLoop()</td>
-<td>分配一个新的Retry Loop - 详情看下边</td>
-</tr>
-</tbody>
-</table>
-<h1 id="Retry_Loop">Retry Loop</h1>
-<p>由于各种各样的原因， 在zookeeper集群上的操作难免遇到失败的情况。最佳实践表明应该提供重试机制。Retry Loop 为此而生。 <strong>每个操作都被包装在一个Retry Loop中</strong>。下面是一个典型的处理流程：</p>
-<figure class="highlight java"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div></pre></td><td class="code"><pre><div class="line">RetryLoop retryLoop = client.newRetryLoop();</div><div class="line"><span class="keyword">while</span> ( retryLoop.shouldContinue() )</div><div class="line">{</div><div class="line">   <span class="keyword">try</span></div><div class="line">   {</div><div class="line">       <span class="comment">// perform your work</span></div><div class="line">       ...</div><div class="line">       <span class="comment">// it's important to re\-get the ZK instance as there may have been an error and the instance was re\-created</span></div><div class="line">       ZooKeeper      zk = client.getZookeeper();</div><div class="line">       retryLoop.markComplete();</div><div class="line">   }</div><div class="line">   <span class="keyword">catch</span> ( Exception e )</div><div class="line">   {</div><div class="line">       retryLoop.takeException(e);</div><div class="line">   }</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>Retry Loop维护一定数量的retry， 它还决定一个错误是否可以要执行retry。 假如一个错误需要retry，Retry策略被调用来决定retry是要要执行，执行多少次才放弃。<br>很方便地，RetryLoop 提供了一个静态方法使用Callable来执行一个完整retry loop。</p>
-<figure class="highlight java"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div></pre></td><td class="code"><pre><div class="line">RetryLoop.callWithRetry(client, <span class="keyword">new</span> Callable&lt;Void&gt;()</div><div class="line">{</div><div class="line">      <span class="annotation">@Override</span></div><div class="line">      <span class="keyword">public</span> Void <span class="title">call</span>() <span class="keyword">throws</span> Exception</div><div class="line">      {</div><div class="line">          <span class="comment">// do your work here - it will get retried if needed</span></div><div class="line">          <span class="keyword">return</span> <span class="keyword">null</span>;</div><div class="line">      }</div><div class="line">});</div></pre></td></tr></table></figure>
-
-<h1 id="Retry策略">Retry策略</h1>
-<p>retry策略可以改变retry的行为。 它抽象出RetryPolicy接口， 包含一个方法<code>public boolean allowRetry(int retryCount, long elapsedTimeMs);</code>。 在retry被尝试执行前， allowRetry()被调用，并且将当前的重试次数和操作已用时间作为参数. 如果返回true， retry被执行。否则异常被抛出。<br>Curator本身提供了几个策略(在 com.netflix.curator.retry 包下):</p>
-<table>
-<thead>
-<tr>
-<th>Policy Name</th>
-<th>Description</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>ExponentialBackoffRetry</td>
-<td>重试一定次数，每次重试sleep更多的时间</td>
-</tr>
-<tr>
-<td>RetryNTimes</td>
-<td>重试N次</td>
-</tr>
-<tr>
-<td>RetryOneTime</td>
-<td>重试一次</td>
-</tr>
-<tr>
-<td>RetryUntilElapsed</td>
-<td>重试一定的时间</td>
-</tr>
-</tbody>
-</table>
-<p><a href="http://curator.apache.org/curator-client/index.html" target="_blank" rel="external">原文</a></p>
-]]></content>
-    <summary type="html"><![CDATA[<p>Curator client使用底层的API， 强烈推荐你是用Curator Framework代替使用CuratorZookeeperClient<br>]]></summary>
-    
-      <category term="Curator" scheme="http://colobu.com/tags/Curator/"/>
-    
-      <category term="ZooKeeper" scheme="http://colobu.com/tags/ZooKeeper/"/>
-    
-      <category term="大数据" scheme="http://colobu.com/categories/%E5%A4%A7%E6%95%B0%E6%8D%AE/"/>
     
   </entry>
   
