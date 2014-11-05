@@ -4,7 +4,7 @@
   <subtitle><![CDATA[大道至简 衍化至繁]]></subtitle>
   <link href="/atom.xml" rel="self"/>
   <link href="http://colobu.com/"/>
-  <updated>2014-11-04T09:48:59.591Z</updated>
+  <updated>2014-11-05T09:13:42.237Z</updated>
   <id>http://colobu.com/</id>
   
   <author>
@@ -13,6 +13,224 @@
   </author>
   
   <generator uri="http://zespia.tw/hexo/">Hexo</generator>
+  
+  <entry>
+    <title><![CDATA[kernel 101 - 动手写内核]]></title>
+    <link href="http://colobu.com/2014/11/05/kernel-101-lets-write-a-kernel/"/>
+    <id>http://colobu.com/2014/11/05/kernel-101-lets-write-a-kernel/</id>
+    <published>2014-11-05T08:33:21.000Z</published>
+    <updated>2014-11-05T09:13:06.000Z</updated>
+    <content type="html"><![CDATA[<p><a href="http://arjunsreedharan.org/" target="_blank" rel="external">Arjun Sreedharan</a>写的内核编写教程。 超级简单。<br>目前写了两篇：<br><a href="http://arjunsreedharan.org/post/82710718100/kernel-101-lets-write-a-kernel" target="_blank" rel="external">Kernel 101 – Let’s write a Kernel</a><br><a href="http://arjunsreedharan.org/post/99370248137/kernel-201-lets-write-a-kernel-with-keyboard-and" target="_blank" rel="external">Kernel 201 - Let’s write a Kernel with keyboard and screen support</a></p>
+<p>国内也有人翻译了，如</p>
+<ul>
+<li><a href="http://www.geekfan.net/8663/" target="_blank" rel="external">内核代号101 — 动手写自己的内核</a></li>
+<li><a href="http://noalgo.info/649.html" target="_blank" rel="external">编写最简单的内核：HelloWorld</a></li>
+</ul>
+<p>以下是我根据上面的文章整理的翻译。<br><a id="more"></a><br>Hi, 大家好。</p>
+<p>在这篇文章中，我们将从零开始，动手编写一个可以用GRUB来引导的简单x86内核，该内核会在屏幕上打印一条信息后挂起。<br><img src="http://static.tumblr.com/gltvynn/MDYn443cj/one-does-not-kernel.jpg" alt=""></p>
+<h3 id="X86机器是怎样启动的？">X86机器是怎样启动的？</h3>
+<p>在我们思考怎样写一个内核之前，让我们先看一下x86机器从启动到把控制权交给内核的过程是怎样的：<br>x86 CPU在机器启动之后就会从地址 <strong>[0xFFFFFFF0]</strong>处开始执行，这个地址就是在32位寻址空间中的最后16个字节处，这里存放了一条跳转指令，会跳转到内存中BIOS代码起始处。<br>接着，cpu就开始开始执行BIOS代码块了，BIOS首先会在我们配置好的启动设备序列中，通过检查一个特定的魔数，找到第一个可以引导的设备。<br>一旦BIOS找到一个可以引导的设备后，它就会把该设备第一个扇区的代码复制到物理内存的<strong>[0x7c00]</strong>的位置，然后跳转到这个地址开始执行这一段代码，我们习惯把这一段代码叫作<code>bootloader</code>。<br>Bootloader会将内核代码加载到物理内存<strong>[0x100000]</strong>的位置，[0x100000]这个地址是所有x86机器宏内核代码的起始地址。</p>
+<h3 id="我们需要哪一些工具？">我们需要哪一些工具？</h3>
+<ul>
+<li>一个x86构架的计算机</li>
+<li>Linux</li>
+<li>NASM 汇编器</li>
+<li>GCC</li>
+<li>LD(GNU 连接器)</li>
+<li>GRUB </li>
+</ul>
+<h3 id="源码">源码</h3>
+<p>源代码可以在我的Github找到 <a href="http://github.com/arjun024/mkernel" target="_blank" rel="external">Github repository - mkernel</a></p>
+<h3 id="用汇编代码来编写内核入口">用汇编代码来编写内核入口</h3>
+<p>我们喜欢用c来做所有的事情，但是我们无可避免地需要用到一点儿汇编，我们将会写一小段x86的汇编代码来作为内核入口，这一段汇编代码会在调用我们的c代码后停止整个程序流程。<br>我们怎样确认汇编代码会作为内核的起始点呢？</p>
+<blockquote>
+<p>我们将用一个连接器脚本将这些目标文件链接成我们最终的内核程序（稍后解释更多），在连接器脚本里，我们指定了这段二进制代码会被加载到内存 [0x100000]处。这个地址就是我之前说过的，内核所希望的起始地址。</p>
+</blockquote>
+<p>汇编代码如下：</p>
+<figure class="highlight asm"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div></pre></td><td class="code"><pre><div class="line"><span class="comment">;;kernel.asm</span></div><div class="line"><span class="built_in">bits</span> <span class="number">32</span>			<span class="comment">;nasm directive - 32 bit</span></div><div class="line"><span class="built_in">section</span> <span class="string">.text</span></div><div class="line"></div><div class="line"><span class="built_in">global</span> start</div><div class="line"><span class="built_in">extern</span> kmain	        <span class="comment">;kmain is defined in the c file</span></div><div class="line"><span class="label"></span></div><div class="line">start:</div><div class="line">  <span class="keyword">cli</span> 			<span class="comment">;block interrupts</span></div><div class="line">  <span class="keyword">call</span> kmain</div><div class="line">  <span class="keyword">hlt</span>		 	<span class="comment">;halt the CPU</span></div></pre></td></tr></table></figure>
+
+<p>第一条指令 <code>bit32</code> 不是x86汇编指令，它是一条NASM 指令，指定nasm汇编器产生32位的程序，这条语句并不是必不可少的，但加上它是一个好的编程习惯。<br>第二行是text段(代码段)的开始，在这里存放着我们的代码块。<br><code>global</code>是另外一个NASM指令，用将一个符号设置为全局符号。这样做连接器才会知道符号<code>start</code>在哪儿开始，start是我们程序的入口地址。<br><code>kmain</code>是我们定义在kernel.c文件中的函数。<br><code>extern</code>关键字声明了该函数定义在别的文件中。<br>到这里，我们的函数start调用kmian函数之后就会使用<code>hlt</code>指令将CPU挂起,中断会cpu从<code>hlt</code>指令中唤醒，我们要在挂起之前用<code>cli</code>指令来关闭系统的中断响应，<code>cli</code>指令是清除中断(clear-interrupts)的缩写。</p>
+<h3 id="用C实现的内核">用C实现的内核</h3>
+<p>在<code>kernle.asm</code>中，我们调用了<code>kmain()</code>函数，所以我们的c代码将会在<code>kmain()</code>中开始运行:</p>
+<figure class="highlight c"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div></pre></td><td class="code"><pre><div class="line"><span class="comment">/*</span></div><div class="line">*  kernel.c</div><div class="line">*/</div><div class="line"><span class="keyword">void</span> kmain(<span class="keyword">void</span>)</div><div class="line">{</div><div class="line">	<span class="keyword">char</span> *str = <span class="string">"my first kernel"</span>;</div><div class="line">	<span class="keyword">char</span> *vidptr = (<span class="keyword">char</span>*)<span class="number">0xb8000</span>; 	<span class="comment">//video mem begins here.</span></div><div class="line">	<span class="keyword">unsigned</span> <span class="keyword">int</span> i = <span class="number">0</span>;</div><div class="line">	<span class="keyword">unsigned</span> <span class="keyword">int</span> j = <span class="number">0</span>;</div><div class="line">	<span class="comment">//clear all</span></div><div class="line">	<span class="keyword">while</span>(j &lt; <span class="number">80</span> * <span class="number">25</span> * <span class="number">2</span>) {</div><div class="line">		<span class="comment">//blank character</span></div><div class="line">		vidptr[j] = <span class="string">' '</span>;</div><div class="line">		<span class="comment">//attribute-byte: light grey on black screen	</span></div><div class="line">		vidptr[j+<span class="number">1</span>] = <span class="number">0x07</span>; 		</div><div class="line">		j = j + <span class="number">2</span>;</div><div class="line">	}</div><div class="line">	j = <span class="number">0</span>;</div><div class="line">	<span class="keyword">while</span>(str[j] != <span class="string">'\0'</span>) {</div><div class="line">		vidptr[i] = str[j];</div><div class="line">		vidptr[i+<span class="number">1</span>] = <span class="number">0x07</span>;</div><div class="line">		++j;</div><div class="line">		i = i + <span class="number">2</span>;</div><div class="line">	}</div><div class="line">	<span class="keyword">return</span>;</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>我们的内核首先会清空整个屏幕，然后打印出字符串。<br>首先，我们用一个<code>vidptr</code>指针，指向地址<strong>[0xb8000]</strong>, 这个地址是保护模式下显存的起始地址。屏幕的文本内容对应着的内存空间中一个内存段，即屏幕的输出输出映射到了内存中地址[0xb8000]的地方，整个屏幕共支持25行，每行80个ASCII字符。<br>在文本内存中每一个字符由16bits(2个字节)表示，这不像我们以前使用8bits来定义。其中第一个字节是该字符的ASCII码，第二个字节是属性字节<code>attribute-byte</code>， 它描述了字符的表现形式，包括了字符颜色等属性。<br>为了在黑色的背景下打印绿色字符<code>s</code>，我们将字符<code>s</code>放在显存中的第一个字节，接着将[0x02]放在第二个字节中, 其中 <code>0</code>表示黑色背景，<code>2</code>表示绿色前景。</p>
+<p>下面是不同颜色的定义：</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line"><span class="number">0</span> - <span class="keyword">Black</span>, <span class="number">1</span> - <span class="keyword">Blue</span>, <span class="number">2</span> - <span class="keyword">Green</span>, <span class="number">3</span> - <span class="keyword">Cyan</span>, <span class="number">4</span> - <span class="keyword">Red</span>, <span class="number">5</span> - <span class="keyword">Magenta</span>, <span class="number">6</span> - <span class="keyword">Brown</span>, <span class="number">7</span> - Light Grey, <span class="number">8</span> - Dark Grey, <span class="number">9</span> - Light <span class="keyword">Blue</span>, <span class="number">10</span>/a - Light <span class="keyword">Green</span>, <span class="number">11</span>/b - Light <span class="keyword">Cyan</span>, <span class="number">12</span>/c - Light <span class="keyword">Red</span>, <span class="number">13</span>/d - Light <span class="keyword">Magenta</span>, <span class="number">14</span>/e - Light <span class="keyword">Brown</span>, <span class="number">15</span>/f – <span class="keyword">White</span>.</div></pre></td></tr></table></figure>
+
+<p>在我们的内核中，我们将字符颜色设置为灰色，将背景颜色设定为黑色，因此我们的属性字节的值是[0x07].<br>在第一个while循环中，程序将属性值为[0x07]的空格字符(‘  ’)写到整个屏幕中(共25行，每行80个字符)，这样就会将整个屏幕清空了。<br>在第二个while循环中，我们将null结尾的字符串 “my first kernel” ，从显存的起始处开始写入。<br>这样字符串就打印在屏幕上了</p>
+<h3 id="链接部分">链接部分</h3>
+<p>我们用NASM，GCC分别将<code>kernale.asm</code>，<code>kernel.c</code>编译成目标文件，接着将这些目标文件链接成一个可引导的内核程序。<br>我们指定ld连接器按照我们脚本规定来进行链接。</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div></pre></td><td class="code"><pre><div class="line">/<span class="keyword">*</span></div><div class="line"><span class="keyword">*</span>  link.ld</div><div class="line"><span class="keyword">*</span>/</div><div class="line">OUTPUT_FORMAT(elf32-i386)</div><div class="line">ENTRY(start)</div><div class="line">SECTIONS</div><div class="line"> {</div><div class="line">   . = 0x100000;</div><div class="line">   .text : { <span class="keyword">*</span>(.text) }</div><div class="line">   .data : { <span class="keyword">*</span>(.data) }</div><div class="line">   .bss  : { <span class="keyword">*</span>(.bss)  }</div><div class="line"> }</div></pre></td></tr></table></figure>
+
+<p>脚本指定了输出格式为 32位的ELF文件格式. ELF（<a href="http://elinux.org/Executable_and_Linkable_Format_(ELF" target="_blank" rel="external">Executable and Linkable Format</a>)）是x86构架的类Unix系统标准的二进制格式。<br><strong>ENTRY</strong> 接收一个参数。它指定了可执行文件的入口符号。<br><strong>SECTIONS</strong>  对我们来讲是最重要的。在这里，我们定义即将生成的可执行文件的布局。我们可以定义各个段链接融合的方式以及放置的位置。<br>在<strong>SECTIONS</strong> 后的花括号中，符号 (.) 表示的是一个位置计数器。它通常会被初始化为<strong>[0x0]</strong>，作为SECTIONS 块的起始地址 ，它的值是可以被修改的。 之前我说过，内核代码需要在地址<strong>[0x100000]</strong>处，所以我们将它修改为<strong>[0x100000]</strong>。</p>
+<p>接着看下一行的 <strong>.text : { *(.text) }</strong><br>星号( <em> )是一个通配符，表示所有的文件名。`</em>(.text)<code>表示将所有输入文件的</code>.text` 段<br>因此，按照这个设定，连接器将所有目标文件的text段融合到最终可执行文件的text 段中，即在位置计数器所标识的地址处 (<strong>[0x100000]</strong>)。<br>在连接器将处理好输出的text段后，地址计数器的值会变为<strong>[0x100000]</strong>+text段的长度。</p>
+<p>类似的，data段和bss段也会相应得融合后放置到地址计数器所标识的位置。</p>
+<h3 id="Grub和多重引导">Grub和多重引导</h3>
+<p>现在我们已经准备好所有制作内核所需的文件了，但我们还有一步工作，我们还需要用<a href="http://www.gnu.org/software/grub/" target="_blank" rel="external">grub Bootloader</a>来启动我们的内核。<br>在按照Mutileboot 规范来编译我们的内核后，它就可以被GRUB引导了。<br>按照Mutileboot 的规范说明，内核必须在起始的8KB中包含这一个多引导项头（<a href="http://www.gnu.org/software/grub/manual/multiboot/multiboot.html" target="_blank" rel="external">Multiboot header</a>)。<br>而且，这个多引导项头里面必须有3个4字节对齐的块。</p>
+<ul>
+<li>一个魔术块：包含了魔数<strong>[0x1BADB002]</strong>，是多引导项头结构的定义值。</li>
+<li>一个标志块：我们不关心这个块的内容，我们简单设定为0。</li>
+<li>一个校检块：校检块，魔术块和标志块的数值的总和必须是0。</li>
+</ul>
+<p>因此，我们的内核代码如下：</p>
+<figure class="highlight asm"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div></pre></td><td class="code"><pre><div class="line"><span class="comment">;;kernel.asm</span></div><div class="line"></div><div class="line"><span class="comment">;nasm directive - 32 bit</span></div><div class="line"><span class="built_in">bits</span> <span class="number">32</span></div><div class="line"><span class="built_in">section</span> <span class="string">.text</span></div><div class="line">        <span class="comment">;multiboot spec</span></div><div class="line">        <span class="preprocessor">align</span> <span class="number">4</span></div><div class="line">        <span class="pseudo">dd</span> <span class="number">0x1BADB002</span>            <span class="comment">;magic</span></div><div class="line">        <span class="pseudo">dd</span> <span class="number">0x00</span>                  <span class="comment">;flags</span></div><div class="line">        <span class="pseudo">dd</span> - (<span class="number">0x1BADB002</span> + <span class="number">0x00</span>) <span class="comment">;checksum. m+f+c should be zero</span></div><div class="line"></div><div class="line"><span class="built_in">global</span> start</div><div class="line"><span class="built_in">extern</span> kmain	        <span class="comment">;kmain is defined in the c file</span></div><div class="line"><span class="label"></span></div><div class="line">start:</div><div class="line">  <span class="keyword">cli</span> 			<span class="comment">;block interrupts</span></div><div class="line">  <span class="keyword">call</span> kmain</div><div class="line">  <span class="keyword">hlt</span>		 	<span class="comment">;halt the CPU</span></div></pre></td></tr></table></figure>
+
+<p>dd 指令定义了个4字节的双字。</p>
+<h3 id="生成内核">生成内核</h3>
+<p>我们现在开始将kernel.asm和kernel.c编译成目标文件，接着将它们根据我们的连接器脚本的设定链接到一起：</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">nasm <span class="operator">-f</span> elf32 kernel.asm -o kasm.o</div></pre></td></tr></table></figure>
+
+<p>启动NASM汇编器将kernel.asm编译成ELF-32位格式的目标文件。</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">gcc -m32 -<span class="built_in">c</span> kernel.<span class="built_in">c</span> -o kc.o</div></pre></td></tr></table></figure>
+
+<p>-c选项告知GCC编译器在将源文件编译成目标文件后，不要对它们进行链接。</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">ld -<span class="keyword">m</span> elf_i386 -T <span class="keyword">link</span>.ld -o kernel kasm.o kc.o</div></pre></td></tr></table></figure>
+
+<p>启动链接器，根据我们的链接脚本生成一个名为<strong>kernel</strong>的可执行的文件。</p>
+<h3 id="配置grub,_启动内核">配置grub, 启动内核</h3>
+<p>GRUB 需要以<code>kernel-&lt;version&gt;</code>的形式来命名内核程序，所以，我将它重名为kernel-701.<br>接着将它放在/boot目录下，这一步需要你需要拥有超级用户权限才能够进行操作。<br>在你的GRUB配置文件<code>grub.cfg</code>中加上一个引导入口，如下：</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line">title myKernel</div><div class="line">	root (hd0,0)</div><div class="line">	kernel /boot/kernel-701 ro</div></pre></td></tr></table></figure>
+
+<p>如果存在一个<code>hiddenmenu</code>的指令，记得要把它移除掉。<br>重启电脑，你就能够看到你的内核也在启动选择项列表中了。<br>选择启动它之后，结果如下：<br><img src="http://static.tumblr.com/gltvynn/yOdn443dr/mkernel.png" alt=""></p>
+<p>好了，你实现了一个简单的内核。</p>
+<p>极客范 – GeekFan.net | 内核代号101 — 动手写自己的内核 - 极客范 - GeekFan.net 极客范 – GeekFan.net</p>
+<pre><code>首页
+科技资讯
+硬件
+Android
+iOS
+Mac
+Linux
+创意
+游戏
+视频
+</code></pre><p>Linux 编程技术<br>  上一篇下一篇<br>内核代号101 — 动手写自己的内核<br>何伟寰    2014 年 4 月 23 日    6 条评论 标签:boot , kernel , Linux , 内核<br>47<br>本文由 极客范 - 何伟寰 翻译自 Arjun Sreedharan。欢迎加入极客翻译小组，同我们一道翻译与分享。转载请参见文章末尾处的要求。</p>
+<p>Hi, 大家好。</p>
+<p>在这篇文章中，我们将从零开始，动手编写一个可以用GRUB来引导的简单x86内核，该内核会在屏幕上打印一条信息后挂起。</p>
+<p>one-does-not-kernel</p>
+<p> 一个人写一个内核是一件简单的事情</p>
+<p>X86机器是怎样启动的？</p>
+<p>在我们思考怎样写一个内核之前，让我们先看一下x86机器从启动到把控制权交给内核的过程是怎样的：</p>
+<p>x86 CPU在机器启动之后就会从地址 [0xFFFFFFF0]处开始执行，这个地址就是在32位寻址空间中的最后16个字节处，这里存放了一条跳转指令，会跳转到内存中BIOS代码起始处。</p>
+<p>接着，cpu就开始开始执行BIOS代码块了，BIOS首先会在我们配置好的启动设备序列中，通过检查一个特定的魔数，找到第一个可以引导的设备。</p>
+<p>一旦BIOS找到一个可以引导的设备后，它就会把该设备第一个扇区的代码复制到物理内存的[0x7c00]的位置，然后跳转到这个地址开始执行这一段代码，我们习惯把这一段代码叫作bootloader。</p>
+<p>Bootloader会将内核代码加载到物理内存[0x100000]的位置，[0x100000]这个地址是所有x86机器宏内核代码的起始地址。</p>
+<p>我们需要哪一些工具？</p>
+<ul>
+<li><p>一个x86构架的计算机</p>
+</li>
+<li><p>Linux</p>
+</li>
+<li><p>NASM 汇编器</p>
+</li>
+<li><p>GCC</p>
+</li>
+<li><p>LD(GNU 连接器)</p>
+</li>
+<li><p>GRUB</p>
+</li>
+</ul>
+<p>源码</p>
+<p>源代码可以在我的Github系在 Github repository - mkernel</p>
+<p>用汇编代码来编写内核入口</p>
+<p>我们喜欢用c来做所有的事情，但是我们无可避免地需要用到一点儿汇编，我们将会写一小段x86的汇编代码来作为内核入口，这一段汇编代码会在调用我们的c代码后停止整个程序流程。</p>
+<p>我们怎样确认汇编代码会作为内核的起始点呢？</p>
+<p> 我们将用一个连接器脚本将这些目标文件链接成我们最终的内核程序（稍后解释更多），在连接器脚本里，我们指定了这段二进制代码会被加载到内存 [0x100000]处。这个地址就是我之前说过的，内核所希望的起始地址。</p>
+<p>汇编代码如下：</p>
+<p>ker1</p>
+<p>第一条指令 bit32 不是x86汇编指令，它是一条NASM 指令，指定nasm汇编器产生32位的程序，这条语句并不是必不可少的，但加上它是一个好的编程习惯。</p>
+<p>第二行是text段(代码段)的开始，在这里存放着我们的代码块。</p>
+<p>global是另外一个NASM指令，用将一个符号设置为全局符号。这样做连接器才会知道符号start在哪儿开始，start是我们程序的入口地址。</p>
+<p>kmain是我们定义在kernel.c文件中的函数，extern关键字声明了该函数定义在别的文件中。</p>
+<p>到这里，我们的函数start调用kmian函数之后就会使用hlt指令将CPU挂起,中断会cpu从hlt 指令中唤醒，我们要在挂起之前用cli指令来关闭系统的中断响应，cli指令是清除中断(clear-interrupts)的缩写。</p>
+<p>用C实现的内核</p>
+<p>在kernle.asm中，我们调用了kmain()函数，所以我们的c代码将会在kmain()中开始运行:</p>
+<p>ker2</p>
+<p>我们的内核首先会清空整个屏幕，然后打印出字符串。</p>
+<p>首先，我们用一个vidptr指针，指向地址[0xb8000] , 这个地址是保护模式下显存的起始地址。屏幕的文本内容对应着的内存空间中一个内存段，即屏幕的输出输出映射到了内存中地址[0xb8000]的地方，整个屏幕共支持25行，每行80个ASCII字符。</p>
+<p>在文本内存中每一个字符由16bits(2个字节)表示，这不像我们以前使用8bits来定义。其中第一个字节是该字符的ASCII码，第二个字节是属性字节， 它描述了字符的表现形式，包括了字符颜色等属性。</p>
+<p>为了在黑色的背景下打印绿色字符’s‘，我们将字符’s‘放在显存中的第一个字节，接着将[0x02]放在第二个字节中, 其中 0表示黑色背景，2表示绿色前景。</p>
+<p>下面是不同颜色的定义：</p>
+<p>col1</p>
+<p>在我们的内核中，我们将字符颜色设置为灰色，将背景颜色设定为黑色，因此我们的属性字节的值是[0x07].</p>
+<p>在第一个while循环中，程序将属性值为[0x07]的空格字符(‘  ’)写到整个屏幕中(共25行，每行80个字符)，这样就会将整个屏幕清空了。</p>
+<p>在第二个while循环中，我们将null结尾的字符串 “my first kernel” ，从显存的起始处开始写入。</p>
+<p>这样字符串就打印在屏幕上了</p>
+<p>链接部分</p>
+<p>我们用NASM，GCC分别将kernale.asm，kernel.c编译成目标文件，接着将这些目标文件链接成一个可引导的内核程序。</p>
+<p>我们指定ld连接器按照我们脚本规定来进行链接。</p>
+<p>ker3</p>
+<p>脚本指定了输出格式为 32位的ELF文件格式. ELF（Executable and Linkable Format）是x86构架的类Unix系统标准的二进制格式。</p>
+<p>ENTRY 接收一个参数。它指定了可执行文件的入口符号。</p>
+<p>SECTIONS  对我们来讲是最重要的。在这里，我们定义即将生成的可执行文件的布局。我们可以定义各个段链接融合的方式以及放置的位置。</p>
+<p>在SECTIONS 后的花括号中，符号 (.) 表示的是一个位置计数器。它通常会被初始化为[0x0]，作为SECTIONS 块的起始地址 ，它的值是可以被修改的。 之前我说过，内核代码需要在地址[0x100000]处，所以我们将它修改为[0x100000]。</p>
+<p>接着看下一行的 .text : { *(.text) }</p>
+<p>星号( <em> )是一个通配符，表示所有的文件名。</em>(.text)表示将所有输入文件的 .text 段</p>
+<p>因此，按照这个设定，连接器将所有目标文件的text段融合到最终可执行文件的text 段中，即在位置计数器所标识的地址处 ([0x100000])。</p>
+<p>在连接器将处理好输出的text段后，地址计数器的值会变为[0x100000]+text段的长度。</p>
+<p>类似的，data段和bss段也会相应得融合后放置到地址计数器所标识的位置。</p>
+<p>Grub和多重引导</p>
+<p>现在我们已经准备好所有制作内核所需的文件了，但我们还有一步工作，我们还需要用grub Bootloader来启动我们的内核。</p>
+<p>在按照Mutileboot 规范来编译我们的内核后，它就可以被GRUB引导了。</p>
+<p>按照Mutileboot 的规范说明，内核必须在起始的8KB中包含这一个多引导项头（Multiboot header)。</p>
+<p>而且，这个多引导项头里面必须有3个4字节对齐的块。</p>
+<p>一个魔术块：包含了魔数[0x1BADB002]，是多引导项头结构的定义值。</p>
+<p>一个标志块：我们不关心这个块的内容，我们简单设定为0。</p>
+<p>一个校检块：校检块，魔术块和标志块的数值的总和必须是0。</p>
+<p>因此，我们的内核代码如下：</p>
+<p>ker4</p>
+<p>dd 指令定义了个4字节的双字。</p>
+<p>生成内核</p>
+<p>我们现在开始将kernel.asm和kernel.c编译成目标文件，接着将它们根据我们的连接器脚本的设定链接到一起：</p>
+<p>①ker5</p>
+<p>启动NASM汇编器将kernel.asm编译成ELF-32位格式的目标文件。</p>
+<p>②ker6</p>
+<p>-c选项告知GCC编译器在将源文件编译成目标文件后，不要对它们进行链接。</p>
+<p>③ker7</p>
+<p>启动链接器，根据我们的链接脚本生成一个名为kernel的可执行的文件。</p>
+<p>配置grub, 启动内核</p>
+<p>GRUB 需要以kernel-<version>的形式来命名内核程序，所以，我将它重名为kernel-701.</version></p>
+<p>接着将它放在/boot目录下，这一步需要你需要拥有超级用户权限才能够进行操作。</p>
+<p>在你的GRUB配置文件grub.cfg中加上一个引导入口，如下：</p>
+<p>ker8</p>
+<p>如果存在一个隐藏菜单的指令，记得要把它移除掉。</p>
+<p>重启电脑，你就能够看到你的内核也在启动选择项列表中了。</p>
+<p>选择启动它之后，结果如下：</p>
+<p>mkernel</p>
+<p>成功显示出来了。</p>
+<p>”这是你的内核“</p>
+<p>”不，是你的内核“。</p>
+<p>PS:</p>
+<ul>
+<li>建议你在虚拟机中进行你所有内核hacking。</li>
+<li><p>在一些新的发行版中，使用了grub2作为默认的bootloader，你需要向下面这样来配置你的配置文件。</p>
+<p>（感谢 Rubén Laguna提供了grub2的配置）</p>
+</li>
+</ul>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line"><span class="title">menuentry</span> <span class="string">'kernel 7001'</span> {</div><div class="line">	<span class="title">set</span> root=<span class="string">'hd0,msdos1'</span></div><div class="line">	multiboot /boot/kernel-<span class="number">7001</span> ro</div><div class="line">}</div></pre></td></tr></table></figure>
+
+
+<ul>
+<li>如果你想用<code>qemu</code>模拟器代替GRUB来启动你的内核程序的话，你可以怎么做：</li>
+</ul>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">qemu-<span class="built_in">system</span>-i386 -kernel kernel</div></pre></td></tr></table></figure>
+
+<p>本系列的下一篇文章。<br><a href="http://arjunsreedharan.org/post/99370248137/kernel-201-lets-write-a-kernel-with-keyboard-and" target="_blank" rel="external">Kernel 201 - Let’s write a Kernel with keyboard and screen support</a></p>
+]]></content>
+    <summary type="html"><![CDATA[<p><a href="http://arjunsreedharan.org/" target="_blank" rel="external">Arjun Sreedharan</a>写的内核编写教程。 超级简单。<br>目前写了两篇：<br><a href="http://arjunsreedharan.org/post/82710718100/kernel-101-lets-write-a-kernel" target="_blank" rel="external">Kernel 101 – Let’s write a Kernel</a><br><a href="http://arjunsreedharan.org/post/99370248137/kernel-201-lets-write-a-kernel-with-keyboard-and" target="_blank" rel="external">Kernel 201 - Let’s write a Kernel with keyboard and screen support</a></p>
+<p>国内也有人翻译了，如</p>
+<ul>
+<li><a href="http://www.geekfan.net/8663/" target="_blank" rel="external">内核代号101 — 动手写自己的内核</a></li>
+<li><a href="http://noalgo.info/649.html" target="_blank" rel="external">编写最简单的内核：HelloWorld</a></li>
+</ul>
+<p>以下是我根据上面的文章整理的翻译。<br>]]></summary>
+    
+      <category term="kernel" scheme="http://colobu.com/tags/kernel/"/>
+    
+      <category term="Linux" scheme="http://colobu.com/categories/Linux/"/>
+    
+  </entry>
   
   <entry>
     <title><![CDATA[Java 8 默认方法和多继承]]></title>
@@ -2602,85 +2820,6 @@
     <summary type="html"><![CDATA[<p>如你所知，JavaScript是世上编程语言的Number One (编者按： 原文如此), 用来编写Web和移动混合应用（比如PhoneGap或者Appcelerator）， 也可以编写服务器端的程序（比如NodeJS或者Wakanda），并且拥有很多其他的实现。 它也是很多新手进入编程世界的启蒙语言，因为它不但可以在浏览器上显示一个简单的alert信息，而且还可以用来控制一个机器人（使用nodebot，或者nodruino）。掌握JavaScript并且能够写出规范并性能高效代码的开发人员，已经成为人才市场上的猎寻目标。</p>
 <p>在这篇文章中，Saad Mousliki将分享一组JavaScript的技巧、窍门和最佳实践，这些都是JavaScript程序员应该知晓的，不管他们是使用在浏览器/引擎上，还是服务器端（SSJS Service Side JavaScript）JavaScript解释器上。</p>
 <p>需要注意的是，这篇文章中的代码片段都在最新的Google Chrome（版本号30）上测试过，它使用V8 JavaScript引擎（V8 3.20.17.15）</p>
-]]></summary>
-    
-      <category term="javascript" scheme="http://colobu.com/tags/javascript/"/>
-    
-      <category term="前端开发" scheme="http://colobu.com/categories/%E5%89%8D%E7%AB%AF%E5%BC%80%E5%8F%91/"/>
-    
-  </entry>
-  
-  <entry>
-    <title><![CDATA[深入理解JavaScript 模块模式]]></title>
-    <link href="http://colobu.com/2014/09/23/JavaScript-Module-Pattern-In-Depth/"/>
-    <id>http://colobu.com/2014/09/23/JavaScript-Module-Pattern-In-Depth/</id>
-    <published>2014-09-23T08:41:27.000Z</published>
-    <updated>2014-09-24T02:18:55.000Z</updated>
-    <content type="html"><![CDATA[<p>模块模式是JavaScript一种常用的编码模式。这是一般的理解，但也有一些高级应用没有得到很多关注。在本文中，我将回顾基础知识，浏览一些不错的高级技巧，甚至我认为是原生基础的。</p>
-<a id="more"></a>
-
-<p>英文原文： <a href="http://www.adequatelygood.com/JavaScript-Module-Pattern-In-Depth.html" target="_blank" rel="external">JavaScript Module Pattern: In-Depth</a><br>中文翻译： <a href="http://www.oschina.net/translate/javascript-module-pattern-in-depth" target="_blank" rel="external">oschina</a> </p>
-<h1 id="基础知识">基础知识</h1>
-<p>首先我们开始简单概述模型模式。三年前Eric Miraglia(YUI)的博文使模型模式众所周知。如果你已经很熟悉模型模式，可以直接阅读“高级模式”。 </p>
-<h2 id="匿名闭包">匿名闭包</h2>
-<p>这是一切成为可能的基础，也是JavaScript最好的特性。我们将简单的创建匿名函数，并立即执行。所有函数内部代码都在闭包(closure)内。它提供了整个应用生命周期的私有和状态。 </p>
-<figure class="highlight javascript"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line">(<span class="function"><span class="keyword">function</span> <span class="params">()</span> </span>{</div><div class="line">    <span class="comment">// ... all vars and functions are in this scope only</span></div><div class="line">    <span class="comment">// still maintains access to all globals</span></div><div class="line">}());</div></pre></td></tr></table></figure>
-
-<p>注意匿名函数周围的()。这是语言的要求。关键字function一般认为是函数声明，包括()就是函数表达式。</p>
-<h2 id="引入全局">引入全局</h2>
-<p>JavaScript有个特性，称为隐性全局。使用变量名称时，解释器会从作用域向后寻找变量声明。如果没找到，变量会被假定入全局（以后可以全局调用）。如果会被分配使用，在还不存在时全局创建它。这意味着在匿名函数里使用全局变量很简单。不幸的是，这会导致代码难以管理，文件中不容易区分（对人而言）哪个变量是全局的。</p>
-<p>幸好，匿名函数还有一个不错的选择。全局变量作为参数传递给匿名函数。将它们引入我们的代码中，既更清晰，又比使用隐性全局更快。下面是一个例子： </p>
-<figure class="highlight javascript"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line">(<span class="function"><span class="keyword">function</span> <span class="params">($, YAHOO)</span> </span>{</div><div class="line">    <span class="comment">// 当前域有权限访问全局jQuery($)和YAHOO</span></div><div class="line">}(jQuery, YAHOO));</div></pre></td></tr></table></figure>
-
-<h2 id="模块出口">模块出口</h2>
-<p>有时你不只想用全局变量，但你需要先声明他们（模块的全局调用）。我们用匿名函数的返回值，很容易输出他们。这样做就完成了基本的模块模式。以下是一个完整例子：</p>
-<figure class="highlight javascript"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">var</span> MODULE = (<span class="function"><span class="keyword">function</span> <span class="params">()</span> </span>{</div><div class="line">    <span class="keyword">var</span> my = {},</div><div class="line">        privateVariable = <span class="number">1</span>;</div><div class="line">     </div><div class="line">    <span class="function"><span class="keyword">function</span> <span class="title">privateMethod</span><span class="params">()</span> </span>{</div><div class="line">        <span class="comment">// ...</span></div><div class="line">    }</div><div class="line">     </div><div class="line">    my.moduleProperty = <span class="number">1</span>;</div><div class="line">    my.moduleMethod = <span class="function"><span class="keyword">function</span> <span class="params">()</span> </span>{</div><div class="line">        <span class="comment">// ...</span></div><div class="line">    };</div><div class="line">     </div><div class="line">    <span class="keyword">return</span> my;</div><div class="line">}());</div></pre></td></tr></table></figure>
-
-<p>注意，我们声明了一个全局模块MODULE，有两个公开属性：方法MODULE.moduleMethod和属性MODULE.moduleProperty。而且，匿名函数的闭包还维持了私有内部状态。同时学会之上的内容，我们就很容易引入需要的全局变量，和输出到全局变量。 </p>
-<h1 id="高级模式">高级模式</h1>
-<p>对许多用户而言以上的还不足，我们可以采用以下的模式创造强大的，可扩展的结构。让我们使用MODULE模块，一个一个继续。 </p>
-<h2 id="扩充">扩充</h2>
-<p>模块模式的一个限制是整个模块必须在一个文件里。任何人都了解长代码分割到不同文件的必要。还好，我们有很好的办法扩充模块。（在扩充文件）首先我们引入模块（从全局），给他添加属性，再输出他。下面是一个例子扩充模块： </p>
-<figure class="highlight javascript"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">var</span> MODULE = (<span class="function"><span class="keyword">function</span> <span class="params">(my)</span> </span>{</div><div class="line">    my.anotherMethod = <span class="function"><span class="keyword">function</span> <span class="params">()</span> </span>{</div><div class="line">        <span class="comment">// 此前的MODULE返回my对象作为全局输出，因此这个匿名函数的参数MODULE就是上面MODULE匿名函数里的my</span></div><div class="line">    };</div><div class="line"> </div><div class="line">    <span class="keyword">return</span> my;</div><div class="line">}(MODULE));</div></pre></td></tr></table></figure>
-
-<p>我们再次使用var关键字以保持一致性，虽然其实没必要。代码执行后，模块获得一个新公开方法MODULE.anotherMethod。扩充文件没有影响模块的私有内部状态。 </p>
-<h2 id="松耦合扩充">松耦合扩充</h2>
-<p>上面的例子需要我们首先创建模块，然后扩充它，这并不总是必要的。提升JavaScript应用性能最好的操作就是异步加载脚本。因而我们可以创建灵活多部分的模块，可以将他们无顺序加载，以松耦合扩充。每个文件应有如下的结构：</p>
-<figure class="highlight javascript"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">var</span> MODULE = (<span class="function"><span class="keyword">function</span> <span class="params">(my)</span> </span>{</div><div class="line">    <span class="comment">// add capabilities...</span></div><div class="line">     </div><div class="line">    <span class="keyword">return</span> my;</div><div class="line">}(MODULE || {}));</div></pre></td></tr></table></figure>
-
-<p>这个模式里，var语句是必须的，以标记引入时不存在会创建。这意味着你可以像LABjs一样同时加载所有模块文件而不被阻塞。 </p>
-<h2 id="紧耦合扩充">紧耦合扩充</h2>
-<p>虽然松耦合很不错，但模块上也有些限制。最重要的，你不能安全的覆写模块属性（因为没有加载顺序）。初始化时也无法使用其他文件定义的模块属性（但你可以在初始化后运行）。紧耦合扩充意味着一组加载顺序，但是允许覆写。下面是一个例子（扩充最初定义的MODULE）：</p>
-<figure class="highlight javascript"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">var</span> MODULE = (<span class="function"><span class="keyword">function</span> <span class="params">(my)</span> </span>{</div><div class="line">    <span class="keyword">var</span> old_moduleMethod = my.moduleMethod;</div><div class="line">     </div><div class="line">    my.moduleMethod = <span class="function"><span class="keyword">function</span> <span class="params">()</span> </span>{</div><div class="line">        <span class="comment">// method override, has access to old through old_moduleMethod...</span></div><div class="line">    };</div><div class="line">     </div><div class="line">    <span class="keyword">return</span> my;</div><div class="line">}(MODULE));</div></pre></td></tr></table></figure>
-
-<p>我们覆写的MODULE.moduleMethod，但依旧保持着私有内部状态。 </p>
-<h2 id="克隆和继承">克隆和继承</h2>
-<figure class="highlight javascript"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">var</span> MODULE_TWO = (<span class="function"><span class="keyword">function</span> <span class="params">(old)</span> </span>{</div><div class="line">    <span class="keyword">var</span> my = {},</div><div class="line">        key;</div><div class="line">     </div><div class="line">    <span class="keyword">for</span> (key <span class="keyword">in</span> old) {</div><div class="line">        <span class="keyword">if</span> (old.hasOwnProperty(key)) {</div><div class="line">            my[key] = old[key];</div><div class="line">        }</div><div class="line">    }</div><div class="line">     </div><div class="line">    <span class="keyword">var</span> super_moduleMethod = old.moduleMethod;</div><div class="line">    my.moduleMethod = <span class="function"><span class="keyword">function</span> <span class="params">()</span> </span>{</div><div class="line">        <span class="comment">// override method on the clone, access to super through super_moduleMethod</span></div><div class="line">    };</div><div class="line">     </div><div class="line">    <span class="keyword">return</span> my;</div><div class="line">}(MODULE));</div></pre></td></tr></table></figure>
-
-<p>这种方式也许最不灵活。他可以实现巧妙的组合，但是牺牲了灵活性。正如我写的，对象的属性或方法不是拷贝，而是一个对象的两个引用。修改一个会影响其他。这可能可以保持递归克隆对象的属性固定，但无法固定方法，除了带eval的方法。不过，我已经完整的包含了模块。（其实就是做了一次浅拷贝）。 </p>
-<h2 id="跨文件私有状态">跨文件私有状态</h2>
-<p>一个模块分割成几个文件有一个严重缺陷。每个文件都有自身的私有状态，且无权访问别的文件的私有状态。这可以修复的。下面是一个松耦合扩充的例子，不同扩充文件之间保持了私有状态： </p>
-<figure class="highlight javascript"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">var</span> MODULE = (<span class="function"><span class="keyword">function</span> <span class="params">(my)</span> </span>{</div><div class="line">    <span class="keyword">var</span> _private = my._private = my._private || {},</div><div class="line">        _seal = my._seal = my._seal || <span class="function"><span class="keyword">function</span> <span class="params">()</span> </span>{</div><div class="line">            <span class="keyword">delete</span> my._private;</div><div class="line">            <span class="keyword">delete</span> my._seal;</div><div class="line">            <span class="keyword">delete</span> my._unseal;</div><div class="line">        },<span class="comment">//模块加载后，调用以移除对_private的访问权限</span></div><div class="line">        _unseal = my._unseal = my._unseal || <span class="function"><span class="keyword">function</span> <span class="params">()</span> </span>{</div><div class="line">            my._private = _private;</div><div class="line">            my._seal = _seal;</div><div class="line">            my._unseal = _unseal;</div><div class="line">        };<span class="comment">//模块加载前，开启对_private的访问，以实现扩充部分对私有内容的操作</span></div><div class="line">     </div><div class="line">    <span class="comment">// permanent access to _private, _seal, and _unseal</span></div><div class="line">     </div><div class="line">    <span class="keyword">return</span> my;</div><div class="line">}(MODULE || {}));</div></pre></td></tr></table></figure>
-
-<p> 任何文件都可以在本地的变量_private中设置属性，他会对别的扩充立即生效（即初始化时所有扩充的私有状态都保存在_private变量，并被my._private输出）。模块完全加载了，应用调用MODULE._seal()方法阻止对私有属性的读取（干掉my._private输出)。如果此后模块又需要扩充，带有一个私有方法。加载扩充文件前调用MODULE._unseal()方法（恢复my._private，外部恢复操作权限）。加载后调用再seal()。</p>
-<p>这个模式一直随我工作至今，我还没看到别的地方这样做的。我觉得这个模式很有用，值得写上。 </p>
-<h2 id="子模块">子模块</h2>
-<p>最后的高级模式实际上最简单。有很多好方法创建子模块。和创建父模块是一样的： </p>
-<figure class="highlight javascript"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div></pre></td><td class="code"><pre><div class="line">MODULE.sub = (<span class="function"><span class="keyword">function</span> <span class="params">()</span> </span>{</div><div class="line">    <span class="keyword">var</span> my = {};</div><div class="line">    <span class="comment">// 就是多一级命名空间</span></div><div class="line">     </div><div class="line">    <span class="keyword">return</span> my;</div><div class="line">}());</div></pre></td></tr></table></figure>
-
-<p>虽然很简单，但我还是提一下。子模块有所有正常模块的功能，包括扩充和私有状态。 </p>
-<h1 id="总结">总结</h1>
-<p> 大多数高级模式可以互相组合成更多有用的模式。如果要我提出一个复杂应用的设计模式，我会组合松耦合、私有状态和子模块。</p>
-<p>这里我还没有涉及性能，不过我有个小建议：模块模式是性能增益的。他简化了许多，加快代码下载。松耦合可以无阻塞并行下载，等价于提高下载速度。可能初始化比别的方法慢一点，但值得权衡。只要全局正确的引入，运行性能不会有任何损失，可能还因为局部变量和更少的引用，加快子模块的加载。</p>
-<p>最后，一个例子动态加载子模块到父模块（动态创建）中。这里就不用私有状态了，其实加上也很简单。这段代码允许整个复杂分成的代码核心及其子模块等平行加载完全。 </p>
-<figure class="highlight javascript"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">var</span> UTIL = (<span class="function"><span class="keyword">function</span> <span class="params">(parent, $)</span> </span>{</div><div class="line">    <span class="keyword">var</span> my = parent.ajax = parent.ajax || {};</div><div class="line">     </div><div class="line">    my.get = <span class="function"><span class="keyword">function</span> <span class="params">(url, params, callback)</span> </span>{</div><div class="line">        <span class="comment">// ok, so I'm cheating a bit :)</span></div><div class="line">        <span class="keyword">return</span> $.getJSON(url, params, callback);</div><div class="line">    };</div><div class="line">     </div><div class="line">    <span class="comment">// etc...</span></div><div class="line">     </div><div class="line">    <span class="keyword">return</span> parent;</div><div class="line">}(UTIL || {}, jQuery));</div></pre></td></tr></table></figure>
-
-<p>我希望你能受益的，并请发表评论，分享您的想法。 现在，继续前进，并写出更好的，更模块化的JavaScript</p>
-<blockquote>
-<p>本文中的所有译文仅用于学习和交流目的，转载请务必注明文章译者、出处、和本文链接<br>我们的翻译工作遵照 CC 协议，如果我们的工作有侵犯到您的权益，请及时联系我们 </p>
-</blockquote>
-]]></content>
-    <summary type="html"><![CDATA[<p>模块模式是JavaScript一种常用的编码模式。这是一般的理解，但也有一些高级应用没有得到很多关注。在本文中，我将回顾基础知识，浏览一些不错的高级技巧，甚至我认为是原生基础的。</p>
 ]]></summary>
     
       <category term="javascript" scheme="http://colobu.com/tags/javascript/"/>
