@@ -4,7 +4,7 @@
   <subtitle><![CDATA[大道至简 衍化至繁]]></subtitle>
   <link href="/atom.xml" rel="self"/>
   <link href="http://colobu.com/"/>
-  <updated>2014-11-12T08:42:06.173Z</updated>
+  <updated>2014-11-13T05:06:47.312Z</updated>
   <id>http://colobu.com/</id>
   
   <author>
@@ -15,14 +15,58 @@
   <generator uri="http://zespia.tw/hexo/">Hexo</generator>
   
   <entry>
+    <title><![CDATA[流量调整和限流技术]]></title>
+    <link href="http://colobu.com/2014/11/13/rate-limiting/"/>
+    <id>http://colobu.com/2014/11/13/rate-limiting/</id>
+    <published>2014-11-13T02:11:20.000Z</published>
+    <updated>2014-11-13T05:05:57.000Z</updated>
+    <content type="html"><![CDATA[<p>最近看到一些限流的文章，特地整理了一下相关的知识。<br>在早期的计算机领域，限流技术(time limiting)被用作控制网络接口收发通信数据的速率。 可以用来优化性能，减少延迟和提高带宽等。<br>现在在互联网领域，也借鉴了这个概念， 用来为服务控制请求的速率， 如果双十一的限流， 12306的抢票等。<br>即使在细粒度的软件架构中，也有类似的概念。 比如Java线程池可以用Bounded queues保存待执行的任务， 一旦超过queue的容量， 线程池可以根据配置的策略处理此请求。</p>
+<a id="more"></a>
+
+<h2 id="两种常用算法">两种常用算法</h2>
+<p>令牌桶(<a href="http://en.wikipedia.org/wiki/Token_bucket" target="_blank" rel="external">Token Bucket</a>)和漏桶(<a href="http://en.wikipedia.org/wiki/Leaky_bucket" target="_blank" rel="external">leaky bucket</a>)是<br>最常用的两种限流的算法。</p>
+<h3 id="漏桶算法">漏桶算法</h3>
+<p><img src="leaky_bucket.GIF" alt=""><br>它的主要目的是控制数据注入到网络的速率，平滑网络上的突发流量。漏桶算法提供了一种机制，通过它，突发流量可以被整形以便为网络提供一个稳定的流量。<br>漏桶可以看作是一个带有常量服务时间的单服务器队列，如果漏桶（包缓存）溢出，那么数据包会被丢弃。<br>用说人话的讲：   </p>
+<blockquote>
+<p>漏桶算法思路很简单，水（数据或者请求）先进入到漏桶里，漏桶以一定的速度出水，当水流入速度过大会直接溢出，可以看出漏桶算法能强行限制数据的传输速率。</p>
+</blockquote>
+<p>在某些情况下，漏桶算法不能够有效地使用网络资源。因为漏桶的漏出速率是固定的参数，所以，即使网络中不存在资源冲突（没有发生拥塞），漏桶算法也不能使某一个单独的流突发到端口速率。因此，漏桶算法对于存在突发特性的流量来说缺乏效率。而令牌桶算法则能够满足这些具有突发特性的流量。通常，漏桶算法与令牌桶算法可以结合起来为网络流量提供更大的控制。</p>
+<h3 id="令牌桶算法">令牌桶算法</h3>
+<p><img src="token_bucket.JPG" alt=""><br>令牌桶算法的原理是系统会以一个恒定的速度往桶里放入令牌，而如果请求需要被处理，则需要先从桶里获取一个令牌，当桶里没有令牌可取时，则拒绝服务。<br>令牌桶的另外一个好处是可以方便的改变速度。 一旦需要提高速率，则按需提高放入桶中的令牌的速率。<br>一般会定时(比如100毫秒)往桶中增加一定数量的令牌， 有些变种算法则实时的计算应该增加的令牌的数量, 比如华为的专利”<strong>采用令牌漏桶进行报文限流的方法</strong>“(CN 1536815 A),提供了一种动态计算可用令牌数的方法， 相比其它定时增加令牌的方法， 它只在收到一个报文后，计算该报文与前一报文到来的时间间隔内向令牌漏桶内注入的令牌数， 并计算判断桶内的令牌数是否满足传送该报文的要求。</p>
+<h2 id="Guava_RateLimiter">Guava RateLimiter</h2>
+<p><a href="http://docs.guava-libraries.googlecode.com/git-history/master/javadoc/com/google/common/util/concurrent/RateLimiter.html" target="_blank" rel="external">Google Guava RateLimiter</a>是一个速度控制器，可以根据配置的速度发放许可(令牌)。 每次调用<code>acquire()</code>, 如果有可用的许可，则拿走许可， 否则被阻塞。 拿走的许可毋须被释放。<br>和JDK中的<a href="http://docs.oracle.com/javase/7/docs/api/java/util/concurrent/Semaphore.html?is-external=true" target="_blank" rel="external">Semaphore</a>不同， Semaphore控制访问资源的并发数，而RateLimiter控制访问资源的速度。<br>RateLimter以每秒N个许可的方式按照固定速率分发许可。<br>你可以warmup让RateLimter能够一开始就稳定的按照固定的速率发放许可。<br><code>tryAcquire()</code>是一个非阻塞的调用方法。</p>
+<p>使用例子：</p>
+<figure class="highlight java"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div></pre></td><td class="code"><pre><div class="line">RateLimiter limiter = RateLimiter.create(<span class="number">20</span>);</div><div class="line"> </div><div class="line"><span class="keyword">public</span> <span class="keyword">void</span> <span class="title">run</span>() {</div><div class="line">	<span class="keyword">for</span> (Item item : items) {</div><div class="line">		limiter.acquire(); <span class="comment">//获取许可</span></div><div class="line">		server.sync(item); <span class="comment">//只有获得许可后才会被执行</span></div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<h2 id="参考">参考</h2>
+<p>网上有众多关于这方面的文章，这里列出了本文参考的一些文档。</p>
+<ol>
+<li><a href="http://en.wikipedia.org/wiki/Token_bucket" target="_blank" rel="external">http://en.wikipedia.org/wiki/Token_bucket</a> </li>
+<li><a href="http://en.wikipedia.org/wiki/Leaky_bucket" target="_blank" rel="external">http://en.wikipedia.org/wiki/Leaky_bucket</a></li>
+<li><a href="http://www.google.com/patents/CN1536815A?cl=zh" target="_blank" rel="external">http://www.google.com/patents/CN1536815A?cl=zh</a></li>
+<li><a href="http://www.cnblogs.com/LBSer/p/4083131.html" target="_blank" rel="external">http://www.cnblogs.com/LBSer/p/4083131.html</a></li>
+</ol>
+]]></content>
+    <summary type="html"><![CDATA[<p>最近看到一些限流的文章，特地整理了一下相关的知识。<br>在早期的计算机领域，限流技术(time limiting)被用作控制网络接口收发通信数据的速率。 可以用来优化性能，减少延迟和提高带宽等。<br>现在在互联网领域，也借鉴了这个概念， 用来为服务控制请求的速率， 如果双十一的限流， 12306的抢票等。<br>即使在细粒度的软件架构中，也有类似的概念。 比如Java线程池可以用Bounded queues保存待执行的任务， 一旦超过queue的容量， 线程池可以根据配置的策略处理此请求。</p>
+]]></summary>
+    
+      <category term="rate limiting" scheme="http://colobu.com/tags/rate-limiting/"/>
+    
+      <category term="网络编程" scheme="http://colobu.com/categories/%E7%BD%91%E7%BB%9C%E7%BC%96%E7%A8%8B/"/>
+    
+  </entry>
+  
+  <entry>
     <title><![CDATA[子网掩码]]></title>
     <link href="http://colobu.com/2014/11/12/subnet-mask/"/>
     <id>http://colobu.com/2014/11/12/subnet-mask/</id>
     <published>2014-11-12T07:34:12.000Z</published>
-    <updated>2014-11-12T08:35:17.000Z</updated>
+    <updated>2014-11-12T08:44:22.000Z</updated>
     <content type="html"><![CDATA[<p>互联网是由许多小型网络构成的，每个网络上都有许多主机，这样便构成了一个有层次的结构。IP地址在设计时就考虑到地址分配的层次特点，将每个IP地址都分割成网络号和主机号两部分，以便于IP地址的寻址操作。</p>
 <p>子网掩码只有一个作用，就是将某个IP地址划分成网络地址和主机地址两部分。子网掩码的设定必须遵循一定的规则。与IP地址相同，子网掩码的长度也是32位，左边是网络位，用二进制数字“1”表示；右边是主机位，用二进制数字“0”表示。只有通过子网掩码，才能表明一台主机所在的子网与其他子网的关系，使网络正常工作。 1 的部分代表网络号，掩码为 0的部分代表主机号。其中 A类地址的默认子网掩码为 255.0.0.0；B类地址的默认子网掩码为 255.255.0.0；C类地址的默认子网掩码为：255.255.255.0。</p>
 <p>同一个网络内的主机的IP地址与掩码 “AND”操作后的结果必然相同。</p>
+<a id="more"></a>
+
 <h4 id="网络地址划分">网络地址划分</h4>
 <p>internate诞生之初一种IP地址的划分方法。 它将IP地址分为五类，A类保留给政府机构，B类分配给中等规模的公司，C类分配给任何需要的人，D类用于组播，E类用于实验，各类可容纳的地址数目不同。</p>
 <table><tbody><tr><th>Class</th><th>Leading<br>bits</th><th>Size of<i>network<br>number</i> bit field</th><th>Size of<i>rest</i><br>bit field</th><th>Number<br>of networks</th><th>Addresses<br>per network</th><th>Start address</th><th>End address</th></tr><tr><td>Class A</td><td>&nbsp;&nbsp;&nbsp;&nbsp;0</td><td>&nbsp;&nbsp;&nbsp;&nbsp;8</td><td>&nbsp;&nbsp;&nbsp;&nbsp;24</td><td>&nbsp;&nbsp;&nbsp;&nbsp;128 (2<sup>7</sup>)</td><td>&nbsp;&nbsp;&nbsp;&nbsp;16,777,216 (2<sup>24</sup>)</td><td>0.0.0.0</td><td>127.255.255.255</td></tr><tr><td>Class B</td><td>&nbsp;&nbsp;&nbsp;&nbsp;10</td><td>&nbsp;&nbsp;&nbsp;&nbsp;16</td><td>&nbsp;&nbsp;&nbsp;&nbsp;16</td><td>&nbsp;&nbsp;&nbsp;&nbsp;16,384 (2<sup>14</sup>)</td><td>&nbsp;&nbsp;&nbsp;&nbsp;65,536 (2<sup>16</sup>)</td><td>128.0.0.0</td><td>191.255.255.255</td></tr><tr><td>Class C</td><td>&nbsp;&nbsp;&nbsp;&nbsp;110</td><td>&nbsp;&nbsp;&nbsp;&nbsp;24</td><td>&nbsp;&nbsp;&nbsp;&nbsp;8</td><td>&nbsp;&nbsp;&nbsp;&nbsp;2,097,152 (2<sup>21</sup>)</td><td>&nbsp;&nbsp;&nbsp;&nbsp;256 (2<sup>8</sup>)</td><td>192.0.0.0</td><td>223.255.255.255</td></tr><tr><td>Class D (<a href="/wiki/Multicast" title="Multicast">multicast</a>)</td><td>&nbsp;&nbsp;&nbsp;&nbsp;1110</td><td>&nbsp;&nbsp;&nbsp;&nbsp;not defined</td><td>&nbsp;&nbsp;&nbsp;&nbsp;not defined</td><td>&nbsp;&nbsp;&nbsp;&nbsp;not defined</td><td>&nbsp;&nbsp;&nbsp;&nbsp;not defined</td><td>224.0.0.0</td><td>239.255.255.255</td></tr><tr><td>Class E (reserved)</td><td>&nbsp;&nbsp;&nbsp;&nbsp;1111</td><td>&nbsp;&nbsp;&nbsp;&nbsp;not defined</td><td>&nbsp;&nbsp;&nbsp;&nbsp;not defined</td><td>&nbsp;&nbsp;&nbsp;&nbsp;not defined</td><td>&nbsp;&nbsp;&nbsp;&nbsp;not defined</td><td>240.0.0.0</td><td>255.255.255.255</td></tr></tbody></table>            
@@ -64,7 +108,10 @@
 <li><a href="http://ipv6.tsinghua.edu.cn/technology/ipv6-di-zhi-jie-shao/" target="_blank" rel="external">http://ipv6.tsinghua.edu.cn/technology/ipv6-di-zhi-jie-shao/</a></li>
 </ol>
 ]]></content>
-    
+    <summary type="html"><![CDATA[<p>互联网是由许多小型网络构成的，每个网络上都有许多主机，这样便构成了一个有层次的结构。IP地址在设计时就考虑到地址分配的层次特点，将每个IP地址都分割成网络号和主机号两部分，以便于IP地址的寻址操作。</p>
+<p>子网掩码只有一个作用，就是将某个IP地址划分成网络地址和主机地址两部分。子网掩码的设定必须遵循一定的规则。与IP地址相同，子网掩码的长度也是32位，左边是网络位，用二进制数字“1”表示；右边是主机位，用二进制数字“0”表示。只有通过子网掩码，才能表明一台主机所在的子网与其他子网的关系，使网络正常工作。 1 的部分代表网络号，掩码为 0的部分代表主机号。其中 A类地址的默认子网掩码为 255.0.0.0；B类地址的默认子网掩码为 255.255.0.0；C类地址的默认子网掩码为：255.255.255.0。</p>
+<p>同一个网络内的主机的IP地址与掩码 “AND”操作后的结果必然相同。</p>
+]]></summary>
     
       <category term="网络编程" scheme="http://colobu.com/categories/%E7%BD%91%E7%BB%9C%E7%BC%96%E7%A8%8B/"/>
     
@@ -2098,45 +2145,6 @@
       <category term="Hadoop" scheme="http://colobu.com/tags/Hadoop/"/>
     
       <category term="大数据" scheme="http://colobu.com/categories/%E5%A4%A7%E6%95%B0%E6%8D%AE/"/>
-    
-  </entry>
-  
-  <entry>
-    <title><![CDATA[最佳免费的网站性能测试工具]]></title>
-    <link href="http://colobu.com/2014/09/26/best-free-website-speed-testing-tools/"/>
-    <id>http://colobu.com/2014/09/26/best-free-website-speed-testing-tools/</id>
-    <published>2014-09-26T01:09:40.000Z</published>
-    <updated>2014-09-26T01:41:59.000Z</updated>
-    <content type="html"><![CDATA[<p>网站的加载速度在一定程度上来说是决定网站能否成功的关键。如果您是网站所有者，一定知道网站速度的重要性。因为没有人愿意为了打开一个网页而等老半天，换句话说，如果你的网站打开速度很慢，将流失大量的访客，甚至出现多米诺效应的不良影响。<br><a id="more"></a></p>
-<p>英文原文: <a href="http://www.practicalecommerce.com/articles/4020-10-Free-Website-Speed-Tests-" target="_blank" rel="external">10 Free Website Speed Tests</a><br>梦想天空翻译整理: <a href="http://www.cnblogs.com/lhb25/p/best-free-website-speed-testing-tools.html" target="_blank" rel="external">博客园</a></p>
-<h1 id="Google_PageSpeed_Insights">Google PageSpeed Insights</h1>
-<p><img src="http://images.cnitblog.com/i/36987/201403/261530317497177.png" alt=""><br>首先介绍的这款网站速度和性能测试工具出自 Google，通过分析网页内容来为开发者提供提升网站加载速的建议。PageSpeed 的测试包含移动设备和桌面设备两方面，使您的网页在所有设备上都能快速加载。</p>
-<h1 id="Yslow">Yslow</h1>
-<p><img src="http://images.cnitblog.com/i/36987/201403/261532178117142.jpg" alt=""><br>YSlow 是最常用的网站性能分析工具之一，相信 Web 开发者特别是前端开发人员一定很熟悉。YSlow 基于一组高性能网页规则来给你提供建议，如何优化可以让网站更快。 </p>
-<h1 id="Pingdom">Pingdom</h1>
-<p><img src="http://images.cnitblog.com/i/36987/201403/261532309999146.jpg" alt=""><br>Pingdom 是一个伟大的工具，帮助用户确定网站加载时间并生成大量的报告，例如页面大小、浏览器缓存、性能等级等。它允许您跟踪性能历史和从不同的地理位置进行测试。在线检查网站每个元素的加载速度，生成非常详细的测试报告，帮助你轻松优化网站。</p>
-<h1 id="Load_Impact">Load Impact</h1>
-<p><img src="http://images.cnitblog.com/i/36987/201403/261532477807518.jpg" alt=""><br>Load Impact 帮助你为 Web 应用程序进行负载测试和性能测试。选择一个全球的负荷区，然后测试模拟客户、带宽、数据接受、每秒的请求等等。该工具显示一个漂亮的图表来测量加载时间。</p>
-<h1 id="Which_Loads_Faster">Which Loads Faster</h1>
-<p><img src="http://images.cnitblog.com/i/36987/201403/261535342028109.jpg" alt=""><br>这是一款开源的工具，可以在线对比两个网站的速度，例如 Google vs Bing，Apple vs Adobe 等，帮助你了解哪个网站加载更快。 </p>
-<h1 id="Show_Slow">Show Slow</h1>
-<p><img src="http://images.cnitblog.com/i/36987/201403/261536050931273.jpg" alt=""><br>Show Slow 是一个开源工具，帮助你监控各种网站性能指标。能够测试网站在 YSlow，Page Speed，WebPageTest 和 dynaTrace AJAX Edition 中的情况。</p>
-<h1 id="GT_Matrix">GT Matrix</h1>
-<p><img src="http://gtmetrix.com/" alt=""><br>GTmetrix 可以帮助你开发更快速，高效以及用户体验良好的网站。GTmetrix 结合了最流行的 Firefox 的性能组件 YSlow 和谷歌网页速度测试工具。 Gtmetrix 给目标网站评分并提供改进网站存在的问题的建议。</p>
-<h1 id="Neustar_Free_Load_Testing_&amp;_Performance_Test">Neustar Free Load Testing &amp; Performance Test</h1>
-<p><img src="http://images.cnitblog.com/i/36987/201403/261537227183658.jpg" alt=""><br>这是一款快速生成网站的性能数据的工具，通过对目标网站进行监控和加载测试，帮助你快速解决网站性能问题。</p>
-<h1 id="Web_Page_Analyzer">Web Page Analyzer</h1>
-<p><img src="http://images.cnitblog.com/i/36987/201403/261537368901962.jpg" alt=""><br>Web Page Analyzer  是一个强大的速度测试工具，为您提供了分析和描述性的网站测试结果以及如何改进它。它提供了各种功能网页速度报告，加载时间、分析和建议等等。</p>
-<h1 id="WebPage_Test">WebPage Test</h1>
-<p><img src="http://images.cnitblog.com/i/36987/201403/261537502338450.jpg" alt=""><br>借助 WebPage Test，你可以运行简单的测试或执行先进的测试包括多级事务、视频捕捉、内容阻塞等。你的结果将提供丰富的诊断信息，包括资源加载瀑布图，页面速度优化检查和改进的建议。</p>
-<h1 id="Free_Speed_Test">Free Speed Test</h1>
-<p><img src="http://images.cnitblog.com/i/36987/201403/261533597492366.jpg" alt=""><br>Free Speed Test 是一个在线的网站速度测试工具，通过在全球范围内多个数据中心来检查加载时间和速度。这将让你能够知道你的网站在世界各个角落的实际加载时间。</p>
-<h1 id="Octa_Gate_Site_Timer">Octa Gate Site Timer</h1>
-<p><img src="http://images.cnitblog.com/i/36987/201403/261534210151437.jpg" alt=""><br>它允许您监控用户需要多长时间下载一个或多个 Web 站点页面。当页面加载的时候，SiteTimer 会统计每个项目需要多长时间下载，包含了多少数据，然后把信息展示在一个表格中。</p>
-]]></content>
-    <summary type="html"><![CDATA[<p>网站的加载速度在一定程度上来说是决定网站能否成功的关键。如果您是网站所有者，一定知道网站速度的重要性。因为没有人愿意为了打开一个网页而等老半天，换句话说，如果你的网站打开速度很慢，将流失大量的访客，甚至出现多米诺效应的不良影响。<br>]]></summary>
-    
-      <category term="前端开发" scheme="http://colobu.com/categories/%E5%89%8D%E7%AB%AF%E5%BC%80%E5%8F%91/"/>
     
   </entry>
   
