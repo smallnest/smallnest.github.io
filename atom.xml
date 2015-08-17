@@ -4,7 +4,7 @@
   <subtitle><![CDATA[大道至简 Simplicity is the ultimate form of sophistication]]></subtitle>
   <link href="/atom.xml" rel="self"/>
   <link href="http://colobu.com/"/>
-  <updated>2015-08-17T02:59:02.273Z</updated>
+  <updated>2015-08-17T03:20:46.208Z</updated>
   <id>http://colobu.com/</id>
   
   <author>
@@ -13,6 +13,42 @@
   </author>
   
   <generator uri="http://zespia.tw/hexo/">Hexo</generator>
+  
+  <entry>
+    <title><![CDATA[Netty之Java堆外内存扫盲贴]]></title>
+    <link href="http://colobu.com/2015/08/17/java-directbytebuffer/"/>
+    <id>http://colobu.com/2015/08/17/java-directbytebuffer/</id>
+    <published>2015-08-17T03:15:13.000Z</published>
+    <updated>2015-08-17T03:20:36.850Z</updated>
+    <content type="html"><![CDATA[<p>原文: <a href="http://calvin1978.blogcn.com/articles/directbytebuffer.html" target="_blank" rel="external">Netty之Java堆外内存扫盲贴</a>, 作者: []江南白衣(<a href="http://calvin1978.blogcn.com/" target="_blank" rel="external">http://calvin1978.blogcn.com/</a>)</p>
+<p>Java的堆外内存本来是高贵而神秘的东西，只在一些缓存方案的收费企业版里出现。但自从用了Netty，就变成了天天打交道的事情，毕竟堆外内存能减少IO时的内存复制，不需要堆内存Buffer拷贝一份到直接内存中，然后才写入Socket中。</p>
+<p>好在，Netty所用的堆外内存只是Java NIO的 DirectByteBuffer类，通读一次很快。还有一些sun.misc.*的类木有源码，要自己跑去<a href="http://hg.openjdk.java.net/jdk8/jdk8/jdk/file/687fd7c7986d/src/share/classes/sun/misc" target="_blank" rel="external">OpenJdk</a>那看个明白。</p>
+<a id="more"></a>
+<h2 id="堆外内存的创建">堆外内存的创建</h2>
+<p>在DirectByteBuffer中，首先向Bits类申请额度，Bits类有一个全局的 totalCapacity变量，记录着全部DirectByteBuffer的总大小，每次申请，都先看看是否超限 -- 堆外内存的限额默认与堆内内存(由-XMX 设定)相仿，可用 -XX:MaxDirectMemorySize 重新设定。<br>如果已经超限，会主动执行Sytem.gc()，期待能主动回收一点堆外内存。然后休眠一百毫秒，看看totalCapacity降下来没有，如果内存还是不足，就抛出大家最头痛的OOM异常。<br>如果额度被批准，就调用大名鼎鼎的sun.misc.Unsafe去分配内存，返回内存基地址，Unsafe的<a href="http://hg.openjdk.java.net/jdk8/jdk8/hotspot/file/87ee5ee27509/src/share/vm/prims/unsafe.cpp#l583" target="_blank" rel="external">C++实现在此</a>，标准的malloc。然后再调一次Unsafe把这段内存给清零。跑个题，Unsafe的名字是提醒大家这个类只给Sun自家用的，你们别用，不然哪天Sun把它藏起来了你们就哭死。果然，<a href="http://www.infoq.com/cn/news/2015/08/Oracle-Carving-Unsafe-Strategy" target="_blank" rel="external">JDK9里就Oracle可能动手哦</a>。]<br>JDK7开始，DirectByteBuffer分配内存时默认已不做分页对齐，不会再每次分配并清零 实际需要＋分页大小(4k)的内存，这对性能应有较大提升，所以Oracle专门写在了<a href="https://docs.oracle.com/javase/8/docs/technotes/guides/io/enhancements.html#jdk7" target="_blank" rel="external">Enhancements in Java I/O</a>里。<br>最后，创建一个Cleaner，并把代表清理动作的Deallocator类绑定 -- 降低Bits里的totalCapacity，并调用Unsafe调free去释放内存。Cleaner的触发机制后面再说。</p>
+<h2 id="堆外内存基于GC的回收">堆外内存基于GC的回收</h2>
+<p>存在于堆内的DirectByteBuffer对象很小，只存着基地址和大小等几个属性，和一个Cleaner，但它代表着后面所分配的一大段内存，是所谓的冰山对象。通过前面说的Cleaner，堆内的DirectByteBuffer对象被GC时，它背后的堆外内存也会被回收。<br>快速回顾一下堆内的GC机制，当新生代满了，就会发生young gc；如果此时对象还没失效，就不会被回收；撑过几次young gc后，对象被迁移到老生代；当老生代也满了，就会发生full gc。<br>这里可以看到一种尴尬的情况，因为DirectByteBuffer本身的个头很小，只要熬过了young gc，即使已经失效了也能在老生代里舒服的呆着，不容易把老生代撑爆触发full gc，如果没有别的大块头进入老生代触发full gc，就一直在那耗着，占着一大片堆外内存不释放。<br>这时，就只能靠前面提到的申请额度超限时触发的system.gc()来救场了。但这道最后的保险其实也不很好，首先它会中断整个进程，然后它让当前线程睡了整整一百毫秒，而且如果gc没在一百毫秒内完成，它仍然会无情的抛出OOM异常。还有，万一，万一大家迷信某个调优指南设置了-DisableExplicitGC禁止了system.gc()，那就不好玩了。<br>所以，堆外内存还是自己主动点回收更好，比如Netty就是这么做的。</p>
+<h2 id="堆外内存的主动回收">堆外内存的主动回收</h2>
+<p>对于Sun的JDK这其实很简单，只要从DirectByteBuffer里取出那个sun.misc.Cleaner，然后调用它的clean()就行。<br>前面说的，clean()执行时实际调用的是被绑定的Deallocator类，这个类可被重复执行，释放过了就不再释放。所以GC时再被动执行一次clean()也没所谓。<br>在Netty里，因为不确定跑在Sun的JDK里(比如安卓)，所以多废了些功夫来确定Cleaner的存在。</p>
+<h2 id="Cleaner如何与GC相关联？">Cleaner如何与GC相关联？</h2>
+<p>涨知识的时间到了，原来JDK除了StrongReference，SoftReference 和 WeakReference之外，还有一种PhantomReference，Phantom是幻影的意思，Cleaner就是PhantomReference的子类。<br>当GC时发现它除了PhantomReference外已不可达（持有它的DirectByteBuffer失效了），就会把它放进 Reference类pending list静态变量里。然后另有一条ReferenceHandler线程，名字叫 &quot;Reference Handler&quot;的，关注着这个pending list，如果看到有对象类型是Cleaner，就会执行它的clean()。</p>
+<h2 id="其实">其实</h2>
+<p>专家们说，OpenJDK没有接受<a href="https://www.owent.net/2013/07/ptmalloctcmalloc%E5%92%8Cjemalloc%E5%86%85%E5%AD%98%E5%88%86%E9%85%8D%E7%AD%96%E7%95%A5%E7%A0%94%E7%A9%B6.html" target="_blank" rel="external">jemalloc</a>(redis们在用)的补丁，直接用malloc在OS里申请一段内存，比在已申请好的JVM堆内内存里划一块出来要慢，所以我们在Netty一般用池化的 PooledDirectByteBuf 对DirectByteBuffer进行重用 ，《Netty权威指南》说性能提升了23倍，所以基本不需要头痛堆外内存的释放。</p>
+<p>文章持续修订，转载请保留原链接： <a href="http://calvin1978.blogcn.com/articles/directbytebuffer.html" target="_blank" rel="external">http://calvin1978.blogcn.com/articles/directbytebuffer.html</a></p>
+]]></content>
+    <summary type="html">
+    <![CDATA[<p>原文: <a href="http://calvin1978.blogcn.com/articles/directbytebuffer.html" target="_blank" rel="external">Netty之Java堆外内存扫盲贴</a>, 作者: []江南白衣(<a href="http://calvin1978.blogcn.com/" target="_blank" rel="external">http://calvin1978.blogcn.com/</a>)</p>
+<p>Java的堆外内存本来是高贵而神秘的东西，只在一些缓存方案的收费企业版里出现。但自从用了Netty，就变成了天天打交道的事情，毕竟堆外内存能减少IO时的内存复制，不需要堆内存Buffer拷贝一份到直接内存中，然后才写入Socket中。</p>
+<p>好在，Netty所用的堆外内存只是Java NIO的 DirectByteBuffer类，通读一次很快。还有一些sun.misc.*的类木有源码，要自己跑去<a href="http://hg.openjdk.java.net/jdk8/jdk8/jdk/file/687fd7c7986d/src/share/classes/sun/misc" target="_blank" rel="external">OpenJdk</a>那看个明白。</p>
+]]>
+    
+    </summary>
+    
+      <category term="Netty" scheme="http://colobu.com/tags/Netty/"/>
+    
+      <category term="Java" scheme="http://colobu.com/categories/Java/"/>
+    
+  </entry>
   
   <entry>
     <title><![CDATA[雪球在股市风暴下的高可用架构改造分享]]></title>
@@ -2497,76 +2533,6 @@
     </summary>
     
       <category term="管理" scheme="http://colobu.com/categories/%E7%AE%A1%E7%90%86/"/>
-    
-  </entry>
-  
-  <entry>
-    <title><![CDATA[Java 安全套接字编程以及 keytool 使用最佳实践]]></title>
-    <link href="http://colobu.com/2015/06/16/java-keytool/"/>
-    <id>http://colobu.com/2015/06/16/java-keytool/</id>
-    <published>2015-06-16T07:58:51.000Z</published>
-    <updated>2015-07-31T13:28:02.932Z</updated>
-    <content type="html"><![CDATA[<p>本文描述了 Java7 中 keytool 工具的使用方法，并结合具体代码片段，向读者阐述如何使用 JSSE 提供的 API 进行安全套接字编程，以及如何进行 SSL/TSL 程序调试等技巧，让读者可以学以致用。</p>
-<p>原文地址： <a href="http://www.ibm.com/developerworks/cn/java/j-lo-socketkeytool/" target="_blank" rel="external">Java 安全套接字编程以及 keytool 使用最佳实践</a>。 作者: <a href="http://www.ibm.com/developerworks/cn/java/j-lo-socketkeytool/#authorN10018" target="_blank" rel="external">赵映洁</a><br><a id="more"></a></p>
-<h3 id="概述">概述</h3>
-<p>利用 Java 的 JSSE（Java Secure Socket Extension）技术，我们可以方便的编写安全套接字程序，关于 JSSE 的介绍，可以参阅 Oracle 网站提供的 JSSE 指导。程序编写过程中，我们需要将数字证书应用到代码中。通常在正式的产品开发中，我们可以支付一定的费用，向正规认证机构，例如：Verisign、Geotrust、Thawte 等申请。</p>
-<p>如果只是为了实验，我们还可以使用 Java 自带的 keytool 工具来制作证书。keytool 是密钥和证书管理工具，生成的密钥或证书，存放在 jks(Java Key Store) 格式的文件里。从用途上来说，jks 格式的文件常用于：</p>
-<p>1) 存储非对称密钥对以及数字证书的证书库；</p>
-<p>2) 存储信任证书列表的信任库。</p>
-<p>注意：不同版本的 Java 自带的 keytool 命令行参数可能会略有不同。相比于 Java6，在 Java7 中 keytool 工具有如下改动：</p>
-<p>-export 选项改名为 -exportcert</p>
-<p>-genkey 选项改名为 -genkeypair</p>
-<p>-import 选项改名为 – importcert</p>
-<p>-keyclone 选项被废弃</p>
-<p>-identitydb 选项被废弃</p>
-<p>-selfcert 选项被废弃</p>
-<p>下面将以 Java7 中的 keytool 为例，对常见的用法进行说明。</p>
-<h3 id="使用_keytool_制作证书库以及信任库">使用 keytool 制作证书库以及信任库</h3>
-<h4 id="生成非对称密钥以及自签发证书">生成非对称密钥以及自签发证书</h4>
-<p><strong>命令</strong>：keytool -genkeypair -alias TEST_ROOT -keystore test_root.jks</p>
-<p><strong>解释</strong>：生成一对密钥以及一个自签发证书，其中私钥和证书以别名 TEST_ROOT 存储在 test_root.jks 文件中。</p>
-<p>注意：使用上述命令时，命令行会交互的需要手动填写密码、CN、OU 等信息。也可以直接在命令行指定这些参数，详情见 参考资料中列出的 keytool 使用帮助。</p>
-<h4 id="生成证书请求文件">生成证书请求文件</h4>
-<p><strong>命令</strong>：keytool -certreq -file test_server.csr -alias TEST_SERVER -keystore test_server.jks</p>
-<p><strong>解释</strong>：将别名为 TEST_SERVER 的公钥和一些个人信息从 test_server.jks 文件中导出，作为证书请求文件。</p>
-<p>#####签发证书<br><strong>命令</strong>：keytool -gencert -infile test_server.csr -outfile test_server.cer -alias TEST_ROOT -keystore TEST_ROOT.jks</p>
-<p><strong>解释</strong>：使用别名为 TEST_ROOT 的私钥为 test_server.csr 签发证书，并保存到 test_server.cer 文件中。</p>
-<h4 id="从_jks_文件中导出证书">从 jks 文件中导出证书</h4>
-<p><strong>命令</strong>：keytool -exportcert -alias TEST_ROOT -file test_root.cer -keystore test_root.jks</p>
-<p><strong>解释</strong>：从 test_root.jks 文件中导出别名为 TEST_ROOT 的证书并存放在 test_root.cer 文件中。</p>
-<h4 id="导入信任证书到_jks_文件">导入信任证书到 jks 文件</h4>
-<p><strong>命令</strong>：keytool -importcert -alias TEST_ROOT -file test_root.cer -keystore TEST_SERVER.jks</p>
-<p><strong>解释</strong>：将证书 test_root.cer 以别名 TEST_ROOT 导入 TEST_SERVER.jks 中。</p>
-<p>注意：这里的目标 jks 文件里不含有指定的别名，此时的导入条目才会以 trustedCertEntry 信任证书的形式保存。</p>
-<h4 id="导入签发证书到_jks_文件_(_更新证书_)">导入签发证书到 jks 文件 ( 更新证书 )</h4>
-<p><strong>命令</strong>：keytool -importcert -alias TEST_SERVER -file test_server.cer -keystore TEST_SERVER.jks</p>
-<p><strong>解释</strong>：将证书 test_server.cer 更新到已存在别名 TEST_SERVER 的 TEST_SERVER.jks 文件中</p>
-<p>注意：这里的命令和上述导入信任证书的命令在形式上完全一样，但作用不同。</p>
-<ol>
-<li>这里的目标 jks 文件里要含有指定的别名，这样 keytool 工具才会理解命令为更新证书，并以 PrivateKeyEntry 的形式保存。</li>
-<li>在更新被签发证书之前，一定要先将相应的 CA 证书，导入进 jks 文件，否则会报错“keytool 错误 : java.lang.Exception: 无法从回复中建立链”。</li>
-</ol>
-<h4 id="打印证书内容">打印证书内容</h4>
-<p><strong>命令</strong>：keytool – printcert – v – file test_server.cer</p>
-<p><strong>解释</strong>：将证书 test_server.cer 的内容打印出来</p>
-<p>注意：也可以使用 -sslserver ip:port 的参数，直接从网络上打印出某个 ssl server 提供的证书的内容，详情见 参考资料中列出的 keytool 使用帮助。</p>
-<h4 id="显示_jks_文件里的内容">显示 jks 文件里的内容</h4>
-<p><strong>命令</strong>：keytool – list – v – keystore test_server.jks</p>
-<p><strong>解释</strong>：显示 test_server.jks 里存储的所有条目</p>
-<p>注意：这里会要求提供 jks 文件的密码，如果不输入，也可以显示出所有条目信息，但会提示“存储在密钥库中的信息的完整性尚未得到验证！”</p>
-<h4 id="从_jks_文件删除条目">从 jks 文件删除条目</h4>
-<p><strong>命令</strong>：keytool -delete -alias TEST_ROOT -keystore test_server.jks</p>
-<p><strong>解释</strong>：从 test_server.jks 中删除别名为 TEST_ROOT 的条目</p>
-]]></content>
-    <summary type="html">
-    <![CDATA[<p>本文描述了 Java7 中 keytool 工具的使用方法，并结合具体代码片段，向读者阐述如何使用 JSSE 提供的 API 进行安全套接字编程，以及如何进行 SSL/TSL 程序调试等技巧，让读者可以学以致用。</p>
-<p>原文地址： <a href="http://www.ibm.com/developerworks/cn/java/j-lo-socketkeytool/" target="_blank" rel="external">Java 安全套接字编程以及 keytool 使用最佳实践</a>。 作者: <a href="http://www.ibm.com/developerworks/cn/java/j-lo-socketkeytool/#authorN10018" target="_blank" rel="external">赵映洁</a><br>]]>
-    
-    </summary>
-    
-      <category term="keytool" scheme="http://colobu.com/tags/keytool/"/>
-    
-      <category term="Java" scheme="http://colobu.com/categories/Java/"/>
     
   </entry>
   
