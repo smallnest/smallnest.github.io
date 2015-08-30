@@ -4,7 +4,7 @@
   <subtitle><![CDATA[大道至简 Simplicity is the ultimate form of sophistication]]></subtitle>
   <link href="/atom.xml" rel="self"/>
   <link href="http://colobu.com/"/>
-  <updated>2015-08-27T02:08:06.475Z</updated>
+  <updated>2015-08-30T13:20:22.889Z</updated>
   <id>http://colobu.com/</id>
   
   <author>
@@ -13,354 +13,6 @@
   </author>
   
   <generator uri="http://zespia.tw/hexo/">Hexo</generator>
-  
-  <entry>
-    <title><![CDATA[日志：每个软件工程师都应该知道的有关实时数据的统一概念]]></title>
-    <link href="http://colobu.com/2015/08/27/log-what-every-software-engineer-should-know-about-real-time-datas-unifying/"/>
-    <id>http://colobu.com/2015/08/27/log-what-every-software-engineer-should-know-about-real-time-datas-unifying/</id>
-    <published>2015-08-27T01:43:13.000Z</published>
-    <updated>2015-08-27T01:57:58.536Z</updated>
-    <content type="html"><![CDATA[<p>原文链接： <a href="https://engineering.linkedin.com/distributed-systems/log-what-every-software-engineer-should-know-about-real-time-datas-unifying" target="_blank" rel="external">The Log: What every software engineer should know about real-time data&#39;s unifying abstraction</a> - <a href="http://www.linkedin.com/in/jaykreps" target="_blank" rel="external">Jay Kreps</a><br>基于开源中国社区的译文稿： <a href="http://www.oschina.net/translate/log-what-every-software-engineer-should-know-about-real-time-datas-unifying" target="_blank" rel="external">日志：每个软件工程师都应该知道的有关实时数据的统一概念</a><br>译文发在<a href="http://blog.jobbole.com/" target="_blank" rel="external">伯乐在线</a>：<a href="http://blog.jobbole.com/89674/" target="_blank" rel="external">The Log：每个程序员都应该知道有关实时数据的统一抽象</a>， 2015-08-21</p>
-<p>我在六年前加入到<code>LinkedIn</code>公司，那是一个令人兴奋的时刻：我们刚开始面临单一庞大的集中式数据库的限制问题，需要过渡到一套专门的分布式系统。<br>这是一个令人兴奋的经历：我们构建、部署和运行分布式图数据库（<code>distributed graph database</code>）、分布式搜索后端（<code>distributed search backend</code>）、<br><code>Hadoop</code>以及第一代和第二代键值数据存储（<code>key-value store</code>），而且这套系统一直运行至今。</p>
-<p>这个过程中，我学到的最有益的事情是我们所构建这套系统的许多组件其核心都包含了一个很简单的概念：日志。<br>日志有时会叫成 预先写入日志（<code>write-ahead logs</code>）、提交日志（<code>commit logs</code>）或者事务日志（<code>transaction logs</code>），几乎和计算机本身形影不离，<br>是许多分布式数据系统（<code>distributed data system</code>）和实时应用架构（<code>real-time application architecture</code>）的核心。</p>
-<p>不懂得日志，你就不可能真正理解数据库、<code>NoSQL</code>存储、键值存储（<code>key value store</code>）、数据复制（<code>replication</code>）、<code>paxos</code>、<code>Hadoop</code>、版本控制（<code>version control</code>），甚至几乎任何一个软件系统；然而大多数软件工程师对日志并不熟悉。我有意于改变这个现状。<br>本文我将带你浏览有关日志需要了解的一切，包括日志是什么，如何在数据集成（<code>data integration</code>）、实时处理（<code>real time processing</code>）和系统构建中使用日志。<br><a id="more"></a></p>
-<p>日志可能是一种最简单的不能再简单的存储抽象，只能追加、按照时间完全有序（<code>totally-ordered</code>）的记录序列。日志看起来的样子：</p>
-<p><img src="https://engineering.linkedin.com/sites/default/files/log.png" alt=""></p>
-<p>在日志的末尾添加记录，读取日志记录则从左到右。每一条记录都指定了一个唯一的顺序的日志记录编号。</p>
-<p>日志记录的次序（<code>ordering</code>）定义了『时间』概念，因为位于左边的日志记录表示比右边的要早。<br>日志记录编号可以看作是这条日志记录的『时间戳』。<br>把次序直接看成是时间概念，刚开始你会觉得有点怪异，但是这样的做法有个便利的性质：解耦了 时间 和 任一特定的物理时钟（<code>physical clock</code>）。<br>引入分布式系统后，这会成为一个必不可少的性质。</p>
-<p><strong><em>【译注】</em></strong> 分布式系统的 时间、次序、时钟是个最基础根本的问题，详见被引用最多的<em>Leslie Lamport</em>的论文<strong><em>Time Clocks and the Ordering of Events in a Distributed System</em></strong>（<a href="http://duanple.blog.163.com/blog/static/709717672012920101343237/" target="_blank" rel="external">中文翻译</a>），现在先 <strong><em>不要</em></strong> 去看，除非读完本文后你还是有很兴趣要探个明白！</p>
-<p>日志记录的内容和格式是什么对于本文讨论并不重要。另外，不可能一直给日志添加记录，因为总会耗尽存储空间。稍后我们会再回来讨论这个问题。</p>
-<p>所以，日志 和 文件或数据表（<code>table</code>）并没有什么大的不同。文件是一系列字节，表是由一系列记录组成，而日志实际上只是一种按照时间顺序存储记录的数据表或文件。</p>
-<p>讨论到现在，你可能奇怪为什么要讨论这么简单的概念？只能追加的有序的日志记录究竟又是怎样与数据系统生产关系的？<br>答案是日志有其特定的目标：它记录了什么时间发生了什么事情。而对分布式数据系统，在许多方面，这是要解决的问题的真正核心。</p>
-<p>不过，在我们进行更加深入的讨论之前，让我先澄清有些让人混淆的概念。每个程序员都熟悉另一种日志记录的定义 —— 应用使用<code>syslog</code>或者<code>log4j</code>写入到本地文件里的无结构的错误信息或者追踪信息。为了区分，这种情形的称为『应用日志记录』。<br>应用日志记录是我说的日志概念的一种退化。两者最大的区别是：文本日志意味着主要用来方便人去阅读，而构建我所说的『日志（<code>journal</code>）』或者『数据日志（<code>data logs</code>）』是用于程序的访问。</p>
-<p>（实际上，如果你深入地思考一下，会觉得人去阅读某个机器上的日志这样的想法有些落伍过时了。<br>当涉及很多服务和服务器时，这样的做法很快就变得难于管理，<br>我们的目的很快就变成 输入查询 和 输出用于理解多台机器的行为的图表，<br>因此，文件中的字句文本 几乎肯定不如 本文所描述的结构化日志 更合适。）</p>
-<h2 id="数据库中的日志">数据库中的日志</h2>
-<p>我不知道日志概念的起源 —— 可能就像二分查找（<code>binary search</code>）一样，发明者觉得太简单了而不是一项发明。早在<code>IBM</code>的<a href="http://www.cs.berkeley.edu/~brewer/cs262/SystemR.pdf" target="_blank" rel="external">系统R</a>出现时候日志就出现了。<br>在数据库里的用法是在崩溃的时候用它来保持各种数据结构和索引的同步。为了保证操作的原子性（<code>atomic</code>）和持久性（<code>durable</code>)，<br>在对数据库维护的所有各种数据结构做更改之前，数据库会把要做的更改操作的信息写入日志。<br>日志记录了发生了什么，而每个表或者索引都是更改历史中的一个投影。由于日志是立即持久化的，发生崩溃时，可以作为恢复其他所有持久化结构的可靠来源。</p>
-<p>随着时间的推移，日志的用途从<code>ACID</code>的实现细节成长为数据库间复制数据的一种方法。<br>结果证明，发生在数据库上的更改序列 即是 与远程副本数据库（<code>replica database</code>）保持同步 所需的操作。<br><code>Oracle</code>、<code>MySQL</code> 和<code>PostgreSQL</code>都包括一个日志传送协议（<code>log shipping protocol</code>），传输日志给作为备库（<code>Slave</code>）的复本（<code>replica</code>）数据库。<br><code>Oracle</code>还把日志产品化为一个通用的数据订阅机制，为非<code>Oracle</code>数据订阅用户提供了<a href="http://docs.oracle.com/cd/E11882_01/server.112/e16545/xstrm_intro.htm" target="_blank" rel="external"><code>XStreams</code></a>和<a href="http://www.oracle.com/technetwork/middleware/goldengate/overview/index.html" target="_blank" rel="external"><code>GoldenGate</code></a>，在<code>MySQL</code>和<code>PostgreSQL</code>中类似设施是许多数据架构的关键组件。</p>
-<p>正是由于这样的起源，机器可识别的日志的概念主要都被局限在数据库的内部。日志作为做数据订阅机制的用法似乎是偶然出现的。<br>但这正是支持各种的消息传输、数据流和实时数据处理的理想抽象。</p>
-<h2 id="分布式系统中的日志">分布式系统中的日志</h2>
-<p>日志解决了两个问题：更改动作的排序和数据的分发，这两个问题在分布式数据系统中更是尤为重要。<br>协商达成一致的更改动作的顺序（或是协商达成不一致做法并去做有副作用的数据拷贝）是分布式系统设计的核心问题之一。</p>
-<p>分布式系统以日志为中心的方案是来自于一个简单的观察，我称之为<strong>状态机复制原理</strong>（<code>State Machine Replication Principle</code>）：</p>
-<p><strong>如果两个相同的、确定性的进程从同一状态开始，并且以相同的顺序获得相同的输入，那么这两个进程将会生成相同的输出，并且结束在相同的状态。</strong></p>
-<p>听起来有点难以晦涩，让我们更加深入的探讨，弄懂它的真正含义。</p>
-<p><a href="http://en.wikipedia.org/wiki/Deterministic_algorithm" target="_blank" rel="external">确定性</a>（<code>deterministic</code>）意味着处理过程是与时间无关的，而且不让任何其他『带外数据（<code>out of band</code>）』的输入影响处理结果。<br>例如，如果一个程序的输出会受到线程执行的具体顺序影响，或者受到<code>getTimeOfDay</code>调用、或者其他一些非重复性事件的影响，那么这样的程序一般被认为是非确定性的。</p>
-<p>进程<strong><em>状态</em></strong> 是进程保存在机器上的任何数据，在进程处理结束的时候，这些数据要么保存在内存里，要么保存在磁盘上。</p>
-<p>当碰到以相同的顺序输入相同的内容的情况时，应该触发你的条件反射：这个地方要引入日志。<br>下面是个很直觉的意识：如果给两段确定性代码相同的日志输入，那么它们就会生产相同的输出。</p>
-<p>应用到分布式计算中就相当明显了。你可以把用多台机器都执行相同事情的问题化简为实现用分布式一致性日志作为这些处理的输入的问题。<br>这里日志的目的是把所有非确定性的东西排除在输入流之外，以确保处理这些输入的各个复本（<code>replica</code>）保持同步。</p>
-<p>当你理解了这个以后，状态机复制原理就不再复杂或深奥了：这个原理差不多就等于说的是『确定性的处理过程就是确定性的』。不管怎样，我认为它是分布式系统设计中一个更通用的工具。</p>
-<p>这样方案的一个美妙之处就在于：用于索引日志的时间戳 就像 用于保持副本状态的时钟 —— 你可以只用一个数字来描述每一个副本，即这个副本已处理的最大日志记录的时间戳。<br>日志中的时间戳 一一对应了 副本的完整状态。</p>
-<p>根据写进日志的内容，这个原理可以有不同的应用方式。举个例子，我们可以记录一个服务的输入请求日志，或者从请求到响应服务的状态变化日志，或者服务所执行的状态转换命令的日志。<br>理论上来说，我们甚至可以记录各个副本执行的机器指令序列的日志 或是 所调用的方法名和参数序列的日志。<br>只要两个进程用相同的方式处理这些输入，这些副本进程就会保持一致的状态。</p>
-<p>对日志用法不同群体有不同的说法。数据库工作者通常说成<strong><em>物理</em></strong>日志（<code>physical logging</code>）和<strong><em>逻辑</em></strong>日志（<code>logical logging</code>）。物理日志是指记录每一行被改变的内容。逻辑日志记录的不是改变的行而是那些引起行的内容改变的<code>SQL</code>语句（<code>insert</code>、<code>update</code>和<code>delete</code>语句）。</p>
-<p>分布式系统文献通常把处理和复制（<code>processing and replication</code>）方案宽泛地分成两种。『状态机器模型』常常被称为主-主模型（<code>active-active model</code>），<br>记录输入请求的日志，各个复本处理每个请求。<br>对这个模型做了细微的调整称为『主备模型』（<code>primary-backup model</code>），即选出一个副本做为<code>leader</code>，让<code>leader</code>按请求到达的顺序处理请求，并输出它请求处理的状态变化日志。<br>其他的副本按照顺序应用<code>leader</code>的状态变化日志，保持和<code>leader</code>同步，并能够在<code>leader</code>失败的时候接替它成为<code>leader</code>。</p>
-<p><img src="https://engineering.linkedin.com/sites/default/files/active_and_passive_arch.png" alt=""></p>
-<p>为了理解两种方式的差异，我们来看一个不太严谨的例子。假定有一个要复制的『算法服务』，维护一个独立的数字作为它的状态（初始值为0），可以对这个值进行加法和乘法运算。<br>主-主方式所做的可能的是输出所进行的变换的日志，比如『+1』、『*2』等。各个副本都会应用这些变换，从而经过一系列相同的值。<br>而主备方式会有一个独立的<code>Master</code>执行这些变换并输出结果日志，比如『1』、『3』、『6』等。<br>这个例子也清楚的展示了为什么说顺序是保证各副本间一致性的关键：加法和乘法的顺序的改变将会导致不同的结果。</p>
-<p><img src="https://engineering.linkedin.com/sites/default/files/paxos_postcard.jpg" width="290" hspace="10px" align="right"></p>
-<p>分布式日志可以看作是建模<a href="https://en.wikipedia.org/wiki/Consensus_(computer_science" target="_blank" rel="external">一致性</a>)（<code>consensus</code>）问题的数据结构。<br>因为日志代表了『下一个』追加值的一系列决策。<br>你需要眯起眼睛才能从<a href="http://en.wikipedia.org/wiki/Paxos_(computer_science" target="_blank" rel="external"><code>Paxos</code></a>)算法簇中找到日志的身影，尽管构建日志是它们最常见的实际应用。<br><code>Paxos</code>通过称为<code>multi-paxos</code>的一个扩展协议来构建日志，把日志建模为一系列一致性值的问题，日志的每个记录对应一个一致性值。<br>日志的身影在<a href="http://www.stanford.edu/class/cs347/reading/zab.pdf" target="_blank" rel="external"><code>ZAB</code></a>、<a href="https://ramcloud.stanford.edu/wiki/download/attachments/11370504/raft.pdf" target="_blank" rel="external"><code>RAFT</code></a>和<a href="http://pmg.csail.mit.edu/papers/vr-revisited.pdf" target="_blank" rel="external"><code>Viewstamped Replication</code></a>等其它的协议中明显得多，这些协议建模的问题直接就是维护分布式一致的日志。</p>
-<p>个人有一点感觉，在这个问题上，我们的思路被历史发展有些带偏了，可能是由于过去的几十年中，分布式计算的理论远超过了其实际应用。<br>在现实中，一致性问题是有点被过于简单化了。计算机系统几乎不需要决定单个的值，要的是处理一序列的请求。<br>所以，日志而不是一个简单的单值寄存器，是更自然的抽象。</p>
-<p>此外，对算法的专注掩盖了系统底层所需的日志抽象。<br>个人觉得，我们最终会更关注把日志作为一个商品化的基石而不是考虑它的实现，就像我们经常讨论哈希表而不纠结于它的细节，<br>比如使用线性探测的杂音哈希（<code>the murmur hash with linear probing</code>）还是某个变种。<br>日志将成为一种大众化的接口，可以有多种竞争的算法和实现，以提供最好的保证和最佳的性能。</p>
-<h2 id="变更日志101：表与事件的二象性（duality）">变更日志101：表与事件的二象性（<code>duality</code>）</h2>
-<p>让我们继续聊一下数据库。变更日志 和 表之间有着迷人的二象性。<br>日志类似借贷清单和银行处理流水，而数据库表则是当前账户的余额。如果有变更日志，你就可以应用这些变更生成数据表并得到当前状态。<br>表记录的是每条数据的最后状态（日志的一个特定时间点）。<br>可以认识到日志是更基本的数据结构：日志除了可用来创建原表，也可以用来创建各类衍生表。<br>（是的，表可以是非关系型用户用的键值数据存储（<code>keyed data store</code>）。）</p>
-<p><img src="https://engineering.linkedin.com/sites/default/files/yin-yang.jpg" width="180" hspace="10px" align="right"></p>
-<p>这个过程也是可逆的：如果你对一张表进行更新，你可以记录这些变更，并把所有更新的『变更日志（<code>changelog</code>）』发布到表的状态信息中。<br>这些变更日志正是你所需要的支持准实时的复制。<br>基于此，你就可以清楚的理解表与事件的二象性： 表支持了静态数据，而日志记录了变更。日志的魅力就在于它是变更的<em>完整</em>记录，它不仅仅包含了表的最终版本的内容，<br>而且可以用于重建任何存在过其它版本。事实上，日志可以看作是表<strong><em>每个</em></strong>历史状态的一系列备份。</p>
-<p>这可能会让你想到源代码的版本控制（<code>source code version control</code>）。源码控制和数据库之间有着密切的关系。<br>版本管理解决了一个和分布式数据系统要解决的很类似的问题 —— 管理分布式的并发的状态变更。<br>版本管理系统建模的是补丁序列（<code>the sequence of patches</code>），实际上这就是日志。<br>你可以检出当前的代码的一个『快照』并直接操作，这个代码快照可以类比成表。<br>你会注意到，正如有状态的分布式系统一样，版本控制系统通过日志来完成复制：更新代码即是拉下补丁并应用到你的当前快照中。</p>
-<p>从销售日志数据库的公司<a href="http://www.datomic.com/" target="_blank" rel="external"><code>Datomic</code></a>那里，大家可以看到一些这样的想法。<br><a href="https://www.youtube.com/watch?v=Cym4TZwTCNU" target="_blank" rel="external">这个视频</a>比较好地介绍了他们如何在系统中应用这些想法。<br>当然这些想法不是只专属于这个系统，这十多年他们贡献了很多分布式系统和数据库方面的文献。</p>
-<p>这节的内容可能有点理论化了。但别沮丧！后面马上就是实操的干货。</p>
-<h2 id="接下来的内容">接下来的内容</h2>
-<p>本文剩下的内容，我会试着重点讲述，除了作为分布式计算内部实现或模型抽象，日志有什么优点。包含：</p>
-<ol>
-<li><em>数据集成</em>（<code>Data Integration</code>） —— 让组织中所有存储和处理系统可以容易地访问组织所有的数据。</li>
-<li><em>实时数据处理</em> —— 计算生成的数据流。</li>
-<li><em>分布式系统设计</em> —— 如何通过集中式日志的设计来简化实际应用系统。</li>
-</ol>
-<p>所有这些用法都是通过把日志用做单独服务来实现的。</p>
-<p>上面这些场景中，日志的好处都来自日志所能提供的简单功能：生成持久化的可重放的历史记录。<br>令人意外的是，能让多台机器以确定性的方式（<code>deterministic manner</code>）按各自的速度重放历史记录的能力是这些问题的核心。<br>我先解释一下我说的是『数据集成』（<code>data integration</code>）是什么，还有为什么我觉得它很重要，然后我们再来看看它是如何和日志建立关系的。</p>
-<p><strong>数据集成 是指 使一个组织的所有数据 对 这个组织的所有的服务和系统 可用。</strong></p>
-<p>『数据集成』还不是一个常见的用语，但是我找不到一个更好的。大家更熟知的术语<a href="http://en.wikipedia.org/wiki/Extract,_transform,_load" target="_blank" rel="external"><code>ETL</code></a><br>（译注：<code>ETL</code>是<code>Extraction-Transformation-Loading</code>的缩写，即数据提取、转换和加载）<br>通常只是覆盖了数据集成的一个有限子集 —— 主要在关系型数据仓库的场景。但我描述的东西很大程度上可以理解为，将<code>ETL</code>推广至覆盖实时系统和处理流程。</p>
-<p><img src="https://engineering.linkedin.com/sites/default/files/cabling.jpg" width="270" hspace="10px" align="right"></p>
-<p>你一定不会听到数据集成就兴趣盎然地屏住呼吸，并且天花乱坠的想到<strong><em>大数据</em></strong>的概念，<br>但尽管如此，我相信这个陈词滥调的『让数据可用』的问题是组织可以关注的更有价值的事情之一。</p>
-<p>对数据的高效使用遵循一种<a href="http://en.wikipedia.org/wiki/Maslow%27s_hierarchy_of_needs" target="_blank" rel="external">马斯洛的需要层次理论</a>。<br>金字塔的基础部分包含捕获所有相关数据，能够将它们全部放到适当的处理环境中（可以是一个华丽的实时查询系统，或仅仅是文本文件和<code>python</code>脚本构成的环境）。<br>这些数据需要以统一的方式建模，以方便读取和处理。<br>一旦这些以统一的方式捕获数据的基本需求得到满足，那么在基础设施上以不同方法处理这些数据就变得理所当然 —— <code>MapReduce</code>、实时查询系统等等。</p>
-<p>显而易见但值得注意的一点：如果没有可靠的、完整的数据流，<code>Hadoop</code>集群只不过是个非常昂贵而且安装麻烦的供暖器。<br>一旦有了数据和处理（<code>data and processing</code>），人们的关注点就会转移到良好的数据模型和一致且易于理解的语义这些更精致的问题上来。<br>最后，关注点会转移到更高级处理上 —— 更好的可视化、生成报表以及处理和预测算法。</p>
-<p>以我的经验，大多数组织在这个数据金字塔的底部存在巨大的漏洞 —— 缺乏可靠的完整的数据流 ——<br>却想直接跳到高级数据模型技术上。这样做完全是本未倒置。</p>
-<p>所以问题是，我们如何在组织中构建贯穿所有数据系统的可靠数据流？</p>
-<h2 id="数据集成：两个难题">数据集成：两个难题</h2>
-<p>有两个趋势使数据集成变得更加困难。</p>
-<h3 id="事件数据管道">事件数据管道</h3>
-<p>第一个趋势是增长的事件数据（<code>event data</code>）。事件数据记录的是发生的事情，而不是已存在的事情。<br>在<code>Web</code>系统中，这就意味着用户活动日志，还有为了可靠地操作和监控数据中心机器的价值而记录的机器级别的事件和统计数字。<br>人们倾向于称它们为『日志数据（<code>log data</code>）』，因为它们经常被写到应用日志中，但这样的说法混淆了形式与功能。<br>这些数据是现代<code>Web</code>的核心：归根结底，<code>Google</code>的财富来自于建立在点击和展示（<code>clicks and impressions</code>）上的相关性管道（<code>relevance pipeline</code>），而这些点击和展示正是事件。</p>
-<p>这样的事情并不是仅限于<code>Web</code>公司，只是<code>Web</code>公司已经完全数字化，所以更容易完成。财务数据长久以来一直是以事件为中心的。<br><a href="http://en.wikipedia.org/wiki/RFID" target="_blank" rel="external"><code>RFID</code></a>（无线射频识别）使得能对物理设备做这样的跟踪。<br>随着传统的业务和活动的<a href="http://online.wsj.com/article/SB10001424053111903480904576512250915629460.html" target="_blank" rel="external">数字化（<code>digitization</code>）</a>，<br>我认为这个趋势仍将继续。</p>
-<p>这种类型的事件数据记录了发生的事情，往往比传统数据库应用要大好几个数量级。这对于处理提出了重大的挑战。</p>
-<h3 id="专用的数据系统（specialized_data_systems）的爆发">专用的数据系统（<code>specialized data systems</code>）的爆发</h3>
-<p>第二个趋势来自于专用的数据系统的<a href="http://citeseerx.ist.psu.edu/viewdoc/summary?doi=10.1.1.68.9136" target="_blank" rel="external">爆发</a>，这些数据系统在最近五年开始流行并且可以免费获得。<br>专门用于<a href="https://github.com/metamx/druid/wiki" target="_blank" rel="external"><code>OLAP</code></a>、<a href="http://www.elasticsearch.org/" target="_blank" rel="external">搜索</a>、<a href="http://www.rethinkdb.com/" target="_blank" rel="external">简单</a> <a href="http://www.slideshare.net/amywtang/espresso-20952131" target="_blank" rel="external">在线</a> <a href="http://hadoop.apache.org/" target="_blank" rel="external">存储</a>、 <a href="http://hadoop.apache.org/" target="_blank" rel="external">批处理</a>、<a href="http://graphlab.org/" target="_blank" rel="external">图分析（<code>graph analysis</code>）</a> <a href="http://redis.io/" target="_blank" rel="external">等</a> <a href="http://spark.incubator.apache.org/" target="_blank" rel="external">等</a> 的数据系统已经出现。</p>
-<p>更加多样化的数据同时变成更加大量，而且这些数据期望放到更多的系统中，这些需求同时要解决，导致了一个巨大的数据集成问题。</p>
-<h2 id="日志结构化的（log-structured）数据流">日志结构化的（<code>log-structured</code>）数据流</h2>
-<p>处理系统之间的数据流，日志是最自然的数据结构。解决方法很简单：</p>
-<p><strong>提取所有组织的数据，并放到一个用于实时订阅的中心日志中。</strong></p>
-<p>每个逻辑数据源都可以建模为它自己的日志。<br>一个数据源可以看作 一个输出事件日志的应用（如点击或页面的浏览），或是 一个接受修改的数据库表。<br>每个订阅消息的系统都尽可能快的从日志读取信息，将每条新的记录应用到自己的存储中，同时向前滚动日志文件中的自己的位置。<br>订阅方可以是任意一种数据系统 —— 缓存、<code>Hadoop</code>、另一个网站中的另一个数据库、一个搜索系统，等等。</p>
-<p><img src="https://engineering.linkedin.com/sites/default/files/log_subscription.png" hspace="10px" align="right"></p>
-<p>举个例子，日志概念为每个变更提供了逻辑时钟，所有的订阅方都可以比较这个逻辑时钟。<br>这极大简化了如何去推断不同的订阅系统的状态彼此是否一致的，因为每个系统都持有了一个读到哪儿的『时间点』。</p>
-<p>为了让讨论更具体些，我们考虑一个简单的案例，有一个数据库和一组缓存服务器集群。<br>日志提供了一个方法可以同步更新到所有这些系统，并推断出每个系统的所处在的时间点。<br>我们假设做了一个写操作，对应日志记录<code>X</code>，然后要从缓存做一次读操作。<br>如果我们想保证看到的不是过时的数据，我们只需保证，不要去读取那些复制操作还没有跟上<code>X</code>的缓存即可。</p>
-<p>日志也起到缓冲的作用，使数据的生产异步于数据的消费。有许多原因使得这一点很重要，特别是在多个订阅方消费数据的速度各不相同的时候。<br>这意味着一个数据订阅系统可以宕机或是下线维护，在重新上线后再赶上来：订阅方可以按照自己的节奏来消费数据。<br>批处理系统如<code>Hadoop</code>或者是一个数据仓库，或许只能每小时或者每天消费一次数据，而实时查询系统可能需要及时到秒。<br>无论是起始的数据源还是日志都感知感知各种各样的目标数据系统，所以消费方系统的添加和删除无需去改变传输管道。</p>
-<p>特别重要的是：目标系统只知道日志，而不知道来源系统的任何细节。<br>无论是数据来自于一个<code>RDBMS</code>、一种新型的键值存储，还是由一个不包含任何类型实时查询的系统所生成的，消费方系统都无需关心。<br>这似乎是一个小问题，但实际上却是至关重要的。</p>
-<blockquote>
-<p><img src="https://engineering.linkedin.com/sites/default/files/tolstoy.jpg" width="250"><br><a href="http://en.wikipedia.org/wiki/Anna_Karenina_principle" target="_blank" rel="external">『每个工作的数据管道要设计得像是一个日志；每个损坏的数据管道都以其自己的方式损坏。』<br>—— <em>Count Leo Tolstoy</em> （由作者翻译）</a></p>
-</blockquote>
-<p>这里我使用术语『日志』取代了『消息系统』或者『发布-订阅』，因为在语义上明确得多，并且准确得多地描述了在实际实现中支持数据复制时你所要做的事。<br>我发现『发布订阅』只是表达出了消息的间接寻址（<code>indirect addressing of messages</code>） ——<br>如果你去比较两个发布-订阅的消息系统的话，会发现他们承诺的是完全不同的东西，而且大多数模型在这一领域没什么用。<br>你可以认为日志是一种有持久性保证和强有序（<code>strong ordering</code>）语义的消息系统。<br>在分布式系统中，这个通信模型有时有个（有些可怕的）名字叫做<a href="http://en.wikipedia.org/wiki/Atomic_broadcast" target="_blank" rel="external">原子广播（<code>atomic broadcast</code>）</a>。</p>
-<p>值得强调的是，日志仍然只是基础设施，并不是精通数据流这个故事的结束：<br>故事的剩余部分围绕着元数据（<code>metadata</code>)、<code>schemas</code>、兼容性以及处理数据结构及其演化的所有细节来展开。<br>但是，除非有一种可靠的通用的方式来处理数据流的机制，否则语义细节总是次要的。</p>
-<h2 id="在LinkedIn">在<code>LinkedIn</code></h2>
-<p>随着<code>LinkedIn</code>从集中式关系数据库过渡到一套分布式系统，我注意到数据集成的问题在迅速地演变。</p>
-<p><img src="https://engineering.linkedin.com/sites/default/files/linkedin.png" width="250" hspace="10px" align="right"></p>
-<p>目前我们主要的数据系统包括：</p>
-<ul>
-<li><a href="http://data.linkedin.com/projects/search" target="_blank" rel="external">搜索</a></li>
-<li><a href="http://engineering.linkedin.com/real-time-distributed-graph/using-set-cover-algorithm-optimize-query-latency-large-scale-distributed" target="_blank" rel="external"><code>Social Graph</code></a></li>
-<li><a href="http://project-voldemort.com/" target="_blank" rel="external"><code>Voldemort</code></a> （键值存储）</li>
-<li><a href="http://data.linkedin.com/projects/espresso" target="_blank" rel="external"><code>Espresso</code></a> （文档存储）</li>
-<li><a href="http://www.quora.com/LinkedIn-Recommendations/How-does-LinkedIns-recommendation-system-work" target="_blank" rel="external">推荐引擎</a></li>
-<li><code>OLAP</code>查询引擎</li>
-<li><a href="http://hadoop.apache.org/" target="_blank" rel="external"><code>Hadoop</code></a></li>
-<li><a href="http://www.teradata.com/" target="_blank" rel="external"><code>Terradata</code></a></li>
-<li><a href="http://engineering.linkedin.com/52/autometrics-self-service-metrics-collection" target="_blank" rel="external"><code>Ingraphs</code></a> （监控图表和指标服务）</li>
-</ul>
-<p>每一个都是专用的分布式系统，在各自的专门领域提供高级的功能。</p>
-<p>使用日志作为数据流的这个想法，甚至在我到这里之前，就已经在<code>LinkedIn</code>的各个地方开始浮现了。<br>我们开发的最早的一个基础设施是一个称为<a href="https://github.com/linkedin/databus" target="_blank" rel="external"><code>databus</code></a>的服务，<br>它在我们早期的<code>Oracle</code>表上提供了一种日志缓存的抽象，用于可伸缩地订阅数据库修改，给我们的<code>social graph</code>和搜索索引输入数据。</p>
-<p>我先简单介绍一些历史以提供讨论的上下文。在发布我们自己键值存储之后，大约是2008年我开始参与这个项目。<br>我接着的一个项目是把一个运行的<code>Hadoop</code>部署用起来，迁移我们的一些推荐处理上来。<br>由于缺乏这方面的经验，我们只计划了几周时间完成数据的导入导出，剩下的时间则用来实现复杂的预测算法。<br>就这样我们开始了长途跋涉。</p>
-<p>我们本来计划是仅仅将数据从现存的<code>Oracle</code>数据仓库中剖离。<br>但是我们首先发现将数据从<code>Oracle</code>中迅速取出简直是一个黑魔法（<code>dark art</code>）。<br>更糟的是，数据仓库的处理过程并不适合于 我们为<code>Hadoop</code>设计的生产批处理过程 ——<br>大部分处理都是不可逆的，并且与要生成的具体报表相关。<br>最终我们采取的办法是，避免使用数据仓库，直接访问源数据库和日志文件。<br>最后，我们实现了一个管道，用于完成<a href="http://data.linkedin.com/blog/2009/06/building-a-terabyte-scale-data-cycle-at-linkedin-with-hadoop-and-project-voldemort" target="_blank" rel="external">加载数据到我们的键值存储</a>并生成结果。</p>
-<p>这种普通常见的数据拷贝最终成为原来开发项目的主要内容之一。<br>糟糕的是，只要在任何时间任意管道有一个问题，<code>Hadoop</code>系统基本上就是废的 ——<br>在错误的数据基础上运行复杂的算法只会产生更多的错误数据。</p>
-<p>虽然我们已经使用了一种很通用的构建方式，但是每个数据源都需要自定义的安装配置。这也被证明是大量错误与失败的根源。<br>我们用<code>Hadoop</code>实现的网站功能开始流行起来，而我们发现自己有一大把需要协作的工程师。<br>每个用户都有他们想要集成的一大把的系统，并且想要导入的一大把新数据源。</p>
-<p>有些东西在我面前开始渐渐清晰起来。</p>
-<p>首先，我们已建成的通道虽然有一些杂乱，但实际上是极有价值的。<br>仅在一个新的处理系统（<code>Hadoop</code>）中让数据可用于处理 就开启了大量的可能性。<br>基于这些数据过去很难实现的计算如今已变为可能。<br>许多新的产品和分析技术都来源于把多个数据片块放在一起，这些数据过去被锁定在特定的系统中。</p>
-<blockquote>
-<p><img src="https://engineering.linkedin.com/sites/default/files/sisyphus.jpg" width="250"><br>古希腊时代的<code>ETL</code>。并没有太多变化。</p>
-</blockquote>
-<p>第二，可靠的数据加载需要数据通道的深度支持，这点已经变得很清晰了。<br>如果我们可以捕获所有我们需要的结构，就可以使得<code>Hadoop</code>数据全自动地加载，<br>这样不需要额外的手动操作就可以添加新的数据源或者处理<code>schema</code>变更 ——<br>数据就会自动的出现在<code>HDFS</code>，并且<code>Hive</code>表就会自动的为新数据源生成恰当的列。</p>
-<p>第三，我们的数据覆盖率仍然很低。<br>如果看一下<code>LinkedIn</code>所有数据在<code>Hadoop</code>中可用的比率，仍然很不完整。<br>相比接入并运转一个新数据源所要做的努力，完整接入一个数据源更不容易。</p>
-<p>我们曾经推行的方式是为每个数据源和目标构建自定义的数据加载，很显然这是不可行的。<br>我们有几十个数据系统和数据仓库。把这些系统和仓库联系起来，就会导致任意两两系统间构建自定义的管道，如下所示：</p>
-<p><img src="https://engineering.linkedin.com/sites/default/files/datapipeline_complex.png" alt=""></p>
-<p>需要注意的是数据是双向流动的：例如许多系统（数据库、<code>Hadoop</code>）同时是数据传输的来源和目的。<br>这就意味着我们我们最后要为每个系统建立两个通道：一个用于数据输入，一个用于数据输出。</p>
-<p>这显然需要一大群人，而且也不具有可操作性。随着我们接近完全连接，最终我们会有差不多<code>O(N^2)</code>条管道。</p>
-<p>要避免上面的问题，我们需要像这样的通用方式：</p>
-<p><img src="https://engineering.linkedin.com/sites/default/files/datapipeline_simple.png" alt=""></p>
-<p>我们需要尽可能的将每个消费者与数据源隔离。理想情形下，它们应该只与一个单独的数据源集成，就能访问到所有数据。</p>
-<p>这个思想是增加一个新的数据系统 —— 它可以作为数据来源或者数据目的地 ——<br>集成工作只需连接这个新系统到一个单独的管道，而无需连接到每个数据消费方。</p>
-<p>这样的经历使得我专注于创建<a href="http://kafka.apache.org/" target="_blank" rel="external"><code>Kafka</code></a>，把 我们所知的消息系统的特点 与 在数据库和分布式系统内核常用的日志概念 结合起来。<br>我们首先需要一个实体作为所有的活动数据的中心管道，并逐步的扩展到其他很多的使用方式，包括<code>Hadoop</code>之外的数据、数据监控等等。</p>
-<p>在相当长的时间内，<code>Kafka</code>是独一无二的（有人会说是怪异） ——<br>作为一个底层设施，它既不是数据库，也不是日志文件收集系统，更不是传统的消息系统。<br>但是最近<code>Amazon</code>提供了非常非常类似<code>Kafka</code>的服务，称之为<a href="http://aws.amazon.com/kinesis" target="_blank" rel="external"><code>Kinesis</code></a>。<br>相似度包括了分片处理的方式，数据的持有方式，甚至包括有点特别的<code>Kafka API</code>分类（分成高端和低端消费者）。<br>我很开心看到这些，这表明了你已经创建了很好的底层设施抽象，<code>AWS</code>已经把它作为服务提供！<br>他们对此的想法看起来与我所描述的完全吻合：<br>管道联通了所有的分布式系统，诸如<code>DynamoDB</code>,<code>RedShift</code>,<code>S3</code>等，同时作为使用<code>EC2</code>进行分布式流处理的基础。</p>
-<h2 id="ETL与数据仓库的关系"><code>ETL</code>与数据仓库的关系</h2>
-<p>我们再来聊聊数据仓库。数据仓库旨在包含支撑数据分析的规整的集成的结构化数据。<br>这是一个非常好的理念。对不了解数据仓库概念的人来说，数据仓库的用法是：<br>周期性的从源数据库抽取数据，把它们转化为可理解的形式，然后把它导入中心数据仓库。<br>对于数据集中分析和处理，拥有高度集中的位置存放全部数据的规整副本对于数据密集的分析和处理是非常宝贵的资产。<br>在更高层面上，无论你使用传统的数据仓库<code>Oracle</code>还是<code>Teradata</code>或<code>Hadoop</code>，<br>这个做法不会有太多变化，可能<a href="http://searchdatamanagement.techtarget.com/definition/Extract-Load-Transform-ELT" target="_blank" rel="external">调整</a>一下抽取和加载数据的顺序。</p>
-<p>数据仓库是极其重要的资产，它包含了的和规整的数据，但是实现此目标的机制有点过时了。</p>
-<p><img src="https://engineering.linkedin.com/sites/default/files/oracle.jpg" width="300" hspace="10px" align="right"></p>
-<p>对于以数据为中心的组织，关键问题是把规整的集成的数据联结到数据仓库。<br>数据仓库是个批处理查询基础设施：它们适用于各类报表和临时性分析，特别是当查询包含了简单的计数、聚合和过滤。<br>但是如果批处理系统是唯一一个包含规整的完整的数据的仓库，<br>这就意味着，如果一个系统需要 实时数据输入的实时系统（如实时处理、实时搜索索引、实时监控等系统），这些数据是不可用的。</p>
-<p>依我之见，<code>ETL</code>包括两件事。<br>首先，它是数据抽取和清理的处理 —— 本质上就是释放被锁在组织的各类系统中的数据，去除特定于系统的约束。<br>第二，依照数据仓库的查询重构数据，例如使其符合关系数据库类型系统，<br>强制使用星型<code>schema</code>（<code>star schema</code>）、雪花型<code>schema</code>（<code>snowflake schema</code>），可能会打散数据成高性能的<a href="http://parquet.io/" target="_blank" rel="external">列</a> <a href="http://docs.hortonworks.com/HDPDocuments/HDP2/HDP-2.0.0.2/ds_Hive/orcfile.html" target="_blank" rel="external">格式</a>（<code>column format</code>），等等。同时做好这两件事是有困难的。<br>这些集成仓库的规整的数据除了要索引到实时存储系统中，也应当可用于实时或是低时延处理中。</p>
-<p>在我看来，正是因为这个原因有了额外好处：使得数据仓库<code>ETL</code>大大提升了<strong><em>组织级</em></strong>的可伸缩性（<code>scalable</code>）。<br>典型的问题是数据仓库团队要负责收集和整理组织中各个团队所生成的全部数据。<br>两边的收益是不对称的：数据的生产者常常并不知晓在数据仓库中数据的使用情况，<br>结果产生的数据，为了转成为可用的形式，抽取过程很难或是很繁重，转换过程很难统一规模化。<br>当然，中心团队的规模不可能跟上组织中其它团队增长，<br>结果数据的覆盖率总是参差不齐的，数据流是脆弱的，跟进变更是缓慢的。</p>
-<p>较好的做法是有一个中央管道即日志，用定义良好的<code>API</code>来添加数据。<br>集成这个管道和提供良好的结构化的输入数据所需的职责由提供数据的生产者承担。<br>这意味着作为系统设计和实现一部分的生产者，在交付到中心通道时，<br>必须考虑其输出和输入的数据要有良好结构形式的问题。<br>新的存储系统的加入对于数据仓库团队是无关紧要的，因为他们现在只有一个中心结点去集成。<br>（<strong><em>译注</em></strong>：原来要集成的是其它各个相关的系统，工作是被简化了的）<br>数据仓库团队需只处理更简单的问题，从中心日志中加载结构化的输入数据、完成特定于他们系统的数据转换。</p>
-<p><img src="https://engineering.linkedin.com/sites/default/files/pipeline_ownership.png" hspace="10px" align="right"></p>
-<p>从上面讨论可以看出，当考虑采纳传统的数据仓库之外额外的数据系统时，组织级的伸缩性（<code>organizational scalability</code>）显得尤为重要。<br>例如，想为组织的所有的数据集提供搜索能力。<br>或者想为数据流的监控的次级监控（<code>sub-second monitoring</code>）添加实时数据趋势和告警。<br>无论是哪个情况，传统的数据仓库的基础设施，甚至是<code>Hadoop</code>集群都将不再适合。<br>更糟的是，用于支持数据加载的<code>ETL</code>处理管道可能输入不了数据到其它系统，<br>和带动不了要动用数据仓库这样的大企业下的那些基础设备。<br>这样的做法应该是不可行的，可能可以解释为什么多数组织对他们的所有数据很难轻松具备这样的能力。<br>反之，如果组织能导出标准的结构良好的数据，<br>那么任何新的系统要使用所有数据仅仅需要提供一个用于集成的管道接到中央管道上即可。</p>
-<p>关于数据规整化和转换在哪里进行，这种架构也引出了的不同观点：</p>
-<ol>
-<li>在添加数据到公司全局日志之前，由数据的生产者完成。</li>
-<li>由在日志上的一个实时转换器完成，转换器生成一个新的转换过的日志。</li>
-<li>作为加载过程的一部分，由目标系统完成。</li>
-</ol>
-<p>最好的模型是数据发布到日志之前由数据生产者完成数据规整化。<br>这样可以确保数据是处于规范形式（<code>canonical form</code>）的，<br>并且不需要保留数据 从原来生产系统的特定代码或是原来存储系统的维护方式所带来的任何遗留属性。<br>这些细节最好由产成数据的团队来处理，因为他们最了解他们自己的数据。<br>这个阶段所使用的任何逻辑都应该是无损的和可逆的。</p>
-<p>可以实时完成的任何类型有附加值的转换操作都应该作为原始日志数据的后处理环节完成。<br>这类操作包括了事件数据的会话管理，或者附加上大家感兴趣的派生字段。<br>原始日志仍然是可用的，但这样的实时处理生产了包含增强数据（<code>augmented data</code>）的派生日志。</p>
-<p>最后，只有针对目标系统的聚合操作才应该加到加载过程中。<br>比如可能包括在数据仓库中为分析和报表而做的把数据转化成特定的星型或者雪花状<code>schema</code>。<br>因为在这个阶段（一般比较自然地对应到传统的<code>ETL</code>处理阶段），现在处理的是一组规整得多和统一得多的流，<br>处理过程已经大大简化了。</p>
-<h2 id="日志文件与事件">日志文件与事件</h2>
-<p>我们再来聊聊这种架构的附带的优势：支持解耦的事件驱动的系统。</p>
-<p>在<code>Web</code>行业取得活动数据的典型方法是把打日志到文本文件中，<br>然后这些文本文件分解进入数据仓库或者<code>Hadoop</code>用于聚合和查询。<br>这做的问题和所有批处理的<code>ETL</code>做法一样：数据流耦合了数据仓库系统的能力和处理计划（<code>processing schedule</code>）。</p>
-<p>在<code>LinkedIn</code>，是以在中心日志完成处理的方式构建事件数据。<br><code>Kafka</code>做为中心的有多个订阅方的事件日志，定义数百种事件类型，<br>每种类型都会捕获一个特定动作类型的独特属性。<br>这样的方式覆盖从页面浏览、广告展示、搜索到服务调用、应用异常的方方面面。</p>
-<p>为了进一步理解这一优势，设想一个简单的场景 —— 显示在工作职位页面提交的职位信息。<br>职位页面应当只包括显示职位所需的逻辑。<br>然而，在足够动态站点中，这很容易就变成与职位显示无关的额外逻辑的点缀。<br>例如，我们将对如下的系统进行集成：</p>
-<ol>
-<li>发送数据到<code>Hadoop</code>和数据仓库中，以做离线数据处理</li>
-<li>浏览计数，确保查看者不是一个内容爬虫</li>
-<li>聚合浏览信息，在职位提交者的分析页面显示</li>
-<li>记录浏览信息，确保合适地设置了用户的推荐职位的展示上限（不想重复地展示同样内容给用户）</li>
-<li>推荐系统可能需要记录浏览，以正确的跟踪职位的流行程度</li>
-<li>等等</li>
-</ol>
-<p>用不了多久，简单的职位显示变得相当的复杂。<br>与此同时，还要增加职位显示的其它终端 —— 移动终端应用等等 ——<br>这样的逻辑必须继续实现，复杂程度被不断地提升。<br>更糟的是，我们需要交互的系统是多方需求交织缠绕在一起的 ——<br>负责显示职位的工程师需要知道多个其它系统和功能，才可以确保集成的正确。<br>这里仅是简单描述了问题，实际应用系统只会更加复杂。</p>
-<p>『事件驱动』风格提供了简化这类问题的方案。<br>职位显示页面现在只负责显示职位并记录显示职位的信息，如职位相关属性、页面浏览者及其它有价值的信息。<br>其它所有关心这个信息的系统诸如推荐系统、安全系统、职位提交分析系统和数据仓库，只需订阅上面的输出数据进行各自的处理。<br>显示代码并不需要关注其它的系统，也不需要因为增加了数据的消费者而做改变。</p>
-<h2 id="构建可伸缩的日志">构建可伸缩的日志</h2>
-<p>当然，把发布者与订阅者分离不再是什么新鲜事了。<br>但是如果要给一个需要按用户扩展的（<code>consumer-scale</code>）网站提供多个订阅者的实时提交日志，<br>那么可伸缩性就会成为你所面临的首要挑战。<br>如果我们不能创建快速、低成本和可伸缩的日志以满足实际大规模的使用，把日志用作统一集成机制只不过是个美好的幻想。</p>
-<p>人们普遍认为分布式日志是缓慢的、重量级的抽象（并且通常只把它与『元数据』类的使用方式联系在一起，可能用<code>Zookeeper</code>才合适）。<br>但有了一个专注于大数据流的深思熟虑的实现可以打破上面的想法。<br>在<code>LinkedIn</code>，目前每天通过<code>Kafka</code>写入超过600亿条不同的消息。<br>（如果算上<a href="http://kafka.apache.org/documentation.html#datacenters" target="_blank" rel="external">数据中心之间镜像</a>的消息，那么这个数字会是数千亿。）</p>
-<p>为了支持这样的规模，我们在<code>Kafka</code>中使用了一些技巧：</p>
-<ol>
-<li>日志分片</li>
-<li>通过批量读出和写入来优化吞吐量</li>
-<li>规避无用的数据拷贝</li>
-</ol>
-<p>为了确保水平可扩展性，我们把日志进行切片：</p>
-<p><img src="https://engineering.linkedin.com/sites/default/files/partitioned_log.png" alt=""></p>
-<p>每个切片的日志是有序的，但是分片之间没有全局的次序（这个有别于在你的消息中可能包含的挂钟时间）。<br>由写入者决定消息发送到特定的日志片段，大部分使用者以某种键值（如用户<code>id</code>）来进行分片。<br>追加日志时，分片方式在片段之间可以不需要协调，并且可以使系统的吞吐量与<code>Kafka</code>集群大小线性增长。</p>
-<p>每个分片通过可配置数字指定数据复制的复本个数，每个复本都有分片的完全一致一份拷贝。<br>任何时候都有一个复本作为<code>leader</code>，如果<code>leader</code>出错了，会有一个复本接替成为<code>leader</code>。</p>
-<p>缺少跨分片的全局顺序是个局限，但是我们没有发现它成为大问题。<br>事实上，与日志的交互一般来源于成百上千个不同的处理流程，所以为所有处理提供全局顺序没有意义。<br>转而需要的是，我们提供的每个分片有序的保证，和<code>Kafka</code>提供的 同一发送者发送给同一分区的消息以相同的顺序交付到接收者 的保证。</p>
-<p>日志，和文件系统一样，对于顺序读写可以方便地优化。日志可以把小的读写合成大的高吞吐量的操作。<br><code>Kafka</code>非常积极做这方面的优化。客户端向服务器端的数据发送、磁盘写入、服务器之间复制、到消费者数据传递和数据提交确认<br>都会做批处理。</p>
-<p>最后，<code>Kafka</code>使用简单的二进制格式维护内存日志、磁盘日志和传送网络数据。这使得我们可以使用包括『<a href="https://www.ibm.com/developerworks/library/j-zerocopy" target="_blank" rel="external">0拷贝的数据传输</a>』在内的大量的优化机制。</p>
-<p>这些优化的积累效应是往往以磁盘和网络的速度在读写数据，即使维护的数据集大大超出内存大小。</p>
-<p>这些自卖自夸的介绍不意味着是关于<code>Kafka</code>的主要内容，我就不再深入细节了。<br><code>LinkedIn</code>方案的更细节说明在<a href="http://sites.computer.org/debull/A12june/pipeline.pdf" target="_blank" rel="external">这儿</a>，<code>Kafka</code>设计的详细说明在<a href="http://kafka.apache.org/documentation.html#design" target="_blank" rel="external">这儿</a>，你可以读一下。</p>
-<p>到目前为止，我只讲述了系统之间拷贝数据的理想机制。但是在存储系统之间搬运字节不是所要讲述内容的全部。<br>最终会发现，『日志』是流的另一种说法，<br>并且日志是<a href="http://highlyscalable.wordpress.com/2013/08/20/in-stream-big-data-processing/" target="_blank" rel="external">流处理</a>的核心。</p>
-<p>但是，等会儿，流处理到底是什么呢？</p>
-<p>如果你是上世纪90年代晚期或者21世纪初<a href="http://cs.brown.edu/research/aurora/vldb03_journal.pdf" target="_blank" rel="external">数据库</a> <a href="http://db.cs.berkeley.edu/papers/cidr03-tcq.pdf" target="_blank" rel="external">文化</a>或者成功了一半的<a href="http://www-03.ibm.com/software/products/us/en/infosphere-streams" target="_blank" rel="external">数据</a> <a href="http://en.wikipedia.org/wiki/StreamBase_Systems" target="_blank" rel="external">基础设施</a> <a href="http://en.wikipedia.org/wiki/Truviso" target="_blank" rel="external">产品</a>的爱好者，那么你就可能会把流处理与建创<code>SQL</code>引擎或者『箱子和箭头』（<code>boxes and arrows</code>）接口用于事件驱动的处理联系起来。</p>
-<p>如果你关注大量出现的开源数据库系统，你就可能把流处理和一些这领域的系统关联起来，<br>比如<a href="http://storm-project.net/" target="_blank" rel="external"><code>Storm</code></a>、<a href="http://akka.io/" target="_blank" rel="external"><code>Akka</code></a>、<a href="http://incubator.apache.org/s4" target="_blank" rel="external"><code>S4</code></a>和<a href="http://engineering.linkedin.com/distributed-systems/log-what-every-software-engineer-should-know-about-real-time-datas-unifying" target="_blank" rel="external"><code>Samza</code></a>。<br>但是大部分人会把这些系统看为异步消息处理系统，与支持群集的远程过程调用（<code>RPC</code>）层没什么差别<br>（而事实上这一领域一些系统确实是如此）。</p>
-<p>这些观点都有一些局限性。流处理即与<code>SQL</code>无关，也不局限于实时流处理。<br>还没有根本的原因，限制你不能使用多种不同的语言来表达计算，处理昨天的或者一个月之前的流数据。</p>
-<p><img src="https://engineering.linkedin.com/sites/default/files/census.jpg" width="250" hspace="10px" align="right"></p>
-<p>我把流处理视为更广泛的概念：持续数据流处理的基础设施。<br>我认为计算模型可以像<code>MapReduce</code>或者分布式处理框架一样通用，但是有能力生成低时延的结果。</p>
-<p>处理模型的真正驱动力是数据收集方法。成批收集数据自然是批处理。当数据是持续收集的，自然也应该持续不断地处理。</p>
-<p>美国的统计调查是一个成批收集数据的经典例子。<br>统计调查周期性的开展，用的是蛮力调查，通过挨门挨户的走访统计美国公民的信息。<br>在1790年统计调查刚刚开始，这样做是很合理的。<br>那时的数据收集本质就是面向批处理的，包括了骑马到周边人家，用纸笔记录，然后把成批的记录运输到人们统计数据的中心站点。<br>现在，在描述这个统计过程时，人们立即会想到为什么我们不保留出生和死亡的记录，这样就可以算出人口统计信息，这些信息或是持续即时计算出来或者按需要时间隔计算。</p>
-<p>这是一个极端的例子，但是现在大量的数据传输处理仍然依赖于周期性的转录和批量的传输和集成。<br>处理批量转录数据的唯一方法就是批量的处理。<br>但是随着这些批处理被持续的数据输入所取代，人们自然而然的开始向持续处理转变，以平滑地使用所需的处理资源并且减少延迟。</p>
-<p>例如在<code>LinkedIn</code>几乎完全没有批量数据收集。我们大部分的数据要么是活动数据或者要么是数据库变更，两者都是不间断地发生的。<br>事实上，你想到的任何商业业务，底层的机制几乎都是不间断的处理，正如<em>Jack Bauer</em>所说的，事件的发生是实时的。<br>当数据以成批的方式收集，几乎总是由这些原因所致：有一些人为的步骤；缺少数字化；或是非数字化流程的历史古董不能自动化。<br>当使用邮件或者人工方式，传输和处理数据是非常缓慢的。刚开始转成自动化时，总是保持着原来流程的形式，所以这样的情况会持续相当长的时间。</p>
-<p>每天运行的『批量』处理作业常常在模拟一种窗口大小是一天的持续计算。<br>当然，底层的数据其实总是在变化着的。<br>在<code>LinkedIn</code>，这样的做法如此之常见（并且在<code>Hadoop</code>做到这些的实现机制如此之复杂），<br>以至于我们实现了一整套<a href="http://engineering.linkedin.com/datafu/datafus-hourglass-incremental-data-processing-hadoop" target="_blank" rel="external">框架</a>来管理增量的<code>Hadoop</code>工作流。</p>
-<p>由此看来，对于流处理我很容易得出不同观点：<br>它处理的是包含时间概念的底层数据并且不需要静态的数据快照，<br>所以可以以用户可控频率生产输出而不是等待数据集的『都』到达后再生产输出（译注：数据是会持续的，所以实际上不会有『都』达到的时间点）。<br>从这个角度上讲，流处理是广义上的批处理，随着实时数据的流行，流处理会是很重要处理方式。</p>
-<p>那么，为什么流处理的传统观点大家之前会认为更合适呢？<br>我个人认为最大的原因是缺少实时数据收集，使得持续处理之前是学术性的概念。</p>
-<p>我觉得，是否缺少实时数据的收集决定了商用流处理系统的命运。<br>当他们的客户还是用面向文件的每日批量处理完成<code>ETL</code>和数据集成时，<br>建设流处理系统的公司专注于提供处理引擎来连接实时数据流，而结果是当时几乎没有人真地有实时数据流。<br>其实我在<code>LinkedIn</code>工作的初期，有一家公司想把一个非常棒的流处理系统卖给我们，<br>但是因为当时我们的所有数据都按小时收集在的文件里，<br>所以用上这个系统我们能做到的最好效果就是在每小时的最后把这些文件输入到流处理系统中。<br>他们意识到这是个普遍问题。<br>下面的这个异常案例实际上是证明上面规律：<br>流处理获得一些成功的一个领域 —— 金融领域，这个领域在过去，实时数据流就已经标准化，并且流处理已经成为了瓶颈。</p>
-<p>甚至于在一个健康的批处理的生态中，我认为作为一种基础设施风格，流处理的实际应用能力是相当广阔的。<br>我认为它填补了实时数据请求/响应服务和离线批量处理之间的缺口。现代的互联网公司，我觉得大约25%的代码可以划分到这个情况。</p>
-<p>事实证明，日志解决了流处理中最关键的一些技术问题，后面我会进一步讲述，<br>但解决的最大的问题是日志使得多个订阅者可以获得实时的数据输入。<br>对技术细节感兴趣的朋友，我们已经开源了<a href="http://samza.apache.org/" target="_blank" rel="external"><code>Samza</code></a>，<br>它正是基于这些理念建设的一个流处理系统。<br>很多这方面的应用的更多技术细节我们在<a href="http://samza.apache.org/learn/documentation/latest/" target="_blank" rel="external">此文档</a>中有详细的描述。</p>
-<h2 id="数据流图（data_flow_graphs）">数据流图（<code>data flow graphs</code>）</h2>
-<p><img src="https://engineering.linkedin.com/sites/default/files/dag.png" width="250" hspace="10px" align="right"></p>
-<p>流处理最有趣的特点是它与流处理系统的内部组织无关，<br>但是与之密切相关的是，流处理是怎么扩展了之前在数据集成讨论中提到的认识：输入数据（<code>data feed</code>）是什么。<br>我们主要讨论了原始数据（<code>primary data</code>）的<code>feeds</code> 或说 日志 —— 各种系统执行所产生的事件和数据行。<br>但是流处理允许我们包括了由其它<code>feeds</code>计算出的<code>feeds</code>。<br>在消费者看来，这些派生的<code>feeds</code>和 用于生成他们的原始数据的<code>feeds</code> 看下来没什么差别。<br>这些派生的<code>feeds</code>可以按任意的复杂方式封装组合。</p>
-<p>让我们再深入一点这个问题。<br>对于我们的目标，流处理作业是指从日志读取数据和将输出写入到日志或其它系统的任何系统。<br>用于输入和输出的日志把这些处理系统连接成一个处理阶段的图。<br>事实上，以这样的风格使用中心化的日志，你可以把组织全部的数据抓取、转化和工作流仅仅看成是一系列的写入它们的日志和处理过程。</p>
-<p>流处理器根本不需要高大上的框架：<br>可以是读写日志的一个处理或者一组处理过程，但是为了便于管理处理所用的代码，可以提供一些额外的基础设施和支持。</p>
-<p>在集成中日志的目标是双重的：</p>
-<p>首先，日志让各个数据集可以有多个订阅者并使之有序。<br>让我们回顾一下『状态复制』原理来记住顺序的重要性。<br>为了更具体地说明，设想一下从数据库中更新数据流 —— 如果在处理过程中把对同一记录的两次更新重新排序，可能会产生错误的输出。<br>这里的有序的持久性要强于<code>TCP</code>之类所提供的有序，因为不局限于单一的点对点链接，并且在流程处理失败和重连时仍然要保持有序。</p>
-<p>其次，日志提供了处理流程的缓冲。<br>这是非常基础重要的。如果多个处理之间是非同步的，那么生成上行流数据的作业生成数据可能比另一个下行流数据作业所能消费的更快。<br>这种情况下，要么使处理进程阻塞，要么引入缓冲区，要么丢弃数据。<br>丢弃数据似乎不是个好的选择，而阻塞处理进程，会使得整个的数据流的图被迫中止处理。<br>日志是一个非常非常大的缓冲，允许处理进程的重启或是失败，而不影响流处理图中的其它部分的处理速度。<br>要扩展数据流到一个更庞大的组织，这种隔离性极其重要，整个处理是由组织中不同的团队提供的处理作业完成的。<br>不能因为某个作业发生错误导致影响前面作业，结果整个处理流程都被卡住。</p>
-<p><a href="http://storm-project.net/" target="_blank" rel="external"><code>Storm</code></a>和<a href="http://samza.apache.org/" target="_blank" rel="external"><code>Sama</code></a>都是按这种风格构建，能用<code>kafka</code>或其它类似的系统作为它们的日志。</p>
-<h2 id="有状态的实时流处理">有状态的实时流处理</h2>
-<p>一些实时流处理做的只是无状态的单次记录的转换，但有很多使用方式需要在流处理的某个大小的时间窗口内进行更复杂的计数、聚合和关联（<code>join</code>）操作。<br>比如，给一个的事件流（如用户点击的流）附加上做点击操作用户的信息，<br>—— 实际上即是关联点击流到用户的账户数据库。<br>这类流程最终总是要处理者维护一些状态信息：<br>比如在计算一个计数时，需要维护到目前为止的计数器。<br>在处理者可能挂掉的情况下，如何维护正确的状态？</p>
-<p>最简单的方案是把状态保存在内存中。但是如果处理流程崩溃，会丢失中间状态。<br>如果状态是按窗口维护的，处理流程只能会回退到日志中窗口开始的时间点上。<br>但是，如果计数的时间窗口是1个小时这么长，那么这种方式可能不可行。</p>
-<p>另一个方案是简单地存储所有的状态到远程的存储系统，通过网络与这些存储关联起来。<br>但问题是没了数据的局部性并产生很多的网络间数据往返（<code>network round-trip</code>）。</p>
-<p>如何才能即支持像处理流程一样分片又支持像『表』一样的存储呢？</p>
-<p>回顾一下关于表和日志二象性的讨论。它正好提供了把流转换成与这里我们处理中所需的表的工具，同时也是一个解决表的容错的处理机制。</p>
-<p>流处理器可以把它的状态保存在本地的『表』或『索引』中 —— <a href="http://www.oracle.com/technetwork/products/berkeleydb" target="_blank" rel="external"><code>bdb</code></a>、<a href="https://code.google.com/p/leveldb" target="_blank" rel="external"><code>leveldb</code></a><br>甚至是些更不常见的组件，如<a href="http://lucene.apache.org/" target="_blank" rel="external"><code>Lucene</code></a> 或<a href="https://sdm.lbl.gov/fastbit" target="_blank" rel="external"><code>fastbit</code></a>索引。<br>这样一些存储的内容可以从它的输入流生成（可能做过了各种转换后的输入流）。<br>通过记录关于本地索引的变更日志，在发生崩溃、重启时也可以恢复它的状态。<br>这是个通用的机制，用于保持 任意索引类型的协作分片（<code>co-partitioned</code>）的本地状态 与 输入流数据 一致。</p>
-<p>当处理流程失败时，可以从变更日志中恢复它的索引。<br>每次备份时，即是日志把本地状态转化成一种增量记录。</p>
-<p>这种状态管理方案的优雅之处在于处理器的状态也是做为日志来维护。<br>我们可以把这个日志看成是数据库表变更的日志。<br>事实上，这些处理器本身就很像是自维护的协作分片的表。<br>因为这些状态本身就是日志，所以其它处理器可以订阅它。<br>如果处理流程的目标是更新结点的最后状态并且这个状态又是流程的一个自然的输出，那么这种方式就显得尤为重要。</p>
-<p>再组合使用上用于解决数据集成的数据库输出日志，日志和表的二象性的威力就更加明显了。<br>从数据库中抽取出来的变更日志可以按不同的形式索引到各种流处理器中，以关联到事件流上。</p>
-<p>在<code>Samza</code>和这些大量<a href="http://samza.apache.org/learn/documentation/0.7.0/container/state-management.html" target="_blank" rel="external">实际例子</a>中，<br>我们说明了这种风格的有状态流处理管理的更多细节。</p>
-<h2 id="日志合并（log_compaction）">日志合并（<code>log compaction</code>）</h2>
-<p><img src="https://engineering.linkedin.com/sites/default/files/log_compaction_0.png" width="350" hspace="10px" align="right"></p>
-<p>当然，我们不能奢望一直保存着全部变更的完整日志。<br>除非想要使用无限空间，日志总是要清理。<br>为了让讨论更具体些，我会介绍一些<code>Kafka</code>这方面的实现。<br>在<code>Kafka</code>中，清理有两种方式，取决于数据包括的是键值存储的更新还是事件数据。<br>对于事件数据，<code>Kafka</code>支持仅维护一个窗口的数据。通常，窗口配置成几天，但窗口也可以按空间大小来定。<br>对于键值存储的更新，尽管完整日志的一个优点是可以回放以重建源系统的状态（一般是另一个系统中重建）。</p>
-<p>但是，随着时间的推移，保持完整的日志会使用越来越多的空间，并且回放的耗时也会越来越长。<br>因此在<code>Kafka</code>中，我们支持不同类型的保留方式。<br>我们删除过时的记录（如这些记录的主键最近更新过）而不是简单的丢弃旧日志。<br>这样做我们仍然保证日志包含了源系统的完整备份，但是现在我们不再重现原系统曾经的所有状态，仅是最近的哪些状态。<br>这一功能我们称之为<a href="https://cwiki.apache.org/confluence/display/KAFKA/Log+Compaction" target="_blank" rel="external">日志合并</a>。<br>最后我要讨论的是在线数据系统设计中日志的角色。</p>
-<p>日志服务在分布式数据库中服务于数据流 可以类比 日志服务在大型组织机构中服务于数据集成。<br>在这两个应用场景中，日志要解决的问题 都是 数据流、一致性和可恢复性。<br>如果组织不是一个很复杂的分布式数据系统呢，它究竟是什么？</p>
-<h2 id="分解单品方式而不是打包套餐方式（Unbundling）？">分解单品方式而不是打包套餐方式（<code>Unbundling</code>）？</h2>
-<p>如果你换个角度，可以把组织的系统和数据流整体看做整个一个分布式数据：<br>把所有独立的面向查询的系统（如<code>Redis</code>、<code>SOLR</code>、<code>Hive</code>表，等等）看做只是你的数据的特定的索引；<br>把流处理系统（如<code>Storm</code>、<code>Samza</code>）看做只是一种很成熟的触发器和视图的具体机制。<br>我注意到，传统的数据库人员非常喜欢这样的观点，因为他们终于能解释通，这些不同的数据系统到底是做什么用的<br>—— 它们只是不同的索引类型而已！</p>
-<p>不可否认这段时间涌现了大量类型的数据系统，但实际上，这方面的复杂性早就存在。<br>即使是在关系数据库的鼎盛时期，组织里就有种类繁多的关系数据库！<br>因为大型机，所有的数据都存储在相同的位置，所以可能并没有真正的数据集成。<br>有很多推动力要把数据分离到多个系统：数据伸缩性、地理地域、安全性和性能隔离是最常见的。<br>这些问题可以通过一个好的系统来解决：<br>比如组织使用单个<code>Hadoop</code>保存所有数据来服务大量各式各样的客户，这样做是可能的。</p>
-<p>所以处理的数据向分布式系统变迁的过程中，已经有了个可能的简单方法：<br>把大量的不同系统的小实例合到少数的大集群中。</p>
-<p>许多的系统还不足好到支持这个方法：它们没有安全，或者不能保证性能隔离性，或者伸缩性不够好。<br>不过这些问题都是可以解决的。</p>
-<p>依我之见，不同系统大量涌现的原因是构建分布式数据系统的难度。<br>把关注点消减到单个查询类型或是用例，各个系统可以把关注范围控制到一组能构建出来的东西上。<br>但是把全部这些系统运行起来，这件事有非常多的复杂性。</p>
-<p>我觉得解决这类问题将来有三个可能的方向：</p>
-<p>第一种可能性是延续现状：各个分离的系统在往后很长的一段时间里基本保持不变。<br>发生这种可能要么是因为建设分布式系统的困难很难克服，<br>要么系统的专用化（<code>specialization</code>）能让各个系统的便得性（<code>convenience</code>）和能力（<code>power</code>）达到一个新的高度。<br>只要现状不变，为了能够使用数据，数据集成问题将仍会最核心事情之一。<br>如果是这样，用于集成数据的外部日志将会非常的重要。</p>
-<p>第二种可能性是一个统一合并的系统（<code>re-consolidation</code>），这个系统具备足够的通用性，逐步把所有不同的功能合并成单个超极系统。<br>这个超级系统表面看起来类似关系数据库，但在组织中使用方式会非常不一样，因为只能用一个大系统而不是无数个小系统。<br>在这样的世界里，除了系统自身的内部，不存在真正的数据集成问题。<br>我觉得，因为建设这样的系统的实际困难，使这个情况不太可能发生。</p>
-<p>还有另一种可能的结果，呃，其实我觉得这个结果对工程师很有吸引力。<br>新一代数据系统的一个让人感兴趣的特征是，这个系统几乎是完全开源的。<br>开源提供了另一个可能性：数据基础架构不用是打包套餐式的而是分解单品成一组服务及面向应用的<code>API</code>。<br>在<code>Java</code>栈中，你可以看到这种状况在一定程度上已经发生了：</p>
-<ul>
-<li><a href="http://zookeeper.apache.org/" target="_blank" rel="external"><code>Zookeeper</code></a>处理系统之间的协调的很多问题。<br>  （或许诸如<a href="http://helix.incubator.apache.org/" target="_blank" rel="external"><code>Helix</code></a> 或<a href="http://curator.incubator.apache.org/" target="_blank" rel="external"><code>Curator</code></a>等高级别抽象可以有些帮助）。</li>
-<li><a href="http://mesos.apache.org/" target="_blank" rel="external"><code>Mesos</code></a>和<a href="http://hadoop.apache.org/docs/current/hadoop-yarn/hadoop-yarn-site/YARN.html" target="_blank" rel="external"><code>YARN</code></a><br>  处理虚拟化（<code>virtualization</code>）和资源管理。</li>
-<li><a href="http://lucene.apache.org/" target="_blank" rel="external"><code>Lucene</code></a>和<a href="https://code.google.com/p/leveldb" target="_blank" rel="external"><code>LevelDB</code></a>等嵌入式类库做为索引。</li>
-<li><a href="http://netty.io/" target="_blank" rel="external"><code>Netty</code></a>、<a href="http://www.eclipse.org/jetty" target="_blank" rel="external"><code>Jetty</code></a> 和 更高层封装如<a href="http://twitter.github.io/finagle" target="_blank" rel="external"><code>Finagle</code></a>、<a href="http://rest.li/" target="_blank" rel="external"><code>rest.li</code></a>处理远程通信。</li>
-<li><a href="http://avro.apache.org/" target="_blank" rel="external"><code>Avro</code></a>、<a href="https://code.google.com/p/protobuf" target="_blank" rel="external"><code>Protocol Buffers</code></a>、<a href="http://thrift.apache.org/" target="_blank" rel="external"><code>Thrift</code></a>和<a href="https://github.com/eishay/jvm-serializers/wiki" target="_blank" rel="external"><code>umpteen zillion</code></a>等其它类库处理序列化。</li>
-<li><a href="http://kafka.apache.org/" target="_blank" rel="external"><code>Kafka</code></a>和<a href="http://zookeeper.apache.org/bookkeeper" target="_blank" rel="external"><code>Bookeeper</code></a>提供后端支持的日志。</li>
-</ul>
-<p>如果你把上面这些叠成一堆，换个角度去看，它会有点像是乐高版（<code>lego version</code>）的分布式数据系统工程。<br>你可以把这些零件拼装在一起，创建大量的可能的系统。<br>显然，上面说的不是面向 主要关心<code>API</code>及<code>API</code>实现的最终用户，<br>但在一个更多样化和模块化且持续演变的世界中，这可能一条途径可以通往简洁的单个系统。<br>因为随着可靠的、灵活的构建模块的出现，实现分布式系统的时间由年缩减为周，聚合形成大型整体系统的压力将会消失。</p>
-<h2 id="日志在系统架构中的地位">日志在系统架构中的地位</h2>
-<p>提供外部日志的系统允许各个系统抛弃很多各自的复杂性，依靠共享的日志。在我看来，日志可以做到以下事情：</p>
-<ul>
-<li>通过对节点的并发更新的排序处理，处理了数据一致性（无论即时的还是最终的一致）</li>
-<li>提供节点之间的数据复制</li>
-<li>为写入者提供『提交（<code>commit</code>）』语义（仅当写入数据确保不会丢失时才会收到完成确认（<code>acknowledge</code>））</li>
-<li>为系统提供外部的数据订阅</li>
-<li>对于丢失数据的失败了的复本，提供恢复或是启动一个新复本的能力</li>
-<li>调整节点间的数据平衡</li>
-</ul>
-<p>这就是一个数据分布式系统所要做的主要部分，实际上，剩下的大部分内容是与<br>最终用户要面对的查询<code>API</code>和索引策略相关的。<br>这正是不同系统间的应该变化的部分，例如：一个全文搜索查询语句可能需要查询所有的分区，<br>而一个主键查询只需要查询负责这个主键数据的单个节点就可以了。</p>
-<p><img src="https://engineering.linkedin.com/sites/default/files/system.png" width="130" hspace="10px" align="right"></p>
-<p>下面我们来看下系统是如何工作的。<br>系统被分为两个逻辑部分：日志和服务层。日志按顺序捕获状态变化。<br>服务节点存储索引提供查询服务需要的所有信息（比如键值存储的索引可能会类似<code>BTree</code>或<code>SSTable</code>，搜索系统可能用的是倒排索引（<code>inverted index</code>））。<br>写入操作可以直接进入日志，尽管可能经过服务层的代理。<br>在写入日志的时候会生成逻辑时间戳（称为日志中的索引），如果系统是分区的，我假定是会分区，<br>那么日志和服务节点会包含相同分区个数，尽管两者的机器台数可能相差很多。</p>
-<p>服务节点订阅日志，并按照日志存储的顺序尽快把日志写到它的本地索引中。</p>
-<p>客户端只要在查询语句中提供某次写入操作的时间戳，就可以有从任何节点『读到该次写入』的语义（<code>read-your-write semantics</code>） ——<br>服务节点收到该查询语句后，会将其中的时间戳与自身索引的位置比较，<br>如果必要，服务节点会延迟请求直到它的索引至少已经跟上那个时间戳，以避免提供的是旧数据。</p>
-<p>服务节点可能会或可能不会需要感知<code>master</code>身份或是当选<code>leader</code>。<br>对很多简单的使用场景，服务节点集群可以完全无需<code>leader</code>，因为日志是正确真实的信息源。</p>
-<p>分布式系统所需要处理的一件比较复杂的事是 恢复失败节点 和 在结点之间移动分区。<br>典型的做法是仅保留一个固定窗口的数据，并把这个数据和分区中存储数据的一个快照关联。<br>另一个相同效果的做法是，让日志保留数据的完整拷贝，并<a href="https://cwiki.apache.org/confluence/display/KAFKA/Log+Compaction" target="_blank" rel="external">对日志做垃圾回收</a>。<br>这把大量的复杂性从特定于系统的系统服务层移到了通用的日志中。</p>
-<p>有了这个日志系统，你得到一个成熟完整的订阅<code>API</code>，这个<code>API</code>可以订阅数据存储的内容，驱动到其它系统的<code>ETL</code>操作。<br>事实上，许多系统都可以共享相同的日志以提供不同的索引，如下所示：</p>
-<p><img src="https://engineering.linkedin.com/sites/default/files/full-stack.png" alt=""></p>
-<p>注意，这样的以日志为中心的系统是如何做到本身即是 在其它系统中要处理和加载的数据流的提供者的呢？<br>同样，流处理器既可以消费多个输入流，然后通过这个流处理器输出把这些输入流的数据索引到其它系统中。</p>
-<p>我觉得把系统分解成日志和查询<code>API</code>的观点很有启迪性，因为使得查询相关的因素与系统的可用性和一致性方面解耦。<br>我其实觉得这更是个好用的思路，可以对于没按这种方式构建的系统做概念上的分解。</p>
-<p>值得一提的是，尽管<code>Kafka</code>和<code>Bookeeper</code>都是一致性日志，但并不是必须的。<br>你可以轻松把<a href="http://www.allthingsdistributed.com/2007/10/amazons_dynamo.html" target="_blank" rel="external"><code>Dynamo</code></a>之类的数据库作为你的系统的<br>最终一致的<a href="http://en.wikipedia.org/wiki/CAP_theorem" target="_blank" rel="external"><code>AP</code></a>日志和键值对服务层。<br>这样的日志使用起来很灵活，因为它会重传了旧消息并依赖订阅者的信息处理（很像<code>Dynamo</code>所做的）。</p>
-<p>很多人认为在日志中维护数据的单独拷贝（特别是做全量数据拷贝）太浪费。<br>然而事实上，有几个因素可以让这个不成为问题。<br>首先，日志可以是一种特别高效的存储机制。在我们<code>Kafka</code>生产环境的服务器上，每个数据中心都存储了超过75TB的数据。<br>同时其它的许多服务系统需要的是多得多的内存来提供高效的服务（例如文本搜索，它通常是全在内存里）。<br>其次，服务系统会用优化过的硬件。例如，我们的在线数据系统或者基于内存提供服务或者使用固态硬盘。<br>相反，日志系统只需要线性读写，因此很合适用TB级的大硬盘。<br>最后，如上图所示，多个系统使用日志数据提供服务，日志的成本是分摊到多个索引上。<br>上面几点合起来使得外部日志的开销相当小。</p>
-<p><code>LinkedIn</code>正是使用这个模式构建了它很多的实时查询系统。<br>这些系统的数据来自数据库（使用作为日志概念的数据总线，或是来自<code>Kafka</code>的真正日志），提供了在这个数据流上特定的分区、索引和查询能力。<br>这也是我们实现搜索、<code>social graph</code>和<code>OLAP</code>查询系统的方式。<br>事实上，把单个数据源（无论来自<code>Hadoop</code>的在线数据源还是派生数据源）复制到多个在线服务系统中，这个做法很常见。<br>这种方式经过了验证可以大大简化系统的设计。<br>系统根本不需要给外部提供写入<code>API</code>，<code>Kafka</code>和数据库通过日志给查询系统提供记录和变更流。<br>各个分区的结点在本地完成写操作。<br>这些结点只要机械地把日志中的数据转录到自己的存储中。失败的结点通过回放上游的日志就可以恢复。</p>
-<p>系统的强度取决于日志的使用方式。一个完全可靠的系统把日志用作数据分片、结点的存储、负载均衡，以及所有和数据一致性和数据传播（<code>propagation</code>）有关的方面。<br>在这样的架构中，服务层实际上只不过是一种『缓存』，可以通过直接写日志就能完成某种处理。<br>如果你从头一直做读到了这，那么我对日志的理解你大部分都知道了。</p>
-<p>这里再给一些有意思参考资料，你可以再去看看。</p>
-<p>人们会用不同的术语描述同一事物，当你从数据库系统到分布式系统、从各类企业级应用软件到广阔的开源世界查看资料时，<br>这会让人有一些困惑。无论如何，在大方向上还是有一些共同之处。</p>
-<p>学术论文、系统、讨论和博客：</p>
-<ul>
-<li>关于<a href="http://www.cs.cornell.edu/fbs/publications/smsurvey.pdf%E2%80%8E" target="_blank" rel="external">状态机</a>和<a href="http://citeseerx.ist.psu.edu/viewdoc/summary?doi=10.1.1.20.5896" target="_blank" rel="external">主备份</a>复制的概述。</li>
-<li><a href="http://research.microsoft.com/apps/pubs/default.aspx?id=66814" target="_blank" rel="external"><code>PacificA</code></a>是实施微软基于日志的分布式存储系统的通用架构。</li>
-<li><a href="http://static.googleusercontent.com/external_content/untrusted_dlcp/research.google.com/en/us/archive/spanner-osdi2012.pdf" target="_blank" rel="external"><code>Spanner</code></a> —— 并不是每个人都支持把逻辑时间用于他们的日志，<code>Google</code>最新的数据库就尝试使用物理时间，并通过把时间戳直接做为区间来直接建时钟迁移的不确定性。</li>
-<li><a href="http://www.datomic.com/" target="_blank" rel="external"><code>Datanomic</code></a>：<a href="https://www.youtube.com/watch?v=Cym4TZwTCNU" target="_blank" rel="external">解构数据库</a>是<em>Rich Hickey</em>（<code>Clojure</code>的创建者）在它的首个数据库产品中的重要陈述之一。</li>
-<li><a href="http://www.cs.utexas.edu/~lorenzo/papers/SurveyFinal.pdf" target="_blank" rel="external">在消息传递系统中回滚恢复协议的调查</a>。<br>  我发现这是有关容错处理和通过日志在数据库之外完成恢复的实际应用的很不错的介绍。</li>
-<li><a href="http://www.reactivemanifesto.org/" target="_blank" rel="external">反应式宣言（<code>Reactive Manifesto</code>）</a> ——<br>  我其实并不清楚反应式编程（<code>reactive programming</code>）的确切涵义，但是我想它和『事件驱动』指的是同一件事。<br>  这个链接并没有太多的讯息，但<em>Martin Odersky</em>（<code>Scala</code>名家）讲授的<a href="https://www.coursera.org/course/reactive" target="_blank" rel="external">这个课程</a>是很有吸引力的。</li>
-<li><code>Paxos</code>!<ol>
-<li>原论文在<a href="http://research.microsoft.com/en-us/um/people/lamport/pubs/lamport-paxos.pdf" target="_blank" rel="external">这里</a>。<br> <em>Leslie Lamport</em> 有一个有趣的历史：在80年代算法是如何发现的，但是直到1998年才发表了，因为评审组不喜欢论文中的希腊寓言，而作者又不愿修改。</li>
-<li>甚至于论文发布以后，它还是不被人们理解。<em>Lamport</em> 再次尝试，这次它包含了一些并不有趣的小细节，这些细节是关于如何使用这些新式的自动化的计算机的。<br> 它仍然没有得到广泛的认可。</li>
-<li><a href="http://www.cs.cornell.edu/fbs/publications/SMSurvey.pdf" target="_blank" rel="external"><em>Fred Schneider</em></a>和<a href="http://research.microsoft.com/en-us/um/people/blampson/58-consensus/Abstract.html" target="_blank" rel="external"><em>Butler Lampson</em></a>分别给出了更多细节关于在实时系统中如何应用<code>Paxos</code>。</li>
-<li>一些<code>Google</code>的工程师总结了他们在<code>Chubby</code>中实施<code>Paxos</code>的<a href="http://www.cs.utexas.edu/users/lorenzo/corsi/cs380d/papers/paper2-1.pdf" target="_blank" rel="external">经验</a>。</li>
-<li>我发现所有关于<code>Paxos</code>的论文理解起来很痛苦，但是值得我们费大力气弄懂。你不必忍受这样的痛苦了，因为日志结构的文件系统的大师<a href="http://www.stanford.edu/~ouster/cgi-bin/papers/lfs.pdf" target="_blank" rel="external"><em>John Ousterhout</em></a>的<a href="https://www.youtube.com/watch?v=JEpsBg0AO6o" target="_blank" rel="external">这个视频</a> 让这一切变得相当的容易。这些一致性算法用展开的通信图表述的更好，而不是在论文中通过静态的描述来说明。颇为讽刺的是，这个视频录制的初衷是告诉人们<code>Paxos</code>很难理解。</li>
-<li><a href="http://arxiv.org/pdf/1103.2408.pdf" target="_blank" rel="external">使用<code>Paxos</code>来构造规模一致的数据存储</a>。这是一篇很棒的介绍使用日志来构造数据存储的文章，<em>Jun</em> 是文章的共同作者之一，他也是<code>Kafka</code>最早期的工程师之一。</li>
-</ol>
-</li>
-<li><code>Paxos</code>有很多的竞争者。如下诸项可以更进一步的映射到日志的实施，更适合于实用性的实施。<ol>
-<li>由<em>Barbara Liskov</em>提出的<a href="http://pmg.csail.mit.edu/papers/vr-revisited.pdf" target="_blank" rel="external">视图戳复现</a>是直接进行日志复现建模的较早的算法。</li>
-<li><a href="http://www.stanford.edu/class/cs347/reading/zab.pdf" target="_blank" rel="external"><code>Zab</code></a>是<code>Zookeeper</code>所使用的算法。</li>
-<li><a href="https://ramcloud.stanford.edu/wiki/download/attachments/11370504/raft.pdf" target="_blank" rel="external"><code>RAFT</code></a>是易于理解的一致性算法之一。由<em>John Ousterhout</em>讲授的这个<a href="https://www.youtube.com/watch?v=YbZ3zDzDnrw" target="_blank" rel="external">视频</a>非常的棒。</li>
-</ol>
-</li>
-<li>你可以的看到在不同的实时分布式数据库中动作日志角色：<ol>
-<li><a href="https://www.youtube.com/watch?v=YbZ3zDzDnrw" target="_blank" rel="external"><code>PNUTS</code></a>是探索在大规模的传统的分布式数据库系统中实施以日志为中心设计理念的系统。</li>
-<li><a href="http://hbase.apache.org/" target="_blank" rel="external"><code>Hbase</code></a>和<code>Bigtable</code>都是在目前的数据库系统中使用日志的样例。</li>
-<li><code>LinkedIn</code>自己的分布式数据库<a href="http://www.slideshare.net/amywtang/espresso-20952131" target="_blank" rel="external"><code>Espresso</code></a>和<code>PNUTs</code>一样，使用日志来复现，但有一个小的差异是它使用自己底层的表做为日志的来源。</li>
-</ol>
-</li>
-<li>如果你正在做一致性算法选型，<a href="http://arxiv.org/abs/1309.5671" target="_blank" rel="external">这篇论文</a>会对你所有帮助。</li>
-<li><a href="http://www.amazon.com/Replication-Practice-Lecture-Computer-Theoretical/dp/3642112935" target="_blank" rel="external">复现：理论与实践</a>，这是收录了分布式系统一致性的大量论文的一本巨著。网上有该书的诸多章节（<a href="http://disi.unitn.it/~montreso/ds/papers/replication.pdf" target="_blank" rel="external">1</a>，<a href="http://research.microsoft.com/en-us/people/aguilera/stumbling-chapter.pdf" target="_blank" rel="external">4</a>，<a href="http://www.distributed-systems.net/papers/2010.verita.pdf" target="_blank" rel="external">5</a>，<a href="http://www.cs.cornell.edu/ken/history.pdf" target="_blank" rel="external">6</a>，<a href="http://www.pmg.csail.mit.edu/papers/vr-to-bft.pdf" target="_blank" rel="external">7</a>，<a href="http://engineering.linkedin.com/distributed-systems/www.cs.cornell.edu/fbs/publications/TrustSurveyTR.pdf" target="_blank" rel="external">8</a>）。</li>
-<li>流处理：这个话题要总结的内容过于宽泛，但还是有几件我所关注的要提一下：<ol>
-<li><a href="http://db.cs.berkeley.edu/papers/cidr03-tcq.pdf" target="_blank" rel="external"><code>TelegraphCQ</code></a></li>
-<li><a href="http://cs.brown.edu/research/aurora/vldb03_journal.pdf" target="_blank" rel="external"><code>Aurora</code></a></li>
-<li><a href="http://research.cs.wisc.edu/niagara/papers/NiagaraCQ.pdf" target="_blank" rel="external"><code>NiagaraCQ</code></a></li>
-<li><a href="http://www.cs.berkeley.edu/~matei/papers/2012/hotcloud_spark_streaming.pdf" target="_blank" rel="external">离散流</a>：这篇论文讨论了<code>Spark</code>的流式系统。</li>
-<li><a href="http://research.google.com/pubs/pub41378.html" target="_blank" rel="external"><code>MillWheel</code></a> 它是<code>Google</code>的流处理系统之一。</li>
-<li><a href="http://research.microsoft.com/apps/pubs/?id=201100" target="_blank" rel="external"><code>Naiad</code>：一个实时数据流系统</a></li>
-<li><a href="http://infolab.usc.edu/csci599/Fall2002/paper/DML2_streams-issues.pdf" target="_blank" rel="external">在数据流系统中建模和相关事件</a>：它可能是研究这一领域的最佳概述之一。</li>
-<li><a href="http://cs.brown.edu/research/aurora/hwang.icde05.ha.pdf" target="_blank" rel="external">分布处式流处理的高可用性算法</a>。</li>
-<li>随机系统的一些论文：</li>
-</ol>
-</li>
-</ul>
-<p>企业级软件存在着同样的问题，只是名称不同，或者规模较小，或者是<code>XML</code>格式的。哈哈，开个玩笑。</p>
-<ul>
-<li><a href="http://cs.brown.edu/research/aurora/hwang.icde05.ha.pdf" target="_blank" rel="external">事件驱动</a> —— 据我所知：它就是企业级应用的工程师们常说的『状态机的复现』。有趣的是同样的理念会用在如此迥异的场景中。事件驱动关注的是小的、内存中的使用场景。这种机制在应用开发中看起来是把发生在日志事件中的『流处理』和应用关联起来。因此变得不那么琐碎：当处理的规模大到需要数据分片时，我关注的是流处理作为独立的首要的基础设施。</li>
-<li><a href="http://en.wikipedia.org/wiki/Change_data_capture" target="_blank" rel="external">变更数据捕获</a> —— 在数据库之外会有些对于数据的舍入处理，这些处理绝大多数都是日志友好的数据扩展。</li>
-<li><a href="http://en.wikipedia.org/wiki/Enterprise_application_integration" target="_blank" rel="external">企业级应用集成</a>，当你有一些现成的类似客户类系管理<code>CRM</code>和供应链管理<code>SCM</code>的软件时，它似乎可以解决数据集成的问题。</li>
-<li><a href="http://en.wikipedia.org/wiki/Complex_event_processing" target="_blank" rel="external">复杂事件处理（<code>CEP</code>）</a>没有人知道它的确切涵义或者它与流处理有什么不同。这些差异看起来集中在无序流和事件过滤、发现或者聚合上，但是依我之见，差别并不明显。我认为每个系统都有自己的优势。</li>
-<li><a href="http://en.wikipedia.org/wiki/Enterprise_service_bus" target="_blank" rel="external">企业服务总线（<code>ESB</code>）</a> —— 我认为企业服务总线的概念类似于我所描述的数据集成。在企业级软件社区中这个理念取得了一定程度的成功，对于从事网络和分布式基础架构的工程师们这个概念还是很陌生的。</li>
-</ul>
-<p>一些相关的开源软件：</p>
-<ul>
-<li><a href="http://kafka.apache.org/" target="_blank" rel="external"><code>Kafka</code></a>是把日志作为服务的一个项目，它是后边所列各项的基础。</li>
-<li><a href="http://zookeeper.apache.org/bookkeeper/" target="_blank" rel="external"><code>Bookeeper</code></a> 和<a href="http://zookeeper.apache.org/bookkeeper/" target="_blank" rel="external"><code>Hedwig</code></a> 另外的两个开源的『把日志作为服务』的项目。它们更关注的是数据库系统内部构件而不是事件数据。</li>
-<li><a href="https://github.com/linkedin/databus" target="_blank" rel="external"><code>Databus</code></a>是提供类似日志的数据库表的覆盖层的系统。</li>
-<li><a href="http://akka.io/" target="_blank" rel="external"><code>Akka</code></a> 是用于<code>Scala</code>的<code>Actor</code>框架。它有一个<a href="https://github.com/eligosource/eventsourced" target="_blank" rel="external">事件驱动</a>的插件，它提供持久化和记录。</li>
-<li><a href="http://storm-project.net/" target="_blank" rel="external"><code>Samza</code></a>是我们在<code>LinkedIn</code>中用到的流处理框架，它用到了本文论述的诸多理念，同时与<code>Kafka</code>集成来作为底层的日志。</li>
-<li><a href="http://storm-project.net/" target="_blank" rel="external"><code>Storm</code></a>是广泛使用的可以很好的与<code>Kafka</code>集成的流处理框架之一。</li>
-<li><a href="http://spark.incubator.apache.org/docs/0.7.3/streaming-programming-guide.html" target="_blank" rel="external"><code>Spark Streaming</code></a>一个流处理框架，它是<a href="http://spark.incubator.apache.org/" target="_blank" rel="external"><code>Spark</code></a>的一部分。</li>
-<li><a href="https://blog.twitter.com/2013/streaming-mapreduce-with-summingbird" target="_blank" rel="external"><code>Summingbird</code></a>是在<code>Storm</code>或<code>Hadoop</code>之上的一层，它提供了便洁的计算摘要。</li>
-</ul>
-<p>对于这一领域，我将持续的关注，如何您知道一些我遗漏的内容，请您告知。</p>
-<p>最后一起来听听这首歌放松一下吧：</p>
-<p><a href="https://youtu.be/2C7mNr5WMjA" target="_blank" rel="external">The Log Song - Ren &amp; Stimpy (Deadwood HoN) </a></p>
-]]></content>
-    <summary type="html">
-    <![CDATA[<p>原文链接： <a href="https://engineering.linkedin.com/distributed-systems/log-what-every-software-engineer-should-know-about-real-time-datas-unifying" target="_blank" rel="external">The Log: What every software engineer should know about real-time data&#39;s unifying abstraction</a> - <a href="http://www.linkedin.com/in/jaykreps" target="_blank" rel="external">Jay Kreps</a><br>基于开源中国社区的译文稿： <a href="http://www.oschina.net/translate/log-what-every-software-engineer-should-know-about-real-time-datas-unifying" target="_blank" rel="external">日志：每个软件工程师都应该知道的有关实时数据的统一概念</a><br>译文发在<a href="http://blog.jobbole.com/" target="_blank" rel="external">伯乐在线</a>：<a href="http://blog.jobbole.com/89674/" target="_blank" rel="external">The Log：每个程序员都应该知道有关实时数据的统一抽象</a>， 2015-08-21</p>
-<p>我在六年前加入到<code>LinkedIn</code>公司，那是一个令人兴奋的时刻：我们刚开始面临单一庞大的集中式数据库的限制问题，需要过渡到一套专门的分布式系统。<br>这是一个令人兴奋的经历：我们构建、部署和运行分布式图数据库（<code>distributed graph database</code>）、分布式搜索后端（<code>distributed search backend</code>）、<br><code>Hadoop</code>以及第一代和第二代键值数据存储（<code>key-value store</code>），而且这套系统一直运行至今。</p>
-<p>这个过程中，我学到的最有益的事情是我们所构建这套系统的许多组件其核心都包含了一个很简单的概念：日志。<br>日志有时会叫成 预先写入日志（<code>write-ahead logs</code>）、提交日志（<code>commit logs</code>）或者事务日志（<code>transaction logs</code>），几乎和计算机本身形影不离，<br>是许多分布式数据系统（<code>distributed data system</code>）和实时应用架构（<code>real-time application architecture</code>）的核心。</p>
-<p>不懂得日志，你就不可能真正理解数据库、<code>NoSQL</code>存储、键值存储（<code>key value store</code>）、数据复制（<code>replication</code>）、<code>paxos</code>、<code>Hadoop</code>、版本控制（<code>version control</code>），甚至几乎任何一个软件系统；然而大多数软件工程师对日志并不熟悉。我有意于改变这个现状。<br>本文我将带你浏览有关日志需要了解的一切，包括日志是什么，如何在数据集成（<code>data integration</code>）、实时处理（<code>real time processing</code>）和系统构建中使用日志。<br>]]>
-    
-    </summary>
-    
-      <category term="架构" scheme="http://colobu.com/categories/%E6%9E%B6%E6%9E%84/"/>
-    
-  </entry>
   
   <entry>
     <title><![CDATA[用 CSS 实现三角形与平行四边形]]></title>
@@ -2286,6 +1938,46 @@
     </summary>
     
       <category term="Scala" scheme="http://colobu.com/categories/Scala/"/>
+    
+  </entry>
+  
+  <entry>
+    <title><![CDATA[奇虎360 和 Go]]></title>
+    <link href="http://colobu.com/2015/07/14/Qihoo-360-and-Go/"/>
+    <id>http://colobu.com/2015/07/14/Qihoo-360-and-Go/</id>
+    <published>2015-07-14T03:25:58.000Z</published>
+    <updated>2015-07-31T13:28:02.417Z</updated>
+    <content type="html"><![CDATA[<p>英文原文：<a href="http://blog.golang.org/qihoo" target="_blank" rel="external">Qihoo 360 and Go</a><br>翻译 by <a href="http://www.oschina.net/" target="_blank" rel="external">开源中国</a>： <a href="http://www.oschina.net/translate/qihoo-and-go" target="_blank" rel="external">奇虎360 和 go </a></p>
+<p>在中国，奇虎 360 是一个互联网和手机安全产品及服务的主要供应商，截止到 2014 年 6 月，奇虎拥有 5 亿的 PC 活跃用户以及超过 6.4 亿移动用户。奇虎还运营着中国最受欢迎的网络浏览器和 PC 搜索引擎(原文如此)。</p>
+<p>我的团队，推送服务团队(Push Service Team)，为超过 50 个公司的产品提供服务（PC 和移动），包括成千上万放在我们的开放平台的应用程序。</p>
+<p>我们对Go的青睐要从2012年第一次尝试为奇虎的一个产品提供推送功能开始。最初的nginx + lua + redis方案因为负载过大没能满足我们对实时性能的需求。在这种情况下，最新发布的1.0.3版Go引起了我们的注意，借助它提供的goroutine和channel特性，我们在几周之内开发完成了一个原型。我们的系统最初运行在20台服务器上，能够处理2000万实时连接，每天发送200万信息。现在这套系统在超过400台服务器运行，支持2亿实时连接，每天发送超过100亿条信息。<br><a id="more"></a></p>
+<p>随着商业上的快速扩张以及对我们推送服务的需求的增长，最初的Go系统很快遇到了瓶颈：堆大小达到69G、GC停顿最高能到3-6秒。更头疼的是，我们必须每周重启系统来释放内存。实话实话，我们考虑过放弃Go，用C来重写全部的核心组件作为替代。然而，并未如我们所愿，我们在迁移业务逻辑层的代码时遇到了麻烦。结果就是，作为当时唯一的人员，我不可能在维护这个Go系统的时候确保业务逻辑顺利迁移到C的服务框架上。</p>
+<p>因此，我决定继续留在Go系统上(可能是我最机智的一次无奈选择)，并且很快就取得了重大进展。<br>下面是几个要点和我们总结的小技巧：</p>
+<ul>
+<li>用长连接(使用连接池)替代短连接，减少通信过程中缓冲区和对象的创建。</li>
+<li>适当的使用对象池和内存池，减少GC的负载。<img src="http://blog.golang.org/qihoo/image00.png" alt=""></li>
+<li>使用任务池，原理是由一组协程作为消费者轮询并执行全局的任务或者来自消息队列的任务——由持有连接的协程作为生产者发送任务，用这种模式取代为每个任务生成一个临时协程。</li>
+<li>监视并控制程序中协程的数量。缺乏控制会使GC不堪重负，比如，因为不加控制的接受外部请求而出现的协程数峰值施加在GC上，同时发往内部服务的RPC调用可能阻塞新创建的协程。</li>
+<li>在移动网络中，要记得给连接<a href="http://golang.org/pkg/net/#Conn" target="_blank" rel="external">设置读写超时限制</a>，否则可能导致协程阻塞。在局域网中就要慎重使用此设置，否则会降低RPC通信的效率。</li>
+<li>使用Pipeline(在TCP全双工特征下)来增强RPC框架的通信效率。</li>
+</ul>
+<p>最后，我们成功的对架构进行了三次迭代，其中有两次对 RPC 框架的迭代还是在人手有限的情况下完成的。这都得益于 Go 开发的便利性，下面是我们当前的系统架构：<br><img src="http://blog.golang.org/qihoo/image01.png" alt=""><br>持续优化的过程可以通过下表来说明：<br><img src="http://blog.golang.org/qihoo/table.png" alt=""><br>还有，在这些优化之后，再也不需要临时的释放内存或者重启系统了。</p>
+<p>更令人兴奋的时我们已经开发了一个线上实时反映 Go 程序运行概况的可视化平台。现在我们很轻松的就可以拿到系统状态并做出诊断，消除隐患。这是系统运行中的截图：<br><img src="http://blog.golang.org/qihoo/image02.png" alt=""><br><img src="http://blog.golang.org/qihoo/image03.png" alt=""></p>
+<p>这个平台还可以做一件很棒的事情——模拟数百万用户在线的连接和操作。通过使用这个分布式的压力测试工具（也是用 Go 实现），并观察所有这些直观的实时数据。我们评估每一次优化的效果并且定位系统瓶颈然后排除问题。<br> 到目前为止，我们几乎试遍了所有系统优化的手段。我们还是期盼 GC 团队能带来更多的好消息让我们进一步的从繁重的开发工作中解脱出来。想来，也许有一天我们的这些经验会因为 Go 的持续发展而变得无用武之地。</p>
+<p>这也是为什么我要以表达获得了这次出席 <a href="http://gopherchina.org/" target="_blank" rel="external">Gopher China</a> 的机会的谢意来结束此次分享的原因。这是一个我们去学习，去分享的盛会，也是一个展现 Go 在中国的普及和繁荣的契机。在奇虎内部有许多其他的团队开始去了解 Go，或者已经在试着使用 Go。</p>
+<p>在可预见的将来，我相信中国会有更多的互联网公司加入我们的行列，用 Go 来重新创建他们的系统，而 Go 开发团队的成果会使更多的开发者和公司收益。</p>
+]]></content>
+    <summary type="html">
+    <![CDATA[<p>英文原文：<a href="http://blog.golang.org/qihoo" target="_blank" rel="external">Qihoo 360 and Go</a><br>翻译 by <a href="http://www.oschina.net/" target="_blank" rel="external">开源中国</a>： <a href="http://www.oschina.net/translate/qihoo-and-go" target="_blank" rel="external">奇虎360 和 go </a></p>
+<p>在中国，奇虎 360 是一个互联网和手机安全产品及服务的主要供应商，截止到 2014 年 6 月，奇虎拥有 5 亿的 PC 活跃用户以及超过 6.4 亿移动用户。奇虎还运营着中国最受欢迎的网络浏览器和 PC 搜索引擎(原文如此)。</p>
+<p>我的团队，推送服务团队(Push Service Team)，为超过 50 个公司的产品提供服务（PC 和移动），包括成千上万放在我们的开放平台的应用程序。</p>
+<p>我们对Go的青睐要从2012年第一次尝试为奇虎的一个产品提供推送功能开始。最初的nginx + lua + redis方案因为负载过大没能满足我们对实时性能的需求。在这种情况下，最新发布的1.0.3版Go引起了我们的注意，借助它提供的goroutine和channel特性，我们在几周之内开发完成了一个原型。我们的系统最初运行在20台服务器上，能够处理2000万实时连接，每天发送200万信息。现在这套系统在超过400台服务器运行，支持2亿实时连接，每天发送超过100亿条信息。<br>]]>
+    
+    </summary>
+    
+      <category term="Go" scheme="http://colobu.com/tags/Go/"/>
+    
+      <category term="高并发编程" scheme="http://colobu.com/categories/%E9%AB%98%E5%B9%B6%E5%8F%91%E7%BC%96%E7%A8%8B/"/>
     
   </entry>
   
