@@ -144,4 +144,8 @@
 		$(".article-entry>#expanderHead>#expanderSign").text("[+]")
 	}
    });
+   
+   $(function() {
+		$("img.lazy").lazyload();
+	});
 })(jQuery);
