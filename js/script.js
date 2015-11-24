@@ -144,8 +144,10 @@
 		$(".article-entry>#expanderHead>#expanderSign").text("[+]")
 	}
    });
-   
-   $(function() {
+})(jQuery);
+
+(function($){
+$(function() {
 		$("img.lazy").lazyload();
-	});
+});
 })(jQuery);
