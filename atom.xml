@@ -4,7 +4,7 @@
   <subtitle><![CDATA[大道至简 Simplicity is the ultimate form of sophistication]]></subtitle>
   <link href="/atom.xml" rel="self"/>
   <link href="http://colobu.com/"/>
-  <updated>2016-03-14T08:41:35.703Z</updated>
+  <updated>2016-03-16T09:12:20.401Z</updated>
   <id>http://colobu.com/</id>
   
   <author>
@@ -13,6 +13,111 @@
   </author>
   
   <generator uri="http://zespia.tw/hexo/">Hexo</generator>
+  
+  <entry>
+    <title><![CDATA[Golang序列化框架对决 - 为什么andyleap/gencode那么快?]]></title>
+    <link href="http://colobu.com/2016/03/16/why-is-go-gencode-so-fast/"/>
+    <id>http://colobu.com/2016/03/16/why-is-go-gencode-so-fast/</id>
+    <published>2016-03-16T05:32:01.000Z</published>
+    <updated>2016-03-16T08:56:32.480Z</updated>
+    <content type="html"><![CDATA[<p>我在github上创建了一个Go语言序列化/反序列化库的性能比较的项目<a href="https://github.com/smallnest/gosercomp" target="_blank" rel="external">gosercomp</a>，用来比较常见的Go语言生态圈的序列化库。<br>性能是以Go官方库提供的JSON/XML序列化库为基准，比较一下第三库能带来多大的性能提升。<br>尽管一些第三方库会自动产生<code>Struct</code>的代码，我们还是都以下面的数据结构为例：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> ColorGroup <span class="keyword">struct</span> {</div><div class="line">	Id     <span class="typename">int</span>      <span class="string">`json:"id" xml:"id,attr" msg:"id"`</span></div><div class="line">	Name   <span class="typename">string</span>   <span class="string">`json:"name" xml:"name" msg:"name"`</span></div><div class="line">	Colors []<span class="typename">string</span> <span class="string">`json:"colors" xml:"colors" msg:"colors"`</span></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>其中<code>Colors</code>是一个slice。我并没有测试Struct嵌套以及循环引用的情况。</p>
+<p>目前本项目包含了以下几种序列化库的性能比较：</p>
+<ul>
+<li><a href="http://golang.org/pkg/encoding/json/" target="_blank" rel="external">encoding/json</a></li>
+<li><a href="http://golang.org/pkg/encoding/xml/" target="_blank" rel="external">encoding/xml</a></li>
+<li><a href="http://github.com/youtube/vitess/go/bson" target="_blank" rel="external">github.com/youtube/vitess/go/bson</a></li>
+<li><a href="http://github.com/tinylib/msgp" target="_blank" rel="external">github.com/tinylib/msgp</a></li>
+<li><a href="http://github.com/golang/protobuf" target="_blank" rel="external">github.com/golang/protobuf</a></li>
+<li><a href="http://github.com/gogo/protobuf" target="_blank" rel="external">github.com/gogo/protobuf</a></li>
+<li><a href="http://github.com/google/flatbuffers" target="_blank" rel="external">github.com/google/flatbuffers</a></li>
+<li><a href="https://github.com/apache/thrift/tree/master/lib/go" target="_blank" rel="external">Apache/Thrift</a></li>
+<li><a href="https://github.com/linkedin/goavro" target="_blank" rel="external">Apache/Avro</a></li>
+<li><a href="https://github.com/andyleap/gencode" target="_blank" rel="external">andyleap/gencode</a></li>
+<li><a href="https://github.com/ugorji/go/tree/master/codec" target="_blank" rel="external">ugorji/go/codec</a></li>
+</ul>
+<p>对于序列化库的实现来讲，如果在运行时通过反射的方式进行序列化和反序列化，性能不会太好，比如官方库的Json和Xml序列化方法，所以高性能的序列化库很多都是通过代码生成在编译的时候提供序列化和反序列化的方法，下面我会介绍<a href="http://msgpack.org/" target="_blank" rel="external">MessagePack</a>和<a href="https://github.com/andyleap/gencode" target="_blank" rel="external">gencode</a>两种性能较高的序列化库。</p>
+<p>本项目受<a href="https://github.com/alecthomas/go_serialization_benchmarks" target="_blank" rel="external">alecthomas/go_serialization_benchmarks</a>项目的启发。<br><a id="more"></a></p>
+<p>对于第三方的序列化库，它们的数据结构的定义可能是自有形式的，比如<code>Thrift</code>:</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">namespace</span> go gosercomp</div><div class="line"></div><div class="line"><span class="class"><span class="keyword">struct</span> <span class="title">ThriftColorGroup</span> </span>{</div><div class="line">  <span class="number">1</span>: <span class="built_in">i32</span> id = <span class="number">0</span>,</div><div class="line">  <span class="number">2</span>: <span class="built_in">string</span> name,</div><div class="line">  <span class="number">3</span>: <span class="stl_container">list&lt;<span class="keyword">string</span>&gt;</span> colors,</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>比如<code>flatbuffers</code>:</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div></pre></td><td class="code"><pre><div class="line"><span class="tag">namespace</span> <span class="tag">gosercomp</span>;</div><div class="line"></div><div class="line"><span class="tag">table</span>  <span class="tag">FlatBufferColorGroup</span> <span class="rules">{</span></div><div class="line">    <span class="rule"><span class="attribute">cgId</span>:<span class="value">int (id: <span class="number">0</span>)</span></span>;</div><div class="line">    <span class="rule"><span class="attribute">name</span>:<span class="value">string (id: <span class="number">1</span>)</span></span>;</div><div class="line">    <span class="rule"><span class="attribute">colors</span>:<span class="value"> [string] (id: <span class="number">2</span>)</span></span>;</div><div class="line"><span class="rule">}</span></div><div class="line"></div><div class="line"><span class="tag">root_type</span> <span class="tag">FlatBufferColorGroup</span>;</div></pre></td></tr></table></figure>
+
+<p>对于<code>protobuf</code>:</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> gosercomp;</div><div class="line"></div><div class="line"></div><div class="line"><span class="class"><span class="keyword">message</span> <span class="title">ProtoColorGroup</span> </span>{</div><div class="line">    <span class="keyword">required</span> <span class="built_in">int32</span> id = <span class="number">1</span>;</div><div class="line">    <span class="keyword">required</span> <span class="built_in">string</span> name = <span class="number">2</span>;</div><div class="line">    <span class="keyword">repeated</span> <span class="built_in">string</span> colors = <span class="number">3</span>;</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>看以看出，所有测试的数据结构都是一致的，它包含三个字段，一个是int类型的字段<code>Id</code>,一个是string类型的字段<code>Name</code>，一个是[]string类型的字段<code>Colors</code>。</p>
+<h2 id="测试结果">测试结果</h2>
+<p>完整的测试结果可以看<a href="https://github.com/smallnest/gosercomp" target="_blank" rel="external">这里</a>,</p>
+<p>以下是Json、Xml、Protobuf、MessagePack、gencode的性能数据：</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div></pre></td><td class="code"><pre><div class="line"><span class="header">benchmark _name                               iter                 time/iter        alloc bytes/iter    allocs/iter</span></div><div class="line">-------------------------------------------------------------------------------------------------------------------------</div><div class="line">BenchmarkMarshalByJson-4                         1000000          1909 ns/op         376 B/op           4 allocs/op</div><div class="line">BenchmarkUnmarshalByJson-4                        500000          4044 ns/op         296 B/op           9 allocs/op</div><div class="line"></div><div class="line">BenchmarkMarshalByXml-4                           200000          7893 ns/op        4801 B/op          12 allocs/op</div><div class="line">BenchmarkUnmarshalByXml-4                         100000         25615 ns/op        2807 B/op          67 allocs/op</div><div class="line"></div><div class="line">BenchmarkMarshalByProtoBuf-4                     2000000           969 ns/op         328 B/op           5 allocs/op</div><div class="line">BenchmarkUnmarshalByProtoBuf-4                   1000000          1617 ns/op         400 B/op          11 allocs/op</div><div class="line"></div><div class="line">BenchmarkMarshalByMsgp-4                         5000000           256 ns/op          80 B/op           1 allocs/op</div><div class="line">BenchmarkUnmarshalByMsgp-4                       3000000           459 ns/op          32 B/op           5 allocs/op</div><div class="line"></div><div class="line">BenchmarkMarshalByGencode-4                     20000000          66.4 ns/op           0 B/op           0 allocs/op</div><div class="line">BenchmarkUnmarshalByGencode-4                    5000000           271 ns/op          32 B/op           5 allocs/op</div></pre></td></tr></table></figure>
+
+<p>可以看出Json、Xml的序列化和反序列化性能是很差的。想比较而言MessagePack有<strong>10x</strong>的性能的提升，而gencode比MessagePack的性能还要好很多。</p>
+<h2 id="MessagePack的实现">MessagePack的实现</h2>
+<p><a href="http://msgpack.org/" target="_blank" rel="external"><code>MessagePack</code></a>是一个高效的二进制序列化格式。它可以在多种语言直接交换数据格式。它将对象可以序列化更小的格式，比如对于很小的整数，它可以使用更少的存储(一个字节)。对于短字符串，它只需一个额外的字节来指示。</p>
+<p><img src="msgp.png" alt=""></p>
+<p>上图是一个27个字节的JSON数据，如果使用MessagePack的话可以用18个字节就可以表示了。</p>
+<p>可以看出每个类型需要额外的0到n个字节来指明(数量依赖对象的大小或者长度)。上面的例子中<code>82</code>指示这个对象是包含两个元素的map (0x80 + 2), <code>A7</code> 代表一个短长度的字符串，字符串长度是7。<code>C3</code>代表true，<code>C2</code>代表false，<code>C0</code>代表nil。<code>00</code>代表是一个小整数。</p>
+<p>完整的格式可以参照<a href="https://github.com/msgpack/msgpack/blob/master/spec.md#formats" target="_blank" rel="external">官方规范</a>。</p>
+<p>MessagePack支持多种<a href="http://msgpack.org/#languages" target="_blank" rel="external">开发语言</a>。</p>
+<blockquote>
+<p>题外话，一个较新的RFC规范 <a href="https://tools.ietf.org/html/rfc7049" target="_blank" rel="external">CBOR/rfc7049</a> (简洁的二进制对象表示)定义了一个类似的规范，可以表达更详细的内容。</p>
+</blockquote>
+<p>推荐使用的Go MessagePack库是 <a href="https://github.com/tinylib/msgp" target="_blank" rel="external">tinylib/msgp</a>，它比<a href="https://github.com/ugorji/go/tree/master/codec" target="_blank" rel="external">ugorji/go</a>有更好的性能。</p>
+<p>tinylib/msgp提供了一个代码生成工具<code>msgp</code>，可以为Golang的Struct生成序列化的代码，当然你的Struct应该定义<code>msg</code>标签，如本文上面定义的<code>ColorGroup</code>。通过<code>go generate</code>就可以自动生成代码，如本项目中生成的<code>msgp_gen.go</code>:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div><div class="line">35</div><div class="line">36</div><div class="line">37</div><div class="line">38</div><div class="line">39</div><div class="line">40</div><div class="line">41</div><div class="line">42</div><div class="line">43</div><div class="line">44</div><div class="line">45</div><div class="line">46</div><div class="line">47</div><div class="line">48</div><div class="line">49</div><div class="line">50</div><div class="line">51</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> gosercomp</div><div class="line"></div><div class="line"><span class="comment">// NOTE: THIS FILE WAS PRODUCED BY THE</span></div><div class="line"><span class="comment">// MSGP CODE GENERATION TOOL (github.com/tinylib/msgp)</span></div><div class="line"><span class="comment">// DO NOT EDIT</span></div><div class="line"></div><div class="line"><span class="keyword">import</span> (</div><div class="line">	<span class="string">"github.com/tinylib/msgp/msgp"</span></div><div class="line">)</div><div class="line"></div><div class="line"><span class="comment">// MarshalMsg implements msgp.Marshaler</span></div><div class="line"><span class="keyword">func</span> (z *ColorGroup) MarshalMsg(b []<span class="typename">byte</span>) (o []<span class="typename">byte</span>, err error) {</div><div class="line">	o = msgp.Require(b, z.Msgsize())</div><div class="line">	<span class="comment">// map header, size 3</span></div><div class="line">	<span class="comment">// string "id"</span></div><div class="line">	o = <span class="built_in">append</span>(o,<span class="number"> 0</span>x83,<span class="number"> 0</span>xa2,<span class="number"> 0</span>x69,<span class="number"> 0</span>x64)</div><div class="line">	o = msgp.AppendInt(o, z.Id)</div><div class="line">	<span class="comment">// string "name"</span></div><div class="line">	o = <span class="built_in">append</span>(o,<span class="number"> 0</span>xa4,<span class="number"> 0</span>x6e,<span class="number"> 0</span>x61,<span class="number"> 0</span>x6d,<span class="number"> 0</span>x65)</div><div class="line">	o = msgp.AppendString(o, z.Name)</div><div class="line">	<span class="comment">// string "colors"</span></div><div class="line">	o = <span class="built_in">append</span>(o,<span class="number"> 0</span>xa6,<span class="number"> 0</span>x63,<span class="number"> 0</span>x6f,<span class="number"> 0</span>x6c,<span class="number"> 0</span>x6f,<span class="number"> 0</span>x72,<span class="number"> 0</span>x73)</div><div class="line">	o = msgp.AppendArrayHeader(o, <span class="typename">uint32</span>(<span class="built_in">len</span>(z.Colors)))</div><div class="line">	<span class="keyword">for</span> xvk := <span class="keyword">range</span> z.Colors {</div><div class="line">		o = msgp.AppendString(o, z.Colors[xvk])</div><div class="line">	}</div><div class="line">	<span class="keyword">return</span></div><div class="line">}</div><div class="line"><span class="comment">// UnmarshalMsg implements msgp.Unmarshaler</span></div><div class="line"><span class="keyword">func</span> (z *ColorGroup) UnmarshalMsg(bts []<span class="typename">byte</span>) (o []<span class="typename">byte</span>, err error) {</div><div class="line">	<span class="keyword">var</span> field []<span class="typename">byte</span></div><div class="line">	_ = field</div><div class="line">	<span class="keyword">var</span> isz <span class="typename">uint32</span></div><div class="line">	isz, bts, err = msgp.ReadMapHeaderBytes(bts)</div><div class="line">	<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">		<span class="keyword">return</span></div><div class="line">	}</div><div class="line">	<span class="keyword">for</span> isz &gt;<span class="number"> 0</span> {</div><div class="line">		isz--</div><div class="line">		field, bts, err = msgp.ReadMapKeyZC(bts)</div><div class="line">		<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">			<span class="keyword">return</span></div><div class="line">		}</div><div class="line">		<span class="keyword">switch</span> msgp.UnsafeString(field) {</div><div class="line">		<span class="keyword">case</span> <span class="string">"id"</span>:</div><div class="line">			z.Id, bts, err = msgp.ReadIntBytes(bts)</div><div class="line">			<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">				<span class="keyword">return</span></div><div class="line">			}</div><div class="line">		<span class="keyword">case</span> <span class="string">"name"</span>:</div><div class="line">	……</div></pre></td></tr></table></figure>
+
+<p>生成的代码的使用类似官方库的Json和Xml，提供了Marshal和UnmarshalMsg的方法。</p>
+<p>结合MessagePack的规范，可以看到<code>MarshalMsg</code>方法很简洁的，它使用了msgp.AppendXXX方法将相应的类型的数据写入到[]byte中，你可以预先分配/重用[]byte，这样可以实现 <code>zero alloc</code>。同时你也注意到，它也将字段的名字写入到序列化字节slice中，因此序列化后的数据包含对象的元数据。</p>
+<p>反序列化的时候会读取字段的名字，再将相应的字节反序列化赋值给对象的相应的字段。</p>
+<p>总体来说，MessagePack的性能已经相当高了，而且生成的数据也非常小，又是跨语言支持的，是值得关注的一个序列化库。</p>
+<h2 id="gencode">gencode</h2>
+<p>对于MessagePack还有没有可提升的空间？测试数据显示, <a href="https://github.com/andyleap/gencode" target="_blank" rel="external">andyleap/gencode</a>的性能还要好，甚至于性能是MessagePack的两倍。</p>
+<p>andyleap/gencode的目标也是提供快速而且数据很少的序列化库。<br>它定义了自有的数据格式，并提供工具生成Golang代码。</p>
+<p>下面是我测试用的数据格式。</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div></pre></td><td class="code"><pre><div class="line"><span class="class"><span class="keyword">struct</span> <span class="title">GencodeColorGroup</span> </span>{</div><div class="line">	Id     int32</div><div class="line">	Name   <span class="built_in">string</span></div><div class="line">	Colors []<span class="built_in">string</span></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>它提供了类似于Golang的数据类型struct，定义结构也类似， 并提供了一组数据类型。</p>
+<p>你可以通过它的工具生成数据结构的代码：</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">gencode.<span class="keyword">exe</span> <span class="keyword">go</span> -schema=gencode.schema -package gosercomp</div></pre></td></tr></table></figure>
+
+<p>和MessagePack一样的处理，对于大于或者等于<code>0x80</code>的整数，它会使用2个或者更多的字节来表示。<br><br>但是与MessagePack不同的是，它不会写入字段的名字，也就是它不包含对象的元数据。同时，它写入的额外数据只包含字段的长度，并不需要指明数据的类型。<br>所有的值都以它的长度做先导，并没有像MessagePack那样为了节省空间会对对象进行压缩处理，所以它的代码会更直接而有效。</p>
+<p>当然它们的处理都是通过字节的移位或者<code>copy</code>对字符串直接进行拷贝，这样的处理也非常的高效。</p>
+<p>反序列化的时候也是依次解析出各字段的值，因为在编译的时候已经知道每个字段的类型，所以gencode无需元数据，可以聪明的对字节按照流的方式顺序处理。</p>
+<p>可以看出，gencode相对于MessagePack,本身并没有为数据中加入额外的元数据的信息，也无需写入字段的类型信息，这样也可以减少生成的数据大小,同时它不会对小整数、短字符串，小的Map进行刻意的压缩，减少的代码的复杂度和判断分支，代码更加的简练而高效。</p>
+<p>值得注意的是，gencode生成的代码除了官方库外不依赖其它的第三方库。</p>
+<p>从测试数据来看，它的性能更胜一筹。</p>
+]]> <br/>转载请注明文章来源：<a href="http://colobu.com/2016/03/16/why-is-go-gencode-so-fast/" target="_blank"> colobu.com</a></content>
+    <summary type="html">
+    <![CDATA[<p>我在github上创建了一个Go语言序列化/反序列化库的性能比较的项目<a href="https://github.com/smallnest/gosercomp" target="_blank" rel="external">gosercomp</a>，用来比较常见的Go语言生态圈的序列化库。<br>性能是以Go官方库提供的JSON/XML序列化库为基准，比较一下第三库能带来多大的性能提升。<br>尽管一些第三方库会自动产生<code>Struct</code>的代码，我们还是都以下面的数据结构为例：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> ColorGroup <span class="keyword">struct</span> {</div><div class="line">	Id     <span class="typename">int</span>      <span class="string">`json:"id" xml:"id,attr" msg:"id"`</span></div><div class="line">	Name   <span class="typename">string</span>   <span class="string">`json:"name" xml:"name" msg:"name"`</span></div><div class="line">	Colors []<span class="typename">string</span> <span class="string">`json:"colors" xml:"colors" msg:"colors"`</span></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>其中<code>Colors</code>是一个slice。我并没有测试Struct嵌套以及循环引用的情况。</p>
+<p>目前本项目包含了以下几种序列化库的性能比较：</p>
+<ul>
+<li><a href="http://golang.org/pkg/encoding/json/" target="_blank" rel="external">encoding/json</a></li>
+<li><a href="http://golang.org/pkg/encoding/xml/" target="_blank" rel="external">encoding/xml</a></li>
+<li><a href="http://github.com/youtube/vitess/go/bson" target="_blank" rel="external">github.com/youtube/vitess/go/bson</a></li>
+<li><a href="http://github.com/tinylib/msgp" target="_blank" rel="external">github.com/tinylib/msgp</a></li>
+<li><a href="http://github.com/golang/protobuf" target="_blank" rel="external">github.com/golang/protobuf</a></li>
+<li><a href="http://github.com/gogo/protobuf" target="_blank" rel="external">github.com/gogo/protobuf</a></li>
+<li><a href="http://github.com/google/flatbuffers" target="_blank" rel="external">github.com/google/flatbuffers</a></li>
+<li><a href="https://github.com/apache/thrift/tree/master/lib/go" target="_blank" rel="external">Apache/Thrift</a></li>
+<li><a href="https://github.com/linkedin/goavro" target="_blank" rel="external">Apache/Avro</a></li>
+<li><a href="https://github.com/andyleap/gencode" target="_blank" rel="external">andyleap/gencode</a></li>
+<li><a href="https://github.com/ugorji/go/tree/master/codec" target="_blank" rel="external">ugorji/go/codec</a></li>
+</ul>
+<p>对于序列化库的实现来讲，如果在运行时通过反射的方式进行序列化和反序列化，性能不会太好，比如官方库的Json和Xml序列化方法，所以高性能的序列化库很多都是通过代码生成在编译的时候提供序列化和反序列化的方法，下面我会介绍<a href="http://msgpack.org/" target="_blank" rel="external">MessagePack</a>和<a href="https://github.com/andyleap/gencode" target="_blank" rel="external">gencode</a>两种性能较高的序列化库。</p>
+<p>本项目受<a href="https://github.com/alecthomas/go_serialization_benchmarks" target="_blank" rel="external">alecthomas/go_serialization_benchmarks</a>项目的启发。<br>]]>
+    
+    </summary>
+    
+      <category term="Go" scheme="http://colobu.com/categories/Go/"/>
+    
+  </entry>
   
   <entry>
     <title><![CDATA[uridb.com 即将关站]]></title>
@@ -1460,100 +1565,6 @@ A +--> B +---> C
 <p><strong>Java并没有没落，人们开始认识到这一点</strong></p>
 <p>欢迎阅读我编写的<a href="https://jdk8.java.net/" target="_blank" rel="external">Java 8</a>介绍。本教程将带领你一步步认识这门语言的所有新特性。通过简单明了的代码示例，你将会学习到如何使用默认接口方法，Lambda表达式，方法引用和可重复注解。在这篇教程的最后，你还将对最新推出的API有一定的了解，例如：流控制，函数式接口，map扩展和新的时间日期API等等。<br><strong>没有大段的废话，只是一些带注释的代码片段，望君喜欢。</strong></p>
 <p>本文最早发表在我的<a href="http://winterbe.com/posts/2014/03/16/java-8-tutorial/" target="_blank" rel="external">博客</a>上。 你可以在Twitter上<a href="https://twitter.com/winterbe_" target="_blank" rel="external">加我</a>。<br>]]>
-    
-    </summary>
-    
-      <category term="Java" scheme="http://colobu.com/categories/Java/"/>
-    
-  </entry>
-  
-  <entry>
-    <title><![CDATA[Java RESTful框架的性能比较]]></title>
-    <link href="http://colobu.com/2015/11/17/Jax-RS-Performance-Comparison/"/>
-    <id>http://colobu.com/2015/11/17/Jax-RS-Performance-Comparison/</id>
-    <published>2015-11-17T08:57:09.000Z</published>
-    <updated>2015-11-18T08:26:08.799Z</updated>
-    <content type="html"><![CDATA[<p>在微服务流行的今天，我们会从纵向和横向分解代码的逻辑，将一些独立的无状态的代码单元实现为微服务，可以将它们发布到一些分布式计算单元或者Docker中，并在性能需要的时候及时地创建更多的服务单元。<br>微服务是一个概念，并没有规定服务的格式，但是很多厂商和框架都不约而同的采用RESTful的架构,尽管也有一些其它的性能很好的RPC框架。<br>如何在Java生态圈选择一个轻量级的RESTful框架？可以参考一些其他人的经验， 比如我翻译的: <a href="http://colobu.com/2015/11/15/best-available-java-restful-micro-frameworks/" target="_blank" rel="external">最好的8个 Java RESTful 框架</a>。<br>就我个人而言，我选择框架的理由很简单：</p>
-<ul>
-<li>简单，轻量级</li>
-<li>性能好</li>
-<li>稳定，可靠</li>
-<li>易于开发和维护</li>
-</ul>
-<p>我会首选遵循Java规范(<a href="https://jcp.org/en/jsr/detail?id=339" target="_blank" rel="external">JSR339</a>)的框架，轻量级，便于发布到Docker容器中。 所以我不会选择Spring boot, Spring MVC, CXF等比较重的框架,也不会选择纯netty这样的太过底层，还得实现路由等基本功能框架。<br>因为追求轻量级，便于发布到docker容器中，我也不会考察JBOSS, Tomcat这样的JEE容器， 而是选用jetty, undertow这样的嵌入式容器。</p>
-<p>所以，这里我挑选了几个候选者：</p>
-<ol>
-<li><a href="https://jersey.java.net/" target="_blank" rel="external">Jersey + Grizzly</a></li>
-<li><a href="https://jersey.java.net/" target="_blank" rel="external">Jersey + Jetty</a></li>
-<li><a href="http://www.dropwizard.io" target="_blank" rel="external">Dropwizard</a></li>
-<li><a href="http://resteasy.jboss.org/" target="_blank" rel="external">RESTEasy + Netty</a></li>
-<li><a href="http://resteasy.jboss.org/" target="_blank" rel="external">RESTEasy + Undertow</a></li>
-</ol>
-<p><strong>[Updated on 2015/11/18]</strong><br>我增加了更多的 RESTful 框架,有些不是Jax-RS的实现，但是也有很活跃的社区。</p>
-<ol>
-<li><a href="https://jersey.java.net/" target="_blank" rel="external">Jersey + Jetty4</a></li>
-<li><a href="http://projects.spring.io/spring-boot/" target="_blank" rel="external">Spring Boot</a></li>
-<li><a href="http://netty.io/" target="_blank" rel="external">纯Netty</a></li>
-<li><a href="http://vertx.io/" target="_blank" rel="external">Vert.x</a><br>你会发现一些有趣的测试结果。</li>
-</ol>
-<p>Jersey 是Jax-RS的官方参考实现，可以很好的和其它JEE容器集成。RESTEasy是JBoss出品的框架，也很容易的和其它容器集成。Dropwizard实际上集成了Jersey, Jetty以及其它的第三方库比如它的Metrics，提供了一站式的开发，略微有些厚重。</p>
-<p>测试相关的代码已经放在了GITHUB上： <a href="https://github.com/smallnest/Jax-RS-Performance-Comparison" target="_blank" rel="external">代码</a><br><a id="more"></a></p>
-<h3 id="编译代码">编译代码</h3>
-<p>测试代码是一个多模块的Maven项目， 你直接运行<code>maven clean package</code>就可以生成各个jar,而且这些jar包含了所依赖的类，执行起来相当简单。<br>你也可以在每个模块下运行<code>mvn exec:java</code>启动服务，然后在浏览器中访问 <a href="http://localhost:8080/rest/hello" target="_blank" rel="external">http://localhost:8080/rest/hello</a> (对于Jersey + Jetty,地址是<a href="http://localhost:8080/hello" target="_blank" rel="external">http://localhost:8080/hello</a>)</p>
-<h3 id="测试环境">测试环境</h3>
-<p><strong>服务器</strong><br>AWS C3.2xlarge</p>
-<ul>
-<li>8 cores (E5-2666 v3 @ 2.90GHz)</li>
-<li>memory: 16G (服务只分配了4G内存)</li>
-</ul>
-<p><strong>Java</strong><br>1.8.0_51</p>
-<p><strong>测试工具</strong><br><a href="https://github.com/wg/wrk" target="_blank" rel="external">wrk</a><br>测试命令如: <code>wrk -t16 -c1000 -d30s http://127.0.0.1:8080/rest/hello</code>.<br>针对每个case, 我使用16个线程，以及100/200/500/1000并发进行测试。</p>
-<p><strong>服务启动命令</strong></p>
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div></pre></td><td class="code"><pre><div class="line"><span class="title">java</span> -Xmx4g -Xms4g -jar jersey-grizzly2-<span class="number">1</span>.<span class="number">0</span>-SNAPSHOT.jar</div><div class="line">java -Xmx4g -Xms4g -jar jersey-jetty-<span class="number">1</span>.<span class="number">0</span>-SNAPSHOT.jar</div><div class="line">java -Xmx4g -Xms4g -jar dropwizard-<span class="number">1</span>.<span class="number">0</span>-SNAPSHOT.jar hello.yml </div><div class="line">java -Xmx4g -Xms4g -jar resteasy-netty-<span class="number">1</span>.<span class="number">0</span>-SNAPSHOT.jar </div><div class="line">java -Xmx4g -Xms4g -jar resteasy-undertow-<span class="number">1</span>.<span class="number">0</span>-SNAPSHOT.jar</div><div class="line">java -Xmx4g -Xms4g -jar springboot-<span class="number">1</span>.<span class="number">0</span>-SNAPSHOT.jar</div><div class="line">java -Xmx4g -Xms4g -jar resteasy-netty4-<span class="number">1</span>.<span class="number">0</span>-SNAPSHOT.jar </div><div class="line">java -Xmx4g -Xms4g -jar nativenetty-<span class="number">1</span>.<span class="number">0</span>-SNAPSHOT.jar</div><div class="line">java -Xmx4g -Xms4g -jar vertx-<span class="number">1</span>.<span class="number">0</span>-SNAPSHOT.jar</div></pre></td></tr></table></figure>
-
-<h3 id="测试结果">测试结果</h3>
-<p>测试结果数据可以查看这里： <a href="Jax-RS-Performance-Comparison">测试数据</a>,<br>延迟基本在几毫秒到10几毫秒之间。</p>
-<p>图形化测试结果(y轴为Requests/sec, x轴为并发量)：<br><img src="performance.png" alt=""></p>
-<h3 id="结论">结论</h3>
-<p>从结果看，</p>
-<ul>
-<li>RESTEasy的性能要好于 Jersey,无论哪种嵌入式JEE容器。</li>
-<li>Jersey+Grizzly2和Jersey+Jetty, dropwizard性能差别不大</li>
-<li>dropwizard底层实际是Jersey+Jetty,性能结果也和Jersey+Jetty一样</li>
-<li>RESTEasy+netty (netty3)的结果并没有优于RESTEasy+undertow.这出乎我的意料，可能CPU和Memory占用上会好一些</li>
-<li>RESTEasy+netty4的性能远远低于RESTEasy+netty3，这出乎我的意料。或许因为Netty线程池的改变。</li>
-<li>纯netty的性能远远高于其它框架，一方面是由于没有http router的逻辑，另一方面也显示了Netty框架的优秀。如果不是实现很复杂的路由和很多的Service,不妨使用纯Netty实现高性能。</li>
-<li>Spring Boot太厚重了，使用Spring MVC的语法，性能只有Jersey的一半。</li>
-<li>Vert.x底层使用Netty,可以使用Java 8 Lambda语法，也提供了其它语言的支持，但是性能看起来不是太好，而且随着并发量增大吞吐率也随之下降。</li>
-</ul>
-<p>当然测试也有一点遗憾，就是没有记录测试时的CPU占用率和Memory占用率，以我个人的经验，这方面Netty会占一些优势。</p>
-]]> <br/>转载请注明文章来源：<a href="http://colobu.com/2015/11/17/Jax-RS-Performance-Comparison/" target="_blank"> colobu.com</a></content>
-    <summary type="html">
-    <![CDATA[<p>在微服务流行的今天，我们会从纵向和横向分解代码的逻辑，将一些独立的无状态的代码单元实现为微服务，可以将它们发布到一些分布式计算单元或者Docker中，并在性能需要的时候及时地创建更多的服务单元。<br>微服务是一个概念，并没有规定服务的格式，但是很多厂商和框架都不约而同的采用RESTful的架构,尽管也有一些其它的性能很好的RPC框架。<br>如何在Java生态圈选择一个轻量级的RESTful框架？可以参考一些其他人的经验， 比如我翻译的: <a href="http://colobu.com/2015/11/15/best-available-java-restful-micro-frameworks/" target="_blank" rel="external">最好的8个 Java RESTful 框架</a>。<br>就我个人而言，我选择框架的理由很简单：</p>
-<ul>
-<li>简单，轻量级</li>
-<li>性能好</li>
-<li>稳定，可靠</li>
-<li>易于开发和维护</li>
-</ul>
-<p>我会首选遵循Java规范(<a href="https://jcp.org/en/jsr/detail?id=339" target="_blank" rel="external">JSR339</a>)的框架，轻量级，便于发布到Docker容器中。 所以我不会选择Spring boot, Spring MVC, CXF等比较重的框架,也不会选择纯netty这样的太过底层，还得实现路由等基本功能框架。<br>因为追求轻量级，便于发布到docker容器中，我也不会考察JBOSS, Tomcat这样的JEE容器， 而是选用jetty, undertow这样的嵌入式容器。</p>
-<p>所以，这里我挑选了几个候选者：</p>
-<ol>
-<li><a href="https://jersey.java.net/" target="_blank" rel="external">Jersey + Grizzly</a></li>
-<li><a href="https://jersey.java.net/" target="_blank" rel="external">Jersey + Jetty</a></li>
-<li><a href="http://www.dropwizard.io" target="_blank" rel="external">Dropwizard</a></li>
-<li><a href="http://resteasy.jboss.org/" target="_blank" rel="external">RESTEasy + Netty</a></li>
-<li><a href="http://resteasy.jboss.org/" target="_blank" rel="external">RESTEasy + Undertow</a></li>
-</ol>
-<p><strong>[Updated on 2015/11/18]</strong><br>我增加了更多的 RESTful 框架,有些不是Jax-RS的实现，但是也有很活跃的社区。</p>
-<ol>
-<li><a href="https://jersey.java.net/" target="_blank" rel="external">Jersey + Jetty4</a></li>
-<li><a href="http://projects.spring.io/spring-boot/" target="_blank" rel="external">Spring Boot</a></li>
-<li><a href="http://netty.io/" target="_blank" rel="external">纯Netty</a></li>
-<li><a href="http://vertx.io/" target="_blank" rel="external">Vert.x</a><br>你会发现一些有趣的测试结果。</li>
-</ol>
-<p>Jersey 是Jax-RS的官方参考实现，可以很好的和其它JEE容器集成。RESTEasy是JBoss出品的框架，也很容易的和其它容器集成。Dropwizard实际上集成了Jersey, Jetty以及其它的第三方库比如它的Metrics，提供了一站式的开发，略微有些厚重。</p>
-<p>测试相关的代码已经放在了GITHUB上： <a href="https://github.com/smallnest/Jax-RS-Performance-Comparison" target="_blank" rel="external">代码</a><br>]]>
     
     </summary>
     
