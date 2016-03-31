@@ -1,0 +1,610 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  
+  <title>Vert.x 线程模型揭秘 | 鸟窝</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+  <meta name="description" content="Vert.x是一个在JVM开发reactive应用的框架，可用于开发异步、可伸缩、高并发的Web应用(虽然不限于web应用)。其目的在于为JVM提供一个Node.js的替代方案。开发者可以通过它使用JavaScript、Ruby、Groovy、Java，甚至是混合语言来编写应用。使用Vertx.x框架，可以用JavaScript、CoffeeScript、Ruby、Python、Groovy或Ja">
+<meta property="og:type" content="article">
+<meta property="og:title" content="Vert.x 线程模型揭秘">
+<meta property="og:url" content="http://colobu.com/2016/03/31/vertx-thread-model/">
+<meta property="og:site_name" content="鸟窝">
+<meta property="og:description" content="Vert.x是一个在JVM开发reactive应用的框架，可用于开发异步、可伸缩、高并发的Web应用(虽然不限于web应用)。其目的在于为JVM提供一个Node.js的替代方案。开发者可以通过它使用JavaScript、Ruby、Groovy、Java，甚至是混合语言来编写应用。使用Vertx.x框架，可以用JavaScript、CoffeeScript、Ruby、Python、Groovy或Ja">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="Vert.x 线程模型揭秘">
+<meta name="twitter:description" content="Vert.x是一个在JVM开发reactive应用的框架，可用于开发异步、可伸缩、高并发的Web应用(虽然不限于web应用)。其目的在于为JVM提供一个Node.js的替代方案。开发者可以通过它使用JavaScript、Ruby、Groovy、Java，甚至是混合语言来编写应用。使用Vertx.x框架，可以用JavaScript、CoffeeScript、Ruby、Python、Groovy或Ja">
+
+  
+    <link rel="alternative" href="/atom.xml" title="鸟窝" type="application/atom+xml">
+  
+  
+    <link rel="icon" href="/favicon.png">
+  
+  <link rel="stylesheet" href="/css/style.css" type="text/css">
+
+  <link href="//cdn.staticfile.org/font-awesome/4.2.0/css/font-awesome.css" rel="stylesheet">
+  
+  <link rel="stylesheet" href="//libs.cncdn.cn/fancybox/2.1.5/jquery.fancybox.css" media="screen" type="text/css">
+  
+  <link rel="stylesheet" href="//cdnjs.cloudflare.com/ajax/libs/animate.css/3.1.1/animate.min.css" media="screen" type="text/css">
+  <!--[if lt IE 9]><script src="//cdn.staticfile.org/html5shiv/3.7/html5shiv.min.js"></script><![endif]-->
+  
+  <script type="text/javascript">
+	//visit my previous blog: http://old.colobu.com just like this http://colobu.com/?=123456
+    var blog_url = location.href.toString();
+	if (blog_url.indexOf("http://colobu.com/?p=") >= 0) {
+		blog_url = blog_url.replace("colobu.com", "old.colobu.com");
+		window.location.assign(blog_url);
+	} else if (blog_url.indexOf("http://smallnest.gitcafe.com") >= 0) {
+		blog_url = blog_url.replace("smallnest.gitcafe.com", "colobu.com");
+		window.location.assign(blog_url);
+	}  else if (blog_url.indexOf("http://smallnest.gitcafe.io") >= 0) {
+		blog_url = blog_url.replace("smallnest.gitcafe.io", "colobu.com");
+		window.location.assign(blog_url);
+	}
+</script>
+</head>
+<body>
+  <div id="container">
+    <div id="wrap">
+      <header id="header">
+  <div id="banner"></div>
+  <div id="header-outer" class="outer">
+    <div id="header-title" class="inner">
+      <h1 id="logo-wrap" class="animated bounceInLeft">
+        <a href="/" id="logo">鸟窝</a>
+      </h1>
+      
+        <h2 id="subtitle-wrap" class="animated bounceInLeft">
+          <a href="/" id="subtitle">大道至简 Simplicity is the ultimate form of sophistication</a>
+        </h2>
+      
+    </div>
+    <div id="header-inner" class="inner">
+      <nav id="main-nav">
+        <a id="main-nav-toggle" class="nav-icon"></a>
+        
+          <a class="main-nav-link" href="/"><i class="fa fa-home">&nbsp;</i>首页</a>
+        
+          <a class="main-nav-link" href="/archives"><i class="fa fa-folder-o">&nbsp;</i>归档</a>
+        
+          <a class="main-nav-link" href="https://github.com/smallnest"><i class="fa fa-github">&nbsp;</i>github</a>
+        
+          <a class="main-nav-link" href="/techreview"><i class="fa fa-newspaper-o">&nbsp;</i>技术快报</a>
+        
+          <a class="main-nav-link" href="/about"><i class="fa fa-lemon-o">&nbsp;</i>关于</a>
+        
+      </nav>
+      <nav id="sub-nav">
+        
+          <a id="nav-rss-link" class="nav-icon" href="/atom.xml" title="RSS Feed"></a>
+        
+        <a id="nav-search-btn" class="nav-icon" title="Search"></a>
+      </nav>
+      <div id="search-form-wrap">
+        <form action="http://www.baidu.com/baidu" method="get" accept-charset="utf-8" class="search-form">
+          <input type="search" name="word" maxlength="20" class="search-form-input" placeholder="Search">
+          <input type="submit" value="" class="search-form-submit">
+          <input name=tn type=hidden value="bds">
+          <input name=cl type=hidden value="3">
+          <input name=ct type=hidden value="2097152">
+          <input type="hidden" name="si" value="colobu.com">
+        </form>
+      </div>
+    </div>
+  </div>
+</header>
+      <div class="outer">
+        <section id="main"><article id="post-vertx-thread-model" class="article article-type-post" itemscope itemprop="blogPost">
+  <div class="article-meta">
+    <a href="/2016/03/31/vertx-thread-model/" class="article-date">
+  <time datetime="2016-03-31T04:27:04.000Z" itemprop="datePublished">2016年03月31日</time>
+</a>
+    
+  <div class="article-category">
+    <a class="article-category-link" href="/categories/Java/">Java</a>
+  </div>
+
+	
+  <div class="article-author"> by smallnest</div>
+
+  </div>
+  <div class="article-inner">
+    
+    
+      <header class="article-header">
+        
+  
+    <h1 class="article-title" itemprop="name">
+      Vert.x 线程模型揭秘
+	  
+    </h1>
+  
+
+      </header>
+    
+    <div class="article-entry" itemprop="articleBody">
+	  
+	    <h1 id="expanderHead" style="cursor:pointer;">
+		目录 <span id="expanderSign">[−]</span>
+		</h1>
+	    <div id="article-entry-toc" data-role="collapsible" class="article-entry-toc">
+		  <ol class="toc"><li class="toc-item toc-level-2"><a class="toc-link" href="#Vert-x_实例"><span class="toc-text">Vert.x 实例</span></a><ol class="toc-child"><li class="toc-item toc-level-3"><a class="toc-link" href="#线程池"><span class="toc-text">线程池</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#Verticle"><span class="toc-text">Verticle</span></a><ol class="toc-child"><li class="toc-item toc-level-4"><a class="toc-link" href="#三种类型"><span class="toc-text">三种类型</span></a></li><li class="toc-item toc-level-4"><a class="toc-link" href="#发布方式"><span class="toc-text">发布方式</span></a></li></ol></li></ol></li><li class="toc-item toc-level-2"><a class="toc-link" href="#Verticle发布和Vert-x线程模型"><span class="toc-text">Verticle发布和Vert.x线程模型</span></a><ol class="toc-child"><li class="toc-item toc-level-3"><a class="toc-link" href="#Verticle发布过程"><span class="toc-text">Verticle发布过程</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#线程模型"><span class="toc-text">线程模型</span></a><ol class="toc-child"><li class="toc-item toc-level-4"><a class="toc-link" href="#Netty的线程模型"><span class="toc-text">Netty的线程模型</span></a></li><li class="toc-item toc-level-4"><a class="toc-link" href="#Vert-x的线程模型"><span class="toc-text">Vert.x的线程模型</span></a></li></ol></li></ol></li></ol>
+	    </div>
+	  
+	  
+      
+        <p>Vert.x是一个在JVM开发reactive应用的框架，可用于开发异步、可伸缩、高并发的Web应用(虽然不限于web应用)。其目的在于为JVM提供一个Node.js的替代方案。开发者可以通过它使用JavaScript、Ruby、Groovy、Java，甚至是混合语言来编写应用。<br>使用Vertx.x框架，可以用JavaScript、CoffeeScript、Ruby、Python、Groovy或Java开发应用程序的组件，最终应用程序可以是混合语言构建的。</p>
+<p>本文试图揭示Vert.x的线程模型的应用，通过源代码分析Vert.x如何使用线程池处理请求的，以及比较Netty和Vert.x使用线程池的异同。</p>
+<p>也许你觉得奇怪，默认启动一个Vert.x Verticle实例，它只用一个线程处理事件，在多核的情况下你需要创建多个Verticle实例以充分利用多个CPU Core的性能。</p>
+<a id="more"></a>
+<h2 id="Vert-x_实例">Vert.x 实例</h2>
+<p>首先先啰嗦地介绍一些Vert.x概念，熟悉Vert.x开发的朋友可以跳过这一节。</p>
+<p>在Vert.x里，如果你不使用Vertx对象，你几乎是寸步难行。</p>
+<p>Vertx对象扮演着Vert.x控制中心的角色，同时它也提供了大量的功能，例如：</p>
+<ul>
+<li>编写TCP客户端和服务器</li>
+<li>编写HTTP客户端和服务器，包括websocket</li>
+<li>Event bus</li>
+<li>共享数据</li>
+<li>定时器</li>
+<li>发布和卸载Verticle</li>
+<li>UDP</li>
+<li>DNS client</li>
+<li>文件系统访问</li>
+<li>高可用</li>
+<li>集群</li>
+</ul>
+<p>如果你将Vert.x嵌入到你的应用程序中，你可以向下面这样获得一个Vertx对象的引用</p>
+<figure class="highlight java"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">Vertx vertx = Vertx.vertx();</div></pre></td></tr></table></figure>
+
+<p>当你实例化Vertx对象时，如果你感觉默认的参数不符合你的需求，你可以指定实例化时的参数：</p>
+<figure class="highlight java"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">Vertx vertx = Vertx.vertx(<span class="keyword">new</span> VertxOptions().setWorkerPoolSize(<span class="number">40</span>));</div></pre></td></tr></table></figure>
+
+<p><a href="http://vertx.io/docs/apidocs/io/vertx/core/VertxOptions.html" target="_blank" rel="external">VertxOptions</a>对象拥有很多关于Vertx实例设置，例如配置集群，高可用设置，线程池大小以及等等其他参数。下面就介绍一下它的线程池。</p>
+<h3 id="线程池">线程池</h3>
+<p>1、eventLoopGroup<br>这个对象是<code>NioEventLoopGroup</code>的一个实例，它的线程池的大小由<code>options.getEventLoopPoolSize()</code>决定，如果没有设置，默认为CPU核数 * 2。</p>
+<figure class="highlight java"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line">eventLoopThreadFactory = <span class="keyword">new</span> VertxThreadFactory(<span class="string">"vert.x-eventloop-thread-"</span>, checker, <span class="keyword">false</span>);</div><div class="line">   eventLoopGroup = <span class="keyword">new</span> NioEventLoopGroup(options.getEventLoopPoolSize(), eventLoopThreadFactory);</div><div class="line">   eventLoopGroup.setIoRatio(NETTY_IO_RATIO);</div></pre></td></tr></table></figure>
+
+<p>它的<code>EventLoop</code>和一个Context对应：</p>
+<figure class="highlight java"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">protected</span> <span class="title">ContextImpl</span>(……) {</div><div class="line">	……</div><div class="line">	EventLoopGroup group = vertx.getEventLoopGroup();</div><div class="line">    <span class="keyword">if</span> (group != <span class="keyword">null</span>) {</div><div class="line">      <span class="keyword">this</span>.eventLoop = group.next();</div><div class="line">    } <span class="keyword">else</span> {</div><div class="line">      <span class="keyword">this</span>.eventLoop = <span class="keyword">null</span>;</div><div class="line">    }</div><div class="line">	……</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>它用来执行标准的Verticle。</p>
+<p>2、WorkerPool<br>用来执行worker Verticle。</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div></pre></td><td class="code"><pre><div class="line">workerPool = Executors.newFixedThreadPool(<span class="keyword">options</span>.getWorkerPoolSize(),</div><div class="line">                <span class="keyword">new</span> VertxThreadFactory(<span class="string">"vert.x-worker-thread-"</span>, checker, <span class="keyword">true</span>));</div></pre></td></tr></table></figure>
+
+
+
+<p>3、Internal Blocking Pool<br>内部使用的线程池，可以用来将阻塞代码异步化。</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div></pre></td><td class="code"><pre><div class="line">internalBlockingPool = Executors.newFixedThreadPool(<span class="keyword">options</span>.getInternalBlockingPoolSize(),</div><div class="line">                <span class="keyword">new</span> VertxThreadFactory(<span class="string">"vert.x-internal-blocking-"</span>, checker, <span class="keyword">true</span>));</div></pre></td></tr></table></figure>
+
+<p>不要在event loop中执行阻塞操作， 比如访问数据库或者网络资源，这绝对会影响你的应用的性能。对于这些阻塞操作，你可以将它们异步化：</p>
+<figure class="highlight java"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div></pre></td><td class="code"><pre><div class="line">vertx.executeBlocking(future -&gt; {</div><div class="line">  <span class="comment">// 下面这行代码可能花费很长时间</span></div><div class="line">  String result = someAPI.blockingMethod(<span class="string">"hello"</span>);</div><div class="line">  future.complete(result);</div><div class="line">}, res -&gt; {</div><div class="line">  System.out.println(<span class="string">"The result is: "</span> + res.result());</div><div class="line">});</div></pre></td></tr></table></figure>
+
+<p>默认情况下executeBlocking会在同一个context中执行(同一个verticle实例)，它们会串行化执行。如果不关心这个执行的顺序，可以将ordered参数设为false，它们会在worker pool线程池中并行的执行。</p>
+<p>另外一种执行阻塞代码的方式就是使用worker verticle，worker verticle总是在worker pool线程池中执行。</p>
+<h3 id="Verticle">Verticle</h3>
+<p>Verticle有点类似Actor模型，也可以实现并发的，可扩展的，易于发布的模型。</p>
+<p>一个vert.x应用可以包含多个verticle实例，实例之间可以通过event bus通讯。</p>
+<h4 id="三种类型">三种类型</h4>
+<p><a href="http://vertx.io/docs/vertx-core/java/#_verticle_types" target="_blank" rel="external">http://vertx.io/docs/vertx-core/java/#_verticle_types</a></p>
+<p>1、Standard Verticle： 最通用的类型，总是在event loop中执行。<br>2、Worker Verticle：它们使用worker pool线程池运行。一个verticle实例绝对不会在两个或者更多线程中并发执行。<br>3、Multi-threaded worker verticle：它们使用worker pool线程池运行。 一个verticle实例可以在多个线程中并发执行。</p>
+<p>实现一个Verticle很简单：</p>
+<figure class="highlight java"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">public</span> <span class="class"><span class="keyword">class</span> <span class="title">MyVerticle</span> <span class="keyword">extends</span> <span class="title">AbstractVerticle</span> </span>{</div><div class="line"></div><div class="line">  <span class="comment">// 当发布verticle时调用</span></div><div class="line">  <span class="keyword">public</span> <span class="keyword">void</span> <span class="title">start</span>() {</div><div class="line">  }</div><div class="line"></div><div class="line">  <span class="comment">// 可以不实现。当 verticle 卸载时调用</span></div><div class="line">  <span class="keyword">public</span> <span class="keyword">void</span> <span class="title">stop</span>() {</div><div class="line">  }</div><div class="line"></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<h4 id="发布方式">发布方式</h4>
+<p>1、命令行方式<br><code>vertx run SomeJavaSourceFile.java</code><br>或者通过<code>maven-shade-plugin</code>打包成一个<code>fat</code>包:</p>
+<figure class="highlight xml"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div></pre></td><td class="code"><pre><div class="line"><span class="tag">&lt;<span class="title">transformers</span>&gt;</span></div><div class="line">    <span class="tag">&lt;<span class="title">transformer</span> <span class="attribute">implementation</span>=<span class="value">"org.apache.maven.plugins.shade.resource.ManifestResourceTransformer"</span>&gt;</span></div><div class="line">        <span class="tag">&lt;<span class="title">manifestEntries</span>&gt;</span></div><div class="line">            <span class="tag">&lt;<span class="title">Main-Class</span>&gt;</span>io.vertx.core.Starter<span class="tag">&lt;/<span class="title">Main-Class</span>&gt;</span></div><div class="line">            <span class="tag">&lt;<span class="title">Main-Verticle</span>&gt;</span>com.colobu.vertx.Main<span class="tag">&lt;/<span class="title">Main-Verticle</span>&gt;</span></div><div class="line">        <span class="tag">&lt;/<span class="title">manifestEntries</span>&gt;</span></div><div class="line">    <span class="tag">&lt;/<span class="title">transformer</span>&gt;</span></div><div class="line">    <span class="tag">&lt;<span class="title">transformer</span> <span class="attribute">implementation</span>=<span class="value">"org.apache.maven.plugins.shade.resource.AppendingTransformer"</span>&gt;</span></div><div class="line">        <span class="tag">&lt;<span class="title">resource</span>&gt;</span>META-INF/services/io.vertx.core.spi.VerticleFactory<span class="tag">&lt;/<span class="title">resource</span>&gt;</span></div><div class="line">    <span class="tag">&lt;/<span class="title">transformer</span>&gt;</span></div><div class="line"><span class="tag">&lt;/<span class="title">transformers</span>&gt;</span></div></pre></td></tr></table></figure>
+
+<p>然后运行 <code>java -jar xxx-fat.jar</code>,你还可以传递一些参数。</p>
+<p>2、编程方式<br>你也可以编程的方式,通过<code>vertx.deployVerticle</code>发布：</p>
+<figure class="highlight java"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">public</span> <span class="class"><span class="keyword">class</span> <span class="title">Main</span>  <span class="keyword">extends</span> <span class="title">AbstractVerticle</span> </span>{</div><div class="line"></div><div class="line">    <span class="keyword">public</span> <span class="keyword">static</span> <span class="keyword">void</span> <span class="title">main</span>(String[] args) {</div><div class="line">        VertxOptions vo = <span class="keyword">new</span> VertxOptions();</div><div class="line">        vo.setEventLoopPoolSize(<span class="number">16</span>);</div><div class="line">        Vertx vertx = Vertx.vertx(vo);</div><div class="line"></div><div class="line">        DeploymentOptions options = <span class="keyword">new</span> DeploymentOptions();</div><div class="line">        options.setInstances(<span class="number">100</span>);</div><div class="line"></div><div class="line">        vertx.deployVerticle(Main.class.getName(), options, e -&gt; {</div><div class="line">            System.out.println(e.succeeded());</div><div class="line">            System.out.println(e.failed());</div><div class="line">            System.out.println(e.cause());</div><div class="line">            System.out.println(e.result());</div><div class="line">        });</div><div class="line">    }</div><div class="line">    <span class="annotation">@Override</span></div><div class="line">    <span class="keyword">public</span> <span class="keyword">void</span> <span class="title">start</span>() {</div><div class="line">        Handler&lt;HttpServerRequest&gt; handler = e -&gt; {</div><div class="line">            HttpServerResponse response = e.response();</div><div class="line">            response.putHeader(<span class="string">"content-type"</span>, <span class="string">"application/json"</span>).end(<span class="string">"Hello world"</span>);</div><div class="line">        };</div><div class="line">        vertx.createHttpServer().requestHandler(handler).listen(<span class="number">8080</span>);</div><div class="line">    }</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<h2 id="Verticle发布和Vert-x线程模型">Verticle发布和Vert.x线程模型</h2>
+<p>以上比较啰嗦，主要介绍了一些Vert.x的一些概念。下面是我想重点介绍的内容。</p>
+<p>本节以实现一个简单的http server为例(编程方式发布Verticle)，分析 vert.x 的线程和Verticle的关系。只分析标准的Verticle。代码如上。</p>
+<h3 id="Verticle发布过程">Verticle发布过程</h3>
+<p>首先先创建一个Vertx实例，可以你可以通过<code>VertxOptions</code>设置线程池的大小。上面的例子中设置Event Loop线程池的大小为16:</p>
+<figure class="highlight java"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">vo.setEventLoopPoolSize(<span class="number">16</span>);</div></pre></td></tr></table></figure>
+
+<p>因此即使你创建几百个Verticle，也只会有16个Event Loop处理它们，你可以通过<code>jstack</code>查看这些线程。你会看到多个名为<code>vert.x-eventloop-thread-&lt;num&gt;</code>的线程，一个<code>vertx-blocked-thread-checker</code>线程，一个<code>vert.x-acceptor-thread-0</code>。</p>
+<p>调用<code>void deployVerticle(String name, DeploymentOptions options, Handler&lt;AsyncResult&lt;String&gt;&gt; completionHandler)</code>方法发布<code>Verticle</code>。<br><code>DeploymentOptions</code>对象可以设置发布参数，比如是否是worker verticle,多线程worker verticle, ha, 隔离组等， 重要的是instances，它用来指定分布的Verticle实例的数量，默认是一个。</p>
+<p>底层调用<code>DeploymentManager</code>的<code>doDeployVerticle</code>来实现，它会根据实例数创建相应多的<code>Verticle</code>,然后调用<code>doDeploy</code>发布这些<code>Verticle</code>:</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">Verticle[] verticles = createVerticles(verticleFactory, identifier, <span class="keyword">options</span>.getInstances(), <span class="keyword">cl</span>);</div></pre></td></tr></table></figure>
+
+<p>我将<code>doDeploy</code>方法简化，让我们看一下关键代码：</p>
+<figure class="highlight java"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">private</span> <span class="keyword">void</span> <span class="title">doDeploy</span>(String identifier, String deploymentID, DeploymentOptions options,</div><div class="line">                          ContextImpl parentContext,</div><div class="line">                          ContextImpl callingContext,</div><div class="line">                          Handler&lt;AsyncResult&lt;String&gt;&gt; completionHandler,</div><div class="line">                          ClassLoader tccl, Verticle... verticles) {</div><div class="line">        <span class="comment">//准备工作</span></div><div class="line">        ……</div><div class="line">        </div><div class="line">        <span class="keyword">for</span> (Verticle verticle: verticles) {</div><div class="line">            <span class="comment">//创建上下文</span></div><div class="line">            ContextImpl context = options.isWorker() ? vertx.createWorkerContext(options.isMultiThreaded(), deploymentID, conf, tccl) :</div><div class="line">                    vertx.createEventLoopContext(deploymentID, conf, tccl);</div><div class="line">            </div><div class="line">            deployment.addVerticle(<span class="keyword">new</span> VerticleHolder(verticle, context));</div><div class="line">            context.runOnContext(v -&gt; {</div><div class="line">                <span class="keyword">try</span> {</div><div class="line">                    verticle.init(vertx, context);</div><div class="line">                    Future&lt;Void&gt; startFuture = Future.future();</div><div class="line">                    verticle.start(startFuture);</div><div class="line">                    startFuture.setHandler(……);</div><div class="line">                } <span class="keyword">catch</span> (Throwable t) {}</div><div class="line">            });</div><div class="line">        }</div><div class="line">    }</div></pre></td></tr></table></figure>
+
+<p>可以看到#11 行创建了一个上下文ContextImpl, 因为本例中我们不用worker模式，所以这个上下文是通过<code>vertx.createEventLoopContext(deploymentID, conf, tccl)</code>创建的。每个verticle都会创建一个新的上下文，因此verticle和上下文是意义对应的。</p>
+<p>#17 行初始化verticle，#19 行启动这个verticle。还记得我们的例子中实现的<code>start</code>方法吗，它会在这里被调用。</p>
+<p>这样，多个verticle实例被发布了。</p>
+<h3 id="线程模型">线程模型</h3>
+<p>首先插播一下Netty的线程模型，不感兴趣的可以略过。</p>
+<h4 id="Netty的线程模型">Netty的线程模型</h4>
+<p>虽然Vert.x底层籍由Netty实现，但是它的处理方式与Netty NIO的线程模型是不同的。<br>(以下谈论的Netty线程模型是指NIO的情况)<br>比如下面的Netty代码片段：</p>
+<figure class="highlight java"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div></pre></td><td class="code"><pre><div class="line">EventLoopGroup parentGroup = <span class="keyword">new</span> NioEventLoopGroup(<span class="number">1</span>);</div><div class="line">EventLoopGroup childGroup = <span class="keyword">new</span> NioEventLoopGroup(<span class="number">50</span>);</div><div class="line"><span class="keyword">try</span> {</div><div class="line">           ServerBootstrap b = <span class="keyword">new</span> ServerBootstrap();</div><div class="line">           b.group(parentGroup, childGroup)</div><div class="line">                   .channel(NioServerSocketChannel.class)</div><div class="line">                   .childHandler(<span class="keyword">new</span> ChannelInitializer&lt;SocketChannel&gt;(){……});</div><div class="line"></div><div class="line">           Channel ch = b.bind(<span class="string">"0.0.0.0"</span>,<span class="number">8080</span>).sync().channel();</div><div class="line">           ch.closeFuture().sync();</div><div class="line">       } <span class="keyword">finally</span> {</div><div class="line">           parentGroup.shutdownGracefully();</div><div class="line">           childGroup.shutdownGracefully();</div><div class="line">       }</div></pre></td></tr></table></figure>
+
+<p><code>NioEventLoopGroup</code>代表一组<code>EventLoop</code>，每个<code>EventLoop</code>映射一个线程，每个<code>Channel</code>注册一个<code>EventLoop</code>,但是一个<code>EventLoop</code>可以关联多个<code>Channel</code>。<br><code>parentGroup</code>用来处理Accept事件，而<code>childGroup</code>用来处理其余的IO事件。当有并发连接的时候，<code>Handler</code>会在<code>childGroup</code>线程池中执行。你可以指定<code>childGroup</code>的线程数量，如果没有指定，则从系统属性中读取&quot;io.netty.eventLoopThreads&quot;，如果这个属性没有设置，则使用CPU核数 <em> 2 (Runtime.getRuntime().availableProcessors() </em> 2))。一般<code>parentGroup</code>设置为1，我们只需要一个Acceptor处理客户端的连接即可。</p>
+<p>当有多个并发连接的时候，每个连接/Channel被分配到一个<code>EventLoop</code>上。<code>EventLoop</code>选择是均匀地 (如果线程数是2的n次方，可以用比较快的选择方法PowerOfTwoEventExecutorChooser):</p>
+<figure class="highlight java"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">private</span> <span class="keyword">final</span> <span class="class"><span class="keyword">class</span> <span class="title">PowerOfTwoEventExecutorChooser</span> <span class="keyword">implements</span> <span class="title">EventExecutorChooser</span> </span>{</div><div class="line">    <span class="annotation">@Override</span></div><div class="line">    <span class="keyword">public</span> EventExecutor <span class="title">next</span>() {</div><div class="line">        <span class="keyword">return</span> children[childIndex.getAndIncrement() & children.length - <span class="number">1</span>];</div><div class="line">    }</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">private</span> <span class="keyword">final</span> <span class="class"><span class="keyword">class</span> <span class="title">GenericEventExecutorChooser</span> <span class="keyword">implements</span> <span class="title">EventExecutorChooser</span> </span>{</div><div class="line">    <span class="annotation">@Override</span></div><div class="line">    <span class="keyword">public</span> EventExecutor <span class="title">next</span>() {</div><div class="line">        <span class="keyword">return</span> children[Math.abs(childIndex.getAndIncrement() % children.length)];</div><div class="line">    }</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>因此一旦如果某个<code>EventLoop</code>处理慢了，则这个线程上的event可能出现堆积。<br>比如下面的代码故意在某个线程上处理慢一些，导致这个<code>EventLoop</code>上出现堆积，Netty并没有根据压力将时间分配到其它处理快的<code>EventLoop</code>上。</p>
+<figure class="highlight java"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">public</span> <span class="class"><span class="keyword">class</span> <span class="title">HelloServerHandler</span> <span class="keyword">extends</span> <span class="title">ChannelInboundHandlerAdapter</span> </span>{</div><div class="line">	……</div><div class="line">	</div><div class="line">    <span class="annotation">@Override</span></div><div class="line">    <span class="keyword">public</span> <span class="keyword">void</span> <span class="title">channelRead</span>(ChannelHandlerContext ctx, Object msg) {</div><div class="line">        String name = Thread.currentThread().getName();</div><div class="line">        System.out.println(name);</div><div class="line">        <span class="keyword">if</span> (name.endsWith(<span class="string">"-5"</span>)) {</div><div class="line">            <span class="keyword">try</span> {</div><div class="line">                Thread.sleep(<span class="number">1000</span>);</div><div class="line">            } <span class="keyword">catch</span> (InterruptedException e) {</div><div class="line">                e.printStackTrace();</div><div class="line">            }</div><div class="line">        }</div><div class="line">		……</div><div class="line"></div><div class="line">｝</div></pre></td></tr></table></figure>
+
+<p>输出结果可以看到<code>nioEventLoopGroup-3-5</code>处理了同样多的请求，而且都堆积在后面了。</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div></pre></td><td class="code"><pre><div class="line">……</div><div class="line">nioEventLoopGroup-3-19</div><div class="line">nioEventLoopGroup-3-18</div><div class="line">nioEventLoopGroup-3-19</div><div class="line">nioEventLoopGroup-3-18</div><div class="line">nioEventLoopGroup-3-20</div><div class="line">nioEventLoopGroup-3-20</div><div class="line">nioEventLoopGroup-3-5</div><div class="line">nioEventLoopGroup-3-5</div><div class="line">nioEventLoopGroup-3-5</div><div class="line">nioEventLoopGroup-3-5</div><div class="line">nioEventLoopGroup-3-5</div><div class="line">nioEventLoopGroup-3-5</div><div class="line">nioEventLoopGroup-3-5</div><div class="line">nioEventLoopGroup-3-5</div><div class="line">nioEventLoopGroup-3-5</div></pre></td></tr></table></figure>
+
+<p>因此，我们可以了解到，当启动一个NIO方式的Netty实例的时候，它会使用一个线程池来处理http请求。</p>
+<p>Netty 4.0的线程模型被很好的重定义，一个<code>ChannelHandler</code>实例的方法不会被并发的调用，除非它被<code>@Sharable</code>标记，因此你不应该增加一个ChannelHandler 实例多次。当你增加一个handler到ChannelPipeline中时，你可以指定一个特定的<code>EventExecutorGroup</code>来执行这个handler。如果没有指定，则使用Channel注册的<code>EventLoop</code>来执行。如果两个Handler被指定不同的<code>EventExecutorGroup</code>，则它们会并发执行，因此如果它们会访问共享数据的化，你需要关注并发控制的问题。更多内容可以查看 <a href="http://netty.io/wiki/new-and-noteworthy-in-4.0.html#well-defined-thread-model" target="_blank" rel="external">Netty的文档</a>。</p>
+<h4 id="Vert-x的线程模型">Vert.x的线程模型</h4>
+<p>Vert.x如何在线程中处理事件的呢，还是以我们的例子分析。</p>
+<p>回顾一下我们实现的Verticle的start方法。</p>
+<figure class="highlight java"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div></pre></td><td class="code"><pre><div class="line"><span class="annotation">@Override</span></div><div class="line">    <span class="keyword">public</span> <span class="keyword">void</span> <span class="title">start</span>() {</div><div class="line">        Handler&lt;HttpServerRequest&gt; handler = e -&gt; {</div><div class="line">            HttpServerResponse response = e.response();</div><div class="line">            response.putHeader(<span class="string">"content-type"</span>, <span class="string">"application/json"</span>).end(<span class="string">"Hello world"</span>);</div><div class="line">        };</div><div class="line">        vertx.createHttpServer().requestHandler(handler).listen(<span class="number">8080</span>);</div><div class="line">    }</div></pre></td></tr></table></figure>
+
+<p>在这个start方法中，我们创建了一个http server，让它监听 8080端口， http request的处理交给handler执行。 那么监听线程是哪一个？handler又是在哪个线程池中执行的呢？调用多个Verticle实例的方法为什么没有出现&quot;地址/端口被占用&quot;的异常呢？</p>
+<p>首先vertx.createHttpServer()会创建一个HttpServerImpl对象，可以通过HttpServerOptions配置更多的参数，每个Verticle实例都会创建一个HttpServerImpl对象。requestHandler(handler)方法设置处理器，你还可以使用Vert.x-Web设置路由的功能。</p>
+<p><code>listen(8080)</code>启动http 服务器，它实际调用netty实现的。<br>我将<code>listen</code>方法简化，去除一些检查代码和回调处理，只保留关键代码如下：</p>
+<figure class="highlight java"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">public</span> <span class="keyword">synchronized</span> HttpServer <span class="title">listen</span>(<span class="keyword">int</span> port, String host, Handler&lt;AsyncResult&lt;HttpServer&gt;&gt; listenHandler) {        </div><div class="line">        listenContext = vertx.getOrCreateContext();</div><div class="line">        listening = <span class="keyword">true</span>;       </div><div class="line">        <span class="keyword">synchronized</span> (vertx.sharedHttpServers()) {</div><div class="line">            id = <span class="keyword">new</span> ServerID(port, host);</div><div class="line">            HttpServerImpl shared = vertx.sharedHttpServers().get(id);</div><div class="line">            <span class="keyword">if</span> (shared == <span class="keyword">null</span>) {</div><div class="line">                serverChannelGroup = <span class="keyword">new</span> DefaultChannelGroup(<span class="string">"vertx-acceptor-channels"</span>, GlobalEventExecutor.INSTANCE);</div><div class="line">                ServerBootstrap bootstrap = <span class="keyword">new</span> ServerBootstrap();</div><div class="line">                bootstrap.group(vertx.getAcceptorEventLoopGroup(), availableWorkers);</div><div class="line">                bootstrap.channelFactory(<span class="keyword">new</span> VertxNioServerChannelFactory());</div><div class="line">                </div><div class="line">                bootstrap.childHandler(<span class="keyword">new</span> ChannelInitializer&lt;Channel&gt;() {</div><div class="line">                    <span class="annotation">@Override</span></div><div class="line">                    <span class="keyword">protected</span> <span class="keyword">void</span> <span class="title">initChannel</span>(Channel ch) <span class="keyword">throws</span> Exception {</div><div class="line">                        ……</div><div class="line">                        pipeline.addLast(<span class="string">"handler"</span>, <span class="keyword">new</span> ServerHandler());</div><div class="line">                    }</div><div class="line">                });</div><div class="line"></div><div class="line">                addHandlers(<span class="keyword">this</span>, listenContext);</div><div class="line">                </div><div class="line">                vertx.sharedHttpServers().put(id, <span class="keyword">this</span>);</div><div class="line">                actualServer = <span class="keyword">this</span>;</div><div class="line">            } <span class="keyword">else</span> {</div><div class="line">                <span class="comment">// Server already exists with that host/port - we will use that</span></div><div class="line">                actualServer = shared;</div><div class="line">                addHandlers(actualServer, listenContext);</div><div class="line">                metrics = vertx.metricsSPI().createMetrics(<span class="keyword">this</span>, <span class="keyword">new</span> SocketAddressImpl(port, host), options);</div><div class="line">            }</div><div class="line">            </div><div class="line">        }</div><div class="line">        <span class="keyword">return</span> <span class="keyword">this</span>;</div><div class="line">    }</div></pre></td></tr></table></figure>
+
+<p>#6 行可以看到它会检查使用这个IP地址和端口的http server是否存在，如果存在的化直接跳到# 27行。因此回答上面的问题，多个Verticle实例不会引起冲突，因为它们会共享同一个http server。</p>
+<p>这个http server通过netty ServerBootstrap创建。#10 行可以看到acceptor是一个单线程执行的,acceptorEventLoopGroup在VertxImpl中定义。</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line"><span class="attribute">acceptorEventLoopGroup </span>=<span class="string"> new NioEventLoopGroup(1, acceptorEventLoopThreadFactory);</span></div></pre></td></tr></table></figure>
+
+<p>#10 行还显示，netty的IO worker线程池由<code>availableWorkers</code>确定，它是一个VertxEventLoopGroup对象。VertxEventLoopGroup类扩展<code>AbstractEventExecutorGroup</code>,实现了<code>EventLoopGroup</code>接口:</p>
+<figure class="highlight java"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div></pre></td><td class="code"><pre><div class="line">……</div><div class="line"><span class="annotation">@Override</span></div><div class="line"><span class="keyword">public</span> <span class="keyword">synchronized</span> EventLoop <span class="title">next</span>() {</div><div class="line">  <span class="keyword">if</span> (workers.isEmpty()) {</div><div class="line">    <span class="keyword">throw</span> <span class="keyword">new</span> IllegalStateException();</div><div class="line">  } <span class="keyword">else</span> {</div><div class="line">    EventLoop worker = workers.get(pos).worker;</div><div class="line">    pos++;</div><div class="line">    checkPos();</div><div class="line">    <span class="keyword">return</span> worker;</div><div class="line">  }</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">public</span> <span class="keyword">synchronized</span> <span class="keyword">void</span> <span class="title">addWorker</span>(EventLoop worker) {</div><div class="line">  EventLoopHolder holder = findHolder(worker);</div><div class="line">  <span class="keyword">if</span> (holder == <span class="keyword">null</span>) {</div><div class="line">    workers.add(<span class="keyword">new</span> EventLoopHolder(worker));</div><div class="line">  } <span class="keyword">else</span> {</div><div class="line">    holder.count++;</div><div class="line">  }</div><div class="line">} </div><div class="line">……</div></pre></td></tr></table></figure>
+
+<p>线程的数量由<code>worker</code>的数量决定，worker的类型是EventLoop,对应一个线程，有多少<code>worker</code>就会有多少线程。</p>
+<p>通过<code>addWorker</code>可以增加线程的数量，worker不会重复。</p>
+<p>回到刚才的<code>listen</code>方法， #21 行addHandlers方法会配置handler在哪一个event loop中执行：</p>
+<figure class="highlight java"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">private</span> <span class="keyword">void</span> <span class="title">addHandlers</span>(HttpServerImpl server, ContextImpl context) {</div><div class="line">  <span class="keyword">if</span> (requestStream.handler() != <span class="keyword">null</span>) {</div><div class="line">    server.reqHandlerManager.addHandler(requestStream.handler(), context);</div><div class="line">  }</div><div class="line">  <span class="keyword">if</span> (wsStream.handler() != <span class="keyword">null</span>) {</div><div class="line">    server.wsHandlerManager.addHandler(wsStream.handler(), context);</div><div class="line">  }</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p><code>server.reqHandlerManager.addHandler</code>方法如下：</p>
+<figure class="highlight java"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">public</span> <span class="keyword">synchronized</span> <span class="keyword">void</span> <span class="title">addHandler</span>(Handler&lt;T&gt; handler, ContextImpl context) {</div><div class="line">  EventLoop worker = context.nettyEventLoop();</div><div class="line">  availableWorkers.addWorker(worker);</div><div class="line">  Handlers&lt;T&gt; handlers = <span class="keyword">new</span> Handlers&lt;&gt;();</div><div class="line">  Handlers&lt;T&gt; prev = handlerMap.putIfAbsent(worker, handlers);</div><div class="line">  <span class="keyword">if</span> (prev != <span class="keyword">null</span>) {</div><div class="line">    handlers = prev;</div><div class="line">  }</div><div class="line">  handlers.addHandler(<span class="keyword">new</span> HandlerHolder&lt;&gt;(context, handler));</div><div class="line">  hasHandlers = <span class="keyword">true</span>;</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>#2 行得到这个上下文的EventLoop。 还记得上下文的EventLoop怎么创建出来的吗？每个<code>Verticle</code>实例关联一个上下文，因此一个<code>Verticle</code>实例只会创建一个worker。<br>把这个worker加入到availableWorkers，这样就增加了一个事件处理线程。</p>
+<p>因此我们可以看出正常情况下Vert.x的每个<code>Verticle</code>实例只会用一个线程处理请求，在多核情况下一定要配置instance的数量。</p>
+<p>如果配置的instance的数量大于eventLoopPoolSize数量，那么就会有一个Event Loop处理多个instance的情况。 线程配置的过多有时不会带来性能的提升，由于线程也有context swicthing，反而会带来性能的降低。</p>
+
+      
+    </div>
+    <footer class="article-footer">
+	
+<div class="bdsharebuttonbox"><a title="分享到新浪微博" class="bds_tsina" href="#" data-cmd="tsina"></a><a title="分享到微信" class="bds_weixin" href="#" data-cmd="weixin"></a><a title="分享到QQ空间" class="bds_qzone" href="#" data-cmd="qzone"></a><a title="分享到印象笔记" class="bds_evernotecn" href="#" data-cmd="evernotecn"></a><a title="分享到有道云笔记" class="bds_youdao" href="#" data-cmd="youdao"></a><a title="分享到百度云收藏" class="bds_bdysc" href="#" data-cmd="bdysc"></a><a class="bds_more" href="#" data-cmd="more"></a></div>
+<script>window._bd_share_config={"common":{"bdSnsKey":{},"bdText":"","bdMini":"2","bdMiniList":false,"bdPic":"","bdStyle":"0","bdSize":"24"},"share":{}};with(document)0[(getElementsByTagName('head')[0]||body).appendChild(createElement('script')).src='http://bdimg.share.baidu.com/static/api/js/share.js?v=89860593.js?cdnversion='+~(-new Date()/36e5)];</script>
+      
+	  
+	  
+        <a href="http://colobu.com/2016/03/31/vertx-thread-model/#comments" class="article-comment-link">评论</a>
+      
+	  
+      
+    </footer>
+  </div>
+  
+    
+<nav id="article-nav">
+  
+  
+    <a href="/2016/03/23/Go-HTTP-request-router-and-web-framework-benchmark/" id="article-nav-older" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">Older</strong>
+      <div class="article-nav-title">超全的Go Http路由框架性能比较</div>
+    </a>
+  
+</nav>
+
+  
+</article>
+
+
+<section id="comments">
+  <div class="ds-thread" data-thread-key="2016/03/31/vertx-thread-model/" data-title="Vert.x 线程模型揭秘" data-url="http://colobu.com/2016/03/31/vertx-thread-model/"></div>
+  
+</section>
+</section>
+        
+          <aside id="sidebar">
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">分类</h3>
+    <div class="widget">
+      <ul class="category-list"><li class="category-list-item"><a class="category-list-link" href="/categories/Android/">Android</a><span class="category-list-count">12</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/DOTNET/">DOTNET</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Docker/">Docker</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Go/">Go</a><span class="category-list-count">11</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Java/">Java</a><span class="category-list-count">51</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Linux/">Linux</a><span class="category-list-count">5</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Scala/">Scala</a><span class="category-list-count">12</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/前端开发/">前端开发</a><span class="category-list-count">17</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/大数据/">大数据</a><span class="category-list-count">53</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/工具/">工具</a><span class="category-list-count">10</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/架构/">架构</a><span class="category-list-count">16</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/程序人生/">程序人生</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/算法/">算法</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/管理/">管理</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/网络编程/">网络编程</a><span class="category-list-count">8</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/读书笔记/">读书笔记</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/高并发编程/">高并发编程</a><span class="category-list-count">18</span></li></ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">标签云</h3>
+    <div class="widget tagcloud">
+      <a href="/tags/Android/" style="font-size: 15.71px;">Android</a><a href="/tags/ApacheBench/" style="font-size: 11.43px;">ApacheBench</a><a href="/tags/Bower/" style="font-size: 10.00px;">Bower</a><a href="/tags/C/" style="font-size: 10.00px;">C#</a><a href="/tags/CQRS/" style="font-size: 10.00px;">CQRS</a><a href="/tags/CRC/" style="font-size: 10.00px;">CRC</a><a href="/tags/CSS/" style="font-size: 11.43px;">CSS</a><a href="/tags/CompletableFuture/" style="font-size: 10.00px;">CompletableFuture</a><a href="/tags/Curator/" style="font-size: 20.00px;">Curator</a><a href="/tags/Disruptor/" style="font-size: 10.00px;">Disruptor</a><a href="/tags/Docker/" style="font-size: 11.43px;">Docker</a><a href="/tags/Ember/" style="font-size: 11.43px;">Ember</a><a href="/tags/FastJson/" style="font-size: 10.00px;">FastJson</a><a href="/tags/GAE/" style="font-size: 10.00px;">GAE</a><a href="/tags/GC/" style="font-size: 12.86px;">GC</a><a href="/tags/Gnuplot/" style="font-size: 10.00px;">Gnuplot</a><a href="/tags/Go/" style="font-size: 11.43px;">Go</a><a href="/tags/Gradle/" style="font-size: 10.00px;">Gradle</a><a href="/tags/Grunt/" style="font-size: 10.00px;">Grunt</a><a href="/tags/Gulp/" style="font-size: 10.00px;">Gulp</a><a href="/tags/Hadoop/" style="font-size: 10.00px;">Hadoop</a><a href="/tags/Hazelcast/" style="font-size: 10.00px;">Hazelcast</a><a href="/tags/Ignite/" style="font-size: 10.00px;">Ignite</a><a href="/tags/JVM/" style="font-size: 10.00px;">JVM</a><a href="/tags/Java/" style="font-size: 17.14px;">Java</a><a href="/tags/Kafka/" style="font-size: 18.57px;">Kafka</a><a href="/tags/Lambda/" style="font-size: 14.29px;">Lambda</a><a href="/tags/Linux/" style="font-size: 12.86px;">Linux</a><a href="/tags/LongAdder/" style="font-size: 10.00px;">LongAdder</a><a href="/tags/MathJax/" style="font-size: 10.00px;">MathJax</a><a href="/tags/Maven/" style="font-size: 11.43px;">Maven</a><a href="/tags/Memcached/" style="font-size: 10.00px;">Memcached</a><a href="/tags/Metrics/" style="font-size: 10.00px;">Metrics</a><a href="/tags/Mongo/" style="font-size: 12.86px;">Mongo</a><a href="/tags/Netty/" style="font-size: 15.71px;">Netty</a><a href="/tags/Node/" style="font-size: 10.00px;">Node</a><a href="/tags/OAuth/" style="font-size: 10.00px;">OAuth</a><a href="/tags/Performance/" style="font-size: 10.00px;">Performance</a><a href="/tags/Quartz/" style="font-size: 10.00px;">Quartz</a><a href="/tags/Sass/" style="font-size: 10.00px;">Sass</a>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">归档</h3>
+    <div class="widget">
+      <ul class="archive-list"><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/03/">March 2016</a><span class="archive-list-count">8</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/02/">February 2016</a><span class="archive-list-count">8</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/01/">January 2016</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/12/">December 2015</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/11/">November 2015</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/10/">October 2015</a><span class="archive-list-count">9</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/09/">September 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/08/">August 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/07/">July 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/06/">June 2015</a><span class="archive-list-count">8</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/05/">May 2015</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/04/">April 2015</a><span class="archive-list-count">15</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/03/">March 2015</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/02/">February 2015</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/01/">January 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/12/">December 2014</a><span class="archive-list-count">28</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/11/">November 2014</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/10/">October 2014</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/09/">September 2014</a><span class="archive-list-count">28</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/08/">August 2014</a><span class="archive-list-count">19</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/07/">July 2014</a><span class="archive-list-count">1</span></li></ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">近期文章</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+            <a href="/2016/03/31/vertx-thread-model/">Vert.x 线程模型揭秘</a>
+          </li>
+        
+          <li>
+            <a href="/2016/03/23/Go-HTTP-request-router-and-web-framework-benchmark/">超全的Go Http路由框架性能比较</a>
+          </li>
+        
+          <li>
+            <a href="/2016/03/22/jump-consistent-hash/">一个速度快内存占用小的一致性哈希算法</a>
+          </li>
+        
+          <li>
+            <a href="/2016/03/17/spymemcached-vs-xmemcached-vs-Folsom/">spymemcached vs. xmemcached vs. Folsom</a>
+          </li>
+        
+          <li>
+            <a href="/2016/03/16/why-is-go-gencode-so-fast/">Golang序列化框架对决 - 为什么andyleap/gencode那么快?</a>
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">友情链接</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+			 
+            <a href="http://old.colobu.com" target="_blank">旧的博客</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://stackshare.io" target="_blank">技术栈</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://weekly.manong.io/issues/" target="_blank">码农周刊</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.tuicool.com/mags" target="_blank">编程狂人周刊</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.importnew.com/" target="_blank">importnew</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://ifeve.com/" target="_blank">并发编程网</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://github.com" target="_blank">github</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://stackoverflow.com/" target="_blank">stackoverflow</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.javacodegeeks.com/" target="_blank">javacodegeeks</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.infoq.com/" target="_blank">infoq</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.dzone.com/links/index.html" target="_blank">dzone</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://oj.leetcode.com/problems/" target="_blank">leetcode</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.flaticon.com/" target="_blank">免费的矢量图片</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://fortawesome.github.io/Font-Awesome/" target="_blank">Font-Awesome</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://getbootstrap.com/" target="_blank">Bootstrap</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://emberjs.com/" target="_blank">Ember</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.qianduan.net/icon-font-large-collecting.html" target="_blank">icon font大搜罗</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.iconfont.cn/" target="_blank">阿里巴巴矢量库</a>
+			
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+      <div class="widget-wrap">
+    <h3 class="widget-title">热评文章</h3>
+    <div class="widget">
+		<div class="ds-top-threads" data-range="monthly" data-num-items="5"></div>
+    </div>
+  </div>
+
+  
+      <div class="widget-wrap">
+    <h3 class="widget-title">最新评论</h3>
+    <div class="widget">
+		<ul class="ds-recent-comments" data-num-items="10" data-show-avatars="1" data-show-time="1" data-show-admin="1" data-excerpt-length="70"></ul>
+		<script type="text/javascript">
+		var duoshuoQuery = {short_name:"colobu"};
+		(function() {
+			var ds = document.createElement('script');
+			ds.type = 'text/javascript';ds.async = true;
+			ds.src = 'http://static.duoshuo.com/embed.js';
+			ds.charset = 'UTF-8';
+			(document.getElementsByTagName('head')[0] || document.getElementsByTagName('body')[0]).appendChild(ds);
+		})();
+		</script>
+    </div>
+  </div>
+
+  
+</aside>
+        
+      </div>
+      <footer id="footer">
+  
+  <div class="outer">
+    <div id="footer-info" class="inner">
+      &copy; 2016 smallnest<br>
+	  Powered by <a href="http://hexo.io/" target="_blank">Hexo</a>
+    </div>
+  </div>
+</footer>
+    </div>
+    <nav id="mobile-nav">
+  
+    <a href="/" class="mobile-nav-link">首页</a>
+  
+    <a href="/archives" class="mobile-nav-link">归档</a>
+  
+    <a href="https://github.com/smallnest" class="mobile-nav-link">github</a>
+  
+    <a href="/techreview" class="mobile-nav-link">技术快报</a>
+  
+    <a href="/about" class="mobile-nav-link">关于</a>
+  
+</nav>
+    
+<script src="//cdn.staticfile.org/jquery/1.11.1/jquery.min.js"></script>
+<script src="//cdn.bootcss.com/jquery.lazyload/1.9.1/jquery.lazyload.min.js"></script>
+
+<script src="//libs.cncdn.cn/fancybox/2.1.5/jquery.fancybox.pack.js"></script>
+
+
+<script src="/js/script.js" type="text/javascript"></script>
+
+<!-- mathjax config similar to math.stackexchange -->
+<script type="text/x-mathjax-config">
+  MathJax.Hub.Config({
+    tex2jax: {
+      inlineMath: [ ['$','$'], ["\\(","\\)"] ],
+      processEscapes: true,
+      skipTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code']
+    }
+  });
+  MathJax.Hub.Queue(function() {
+      var all = MathJax.Hub.getAllJax(), i;
+      for(i=0; i < all.length; i += 1) {
+        all[i].SourceElement().parentNode.className += ' has-jax';
+      }
+  });
+</script>
+<script type="text/javascript" src="//cdn.bootcss.com/mathjax/2.6.0-beta.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML">
+</script>
+
+<div id="totop" style="position:fixed;bottom:150px;right:10px;cursor: pointer;z-index: 2000;">
+	<a title="返回顶部"><img src="/images/scrollup.png"/></a>
+</div>
+<script src="/js/totop.js" type="text/javascript"></script>
+
+
+
+
+<script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "//hm.baidu.com/hm.js?e085d87993250aab11f3e0c15f1c2785";
+  var s = document.getElementsByTagName("script")[0]; 
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+
+
+  </div>
+</body>
+</html>
