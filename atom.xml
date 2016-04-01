@@ -4,7 +4,7 @@
   <subtitle><![CDATA[大道至简 Simplicity is the ultimate form of sophistication]]></subtitle>
   <link href="/atom.xml" rel="self"/>
   <link href="http://colobu.com/"/>
-  <updated>2016-04-01T06:56:23.237Z</updated>
+  <updated>2016-04-01T10:33:49.570Z</updated>
   <id>http://colobu.com/</id>
   
   <author>
@@ -13,6 +13,128 @@
   </author>
   
   <generator uri="http://zespia.tw/hexo/">Hexo</generator>
+  
+  <entry>
+    <title><![CDATA[iris 真的是最快的Golang 路由框架吗?]]></title>
+    <link href="http://colobu.com/2016/04/01/Is-iris-the-fastest-golang-router-library/"/>
+    <id>http://colobu.com/2016/04/01/Is-iris-the-fastest-golang-router-library/</id>
+    <published>2016-04-01T07:57:03.000Z</published>
+    <updated>2016-04-01T10:33:38.112Z</updated>
+    <content type="html"><![CDATA[<p>依照我的前一篇文章（<a href="http://colobu.com/2016/03/23/Go-HTTP-request-router-and-web-framework-benchmark/" target="_blank" rel="external">超全的Go Http路由框架性能比较</a>）对各种Go http路由框架的比较， Iris明显胜出，它的性能远远超过其它Golang http路由框架。</p>
+<p>但是，在真实的环境中，Iris真的就是最快的Golang http路由框架吗？</p>
+<a id="more"></a>
+<h3 id="Benchmark测试分析">Benchmark测试分析</h3>
+<p>在那篇文章中我使用的是Julien Schmidt的<a href="https://github.com/julienschmidt/go-http-routing-benchmark" target="_blank" rel="external">测试代码</a>,他模拟了静态路由、Github API、Goolge+ API、Parse API的各种情况，因为这些API是知名网站的开放的API，看起来测试挺真实可靠的。</p>
+<p>但是，这个测试存在着一个严重的问题，就是Handler的业务逻辑非常的简单，各个框架的handler类似，比如Iris的Handler的实现：</p>
+<figure class="highlight golang"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> irisHandler(_ *iris.Context) {}</div><div class="line"></div><div class="line"><span class="keyword">func</span> irisHandlerWrite(c *iris.Context) {</div><div class="line">	io.WriteString(c.ResponseWriter, c.Param(<span class="string">"name"</span>))</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> irisHandlerTest(c *iris.Context) {</div><div class="line">	io.WriteString(c.ResponseWriter, c.Request.RequestURI)</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>几乎没有任何的业务逻辑，最多是往Response中写入一个字符串。</p>
+<p><strong>这和生产环境中的情况严重不符!</strong></p>
+<p>实际的产品肯定会有一些业务的处理，比如参数的校验，数据的计算，本地文件的读取、远程服务的调用、缓存的读取、数据库的读取和写入等，有些操作可能花费的时间很多，一两个毫秒就可以搞定，有的却很耗时，可能需要几十毫秒，比如：</p>
+<ul>
+<li>从一个网络连接中读取数据</li>
+<li>写数据到硬盘中</li>
+<li>调用其它服务，等待服务结果的返回</li>
+<li>……</li>
+</ul>
+<p>这才是我们常用的case,而不是一个简单的写字符串。</p>
+<p>因此那个测试框架的Handler还应该加入时间花费的情况。</p>
+<h3 id="模拟真实的Handler的情况">模拟真实的Handler的情况</h3>
+<p>我们模拟一下真实的情况，看看Iris框架和Golang内置的Http路由框架的性能如何。</p>
+<p>首先使用Iris实现一个Http Server:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> main</div><div class="line"></div><div class="line"><span class="keyword">import</span> (</div><div class="line">	<span class="string">"os"</span></div><div class="line">	<span class="string">"strconv"</span></div><div class="line">	<span class="string">"time"</span></div><div class="line"></div><div class="line">	<span class="string">"github.com/kataras/iris"</span></div><div class="line">)</div><div class="line"></div><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	api := iris.New()</div><div class="line">	api.Get(<span class="string">"/rest/hello"</span>, <span class="keyword">func</span>(c *iris.Context) {</div><div class="line">		sleepTime, _ := strconv.Atoi(os.Args<span class="number">[1</span>])</div><div class="line">		<span class="keyword">if</span> sleepTime &gt;<span class="number"> 0</span> {</div><div class="line">			time.Sleep(time.Duration(sleepTime) * time.Millisecond)</div><div class="line">		}</div><div class="line"></div><div class="line">		c.Text(<span class="string">"Hello world"</span>)</div><div class="line">	})</div><div class="line">	api.Listen(<span class="string">":8080"</span>)</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>我们可以传递给它一个时间花费的参数sleepTime，模拟这个Handler在处理业务时要花费的时间，它会让处理这个Handler的暂停sleepTime毫秒，如果为0,则不需要暂停，这种情况类似上面的测试。</p>
+<p>然后我们使用Go内置的路由功能实现一个Http Server:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> main</div><div class="line"></div><div class="line"><span class="keyword">import</span> (</div><div class="line">	<span class="string">"log"</span></div><div class="line">	<span class="string">"net/http"</span></div><div class="line">	<span class="string">"os"</span></div><div class="line">	<span class="string">"strconv"</span></div><div class="line">	<span class="string">"time"</span></div><div class="line">)</div><div class="line"></div><div class="line"><span class="comment">// There are some golang RESTful libraries and mux libraries but i use the simplest to test.</span></div><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	http.HandleFunc(<span class="string">"/rest/hello"</span>, <span class="keyword">func</span>(w http.ResponseWriter, r *http.Request) {</div><div class="line">		sleepTime, _ := strconv.Atoi(os.Args<span class="number">[1</span>])</div><div class="line">		<span class="keyword">if</span> sleepTime &gt;<span class="number"> 0</span> {</div><div class="line">			time.Sleep(time.Duration(sleepTime) * time.Millisecond)</div><div class="line">		}</div><div class="line"></div><div class="line">		w.Write([]<span class="typename">byte</span>(<span class="string">"Hello world"</span>))</div><div class="line">	})</div><div class="line"></div><div class="line">	err := http.ListenAndServe(<span class="string">":8080"</span>, <span class="constant">nil</span>)</div><div class="line">	<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">		log.Fatal(<span class="string">"ListenAndServe: "</span>, err)</div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>编译两个程序进行测试。<br><strong>1、首先进行业务逻辑时间花费为0的测试</strong><br>运行程序<code>iris 0</code>,然后执行<code>wrk -t16 -c100 -d30s http://127.0.0.1:8080/rest/hello</code>进行并发100,持续30秒的测试。<br>iris的吞吐率为46155 requests/second。</p>
+<p>运行程序<code>gomux 0</code>,然后执行<code>wrk -t16 -c100 -d30s http://127.0.0.1:8080/rest/hello</code>进行并发100,持续30秒的测试。<br>Go内置的路由程序的吞吐率为55944 requests/second。</p>
+<p><em>两者的吞吐量差别不大，iris略差一点</em></p>
+<p><strong>2、然后进行业务逻辑时间花费为10的测试</strong><br>运行程序<code>iris 10</code>,然后执行<code>wrk -t16 -c100 -d30s http://127.0.0.1:8080/rest/hello</code>进行并发100,持续30秒的测试。<br>iris的吞吐率为97 requests/second。</p>
+<p>运行程序<code>gomux 10</code>,然后执行<code>wrk -t16 -c100 -d30s http://127.0.0.1:8080/rest/hello</code>进行并发100,持续30秒的测试。<br>Go内置的路由程序的吞吐率为9294 requests/second。</p>
+<p><strong>3、最后进行业务逻辑时间花费为1000的测试</strong><br>这次模拟一个极端的情况，业务处理很慢，处理一个业务需要1秒的时间。</p>
+<p>运行程序<code>iris 1000</code>,然后执行<code>wrk -t16 -c100 -d30s http://127.0.0.1:8080/rest/hello</code>进行并发100,持续30秒的测试。<br>iris的吞吐率为1 requests/second。</p>
+<p>运行程序<code>gomux 1000</code>,然后执行<code>wrk -t16 -c100 -d30s http://127.0.0.1:8080/rest/hello</code>进行并发100,持续30秒的测试。<br>Go内置的路由程序的吞吐率为95 requests/second。</p>
+<p>可以看到，如果加上业务逻辑的处理时间，Go内置的路由功能要远远好于Iris, 甚至可以说Iris的路由根本无法应用的有业务逻辑的产品中，随着业务逻辑的时间耗费加大，iris的吞吐量急剧下降。</p>
+<p>而对于Go的内置路由来说，业务逻辑的时间耗费加大，单个client会等待更长的时间，但是并发量大的网站来说，吞吐率不会下降太多。<br>比如我们用1000的并发量测试<code>gomux 10</code>和<code>gomux 1000</code>。</p>
+<ul>
+<li><code>gomux 10</code>: 吞吐率为47664</li>
+<li><code>gomux 1000</code>: 吞吐率为979</li>
+</ul>
+<p>这才是Http网站真实的情况，因为我们要应付的网站的并发量，网站应该支持同时有尽可能多的用户访问，即使单个用户得到返回页面需要上百毫秒也可以接受。</p>
+<p>而Iris在业务逻辑的处理时间增大的情况下，无法支持大的吞吐率，即使在并发量很大的情况下(比如1000),吞吐率也很低。</p>
+<p>所以</p>
+<h3 id="深入了解Go_http_server的实现">深入了解Go http server的实现</h3>
+<p>Go http server实现的是每个request对应一个goroutine (goroutine per request), 考虑到Http Keep-Alive的情况，更准确的说是每个连接对应一个goroutine(goroutine per connection)。</p>
+<p>因为goroutine是非常轻量级的，不会像Java那样 Thread per request会导致服务器资源不足，无法创建很多的Thread， Golang可以创建足够多的goroutine，所以goroutine per request的方式在Golang中没有问题。而且这还有一个好处，因为request是在一个goroutine中处理的，不必考虑对同一个Request/Response并发读写的问题。</p>
+<p>如何查看Handler是在哪一个goroutine中执行的呢?我们需要实现一个函数来获取goroutine的Id:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> goID() <span class="typename">int</span> {</div><div class="line">	<span class="keyword">var</span> buf <span class="number">[64</span>]<span class="typename">byte</span></div><div class="line">	n := runtime.Stack(buf[:], <span class="constant">false</span>)</div><div class="line">	idField := strings.Fields(strings.TrimPrefix(<span class="typename">string</span>(buf[:n]), <span class="string">"goroutine "</span>))<span class="number">[0</span>]</div><div class="line">	id, err := strconv.Atoi(idField)</div><div class="line">	<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">		<span class="built_in">panic</span>(fmt.Sprintf(<span class="string">"cannot get goroutine id: %v"</span>, err))</div><div class="line">	}</div><div class="line">	<span class="keyword">return</span> id</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>然后在handler中打印出当前的goroutine id:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span>(c *iris.Context) {</div><div class="line">		fmt.Println(goID())</div><div class="line">		……</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>和</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span>(w http.ResponseWriter, r *http.Request) {</div><div class="line">		fmt.Println(goID())</div><div class="line">		……</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>启动<code>gomux 0</code>,然后运行<code>ab -c 5 -n 5 http://localhost:8080/rest/hello</code>测试一下，apache的ab命令使用5个并发并且每个并发两个请求访问服务器。<br>可以看到服务器的输出：</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div></pre></td><td class="code"><pre><div class="line">21</div><div class="line">18</div><div class="line">17</div><div class="line">19</div><div class="line">20</div><div class="line">33</div><div class="line">35</div><div class="line">36</div><div class="line">37</div><div class="line">34</div></pre></td></tr></table></figure>
+
+<p>因为没有指定<code>-k</code>参数，每个client发送两个请求会创建两个连接。</p>
+<blockquote>
+<p>你可以加上<code>-k</code>参数，可以看出会有重复的goroutine id出现，表明同一个持久连接会使用同一个goroutine处理。</p>
+</blockquote>
+<p>以上是通过实验验证我们的理论，下面是代码分析。</p>
+<p><code>net/http/server.go</code>的<a href="https://github.com/golang/go/blob/master/src/net/http/server.go#L2146" target="_blank" rel="external">第2146行</a> <code>go c.serve()</code>表明，对于一个http连接，会启动一个goroutine:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> (srv *Server) Serve(l net.Listener) error {</div><div class="line">	<span class="keyword">defer</span> l.Close()</div><div class="line">	<span class="keyword">if</span> fn := testHookServerServe; fn != <span class="constant">nil</span> {</div><div class="line">		fn(srv, l)</div><div class="line">	}</div><div class="line">	<span class="keyword">var</span> tempDelay time.Duration <span class="comment">// how long to sleep on accept failure</span></div><div class="line">	<span class="keyword">if</span> err := srv.setupHTTP2(); err != <span class="constant">nil</span> {</div><div class="line">		<span class="keyword">return</span> err</div><div class="line">	}</div><div class="line">	<span class="keyword">for</span> {</div><div class="line">		rw, e := l.Accept()</div><div class="line">		……</div><div class="line">		tempDelay =<span class="number"> 0</span></div><div class="line">		c := srv.newConn(rw)</div><div class="line">		c.setState(c.rwc, StateNew) <span class="comment">// before Serve can return</span></div><div class="line">		<span class="keyword">go</span> c.serve()</div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>而这个<code>c.serve</code>方法会从连接中<a href="https://github.com/golang/go/blob/master/src/net/http/server.go#L2116" target="_blank" rel="external">读取request交由handler处理</a>:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> (c *conn) serve() {</div><div class="line">	……</div><div class="line">	<span class="keyword">for</span> {</div><div class="line">		w, err := c.readRequest()</div><div class="line">		……</div><div class="line">		req := w.req</div><div class="line">		serverHandler{c.server}.ServeHTTP(w, w.req)</div><div class="line">		<span class="keyword">if</span> c.hijacked() {</div><div class="line">			<span class="keyword">return</span></div><div class="line">		}</div><div class="line">		w.finishRequest()</div><div class="line">		<span class="keyword">if</span> !w.shouldReuseConnection() {</div><div class="line">			<span class="keyword">if</span> w.requestBodyLimitHit || w.closedRequestBodyEarly() {</div><div class="line">				c.closeWriteAndWait()</div><div class="line">			}</div><div class="line">			<span class="keyword">return</span></div><div class="line">		}</div><div class="line">		c.setState(c.rwc, StateIdle)</div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>而<code>ServeHTTP</code>的实现如下，如果没有配置handler或者路由器，则使用缺省的<strong>DefaultServeMux</strong>。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> (sh serverHandler) ServeHTTP(rw ResponseWriter, req *Request) {</div><div class="line">	handler := sh.srv.Handler</div><div class="line">	<span class="keyword">if</span> handler == <span class="constant">nil</span> {</div><div class="line">		handler = DefaultServeMux</div><div class="line">	}</div><div class="line">	<span class="keyword">if</span> req.RequestURI == <span class="string">"*"</span> && req.Method == <span class="string">"OPTIONS"</span> {</div><div class="line">		handler = globalOptionsHandler{}</div><div class="line">	}</div><div class="line">	handler.ServeHTTP(rw, req)</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>可以看出这里并没有新开goroutine,而是在同一个connection对应的goroutine中执行的。如果试用Keep-Alive,还是在这个connection对应的goroutine中执行。</p>
+<p>正如注释中所说的那样：</p>
+<blockquote>
+<pre><code>   <span class="comment">// HTTP cannot have multiple simultaneous active requests.[*]</span>
+   <span class="comment">// Until the server replies to this request, it can't read another,</span>
+   <span class="comment">// so we might as well run the handler in this goroutine.</span>
+   <span class="comment">// [*] Not strictly true: HTTP pipelining.  We could let them all process</span>
+   <span class="comment">// in parallel even if their responses need to be serialized.</span>
+  serverHandler{<span class="built_in">c</span>.server}.<span class="type">ServeHTTP</span>(w, w.req)
+</code></pre></blockquote>
+<p>因此业务逻辑的时间花费会影响单个goroutine的执行时间，并且反映到客户的浏览器是是延迟时间latency增大了，如果并发量足够多，影响的是系统中的goroutine的数量以及它们的调度，吞吐率不会剧烈影响。</p>
+<h3 id="Iris的分析">Iris的分析</h3>
+<p>如果你使用Iris查看每个Handler是使用哪一个goroutine执行的，会发现每个连接也会用不同的goroutine执行，可是性能差在哪儿呢？<br><br>或者说,是什么原因导致Iris的性能急剧下降呢？</p>
+<p>Iris服务器的监听和为连接启动一个goroutine没有什么明显不同，重要的不同在与Router处理Request的逻辑。</p>
+<p>原因在于Iris为了提供性能，缓存了context,对于相同的请求url和method,它会从缓存中使用相同的context。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> (r *MemoryRouter) ServeHTTP(res http.ResponseWriter, req *http.Request) {</div><div class="line">	<span class="keyword">if</span> ctx := r.cache.GetItem(req.Method, req.URL.Path); ctx != <span class="constant">nil</span> {</div><div class="line">		ctx.Redo(res, req)</div><div class="line">		<span class="keyword">return</span></div><div class="line">	}</div><div class="line"></div><div class="line">	ctx := r.getStation().pool.Get().(*Context)</div><div class="line">	ctx.Reset(res, req)</div><div class="line"></div><div class="line">	<span class="keyword">if</span> r.processRequest(ctx) {</div><div class="line">		<span class="comment">//if something found and served then add it's clone to the cache</span></div><div class="line">		r.cache.AddItem(req.Method, req.URL.Path, ctx.Clone())</div><div class="line">	}</div><div class="line"></div><div class="line">	r.getStation().pool.Put(ctx)</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>由于并发量较大的时候，多个client的请求都会进入到上面的<code>ServeHTTP</code>方法中，导致相同的请求会进入下面的逻辑：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">if</span> ctx := r.cache.GetItem(req.Method, req.URL.Path); ctx != <span class="constant">nil</span> {</div><div class="line">	ctx.Redo(res, req)</div><div class="line">	<span class="keyword">return</span></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p><code>ctx.Redo(res, req)</code>导致不断循环，直到每个请求处理完毕，将context放回到池子中。</p>
+<p>所以对于Iris来说，并发量大的情况下,对于相同的请求(req.URL.Path和Method相同)会进入排队的状态，导致性能低下。</p>
+<h3 id="参考资料">参考资料</h3>
+<ol>
+<li><a href="https://blog.golang.org/context" target="_blank" rel="external">https://blog.golang.org/context</a></li>
+<li><a href="https://www.reddit.com/r/golang/comments/3xz1f3/go_http_server_and_go_routines/" target="_blank" rel="external">https://www.reddit.com/r/golang/comments/3xz1f3/go_http_server_and_go_routines/</a></li>
+<li><a href="http://screamingatmyscreen.com/2013/6/http-request-and-goroutines/" target="_blank" rel="external">http://screamingatmyscreen.com/2013/6/http-request-and-goroutines/</a></li>
+<li><a href="https://groups.google.com/forum/#!topic/golang-nuts/iwCz_pqu8R4" target="_blank" rel="external">https://groups.google.com/forum/#!topic/golang-nuts/iwCz_pqu8R4</a></li>
+<li><a href="https://groups.google.com/forum/#!topic/golang-nuts/ic3FxWZRyHs" target="_blank" rel="external">https://groups.google.com/forum/#!topic/golang-nuts/ic3FxWZRyHs</a></li>
+</ol>
+]]> <br/>转载请注明文章来源：<a href="http://colobu.com/2016/04/01/Is-iris-the-fastest-golang-router-library/" target="_blank"> colobu.com</a></content>
+    <summary type="html">
+    <![CDATA[<p>依照我的前一篇文章（<a href="http://colobu.com/2016/03/23/Go-HTTP-request-router-and-web-framework-benchmark/" target="_blank" rel="external">超全的Go Http路由框架性能比较</a>）对各种Go http路由框架的比较， Iris明显胜出，它的性能远远超过其它Golang http路由框架。</p>
+<p>但是，在真实的环境中，Iris真的就是最快的Golang http路由框架吗？</p>
+]]>
+    
+    </summary>
+    
+      <category term="Go" scheme="http://colobu.com/categories/Go/"/>
+    
+  </entry>
   
   <entry>
     <title><![CDATA[如何得到goroutine 的 id?]]></title>
@@ -1483,50 +1605,6 @@ A +--> B +---> C
     </summary>
     
       <category term="kafka" scheme="http://colobu.com/tags/kafka/"/>
-    
-      <category term="大数据" scheme="http://colobu.com/categories/%E5%A4%A7%E6%95%B0%E6%8D%AE/"/>
-    
-  </entry>
-  
-  <entry>
-    <title><![CDATA[为豆瓣电影实现Item-based协同过滤的推荐系统]]></title>
-    <link href="http://colobu.com/2015/12/03/item-based-recommender-for-douban-movies/"/>
-    <id>http://colobu.com/2015/12/03/item-based-recommender-for-douban-movies/</id>
-    <published>2015-12-03T03:00:03.000Z</published>
-    <updated>2016-03-28T02:23:06.918Z</updated>
-    <content type="html"><![CDATA[<p>前面的两篇文章分别使用Spark mllib ALS实现了Model-based协同过滤推荐系统和使用Mahout实现了User-based的协同过滤推荐系统。<br>我们再来回顾一下item-base CF算法的特点：</p>
-<ul>
-<li>物品数明显小于用户数的场合，否则物品相似度矩阵计算代价很大</li>
-<li>适合长尾物品丰富，用户个性化需求强的领域</li>
-<li>对新用户友好，对新物品不友好，因为物品相似度矩阵不需要很强的实时性</li>
-<li>利用用户历史行为做推荐解释，比较令用户信服</li>
-</ul>
-<p>所以item-base挺适合做电影的推荐。当用户浏览某个电影的时候，我们可以推荐给他类似的电影，或者根据用户以前的观影记录，推荐他感兴趣的电影。<br>本文还是以mahout 非分布式计算的方式实现。因为电影的记录比较少(166条),计算量不是很大。<br><a id="more"></a><br>代码也非常的简单，我们还是以皮尔逊算法计算相似度：</p>
-<figure class="highlight java"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">public</span> <span class="class"><span class="keyword">class</span> <span class="title">DoubanItemBasedRecommender</span> </span>{</div><div class="line">    <span class="keyword">public</span> <span class="keyword">static</span> <span class="keyword">void</span> <span class="title">main</span>(String[] args) <span class="keyword">throws</span> Exception {</div><div class="line">        String base = args[<span class="number">0</span>];</div><div class="line">        File file = <span class="keyword">new</span> File(base + <span class="string">"user_movies.csv"</span>);</div><div class="line">        DoubanFileDataModel model = <span class="keyword">new</span> DoubanFileDataModel(file);</div><div class="line">        ItemSimilarity similarity = <span class="keyword">new</span> PearsonCorrelationSimilarity(model);</div><div class="line">        ItemBasedRecommender recommender = <span class="keyword">new</span> GenericItemBasedRecommender(model, similarity);</div><div class="line">        BatchItemSimilarities batch = <span class="keyword">new</span> MultithreadedBatchItemSimilarities(recommender, <span class="number">5</span>);</div><div class="line">        <span class="keyword">int</span> numSimilarities = batch.computeItemSimilarities(Runtime.getRuntime().availableProcessors(), <span class="number">1</span>, <span class="keyword">new</span> FileSimilarItemsWriter(<span class="keyword">new</span> File(base + <span class="string">"item_result.csv"</span>)));</div><div class="line">        System.out.println(<span class="string">"Computed "</span> + numSimilarities + <span class="string">" similarities for "</span> + model.getNumItems() + <span class="string">" items "</span> + <span class="string">"and saved them to file "</span> + base + <span class="string">"item_result.csv"</span>);</div><div class="line">    }</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>第<strong>8</strong>行和第<strong>9</strong>行使用多线程批处理的方式，把计算结果写入到一个文件中。<br>生成的文件如下：</p>
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div></pre></td><td class="code"><pre><div class="line"><span class="code">......</span></div><div class="line">25821461,26253733,0.8279288411140442</div><div class="line">25821461,26252196,0.819756031036377</div><div class="line">25821461,26366634,0.8181818127632141</div><div class="line">25821461,25919385,0.7033082246780396</div><div class="line">25821585,26328118,0.794719398021698</div><div class="line">25821585,22556810,0.7655318379402161</div><div class="line">25821585,1972724,0.6770924925804138</div><div class="line">25821585,25809260,0.6347297430038452</div><div class="line">......</div></pre></td></tr></table></figure>
-
-<p>电影 25821461 (旅程终点) 的信息如下：<br><a href="http://movie.douban.com/subject/25821461/" title="" target="_blank"><img src="25821461.jpg" style="display:inline;margin-right:20px;" alt=""></a></p>
-<p>和它相似度比较高的电影如下：<br><a href="http://movie.douban.com/subject/26253733/" title="" target="_blank"><img src="26253733.jpg" style="display:inline;margin-right:20px;" alt=""></a><a href="http://movie.douban.com/subject/26252196/" title="" target="_blank"><img src="26252196.jpg" style="display:inline;margin-right:20px;" alt=""></a><a href="http://movie.douban.com/subject/26366634/" title="" target="_blank"><img src="26366634.jpg" style="display:inline;margin-right:20px;" alt=""></a><a href="http://movie.douban.com/subject/25919385/" title="" target="_blank"><img src="25919385.jpg" style="display:inline;margin-right:20px;" alt=""></a></p>
-<p>推荐还不错，基本都属于剧情，喜剧类型，而且都是国外的，没有推荐战争，科幻或者武侠类的。</p>
-<p>代码下载: <a href="https://github.com/smallnest/mahout-douban-recommender" target="_blank" rel="external">github</a></p>
-]]> <br/>转载请注明文章来源：<a href="http://colobu.com/2015/12/03/item-based-recommender-for-douban-movies/" target="_blank"> colobu.com</a></content>
-    <summary type="html">
-    <![CDATA[<p>前面的两篇文章分别使用Spark mllib ALS实现了Model-based协同过滤推荐系统和使用Mahout实现了User-based的协同过滤推荐系统。<br>我们再来回顾一下item-base CF算法的特点：</p>
-<ul>
-<li>物品数明显小于用户数的场合，否则物品相似度矩阵计算代价很大</li>
-<li>适合长尾物品丰富，用户个性化需求强的领域</li>
-<li>对新用户友好，对新物品不友好，因为物品相似度矩阵不需要很强的实时性</li>
-<li>利用用户历史行为做推荐解释，比较令用户信服</li>
-</ul>
-<p>所以item-base挺适合做电影的推荐。当用户浏览某个电影的时候，我们可以推荐给他类似的电影，或者根据用户以前的观影记录，推荐他感兴趣的电影。<br>本文还是以mahout 非分布式计算的方式实现。因为电影的记录比较少(166条),计算量不是很大。<br>]]>
-    
-    </summary>
-    
-      <category term="推荐系统" scheme="http://colobu.com/tags/%E6%8E%A8%E8%8D%90%E7%B3%BB%E7%BB%9F/"/>
-    
-      <category term="协同过滤，mahout" scheme="http://colobu.com/tags/%E5%8D%8F%E5%90%8C%E8%BF%87%E6%BB%A4%EF%BC%8Cmahout/"/>
     
       <category term="大数据" scheme="http://colobu.com/categories/%E5%A4%A7%E6%95%B0%E6%8D%AE/"/>
     
