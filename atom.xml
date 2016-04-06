@@ -4,7 +4,7 @@
   <subtitle><![CDATA[大道至简 Simplicity is the ultimate form of sophistication]]></subtitle>
   <link href="/atom.xml" rel="self"/>
   <link href="http://colobu.com/"/>
-  <updated>2016-04-06T02:01:42.125Z</updated>
+  <updated>2016-04-06T10:27:23.201Z</updated>
   <id>http://colobu.com/</id>
   
   <author>
@@ -13,6 +13,88 @@
   </author>
   
   <generator uri="http://zespia.tw/hexo/">Hexo</generator>
+  
+  <entry>
+    <title><![CDATA[谁是最快的Go Web框架]]></title>
+    <link href="http://colobu.com/2016/04/06/the-fastest-golang-web-framework/"/>
+    <id>http://colobu.com/2016/04/06/the-fastest-golang-web-framework/</id>
+    <published>2016-04-06T06:14:26.000Z</published>
+    <updated>2016-04-06T10:27:15.430Z</updated>
+    <content type="html"><![CDATA[<p>前几天我写了一篇文章: <a href="http://colobu.com/2016/03/23/Go-HTTP-request-router-and-web-framework-benchmark/" target="_blank" rel="external">超全的Go Http路由框架性能比较</a>，利用Julien Schmidt实现的<a href="https://github.com/julienschmidt/go-http-routing-benchmark" target="_blank" rel="external">benchmark测试框架</a>对几乎所有的go web框架的路由功能进行了比较。我本来以为对Go web框架的性能考察就告以段落了，直到我写了一段简单的代码测试Irsi，用来模拟实际产品中的处理，才发现了Julien Schmidt测试框架的问题。</p>
+<p>这段代码是这样的：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> main</div><div class="line"></div><div class="line"><span class="keyword">import</span> (</div><div class="line">	<span class="string">"fmt"</span></div><div class="line">	<span class="string">"os"</span></div><div class="line">	<span class="string">"strconv"</span></div><div class="line">	<span class="string">"time"</span></div><div class="line">    <span class="string">"github.com/kataras/iris"</span></div><div class="line">)</div><div class="line"></div><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	api := iris.New()</div><div class="line">	api.Get(<span class="string">"/rest/hello"</span>, <span class="keyword">func</span>(c *iris.Context) {</div><div class="line">		sleepTime, _ := strconv.Atoi(os.Args<span class="number">[1</span>])</div><div class="line">		<span class="keyword">if</span> sleepTime &gt;<span class="number"> 0</span> {</div><div class="line">			time.Sleep(time.Duration(sleepTime) * time.Millisecond)</div><div class="line">		}</div><div class="line"></div><div class="line">		c.Text(<span class="string">"Hello world"</span>)</div><div class="line">	})</div><div class="line">	api.Listen(<span class="string">":8080"</span>)</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>当我将实际业务的处理时间模拟为10毫秒的时候，使用100并发进行测试：<br><code>wrk -t16 -c100 -d30s http://127.0.0.1:8080/rest/hello</code>，Iris吞吐率才达到97 requests/second。详细介绍可以看我的文章： <a href="http://colobu.com/2016/04/01/Is-iris-the-fastest-golang-router-library/" target="_blank" rel="external">iris 真的是最快的Golang 路由框架吗? </a>。</p>
+<p>虽然Iris的作者很快做了修改，临时解决了这个问题，但是也促使我重新审视Julien Schmidt测试框架,也促使我实现了一个测试Go web framework benchmak的框架： <a href="https://github.com/smallnest/go-web-framework-benchmark" target="_blank" rel="external">Go web framework benchmark</a>。</p>
+<a id="more"></a>
+<h2 id="重新审视Julien_Schmidt测试框架">重新审视Julien Schmidt测试框架</h2>
+<p>如果查看Julien Schmidt测试框架的测试结果以及实现，可以看到他测试的只是web框架的<strong>路由功能</strong>，包括路径中参数的解析， 并不是测试一个完整的web框架的处理(接受连接、路由、Handler处理)。</p>
+<p>他利用Go的benchmark测试框架的方法，实现了N多的Benchmark方法，通过手工创建一个http.Request,传递给router进行路由处理。</p>
+<p>并且，他的Handler的业务非常的简单，有的handler里面没有任何业务逻辑，只是空的方法体，有的只是将参数写回到Response中。这并不能反映实际的产品的业务处理。</p>
+<p>在实际的业务中，Handler必然要包含一定的业务处理，也出处理的时间可能从几毫秒到上百毫秒不等，一些业务逻辑处理起来还非常的慢，比如：</p>
+<ul>
+<li>从一个网络连接中读取数据</li>
+<li>写数据到硬盘中</li>
+<li>访问数据库</li>
+<li>访问缓存服务器</li>
+<li>调用其它服务，等待服务结果的返回</li>
+<li>……</li>
+</ul>
+<p>如果加上这些业务逻辑的处理时间，各个web框架benchmark是否还如路由功能的benchmark一样呢？</p>
+<p>因为路由的处理时间在整个web框架中的处理时间所占的比例比较小，所以实际的web框架的benchmark有可能和路由的benchmark关系不大。即使路由的性能最好，如果handler的处理没有很好的处理的化，也可能整体的性能也不会特别出色。</p>
+<p>如果想实现一个高性能的路由器，一定要尽量避免在路由处理时分配新的对象，高性能的路由器都实现了零分配，如httprouter、Iris等。</p>
+<p>很多web框架的Handler处理和Go的缺省实现一样，还是在连接所在的goroutine中执行，也有的框架实现了goroutine池，由一个goroutine池来处理连接和handler，避免太多的goroutine分配和回收，性能可能会好一些。</p>
+<h2 id="实现一个Go_web_framework_benchmark库">实现一个Go web framework benchmark库</h2>
+<p>所以，有必要实现一个新的测试框架(库),完整测试web框架的性能，包括连接、路由、handler处理等，基于此，我实现了<a href="https://github.com/smallnest/go-web-framework-benchmark" target="_blank" rel="external">Go web framework benchmark</a>。</p>
+<p>它具有下面的功能：</p>
+<ol>
+<li>为每个web框架实现了/hello的Http Get服务,它返回<code>hello world</code>字符串。所有的web框架的实现都是一致的。</li>
+<li>可以指定业务处理的时间，如10毫秒，100毫秒，500毫秒等</li>
+<li>自动化测试</li>
+</ol>
+<p>这个框架并没有测试其它功能，如Post、Put，也没有测试路由的参数解析的功能，它的本意是期望通过Get方法的测试来比较各个框架对业务的处理的能力。</p>
+<p>根据Julien Schmidt测试框架中测试到的go web框架，在加上lion，fasthttp,一共测试了下面的web框架。<br><a href="https://golang.org/pkg/net/http/" target="_blank" rel="external">default http</a><br><a href="https://github.com/Unknwon/macaron" target="_blank" rel="external">macaron</a><br><a href="https://github.com/ant0ine/go-json-rest" target="_blank" rel="external">go-json-rest</a><br><a href="https://github.com/astaxie/beego" target="_blank" rel="external">beego</a><br><a href="https://github.com/bmizerany/pat" target="_blank" rel="external">pat</a><br><a href="https://github.com/celrenheit/lion" target="_blank" rel="external">lion</a><br><a href="https://github.com/dimfeld/httptreemux" target="_blank" rel="external">httptreemux</a><br><a href="https://github.com/emicklei/go-restful" target="_blank" rel="external">go-restful</a><br><a href="https://github.com/gin-gonic/gin" target="_blank" rel="external">gin</a><br><a href="https://github.com/go-martini/martini" target="_blank" rel="external">martini</a><br><a href="https://github.com/go-playground/lars" target="_blank" rel="external">lars</a><br><a href="https://github.com/go-zoo/bone" target="_blank" rel="external">bone</a><br><a href="https://github.com/gocraft/web" target="_blank" rel="external">gocraft</a><br><a href="https://github.com/gorilla/mux" target="_blank" rel="external">gorilla</a><br><a href="https://github.com/julienschmidt/httprouter" target="_blank" rel="external">httprouter</a><br><a href="https://github.com/kataras/iris" target="_blank" rel="external">iris</a><br><a href="https://github.com/lunny/tango" target="_blank" rel="external">tango</a><br><a href="https://github.com/mailgun/route" target="_blank" rel="external">vulcan</a><br><a href="https://github.com/mikespook/possum" target="_blank" rel="external">possum</a><br><a href="https://github.com/naoina/denco" target="_blank" rel="external">denco</a><br><a href="https://github.com/pilu/traffic" target="_blank" rel="external">traffic</a><br><a href="https://github.com/plimble/ace" target="_blank" rel="external">ace</a><br><a href="https://github.com/rcrowley/go-tigertonic" target="_blank" rel="external">go-tigertonic</a><br><a href="https://github.com/valyala/fasthttp" target="_blank" rel="external">fasthttp</a><br><a href="https://github.com/vanng822/r2router" target="_blank" rel="external">r2router</a><br><a href="https://github.com/zenazn/goji/web" target="_blank" rel="external">goji</a><br><a href="http://goji.io" target="_blank" rel="external">gojiv2</a><br><a href="http://gopkg.in/labstack/echo.v1" target="_blank" rel="external">echo</a></p>
+<h2 id="基本测试">基本测试</h2>
+<p>首先我们先看一些业务逻辑处理时间分别为0ms，10ms,100ms,500ms时的各web框架的表现。</p>
+<p>测试的并发数为5000。</p>
+<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">wrk -t16 -c5000 <span class="operator">-d</span>30s http://<span class="number">127.0</span>.<span class="number">0.1</span>:<span class="number">8080</span>/hello</div></pre></td></tr></table></figure>
+
+<p><img src="benchmark.png" alt=""></p>
+<p>注解：</p>
+<ol>
+<li>possum在测试的时候出现N多的<code>http: multiple response.WriteHeader calls</code>错误，它的性能比较低下。以下的测试possum也有问题。</li>
+<li>默认的go标准库的实现性能已经很高</li>
+<li>处理时间10ms和100ms， 各框架的性能差别不是特别巨大，但是500ms吞吐率下降的很厉害。</li>
+<li>fasthttp表现非常好</li>
+</ol>
+<blockquote>
+<p>目前我并没有监控latency和cpu, memory指标，或许以后会加入。</p>
+</blockquote>
+<h2 id="并发量测试">并发量测试</h2>
+<p>我们以业务逻辑处理时间为30ms为基准，测试并发量为100，1000，5000的情况下web框架的性能。</p>
+<p><img src="concurrency.png" alt=""></p>
+<p>注解：</p>
+<ol>
+<li>大部分的框架的性能差不太多</li>
+<li>fasthttp表现还是非常好，是性能最好的框架，尤其在并发量大的情况下</li>
+<li>并发量在1000的时候大部分的框架的吞吐率能达到3万/秒，并发量在5000的时候大部分二代框架能达到4万/秒</li>
+</ol>
+<p>综上测试，大部分的go web框架性能表现还可以，加上处理时间的测试后性能差别不是很大，不像测试路由功能一样泾渭分明。<br>fasthttp表现非常的，需要考虑的是如果选他做web框架，你的代码将难以迁移到别的框架上,因为它实现了和标准库不一样的接口。</p>
+]]> <br/>转载请注明文章来源：<a href="http://colobu.com/2016/04/06/the-fastest-golang-web-framework/" target="_blank"> colobu.com</a></content>
+    <summary type="html">
+    <![CDATA[<p>前几天我写了一篇文章: <a href="http://colobu.com/2016/03/23/Go-HTTP-request-router-and-web-framework-benchmark/" target="_blank" rel="external">超全的Go Http路由框架性能比较</a>，利用Julien Schmidt实现的<a href="https://github.com/julienschmidt/go-http-routing-benchmark" target="_blank" rel="external">benchmark测试框架</a>对几乎所有的go web框架的路由功能进行了比较。我本来以为对Go web框架的性能考察就告以段落了，直到我写了一段简单的代码测试Irsi，用来模拟实际产品中的处理，才发现了Julien Schmidt测试框架的问题。</p>
+<p>这段代码是这样的：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> main</div><div class="line"></div><div class="line"><span class="keyword">import</span> (</div><div class="line">	<span class="string">"fmt"</span></div><div class="line">	<span class="string">"os"</span></div><div class="line">	<span class="string">"strconv"</span></div><div class="line">	<span class="string">"time"</span></div><div class="line">    <span class="string">"github.com/kataras/iris"</span></div><div class="line">)</div><div class="line"></div><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	api := iris.New()</div><div class="line">	api.Get(<span class="string">"/rest/hello"</span>, <span class="keyword">func</span>(c *iris.Context) {</div><div class="line">		sleepTime, _ := strconv.Atoi(os.Args<span class="number">[1</span>])</div><div class="line">		<span class="keyword">if</span> sleepTime &gt;<span class="number"> 0</span> {</div><div class="line">			time.Sleep(time.Duration(sleepTime) * time.Millisecond)</div><div class="line">		}</div><div class="line"></div><div class="line">		c.Text(<span class="string">"Hello world"</span>)</div><div class="line">	})</div><div class="line">	api.Listen(<span class="string">":8080"</span>)</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>当我将实际业务的处理时间模拟为10毫秒的时候，使用100并发进行测试：<br><code>wrk -t16 -c100 -d30s http://127.0.0.1:8080/rest/hello</code>，Iris吞吐率才达到97 requests/second。详细介绍可以看我的文章： <a href="http://colobu.com/2016/04/01/Is-iris-the-fastest-golang-router-library/" target="_blank" rel="external">iris 真的是最快的Golang 路由框架吗? </a>。</p>
+<p>虽然Iris的作者很快做了修改，临时解决了这个问题，但是也促使我重新审视Julien Schmidt测试框架,也促使我实现了一个测试Go web framework benchmak的框架： <a href="https://github.com/smallnest/go-web-framework-benchmark" target="_blank" rel="external">Go web framework benchmark</a>。</p>
+]]>
+    
+    </summary>
+    
+      <category term="Go" scheme="http://colobu.com/categories/Go/"/>
+    
+  </entry>
   
   <entry>
     <title><![CDATA[[转]Golang自动生成版本信息]]></title>
@@ -1560,82 +1642,6 @@ A +--> B +---> C
     </summary>
     
       <category term="Scala" scheme="http://colobu.com/tags/Scala/"/>
-    
-      <category term="Scala" scheme="http://colobu.com/categories/Scala/"/>
-    
-  </entry>
-  
-  <entry>
-    <title><![CDATA[Scala 魔法函数]]></title>
-    <link href="http://colobu.com/2016/01/04/Scala-magic-functions/"/>
-    <id>http://colobu.com/2016/01/04/Scala-magic-functions/</id>
-    <published>2016-01-04T02:18:16.000Z</published>
-    <updated>2016-01-04T07:44:14.182Z</updated>
-    <content type="html"><![CDATA[<p>Scala有一些语法糖，让一些特定名称的函数拥有一些特殊的能力。这些语法糖并没有专门的文档介绍，只是散落在不同的文章和教程中。本文整理里这些魔法函数，并通过例子演示它们的功能。<br><a id="more"></a></p>
-<h2 id="apply,_unapply">apply, unapply</h2>
-<p>当类或对象有一个主要用途的时候，<code>apply</code>方法为你提供了一个很好的语法糖。比如<code>a</code>是一个对象， <code>a.apply(x)</code>则可以简化为<code>a(x)</code><br><code>unapply</code>方法是抽取器(Extractor)，有人也翻译成提取器，经常用在模式匹配上。</p>
-<figure class="highlight scala"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">val</span> foo = Foo(<span class="number">1</span>)</div><div class="line">foo <span class="keyword">match</span> {</div><div class="line">  <span class="keyword">case</span> Foo(x) =&gt; println(x)</div><div class="line">}</div><div class="line"></div><div class="line"><span class="class"><span class="keyword">class</span> <span class="title">Foo</span><span class="params">(val x: Int)</span> </span>{}</div><div class="line"></div><div class="line"><span class="class"><span class="keyword">object</span> <span class="title">Foo</span> </span>{</div><div class="line">  <span class="keyword">def</span> apply(x: Int) = <span class="keyword">new</span> Foo(x)</div><div class="line">  <span class="keyword">def</span> unapply(f: Foo) = Some(f.x)</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>我们一般都在伴生对象内定义<code>apply</code>,<code>unapply</code>方法，但是<code>Trait</code>,<code>class</code>内都可以定义这些方法。</p>
-<h2 id="update">update</h2>
-<p>与<code>apply</code>方法类似，<code>update</code>也是一个魔法方法。对于一个实例<code>a</code>, Scala可以将<code>a.update(x,y)</code>简化为<code>a(x)=y</code>。</p>
-<figure class="highlight scala"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">val</span> bar = Bar(<span class="number">10</span>)</div><div class="line">bar(<span class="number">0</span>) = <span class="number">1</span></div><div class="line">println(bar(<span class="number">0</span>))</div><div class="line"></div><div class="line"><span class="class"><span class="keyword">class</span> <span class="title">Bar</span><span class="params">(n :Int)</span> </span>{</div><div class="line">  <span class="keyword">val</span> a = Array[Int](n)</div><div class="line"></div><div class="line">  <span class="keyword">def</span> apply(n :Int) = a(n)</div><div class="line">  <span class="keyword">def</span> update(n:Int, v:Int) = a(n) = v</div><div class="line">}</div><div class="line"></div><div class="line"><span class="class"><span class="keyword">object</span> <span class="title">Bar</span> </span>{</div><div class="line">  <span class="keyword">def</span> apply(n :Int) = <span class="keyword">new</span> Bar(n)</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p><code>val bar = Bar(10)</code>调用伴生对象的<code>apply</code>方法生成一个<code>Bar</code>的实例。<code>bar(0) = 1</code>等价于<code>bar.update(0,1)</code>。<code>println(bar(0))</code>等价于<code>println(bar.apply(0))</code>,也就是<code>class Bar</code>中定义的<code>apply</code>方法。</p>
-<h2 id="unapplySeq">unapplySeq</h2>
-<p>类似<code>unapply</code>,用来从对象中抽取序列，常用在模式匹配上：</p>
-<figure class="highlight scala"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">val</span> m = M(<span class="number">1</span>)</div><div class="line"></div><div class="line">m <span class="keyword">match</span> {</div><div class="line">  <span class="keyword">case</span> M(n1,others@_*) =&gt; println(others)</div><div class="line">}</div><div class="line"></div><div class="line"><span class="class"><span class="keyword">class</span> <span class="title">M</span> </span>{}</div><div class="line"></div><div class="line"><span class="class"><span class="keyword">object</span> <span class="title">M</span> </span>{</div><div class="line">  <span class="keyword">def</span> apply(a: Int*): M = <span class="keyword">new</span> M</div><div class="line">  <span class="keyword">def</span> unapplySeq(m: M): Option[Seq[Int]] = Some(<span class="number">1</span> :: <span class="number">2</span> :: <span class="number">3</span> :: Nil)</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<h2 id="identifier_=">identifier_=</h2>
-<p>如果你只是简单的字段操作，只需定义一个<code>var</code>类型的属性即可。但是如果你在set的时候执行额外的逻辑，比如参数检查等，你就可能需要<code>setter</code>符号。<br>Scala为setter提供了特殊的语法：</p>
-<figure class="highlight scala"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">val</span> obj = <span class="keyword">new</span> X</div><div class="line">obj.x = -<span class="number">1</span></div><div class="line">println(obj.x)</div><div class="line">obj.x = <span class="number">10</span></div><div class="line">println(obj.x)</div><div class="line"></div><div class="line"><span class="class"><span class="keyword">class</span> <span class="title">X</span> </span>{</div><div class="line">  <span class="keyword">var</span> _x = <span class="number">0</span></div><div class="line"></div><div class="line">  <span class="comment">//setter</span></div><div class="line">  <span class="keyword">def</span> x_=(n: Int) {</div><div class="line">    <span class="keyword">if</span> (n &lt; <span class="number">0</span>) _x = <span class="number">0</span> <span class="keyword">else</span> _x = n</div><div class="line">  }</div><div class="line"></div><div class="line">  <span class="comment">//getter</span></div><div class="line">  <span class="keyword">def</span> x = _x</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>上面的例子中<code>x_=</code>就是<code>x</code>的setter。</p>
-<h2 id="一元操作符">一元操作符</h2>
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line"><span class="function_or_atom">unary_</span>+</div><div class="line"><span class="function_or_atom">unary_</span>-</div><div class="line"><span class="function_or_atom">unary_</span><span class="exclamation_mark">!</span></div><div class="line"><span class="function_or_atom">unary_</span>~</div></pre></td></tr></table></figure>
-
-<p>如果你想重载/实现一元操作符(+,-,!,~)，可以定义上面的方法：</p>
-<figure class="highlight scala"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">val</span> x = <span class="keyword">new</span> X('小')</div><div class="line">println(!x)</div><div class="line">x.s = '黑'</div><div class="line">println(!x)</div><div class="line"></div><div class="line"><span class="class"><span class="keyword">class</span> <span class="title">X</span><span class="params">(var s: Char)</span> </span>{</div><div class="line">  <span class="keyword">val</span> s1 = <span class="string">"大小多少长短胖瘦高矮黑白冷暖"</span></div><div class="line"></div><div class="line">  <span class="keyword">def</span> unary_! = {</div><div class="line">    <span class="keyword">var</span> i = s1 indexOf s</div><div class="line">    <span class="keyword">if</span> (i % <span class="number">2</span> == <span class="number">0</span>) i = i + <span class="number">1</span> <span class="keyword">else</span> i = i - <span class="number">1</span></div><div class="line">    <span class="keyword">new</span> X(s1(i))</div><div class="line">  }</div><div class="line"></div><div class="line">  <span class="keyword">override</span> <span class="keyword">def</span> toString = <span class="string">"X("</span> + s + <span class="string">")"</span></div><div class="line">}</div></pre></td></tr></table></figure>
-
-<h2 id="op=">op=</h2>
-<p>如果你定义了一个操作符<code>op</code>,那么<code>A &lt;op&gt;= B</code>能自动转换为<code>A = A &lt;op&gt; B</code>。</p>
-<figure class="highlight scala"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">var</span> s = <span class="keyword">new</span> X(<span class="string">"abc"</span>)</div><div class="line">s ::/ <span class="number">1</span></div><div class="line">println(s)</div><div class="line">s ::/= <span class="number">1</span></div><div class="line">println(s)</div><div class="line"></div><div class="line"><span class="class"><span class="keyword">class</span> <span class="title">X</span><span class="params">(var s: String)</span> </span>{</div><div class="line">  <span class="keyword">def</span> ::/(n:Int) = {</div><div class="line">    <span class="keyword">new</span> X(s + n)</div><div class="line">  }</div><div class="line"></div><div class="line">  <span class="keyword">override</span> <span class="keyword">def</span> toString = <span class="string">"X("</span> + s + <span class="string">")"</span></div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>操作符不能是字母和数字(alphanumeric)，也不能是!=, ==, &lt;= 或者 &gt;=。</p>
-<h2 id="Dynamic">Dynamic</h2>
-<p>Dynamic对象可以调用不存在的字段或者方法，Scala将它们转换为下面的四个方法：</p>
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line"><span class="title">selectDynamic</span></div><div class="line">updateDynamic</div><div class="line">applyDynamic </div><div class="line">applyDynamicNamed</div></pre></td></tr></table></figure>
-
-<p>这有点动态语言的风格。</p>
-<p>例子：</p>
-<figure class="highlight scala"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">val</span> d = <span class="keyword">new</span> DynImpl</div><div class="line">  println(d.foo)</div><div class="line">  d.foo = <span class="number">10</span></div><div class="line">  println(d.ints(<span class="number">1</span>, <span class="number">2</span>, <span class="number">3</span>))</div><div class="line">  println(d.ints(i1 = <span class="number">1</span>, i2 = <span class="number">2</span>, <span class="number">3</span>))</div><div class="line"></div><div class="line">  <span class="class"><span class="keyword">class</span> <span class="title">DynImpl</span> <span class="keyword">extends</span> <span class="title">Dynamic</span> </span>{</div><div class="line">    <span class="keyword">var</span> map = Map.empty[String, Any]</div><div class="line"></div><div class="line">    <span class="keyword">def</span> selectDynamic(name: String) = name</div><div class="line"></div><div class="line">    <span class="keyword">def</span> updateDynamic(name: String)(value: Any) {</div><div class="line">      map += name -&gt; value</div><div class="line">    }</div><div class="line"></div><div class="line">    <span class="keyword">def</span> applyDynamic(name: String)(args: Any*) = s<span class="string">"method '$name' called with arguments ${args.mkString("</span>'<span class="string">", "</span>', '<span class="string">", "</span>'<span class="string">")}"</span></div><div class="line"></div><div class="line">    <span class="keyword">def</span> applyDynamicNamed(name: String)(args: (String, Any)*) = s<span class="string">"method '$name' called with arguments ${args.mkString("</span>'<span class="string">", "</span>', '<span class="string">", "</span>'<span class="string">")}"</span></div><div class="line">  }</div></pre></td></tr></table></figure>
-
-<h2 id="_*">_*</h2>
-<p><code>_*</code>可以用作模式匹配任意数量的参数：</p>
-<figure class="highlight scala"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div></pre></td><td class="code"><pre><div class="line"><span class="class"><span class="keyword">case</span> <span class="keyword">class</span> <span class="title">A</span><span class="params">(n: Int*)</span></span></div><div class="line"></div><div class="line"><span class="keyword">val</span> a = A(<span class="number">1</span>, <span class="number">2</span>, <span class="number">3</span>, <span class="number">4</span>, <span class="number">5</span>)</div><div class="line">a <span class="keyword">match</span> {</div><div class="line">  <span class="keyword">case</span> A(<span class="number">1</span>, <span class="number">2</span>, _*) =&gt;</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>你可以将可变参数绑定到一个值上：</p>
-<figure class="highlight scala"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line">a <span class="keyword">match</span> {</div><div class="line">  <span class="keyword">case</span> A(<span class="number">1</span>, <span class="number">2</span>, as @_*) =&gt; println(as)</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>另外<code>_*</code>还可以作为辅助类型描述：</p>
-<figure class="highlight scala"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">val</span> l = <span class="number">1</span> :: <span class="number">2</span> :: <span class="number">3</span> :: Nil</div><div class="line"><span class="keyword">val</span> a2 = A(l :_*)</div></pre></td></tr></table></figure>
-
-<p>这里<code>:_*</code>用来将集合作为可变参数传递。</p>
-<h2 id="@_Pattern_Binders"><code>@</code> Pattern Binders</h2>
-<p>Scala规范8.1.3定义了模式绑定的定义。上面的例子<code>as @_*</code>也演示了这个功能。下面再看个例子：</p>
-<figure class="highlight scala"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">sealed</span> <span class="keyword">abstract</span> <span class="class"><span class="keyword">class</span> <span class="title">Expr</span></span></div><div class="line"><span class="class"><span class="keyword">case</span> <span class="keyword">class</span> <span class="title">Number</span><span class="params">(num: Double)</span> <span class="keyword">extends</span> <span class="title">Expr</span></span></div><div class="line"><span class="class"><span class="keyword">case</span> <span class="keyword">class</span> <span class="title">UnOp</span><span class="params">(operator: String, arg: Expr)</span> <span class="keyword">extends</span> <span class="title">Expr</span></span></div><div class="line"></div><div class="line"><span class="keyword">val</span> expr = UnOp(<span class="string">"abs"</span>, Number(-<span class="number">1</span>))</div><div class="line">expr <span class="keyword">match</span> {</div><div class="line">  <span class="keyword">case</span> UnOp(<span class="string">"abs"</span>, e @ Number(_)) =&gt; println(e)</div><div class="line">  <span class="keyword">case</span> _ =&gt;</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<h2 id="参考资料">参考资料</h2>
-<ol>
-<li><a href="http://stackoverflow.com/questions/1483212/list-of-scalas-magic-functions" target="_blank" rel="external">http://stackoverflow.com/questions/1483212/list-of-scalas-magic-functions</a></li>
-<li><a href="http://stackoverflow.com/questions/15799811/how-does-type-dynamic-work-and-how-to-use-it" target="_blank" rel="external">http://stackoverflow.com/questions/15799811/how-does-type-dynamic-work-and-how-to-use-it</a></li>
-<li><a href="http://www.scala-lang.org/files/archive/spec/2.11/08-pattern-matching.html#pattern-binders" target="_blank" rel="external">http://www.scala-lang.org/files/archive/spec/2.11/08-pattern-matching.html#pattern-binders</a></li>
-</ol>
-]]> <br/>转载请注明文章来源：<a href="http://colobu.com/2016/01/04/Scala-magic-functions/" target="_blank"> colobu.com</a></content>
-    <summary type="html">
-    <![CDATA[<p>Scala有一些语法糖，让一些特定名称的函数拥有一些特殊的能力。这些语法糖并没有专门的文档介绍，只是散落在不同的文章和教程中。本文整理里这些魔法函数，并通过例子演示它们的功能。<br>]]>
-    
-    </summary>
     
       <category term="Scala" scheme="http://colobu.com/categories/Scala/"/>
     
