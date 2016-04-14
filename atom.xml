@@ -4,7 +4,7 @@
   <subtitle><![CDATA[大道至简 Simplicity is the ultimate form of sophistication]]></subtitle>
   <link href="/atom.xml" rel="self"/>
   <link href="http://colobu.com/"/>
-  <updated>2016-04-14T06:53:25.154Z</updated>
+  <updated>2016-04-14T06:57:41.769Z</updated>
   <id>http://colobu.com/</id>
   
   <author>
@@ -19,7 +19,7 @@
     <link href="http://colobu.com/2016/04/14/Futures-and-Promises-in-golang/"/>
     <id>http://colobu.com/2016/04/14/Futures-and-Promises-in-golang/</id>
     <published>2016-04-14T06:13:12.000Z</published>
-    <updated>2016-04-14T06:53:15.314Z</updated>
+    <updated>2016-04-14T06:57:33.539Z</updated>
     <content type="html"><![CDATA[<p>其它语言中Future和Promise的概念大量存在， 比如Node.js、Scala、Java、C#、C++ 11、Scheme、Swift等，可以方便的实现异步执行和回调。但是在Go语言的世界里，我们是通过goroutine/channel实现这种类似的功能呢，goroutine之间可以通过channel进行通讯， 但是，如果我们还是想使用Future/Promise的功能的话，该如何实现呢？</p>
 <blockquote>
 <p>Future，Promise或Delay是用于并发编程的一种设计模式。它们表示一个对象，这个对象用来作为一次计算结果的代理，而该结果开始的时候是未知的，因为计算还没有完成。Promise与Future的区别在于，Future是Promise的一个只读的视图，也就是说Future没有设置任务结果的方法，只能获取任务执行结果或者为Future添加回调函数。</p>
@@ -27,20 +27,43 @@
 <a id="more"></a>
 <p>下面演示了实现一个Go Future的实现。因为Go目前还没有泛型的概念，所以为了使代码更通用，我会使用<code>interface{}</code>代表一个通用的对象。</p>
 <p>首先定义一个<code>Future</code>结构,</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> Future <span class="keyword">struct</span> {</div><div class="line">	result      <span class="keyword">interface</span>{}     <span class="comment">//计算结果</span></div><div class="line">	err         error           <span class="comment">//错误</span></div><div class="line">	signal      <span class="keyword">chan</span> <span class="keyword">struct</span>{}   <span class="comment">//等待完成的信号</span></div><div class="line">	IsCompleted <span class="typename">bool</span>            <span class="comment">//计算是否完成</span></div><div class="line">}</div></pre></td></tr></table></figure>
+<p><code>go
+type Future struct {
+    result      interface{}     //计算结果
+    err         error           //错误
+    signal      chan struct{}   //等待完成的信号
+    IsCompleted bool            //计算是否完成
+}</code></p>
+<p>这个Future可以执行下面的计算<code>func() (interface{}, error)</code>,所以计算方法应该实现为<code>FutureFunc</code>类型的函数，它会返回结果或者返回error：<br><code>go 
+type FutureFunc func() (interface{}, error)</code></p>
+<p>然后定义获取结果的<code>Get</code>和<code>GetOrTimeout</code>方法，它会阻塞直到获得结果或者超时(GetOrTimeout)。<br>`go<br>// GetOrTimeout is similar to Get(), but GetOrTimeout will not block after timeout.<br>func (f *Future) GetOrTimeout(d time.Duration) (result interface{}, err error, timeout bool) {<br>    select {<br>    case &lt;-time.After(d):<br>        return nil, nil, true<br>    case &lt;-f.signal:<br>        return f.result, f.err, false<br>    }<br>}</p>
+<p>// Get is used to get future result<br>func (f *Future) Get() (result interface{}, err error) {<br>    &lt;-f.signal<br>    return f.result, f.err<br>}<br>`</p>
+<p>然后定义<code>NewFuture</code>就可以了:<br>`go<br>func NewFuture(fun FutureFunc) *Future {<br>    f := new(Future)</p>
+<pre><code>f.signal = make(chan struct{}, <span class="number">1</span>)
 
-<p>这个Future可以执行下面的计算<code>func() (interface{}, error)</code>,所以计算方法应该实现为<code>FutureFunc</code>类型的函数，它会返回结果或者返回error：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> FutureFunc <span class="keyword">func</span>() (<span class="keyword">interface</span>{}, error)</div></pre></td></tr></table></figure>
+go func() {
+    defer close(f.signal)
+    <span class="literal">result</span>, err := fun()
+    f.<span class="literal">result</span> = <span class="literal">result</span>
+    f.err = err
+    f.<span class="type">IsCompleted</span> = <span class="literal">true</span>
+}()
 
-<p>然后定义获取结果的<code>Get</code>和<code>GetOrTimeout</code>方法，它会阻塞直到获得结果或者超时(GetOrTimeout)。</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div></pre></td><td class="code"><pre><div class="line"><span class="comment">// GetOrTimeout is similar to Get(), but GetOrTimeout will not block after timeout.</span></div><div class="line"><span class="keyword">func</span> (f *Future) GetOrTimeout(d time.Duration) (result <span class="keyword">interface</span>{}, err error, timeout <span class="typename">bool</span>) {</div><div class="line">	<span class="keyword">select</span> {</div><div class="line">	<span class="keyword">case</span> &lt;-time.After(d):</div><div class="line">		<span class="keyword">return</span> <span class="constant">nil</span>, <span class="constant">nil</span>, <span class="constant">true</span></div><div class="line">	<span class="keyword">case</span> &lt;-f.signal:</div><div class="line">		<span class="keyword">return</span> f.result, f.err, <span class="constant">false</span></div><div class="line">	}</div><div class="line">}</div><div class="line"></div><div class="line"><span class="comment">// Get is used to get future result</span></div><div class="line"><span class="keyword">func</span> (f *Future) Get() (result <span class="keyword">interface</span>{}, err error) {</div><div class="line">	&lt;-f.signal</div><div class="line">	<span class="keyword">return</span> f.result, f.err</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>然后定义<code>NewFuture</code>就可以了:</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> NewFuture(fun FutureFunc) *Future {</div><div class="line">	f := <span class="built_in">new</span>(Future)</div><div class="line"></div><div class="line">	f.signal = <span class="built_in">make</span>(<span class="keyword">chan</span> <span class="keyword">struct</span>{},<span class="number"> 1</span>)</div><div class="line"></div><div class="line">	<span class="keyword">go</span> <span class="keyword">func</span>() {</div><div class="line">		<span class="keyword">defer</span> <span class="built_in">close</span>(f.signal)</div><div class="line">		result, err := fun()</div><div class="line">		f.result = result</div><div class="line">		f.err = err</div><div class="line">		f.IsCompleted = <span class="constant">true</span></div><div class="line">	}()</div><div class="line"></div><div class="line">	<span class="keyword">return</span> f</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>一个使用的例子：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> ExampleRequestFuture() {</div><div class="line">	requestFunc := <span class="keyword">func</span>() (body <span class="keyword">interface</span>{}, err error) {</div><div class="line">		url := <span class="string">"http://www.baidu.com"</span></div><div class="line">		<span class="keyword">var</span> resp *http.Response</div><div class="line">		resp, err = http.Get(url)</div><div class="line">		<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">			<span class="keyword">return</span></div><div class="line">		}</div><div class="line">		<span class="keyword">defer</span> resp.Body.Close()</div><div class="line">		bodyBytes, err := ioutil.ReadAll(resp.Body)</div><div class="line">		<span class="keyword">return</span> <span class="typename">string</span>(bodyBytes), err</div><div class="line">	}</div><div class="line"></div><div class="line">	requestFuture := NewFuture(FutureFunc(requestFunc))</div><div class="line">	body, err, timeout := requestFuture.GetOrTimeout<span class="number">(10</span> * time.Second)</div><div class="line">	<span class="keyword">if</span> timeout {</div><div class="line">		fmt.Println(<span class="string">"timeout"</span>)</div><div class="line">	} <span class="keyword">else</span> {</div><div class="line">		<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">			fmt.Printf(<span class="string">"error: %v\n"</span>, err)</div><div class="line">		} <span class="keyword">else</span> {</div><div class="line">			fmt.Printf(<span class="string">"body: %v\n"</span>, body)</div><div class="line">		}</div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
-
+<span class="keyword">return</span> f
+</code></pre><p>}<br>`</p>
+<p>一个使用的例子：<br>`go<br>func ExampleRequestFuture() {<br>    requestFunc := func() (body interface{}, err error) {<br>        url := &quot;<a href="http://www.baidu.com" target="_blank" rel="external">http://www.baidu.com</a>&quot;<br>        var resp *http.Response<br>        resp, err = http.Get(url)<br>        if err != nil {<br>            return<br>        }<br>        defer resp.Body.Close()<br>        bodyBytes, err := ioutil.ReadAll(resp.Body)<br>        return string(bodyBytes), err<br>    }</p>
+<pre><code>requestFuture := NewFuture(FutureFunc(requestFunc))
+body, <span class="built_in">err</span>, timeout := requestFuture.GetOrTimeout(<span class="number">10</span> * <span class="built_in">time</span>.<span class="built_in">Second</span>)
+<span class="keyword">if</span> timeout {
+    fmt.Println(<span class="string">"timeout"</span>)
+} <span class="keyword">else</span> {
+    <span class="keyword">if</span> <span class="built_in">err</span> != nil {
+        fmt.Printf(<span class="string">"error: %v\n"</span>, <span class="built_in">err</span>)
+    } <span class="keyword">else</span> {
+        fmt.Printf(<span class="string">"body: %v\n"</span>, body)
+    }
+}
+</code></pre><p>}<br>`</p>
 <p>如果你是一个Java程序了，可以发现这个Future类似Java中的<a href="https://docs.oracle.com/javase/8/docs/api/java/util/concurrent/Future.html" target="_blank" rel="external">Future接口</a>。</p>
 <p>当然这个Future实现的还是非常的简陋，至少还应该实现回调接口比如<code>OnSuccess</code>、<code>OnFailure</code>、<code>OnComplete</code>等方法，另外一些方法如<code>Cancel</code>也应该加上。<br>为了组合多个Future，避免掉入&quot;回调陷阱&quot;,还应该实现Future的组合方法。</p>
 <p>为了实现<code>SetResult</code>和<code>SetError</code>的功能，可以实现一个类似的<code>Promise</code>的功能。</p>
@@ -49,73 +72,67 @@
 <ul>
 <li><p>Future and Promise</p>
 <ul>
-<li></li>
+<li><code>NewPromise()</code></li>
+<li><code>promise.Future</code></li>
+</ul>
+</li>
+<li><p>Promise and Future callbacks</p>
+<ul>
+<li><code>.OnSuccess(v interface{})</code></li>
+<li><code>.OnFailure(v interface{})</code></li>
+<li><code>.OnComplete(v interface{})</code></li>
+<li><code>.OnCancel()</code></li>
+</ul>
+</li>
+<li><p>Get the result of future</p>
+<ul>
+<li><code>.Get()</code></li>
+<li><code>.GetOrTimeout()</code></li>
+<li><code>.GetChan()</code></li>
+</ul>
+</li>
+<li><p>Set timeout for future</p>
+<ul>
+<li><code>.SetTimeout(ms)</code></li>
+</ul>
+</li>
+<li><p>Merge multiple promises</p>
+<ul>
+<li><code>WhenAll(func1, func2, func3, ...)</code></li>
+<li><code>WhenAny(func1, func2, func3, ...)</code></li>
+<li><code>WhenAnyMatched(func1, func2, func3, ...)</code></li>
+</ul>
+</li>
+<li><p>Pipe</p>
+<ul>
+<li><code>.Pipe(funcWithDone, funcWithFail)</code></li>
+</ul>
+</li>
+<li><p>Cancel the future</p>
+<ul>
+<li><code>.Cancel()</code></li>
+<li><code>.IsCancelled()</code></li>
+</ul>
+</li>
+<li><p>Create future by function</p>
+<ul>
+<li><code>Start(func() (r interface{}, e error))</code></li>
+<li><code>Start(func())</code></li>
+<li><code>Start(func(canceller Canceller) (r interface{}, e error))</code></li>
+<li><code>Start(func(canceller Canceller))</code></li>
+</ul>
+</li>
+<li><p>Immediate wrappers</p>
+<ul>
+<li><code>Wrap(interface{})</code></li>
+</ul>
+</li>
+<li><p>Chain API</p>
+<ul>
+<li><code>Start(taskDone).Done(done1).Fail(fail1).Always(alwaysForDone1).Pipe(f1, f2).Done(done2)</code></li>
 </ul>
 </li>
 </ul>
-<figure class="highlight NewPromise()```"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">*</span></div></pre></td></tr></table></figure>
-
-<p>promise.Future</p>
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line"></div><div class="line"><span class="keyword">*</span> Promise and Future callbacks</div><div class="line"></div><div class="line">  <span class="keyword">*</span></div></pre></td></tr></table></figure>
-
-<p>.OnSuccess(v interface{})</p>
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">*</span></div></pre></td></tr></table></figure>
-
-<p>.OnFailure(v interface{})</p>
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">*</span></div></pre></td></tr></table></figure>
-
-<p>.OnComplete(v interface{})</p>
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">*</span></div></pre></td></tr></table></figure>
-
-<p>.OnCancel()</p>
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line"></div><div class="line">* <span class="type">Get</span> the <span class="literal">result</span> <span class="keyword">of</span> future</div><div class="line"></div><div class="line">  *</div></pre></td></tr></table></figure>
-
-<p>.Get() </p>
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">*</span></div></pre></td></tr></table></figure>
-
-<p>.GetOrTimeout()</p>
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">*</span></div></pre></td></tr></table></figure>
-
-<p>.GetChan()</p>
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line"></div><div class="line">* <span class="keyword">Set</span> timeout <span class="keyword">for</span> <span class="keyword">future</span></div><div class="line"></div><div class="line">  *</div></pre></td></tr></table></figure>
-
-<p>.SetTimeout(ms)</p>
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line">  </div><div class="line"><span class="keyword">*</span> Merge multiple promises</div><div class="line"></div><div class="line">  <span class="keyword">*</span></div></pre></td></tr></table></figure>
-
-<p>WhenAll(func1, func2, func3, ...)</p>
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">*</span></div></pre></td></tr></table></figure>
-
-<p>WhenAny(func1, func2, func3, ...)</p>
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">*</span></div></pre></td></tr></table></figure>
-
-<p>WhenAnyMatched(func1, func2, func3, ...)</p>
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line"></div><div class="line"><span class="keyword">*</span> Pipe</div><div class="line">  <span class="keyword">*</span></div></pre></td></tr></table></figure>
-
-<p>.Pipe(funcWithDone, funcWithFail)</p>
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line"></div><div class="line"><span class="keyword">*</span> Cancel the future</div><div class="line"></div><div class="line">  <span class="keyword">*</span></div></pre></td></tr></table></figure>
-
-<p>.Cancel()</p>
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">*</span></div></pre></td></tr></table></figure>
-
-<p>.IsCancelled()</p>
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line"></div><div class="line">* <span class="keyword">Create</span> <span class="keyword">future</span> <span class="keyword">by</span> <span class="function"><span class="keyword">function</span></span></div><div class="line"></div><div class="line">  *</div></pre></td></tr></table></figure>
-
-<p>Start(func() (r interface{}, e error))</p>
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">*</span></div></pre></td></tr></table></figure>
-
-<p>Start(func())</p>
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">*</span></div></pre></td></tr></table></figure>
-
-<p>Start(func(canceller Canceller) (r interface{}, e error))</p>
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">*</span></div></pre></td></tr></table></figure>
-
-<p>Start(func(canceller Canceller))</p>
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line"></div><div class="line"><span class="keyword">*</span> Immediate wrappers</div><div class="line"></div><div class="line">  <span class="keyword">*</span></div></pre></td></tr></table></figure>
-
-<p>Wrap(interface{})</p>
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line"></div><div class="line"><span class="keyword">*</span> Chain API</div><div class="line"></div><div class="line">  <span class="keyword">*</span></div></pre></td></tr></table></figure>
-
-<p>Start(taskDone).Done(done1).Fail(fail1).Always(alwaysForDone1).Pipe(f1, f2).Done(done2)```</p>
 <p>使用例子可以看他的项目文档。</p>
 <h2 id="参考资料">参考资料</h2>
 <ol>
