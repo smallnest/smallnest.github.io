@@ -1,0 +1,568 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  
+  <title>Socket分片:基于Netty的Java实现 | 鸟窝</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+  <meta name="description" content="最近Nginx发布了1.9.1版，其中一个新的特性就是支持socket的SO_REUSEPORT选项。这个socket的SO_REUSEPORT选项已经有许多现实世界的应用。对NGINX而言，它通过将连接均衡的分给多个进程以提升性能。SO_REUSEPORT已经在一些操作系统上实现了支持。这个选项允许多个socket监听同一个IP地址+端口。内核负载均衡这些进来的sockets连接，将这些sock">
+<meta property="og:type" content="article">
+<meta property="og:title" content="Socket分片:基于Netty的Java实现">
+<meta property="og:url" content="http://colobu.com/2015/06/11/Socket-sharding-implemented-by-netty/">
+<meta property="og:site_name" content="鸟窝">
+<meta property="og:description" content="最近Nginx发布了1.9.1版，其中一个新的特性就是支持socket的SO_REUSEPORT选项。这个socket的SO_REUSEPORT选项已经有许多现实世界的应用。对NGINX而言，它通过将连接均衡的分给多个进程以提升性能。SO_REUSEPORT已经在一些操作系统上实现了支持。这个选项允许多个socket监听同一个IP地址+端口。内核负载均衡这些进来的sockets连接，将这些sock">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="Socket分片:基于Netty的Java实现">
+<meta name="twitter:description" content="最近Nginx发布了1.9.1版，其中一个新的特性就是支持socket的SO_REUSEPORT选项。这个socket的SO_REUSEPORT选项已经有许多现实世界的应用。对NGINX而言，它通过将连接均衡的分给多个进程以提升性能。SO_REUSEPORT已经在一些操作系统上实现了支持。这个选项允许多个socket监听同一个IP地址+端口。内核负载均衡这些进来的sockets连接，将这些sock">
+
+  
+    <link rel="alternative" href="/atom.xml" title="鸟窝" type="application/atom+xml">
+  
+  
+    <link rel="icon" href="/favicon.png">
+  
+  <link rel="stylesheet" href="/css/style.css" type="text/css">
+
+  <link href="//cdn.staticfile.org/font-awesome/4.2.0/css/font-awesome.css" rel="stylesheet">
+  
+  <link rel="stylesheet" href="//libs.cncdn.cn/fancybox/2.1.5/jquery.fancybox.css" media="screen" type="text/css">
+  
+  <link rel="stylesheet" href="//cdnjs.cloudflare.com/ajax/libs/animate.css/3.1.1/animate.min.css" media="screen" type="text/css">
+  <!--[if lt IE 9]><script src="//cdn.staticfile.org/html5shiv/3.7/html5shiv.min.js"></script><![endif]-->
+
+  <script type="text/javascript">
+	//visit my previous blog: http://old.colobu.com just like this http://colobu.com/?=123456
+    var blog_url = location.href.toString();
+	if (blog_url.indexOf("http://colobu.com/?p=") >= 0) {
+		blog_url = blog_url.replace("colobu.com", "old.colobu.com");
+		window.location.assign(blog_url);
+	} else if (blog_url.indexOf("http://smallnest.gitcafe.com") >= 0) {
+		blog_url = blog_url.replace("smallnest.gitcafe.com", "colobu.com");
+		window.location.assign(blog_url);
+	}  else if (blog_url.indexOf("http://smallnest.gitcafe.io") >= 0) {
+		blog_url = blog_url.replace("smallnest.gitcafe.io", "colobu.com");
+		window.location.assign(blog_url);
+	}
+</script>
+</head>
+
+<body>
+  <div id="container">
+    <div id="wrap">
+      <header id="header">
+  <div id="banner"></div>
+  <div id="header-outer" class="outer">
+    <div id="header-title" class="inner">
+      <h1 id="logo-wrap" class="animated bounceInLeft">
+        <a href="/" id="logo">鸟窝</a>
+      </h1>
+      
+        <h2 id="subtitle-wrap" class="animated bounceInLeft">
+          <a href="/" id="subtitle">大道至简 Simplicity is the ultimate form of sophistication</a>
+        </h2>
+      
+    </div>
+    <div id="header-inner" class="inner">
+      <nav id="main-nav">
+        <a id="main-nav-toggle" class="nav-icon"></a>
+        
+          <a class="main-nav-link" href="/"><i class="fa fa-home">&nbsp;</i>首页</a>
+        
+          <a class="main-nav-link" href="/archives"><i class="fa fa-folder-o">&nbsp;</i>归档</a>
+        
+          <a class="main-nav-link" href="https://github.com/smallnest"><i class="fa fa-github">&nbsp;</i>github</a>
+        
+          <a class="main-nav-link" href="http://tr.colobu.com"><i class="fa fa-spinner fa-pulse">&nbsp;</i>技术流</a>
+        
+          <a class="main-nav-link" href="/ScalaCollectionsCookbook"><i class="fa fa-book">&nbsp;</i>Scala集合技术手册</a>
+        
+          <a class="main-nav-link" href="/techreview"><i class="fa fa-newspaper-o">&nbsp;</i>技术快报</a>
+        
+          <a class="main-nav-link" href="/about"><i class="fa fa-lemon-o">&nbsp;</i>关于</a>
+        
+      </nav>
+      <nav id="sub-nav">
+        
+          <a id="nav-rss-link" class="nav-icon" href="/atom.xml" title="RSS Feed"></a>
+        
+        <a id="nav-search-btn" class="nav-icon" title="Search"></a>
+      </nav>
+      <div id="search-form-wrap">
+        <form action="http://www.baidu.com/baidu" method="get" accept-charset="utf-8" class="search-form">
+          <input type="search" name="word" maxlength="20" class="search-form-input" placeholder="Search">
+          <input type="submit" value="" class="search-form-submit">
+          <input name=tn type=hidden value="bds">
+          <input name=cl type=hidden value="3">
+          <input name=ct type=hidden value="2097152">
+          <input type="hidden" name="si" value="colobu.com">
+        </form>
+      </div>
+    </div>
+  </div>
+</header>
+      <div class="outer">
+        <section id="main"><article id="post-Socket-sharding-implemented-by-netty" class="article article-type-post" itemscope itemprop="blogPost">
+  <div class="article-meta">
+    <a href="/2015/06/11/Socket-sharding-implemented-by-netty/" class="article-date">
+  <time datetime="2015-06-11T01:07:50.000Z" itemprop="datePublished">2015年06月11日</time>
+</a>
+    
+  <div class="article-category">
+    <a class="article-category-link" href="/categories/网络编程/">网络编程</a>
+  </div>
+
+	
+  <div class="article-author"> by smallnest</div>
+
+  </div>
+  <div class="article-inner">
+    
+    
+      <header class="article-header">
+        
+  
+    <h1 class="article-title" itemprop="name">
+      Socket分片:基于Netty的Java实现
+	  
+    </h1>
+  
+
+      </header>
+    
+    <div class="article-entry" itemprop="articleBody">
+	  
+	  
+      
+        <p>最近Nginx发布了1.9.1版，其中一个新的特性就是支持socket的<code>SO_REUSEPORT</code>选项。这个socket的SO_REUSEPORT选项已经有许多现实世界的应用。对NGINX而言，它通过将连接均衡的分给多个进程以提升性能。SO_REUSEPORT已经在一些操作系统上实现了支持。这个选项允许多个socket监听同一个IP地址+端口。内核负载均衡这些进来的sockets连接，将这些socket有效的分片。<br>尽管Java很早就有一个特性请求：<a href="https://bugs.openjdk.java.net/browse/JDK-6432031" target="_blank" rel="external">JDK-6432031</a>，但是时至今日，Oracle JDK依然不支持这个选项，因此我们只能通过<code>hack</code>的方式在Java中使用此特性。</p>
+<p>Google已经在内部服务器中开启了这个特性： <a href="https://domsch.com/linux/lpc2010/Scaling_techniques_for_servers_with_high_connection%20rates.pdf" target="_blank" rel="external">SO_REUSEPORT<br>Scaling Techniques for Servers with High Connection Rates</a><br><a id="more"></a></p>
+<h2 id="SO_REUSEPORT">SO_REUSEPORT</h2>
+<p>就像聂永的博客中所说：</p>
+<blockquote>
+<p>运行在Linux系统上网络应用程序，为了利用多核的优势，一般使用以下比较典型的多进程/多线程服务器模型：</p>
+<ul>
+<li>单线程listen/accept，多个工作线程接收任务分发，虽CPU的工作负载不再是问题，但会存在：<ul>
+<li>单线程listener，在处理高速率海量连接时，一样会成为瓶颈</li>
+<li>CPU缓存行丢失套接字结构(socket structure)现象严重</li>
+</ul>
+</li>
+<li>所有工作线程都accept()在同一个服务器套接字上呢，一样存在问题：<ul>
+<li>多线程访问server socket锁竞争严重</li>
+<li>高负载下，线程之间处理不均衡，有时高达3:1不均衡比例</li>
+<li>导致CPU缓存行跳跃(cache line bouncing)</li>
+<li>在繁忙CPU上存在较大延迟</li>
+</ul>
+</li>
+</ul>
+<p>上面模型虽然可以做到线程和CPU核绑定，但都会存在：</p>
+<ul>
+<li>单一listener工作线程在高速的连接接入处理时会成为瓶颈</li>
+<li>缓存行跳跃</li>
+<li>很难做到CPU之间的负载均衡</li>
+<li>随着核数的扩展，性能并没有随着提升</li>
+</ul>
+</blockquote>
+<p><code>SO_REUSEPORT</code>在*BSD平台早已经实现，而Linux平台则由谷歌工程师实现并于2013年正式纳入Linux的trunk (kernel 3.9)。</p>
+<p>当前的操作系统支持情况：</p>
+<ul>
+<li>Linux: 内核自3.9开始支持此特性。因此Redhat 7.0中支持。</li>
+<li>BSD: 支持 (FreeBSD, DragonFly BSD. OpenBSD， NetBSD等)</li>
+<li>Mac OS：支持</li>
+<li>Windows： windows上只有SO_REUSEADDR选项，没有SO_REUSEPORT。windows上设置了SO_REUSEADDR的socket其行为与BSD上设定了SO_REUSEPORT和SO_REUSEADDRd的行为大致一样。</li>
+<li>Solaris：Solaris 11中支持 (patch已打)</li>
+</ul>
+<h2 id="和SO_REUSEADDR的区别">和SO_REUSEADDR的区别</h2>
+<p><em>SO_REUSEADDR提供如下四个功能</em>：</p>
+<ol>
+<li>SO_REUSEADDR允许启动一个监听服务器并捆绑一个端口，即使以前建立的将此端口用做他们的本地端口的连接仍存在(TIME_WAIT)。这通常是重启监听服务器时出现，若不设置此选项，则bind时将出错。</li>
+<li>SO_REUSEADDR允许在同一端口上启动同一服务器的多个实例，只要每个实例捆绑一个不同的本地IP地址即可。</li>
+<li>SO_REUSEADDR允许单个进程捆绑同一端口到多个套接口上，只要每个捆绑指定不同的本地IP地址即可。这一般不用于TCP服务器。</li>
+<li>SO_REUSEADDR允许完全重复的捆绑：当一个IP地址和端口绑定到某个套接口上时，还允许此IP地址和端口捆绑到另一个套接口上。一般来说，这个特性仅在支持多播的系统上才有，而且只对UDP套接口而言（TCP不支持多播）。</li>
+</ol>
+<p>当使用通配符的时候更为复杂，这里有一张表格列出了各种情况(服务器的IP地址是192.168.0.1)：</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div></pre></td><td class="code"><pre><div class="line"><span class="title">SO_REUSEADDR</span>       socketA        socketB       Result</div><div class="line">---------------------------------------------------------------------</div><div class="line">  ON/OFF       <span class="number">192.168.0.1:21</span>   <span class="number">192.168.0.1:21</span>    Error (EADDRINUSE)</div><div class="line">  ON/OFF       <span class="number">192.168.0.1:21</span>      <span class="number">10.0.0.1:21</span>    OK</div><div class="line">  ON/OFF          <span class="number">10.0.0.1:21</span>   <span class="number">192.168.0.1:21</span>    OK</div><div class="line">   OFF             <span class="number">0.0.0.0:21</span>   <span class="number">192.168.1.0:21</span>    Error (EADDRINUSE)</div><div class="line">   OFF         <span class="number">192.168.1.0:21</span>       <span class="number">0.0.0.0:21</span>    Error (EADDRINUSE)</div><div class="line">   ON              <span class="number">0.0.0.0:21</span>   <span class="number">192.168.1.0:21</span>    OK</div><div class="line">   ON          <span class="number">192.168.1.0:21</span>       <span class="number">0.0.0.0:21</span>    OK</div><div class="line">  ON/OFF           <span class="number">0.0.0.0:21</span>       <span class="number">0.0.0.0:21</span>    Error (EADDRINUSE)</div></pre></td></tr></table></figure>
+
+
+<p><em>SO_REUSEPORT选项有如下语义</em>：</p>
+<ol>
+<li>此选项允许完全重复捆绑，但仅在想捆绑相同IP地址和端口的套接口都指定了此套接口选项才行。</li>
+<li>如果被捆绑的IP地址是一个多播地址，则SO_REUSEADDR和SO_REUSEPORT等效。</li>
+</ol>
+<h2 id="Netty的实现">Netty的实现</h2>
+<p>Netty不是唯一通过<code>hack</code>方式实现<code>SO_REUSEPORT</code>特性的Java网络框架。比如下面的方式，使用<code>sun.nio.ch.Net</code>进行设置：</p>
+<figure class="highlight java"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">import</span> sun.nio.ch.Net;</div><div class="line"></div><div class="line">   ......</div><div class="line"></div><div class="line"><span class="keyword">public</span> <span class="keyword">void</span> <span class="title">setReusePort</span>(ServerSocketChannel serverChannel) {</div><div class="line">	<span class="keyword">try</span> {</div><div class="line">		Field fieldFd = serverChannel.getClass().getDeclaredField(<span class="string">"fd"</span>);</div><div class="line">		<span class="comment">//NoSuchFieldException</span></div><div class="line">		fieldFd.setAccessible(<span class="keyword">true</span>);</div><div class="line">		FileDescriptor fd = (FileDescriptor)fieldFd.get(serverChannel);</div><div class="line">		<span class="comment">//IllegalAccessException</span></div><div class="line"></div><div class="line">		Method methodSetIntOption0 =</div><div class="line">				Net.class.getDeclaredMethod(<span class="string">"setIntOption0"</span>, FileDescriptor.class,</div><div class="line">						Boolean.TYPE, Integer.TYPE, Integer.TYPE, Integer.TYPE);</div><div class="line">		methodSetIntOption0.setAccessible(<span class="keyword">true</span>);</div><div class="line">		methodSetIntOption0.invoke(<span class="keyword">null</span>, fd, <span class="keyword">false</span>, <span class="string">'\uffff'</span>,</div><div class="line">				SO_REUSEPORT, <span class="number">1</span>);</div><div class="line">	} <span class="keyword">catch</span> (Exception e) {</div><div class="line">		System.out.println(e.toString());</div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>但是本文将关注Netty,因为Netty提供了一个通过JNI封装的库，可以更方便的进行<code>SO_REUSEPORT</code>设置。<br>自4.0.16版本，Netty为Linux提供了 native socket transport,通过JNI的方式实现，它可以提供更高的性能和极少的垃圾回收。<br>它兼容NIO的方式，只需改成：</p>
+<figure class="highlight java"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line">NioEventLoopGroup → EpollEventLoopGroup</div><div class="line">NioEventLoop → EpollEventLoop</div><div class="line">NioServerSocketChannel → EpollServerSocketChannel</div><div class="line">NioSocketChannel → EpollSocketChannel</div></pre></td></tr></table></figure>
+
+<p>Maven pom.xml加入：</p>
+<figure class="highlight xml"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div></pre></td><td class="code"><pre><div class="line"><span class="tag">&lt;<span class="title">build</span>&gt;</span></div><div class="line">  <span class="tag">&lt;<span class="title">extensions</span>&gt;</span></div><div class="line">    <span class="tag">&lt;<span class="title">extension</span>&gt;</span></div><div class="line">      <span class="tag">&lt;<span class="title">groupId</span>&gt;</span>kr.motd.maven<span class="tag">&lt;/<span class="title">groupId</span>&gt;</span></div><div class="line">      <span class="tag">&lt;<span class="title">artifactId</span>&gt;</span>os-maven-plugin<span class="tag">&lt;/<span class="title">artifactId</span>&gt;</span></div><div class="line">      <span class="tag">&lt;<span class="title">version</span>&gt;</span>1.2.3.Final<span class="tag">&lt;/<span class="title">version</span>&gt;</span></div><div class="line">    <span class="tag">&lt;/<span class="title">extension</span>&gt;</span></div><div class="line">  <span class="tag">&lt;/<span class="title">extensions</span>&gt;</span></div><div class="line">  ...</div><div class="line"><span class="tag">&lt;/<span class="title">build</span>&gt;</span></div><div class="line"></div><div class="line"><span class="tag">&lt;<span class="title">dependencies</span>&gt;</span></div><div class="line">  <span class="tag">&lt;<span class="title">dependency</span>&gt;</span></div><div class="line">    <span class="tag">&lt;<span class="title">groupId</span>&gt;</span>io.netty<span class="tag">&lt;/<span class="title">groupId</span>&gt;</span></div><div class="line">    <span class="tag">&lt;<span class="title">artifactId</span>&gt;</span>netty-transport-native-epoll<span class="tag">&lt;/<span class="title">artifactId</span>&gt;</span></div><div class="line">    <span class="tag">&lt;<span class="title">version</span>&gt;</span>${project.version}<span class="tag">&lt;/<span class="title">version</span>&gt;</span></div><div class="line">    <span class="tag">&lt;<span class="title">classifier</span>&gt;</span>${os.detected.classifier}<span class="tag">&lt;/<span class="title">classifier</span>&gt;</span></div><div class="line">  <span class="tag">&lt;/<span class="title">dependency</span>&gt;</span></div><div class="line">  ...</div><div class="line"><span class="tag">&lt;/<span class="title">dependencies</span>&gt;</span></div></pre></td></tr></table></figure>
+
+<p>SBT配置文件的话则加入：</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line"><span class="string">"io.netty"</span> % <span class="string">"netty-transport-native-epoll"</span> % <span class="string">"<span class="variable">${project.version}</span>"</span> classifier <span class="string">"linux-x86_64"</span></div></pre></td></tr></table></figure>
+
+<p>代码中设置<code>SO_REUSEPORT</code>:</p>
+<figure class="highlight scala"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">bootstrap.option(EpollChannelOption.SO_REUSEPORT, <span class="keyword">true</span>)</div></pre></td></tr></table></figure>
+
+<p>很简单，完整的代码可以参照: <a href="https://github.com/smallnest/C1000K-Servers/blob/master/netty/src/main/scala/com/colobu/webtest/netty/WebServer.scala" target="_blank" rel="external">WebServer.scala</a></p>
+<h2 id="参考文档">参考文档</h2>
+<ol>
+<li><a href="http://nginx.com/blog/socket-sharding-nginx-release-1-9-1" target="_blank" rel="external">Socket Sharding in NGINX Release 1.9.1</a></li>
+<li><a href="https://github.com/tokuhirom/jetty-so_reuseport-sample" target="_blank" rel="external">https://github.com/tokuhirom/jetty-so_reuseport-sample</a></li>
+<li><a href="http://www.blogjava.net/yongboy/archive/2015/02/12/422893.html" target="_blank" rel="external">SO_REUSEPORT学习笔记</a></li>
+<li><a href="http://www.cnblogs.com/mydomain/archive/2011/08/23/2150567.html" target="_blank" rel="external">http://www.cnblogs.com/mydomain/archive/2011/08/23/2150567.html</a></li>
+<li><a href="http://stackoverflow.com/questions/14388706/socket-options-so-reuseaddr-and-so-reuseport-how-do-they-differ-do-they-mean-t" target="_blank" rel="external">http://stackoverflow.com/questions/14388706/socket-options-so-reuseaddr-and-so-reuseport-how-do-they-differ-do-they-mean-t</a></li>
+<li><a href="http://blog.chinaunix.net/uid-26133817-id-4814341.html" target="_blank" rel="external">http://blog.chinaunix.net/uid-26133817-id-4814341.html</a></li>
+<li><a href="https://lwn.net/Articles/542629/" target="_blank" rel="external">https://lwn.net/Articles/542629/</a></li>
+</ol>
+
+      
+    </div>
+    <footer class="article-footer">
+	
+<div class="bdsharebuttonbox"><a title="分享到新浪微博" class="bds_tsina" href="#" data-cmd="tsina"></a><a title="分享到微信" class="bds_weixin" href="#" data-cmd="weixin"></a><a title="分享到QQ空间" class="bds_qzone" href="#" data-cmd="qzone"></a><a title="分享到印象笔记" class="bds_evernotecn" href="#" data-cmd="evernotecn"></a><a title="分享到有道云笔记" class="bds_youdao" href="#" data-cmd="youdao"></a><a title="分享到百度云收藏" class="bds_bdysc" href="#" data-cmd="bdysc"></a><a class="bds_more" href="#" data-cmd="more"></a></div>
+<script>window._bd_share_config={"common":{"bdSnsKey":{},"bdText":"","bdMini":"2","bdMiniList":false,"bdPic":"","bdStyle":"0","bdSize":"24"},"share":{}};with(document)0[(getElementsByTagName('head')[0]||body).appendChild(createElement('script')).src='http://bdimg.share.baidu.com/static/api/js/share.js?v=89860593.js?cdnversion='+~(-new Date()/36e5)];</script>
+      
+
+	  
+        <a href="http://colobu.com/2015/06/11/Socket-sharding-implemented-by-netty/#comments" class="article-comment-link">评论</a>
+      
+
+      
+  <ul class="article-tag-list"><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/Netty/">Netty</a></li></ul>
+
+    </footer>
+  </div>
+  
+    
+<nav id="article-nav">
+  
+    <a href="/2015/06/11/Scala-Either-Left-And-Right/" id="article-nav-newer" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">Newer</strong>
+      <div class="article-nav-title">
+        
+          Scala Either, Left And Right
+        
+      </div>
+    </a>
+  
+  
+    <a href="/2015/05/28/Akka-actor-scheduling/" id="article-nav-older" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">Older</strong>
+      <div class="article-nav-title">akka actor的运行原理</div>
+    </a>
+  
+</nav>
+
+  
+</article>
+
+
+<section id="comments">
+  <div class="ds-thread" data-thread-key="2015/06/11/Socket-sharding-implemented-by-netty/" data-title="Socket分片:基于Netty的Java实现" data-url="http://colobu.com/2015/06/11/Socket-sharding-implemented-by-netty/"></div>
+
+</section>
+
+</section>
+        
+          <aside id="sidebar">
+  
+      <div class="widget-wrap">
+    <h3 class="widget-title">原创图书</h3>
+    <div class="widget">
+      <a href="/ScalaCollectionsCookbook/">
+        <img width="100%" src="/ScalaCollectionsCookbook/scala_collections_cookbook.jpg">
+        <img width="100%" src="/ScalaCollectionsCookbook/scala_collections_cookbook_tw.png">
+      </a>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">分类</h3>
+    <div class="widget">
+      <ul class="category-list"><li class="category-list-item"><a class="category-list-link" href="/categories/Android/">Android</a><span class="category-list-count">12</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/DOTNET/">DOTNET</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Docker/">Docker</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Go/">Go</a><span class="category-list-count">49</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Java/">Java</a><span class="category-list-count">58</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Linux/">Linux</a><span class="category-list-count">6</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Scala/">Scala</a><span class="category-list-count">18</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/前端开发/">前端开发</a><span class="category-list-count">18</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/大数据/">大数据</a><span class="category-list-count">54</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/工具/">工具</a><span class="category-list-count">14</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/架构/">架构</a><span class="category-list-count">21</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/算法/">算法</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/管理/">管理</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/网络编程/">网络编程</a><span class="category-list-count">8</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/读书笔记/">读书笔记</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/运维/">运维</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/高并发编程/">高并发编程</a><span class="category-list-count">20</span></li></ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">标签云</h3>
+    <div class="widget tagcloud">
+      <a href="/tags/Android/" style="font-size: 15.71px;">Android</a><a href="/tags/ApacheBench/" style="font-size: 11.43px;">ApacheBench</a><a href="/tags/Bower/" style="font-size: 10.00px;">Bower</a><a href="/tags/C/" style="font-size: 10.00px;">C#</a><a href="/tags/CDN/" style="font-size: 10.00px;">CDN</a><a href="/tags/CQRS/" style="font-size: 10.00px;">CQRS</a><a href="/tags/CRC/" style="font-size: 10.00px;">CRC</a><a href="/tags/CSS/" style="font-size: 11.43px;">CSS</a><a href="/tags/CompletableFuture/" style="font-size: 10.00px;">CompletableFuture</a><a href="/tags/Comsat/" style="font-size: 10.00px;">Comsat</a><a href="/tags/Curator/" style="font-size: 20.00px;">Curator</a><a href="/tags/DSL/" style="font-size: 10.00px;">DSL</a><a href="/tags/Disruptor/" style="font-size: 10.00px;">Disruptor</a><a href="/tags/Docker/" style="font-size: 11.43px;">Docker</a><a href="/tags/Ember/" style="font-size: 11.43px;">Ember</a><a href="/tags/FastJson/" style="font-size: 10.00px;">FastJson</a><a href="/tags/Fiber/" style="font-size: 10.00px;">Fiber</a><a href="/tags/GAE/" style="font-size: 10.00px;">GAE</a><a href="/tags/GC/" style="font-size: 12.86px;">GC</a><a href="/tags/Gnuplot/" style="font-size: 10.00px;">Gnuplot</a><a href="/tags/Go/" style="font-size: 11.43px;">Go</a><a href="/tags/Gradle/" style="font-size: 10.00px;">Gradle</a><a href="/tags/Grunt/" style="font-size: 10.00px;">Grunt</a><a href="/tags/Gulp/" style="font-size: 10.00px;">Gulp</a><a href="/tags/Hadoop/" style="font-size: 10.00px;">Hadoop</a><a href="/tags/Hazelcast/" style="font-size: 10.00px;">Hazelcast</a><a href="/tags/Ignite/" style="font-size: 10.00px;">Ignite</a><a href="/tags/JVM/" style="font-size: 10.00px;">JVM</a><a href="/tags/Java/" style="font-size: 17.14px;">Java</a><a href="/tags/Kafka/" style="font-size: 18.57px;">Kafka</a><a href="/tags/Lambda/" style="font-size: 14.29px;">Lambda</a><a href="/tags/Linux/" style="font-size: 12.86px;">Linux</a><a href="/tags/LongAdder/" style="font-size: 10.00px;">LongAdder</a><a href="/tags/MathJax/" style="font-size: 10.00px;">MathJax</a><a href="/tags/Maven/" style="font-size: 11.43px;">Maven</a><a href="/tags/Memcached/" style="font-size: 10.00px;">Memcached</a><a href="/tags/Metrics/" style="font-size: 10.00px;">Metrics</a><a href="/tags/Mongo/" style="font-size: 12.86px;">Mongo</a><a href="/tags/Netty/" style="font-size: 15.71px;">Netty</a><a href="/tags/Node/" style="font-size: 10.00px;">Node</a>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">归档</h3>
+    <div class="widget">
+      <ul class="archive-list"><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/12/">December 2016</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/11/">November 2016</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/10/">October 2016</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/09/">September 2016</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/08/">August 2016</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/07/">July 2016</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/06/">June 2016</a><span class="archive-list-count">14</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/05/">May 2016</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/04/">April 2016</a><span class="archive-list-count">14</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/03/">March 2016</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/02/">February 2016</a><span class="archive-list-count">8</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/01/">January 2016</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/12/">December 2015</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/11/">November 2015</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/10/">October 2015</a><span class="archive-list-count">9</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/09/">September 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/08/">August 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/07/">July 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/06/">June 2015</a><span class="archive-list-count">8</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/05/">May 2015</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/04/">April 2015</a><span class="archive-list-count">15</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/03/">March 2015</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/02/">February 2015</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/01/">January 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/12/">December 2014</a><span class="archive-list-count">28</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/11/">November 2014</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/10/">October 2014</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/09/">September 2014</a><span class="archive-list-count">28</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/08/">August 2014</a><span class="archive-list-count">19</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/07/">July 2014</a><span class="archive-list-count">1</span></li></ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">近期文章</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+            <a href="/2016/12/04/smooth-weighted-round-robin-algorithm/">平滑的基于权重的轮询算法</a>
+          </li>
+        
+          <li>
+            <a href="/2016/11/28/techempower-benchmarks-round13/">2016年Web框架性能基准</a>
+          </li>
+        
+          <li>
+            <a href="/2016/11/26/secrets-of-condoms/">嘘，啪啪啪的秘密</a>
+          </li>
+        
+          <li>
+            <a href="/2016/11/17/Benchmarking-Scala-Collections/">[译]Scala Collection的性能</a>
+          </li>
+        
+          <li>
+            <a href="/2016/11/11/microservices-anti-patterns-and-pitfalls/">微服务的反模式和陷阱</a>
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">友情链接</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+			 
+            <a href="http://old.colobu.com" target="_blank">旧的博客</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://stackshare.io" target="_blank">技术栈</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://weekly.manong.io/issues/" target="_blank">码农周刊</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.tuicool.com/mags" target="_blank">编程狂人周刊</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.importnew.com/" target="_blank">importnew</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://ifeve.com/" target="_blank">并发编程网</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://github.com" target="_blank">github</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://stackoverflow.com/" target="_blank">stackoverflow</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.javacodegeeks.com/" target="_blank">javacodegeeks</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.infoq.com/" target="_blank">infoq</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.dzone.com/links/index.html" target="_blank">dzone</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://oj.leetcode.com/problems/" target="_blank">leetcode</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.503error.com/" target="_blank">503error</a>
+			
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+      <div class="widget-wrap">
+    <h3 class="widget-title">热评文章</h3>
+    <div class="widget">
+		<div class="ds-top-threads" data-range="monthly" data-num-items="5"></div>
+    </div>
+  </div>
+
+  
+      <div class="widget-wrap">
+    <h3 class="widget-title">最新评论</h3>
+    <div class="widget">
+		<ul class="ds-recent-comments" data-num-items="10" data-show-avatars="1" data-show-time="1" data-show-admin="1" data-excerpt-length="70"></ul>
+		<script type="text/javascript">
+		var duoshuoQuery = {short_name:"colobu"};
+		(function() {
+			var ds = document.createElement('script');
+			ds.type = 'text/javascript';ds.async = true;
+			ds.src = 'http://static.duoshuo.com/embed.js';
+			ds.charset = 'UTF-8';
+			(document.getElementsByTagName('head')[0] || document.getElementsByTagName('body')[0]).appendChild(ds);
+		})();
+		</script>
+    </div>
+  </div>
+
+  
+</aside>
+        
+      </div>
+      <footer id="footer">
+  
+  <div class="outer">
+    <div id="footer-info" class="inner">
+      &copy; 2016 smallnest<br>
+	  Powered by <a href="http://hexo.io/" target="_blank">Hexo</a>
+    </div>
+  </div>
+</footer>
+    </div>
+    <nav id="mobile-nav">
+  
+    <a href="/" class="mobile-nav-link">首页</a>
+  
+    <a href="/archives" class="mobile-nav-link">归档</a>
+  
+    <a href="https://github.com/smallnest" class="mobile-nav-link">github</a>
+  
+    <a href="http://tr.colobu.com" class="mobile-nav-link">技术流</a>
+  
+    <a href="/ScalaCollectionsCookbook" class="mobile-nav-link">Scala集合技术手册</a>
+  
+    <a href="/techreview" class="mobile-nav-link">技术快报</a>
+  
+    <a href="/about" class="mobile-nav-link">关于</a>
+  
+</nav>
+    
+<script src="//cdn.staticfile.org/jquery/1.11.1/jquery.min.js"></script>
+<script src="//cdn.bootcss.com/jquery.lazyload/1.9.1/jquery.lazyload.min.js"></script>
+
+<script src="//libs.cncdn.cn/fancybox/2.1.5/jquery.fancybox.pack.js"></script>
+
+
+<script src="/js/script.js" type="text/javascript"></script>
+
+<!-- mathjax config similar to math.stackexchange -->
+<script type="text/x-mathjax-config">
+  MathJax.Hub.Config({
+    tex2jax: {
+      inlineMath: [ ['$','$'], ["\\(","\\)"] ],
+      processEscapes: true,
+      skipTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code']
+    }
+  });
+  MathJax.Hub.Queue(function() {
+      var all = MathJax.Hub.getAllJax(), i;
+      for(i=0; i < all.length; i += 1) {
+        all[i].SourceElement().parentNode.className += ' has-jax';
+      }
+  });
+</script>
+<script type="text/javascript" src="//cdn.bootcss.com/mathjax/2.6.0-beta.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML">
+</script>
+
+<div id="totop" style="position:fixed;bottom:150px;right:10px;cursor: pointer;z-index: 2000;">
+	<a title="返回顶部"><img src="/images/scrollup.png"/></a>
+</div>
+<script src="/js/totop.js" type="text/javascript"></script>
+
+
+
+<script type="text/javascript">
+  var _gaq = _gaq || [];
+  _gaq.push(['_setAccount', 'UA-142561-4']);
+  _gaq.push(['_trackPageview']);
+
+  (function() {
+    var ga = document.createElement('script'); ga.type = 'text/javascript'; ga.async = true;
+    ga.src = ('https:' == document.location.protocol ? 'https://ssl' : 'http://www') + '.google-analytics.com/ga.js';
+    var s = document.getElementsByTagName('script')[0]; s.parentNode.insertBefore(ga, s);
+  })();
+</script>
+
+
+<script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "//hm.baidu.com/hm.js?e085d87993250aab11f3e0c15f1c2785";
+  var s = document.getElementsByTagName("script")[0]; 
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+
+
+  </div>
+</body>
+</html>

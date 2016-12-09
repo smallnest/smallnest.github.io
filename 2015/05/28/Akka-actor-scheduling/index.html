@@ -1,0 +1,590 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  
+  <title>akka actor的运行原理 | 鸟窝</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+  <meta name="description" content="最近在调研Scala web框架的性能时遇到一些问题， 比如生成巨多的Actor，GC时间过长，CPU使用率太高， 执行Actor的Receive是遇到耗时操作的问题等。怀疑Akka的调度器有些问题，特意整理了一些Akka调度器的背景知识，以及从源代码分析一下Actor是怎么执行地。">
+<meta property="og:type" content="article">
+<meta property="og:title" content="akka actor的运行原理">
+<meta property="og:url" content="http://colobu.com/2015/05/28/Akka-actor-scheduling/">
+<meta property="og:site_name" content="鸟窝">
+<meta property="og:description" content="最近在调研Scala web框架的性能时遇到一些问题， 比如生成巨多的Actor，GC时间过长，CPU使用率太高， 执行Actor的Receive是遇到耗时操作的问题等。怀疑Akka的调度器有些问题，特意整理了一些Akka调度器的背景知识，以及从源代码分析一下Actor是怎么执行地。">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="akka actor的运行原理">
+<meta name="twitter:description" content="最近在调研Scala web框架的性能时遇到一些问题， 比如生成巨多的Actor，GC时间过长，CPU使用率太高， 执行Actor的Receive是遇到耗时操作的问题等。怀疑Akka的调度器有些问题，特意整理了一些Akka调度器的背景知识，以及从源代码分析一下Actor是怎么执行地。">
+
+  
+    <link rel="alternative" href="/atom.xml" title="鸟窝" type="application/atom+xml">
+  
+  
+    <link rel="icon" href="/favicon.png">
+  
+  <link rel="stylesheet" href="/css/style.css" type="text/css">
+
+  <link href="//cdn.staticfile.org/font-awesome/4.2.0/css/font-awesome.css" rel="stylesheet">
+  
+  <link rel="stylesheet" href="//libs.cncdn.cn/fancybox/2.1.5/jquery.fancybox.css" media="screen" type="text/css">
+  
+  <link rel="stylesheet" href="//cdnjs.cloudflare.com/ajax/libs/animate.css/3.1.1/animate.min.css" media="screen" type="text/css">
+  <!--[if lt IE 9]><script src="//cdn.staticfile.org/html5shiv/3.7/html5shiv.min.js"></script><![endif]-->
+
+  <script type="text/javascript">
+	//visit my previous blog: http://old.colobu.com just like this http://colobu.com/?=123456
+    var blog_url = location.href.toString();
+	if (blog_url.indexOf("http://colobu.com/?p=") >= 0) {
+		blog_url = blog_url.replace("colobu.com", "old.colobu.com");
+		window.location.assign(blog_url);
+	} else if (blog_url.indexOf("http://smallnest.gitcafe.com") >= 0) {
+		blog_url = blog_url.replace("smallnest.gitcafe.com", "colobu.com");
+		window.location.assign(blog_url);
+	}  else if (blog_url.indexOf("http://smallnest.gitcafe.io") >= 0) {
+		blog_url = blog_url.replace("smallnest.gitcafe.io", "colobu.com");
+		window.location.assign(blog_url);
+	}
+</script>
+</head>
+
+<body>
+  <div id="container">
+    <div id="wrap">
+      <header id="header">
+  <div id="banner"></div>
+  <div id="header-outer" class="outer">
+    <div id="header-title" class="inner">
+      <h1 id="logo-wrap" class="animated bounceInLeft">
+        <a href="/" id="logo">鸟窝</a>
+      </h1>
+      
+        <h2 id="subtitle-wrap" class="animated bounceInLeft">
+          <a href="/" id="subtitle">大道至简 Simplicity is the ultimate form of sophistication</a>
+        </h2>
+      
+    </div>
+    <div id="header-inner" class="inner">
+      <nav id="main-nav">
+        <a id="main-nav-toggle" class="nav-icon"></a>
+        
+          <a class="main-nav-link" href="/"><i class="fa fa-home">&nbsp;</i>首页</a>
+        
+          <a class="main-nav-link" href="/archives"><i class="fa fa-folder-o">&nbsp;</i>归档</a>
+        
+          <a class="main-nav-link" href="https://github.com/smallnest"><i class="fa fa-github">&nbsp;</i>github</a>
+        
+          <a class="main-nav-link" href="http://tr.colobu.com"><i class="fa fa-spinner fa-pulse">&nbsp;</i>技术流</a>
+        
+          <a class="main-nav-link" href="/ScalaCollectionsCookbook"><i class="fa fa-book">&nbsp;</i>Scala集合技术手册</a>
+        
+          <a class="main-nav-link" href="/techreview"><i class="fa fa-newspaper-o">&nbsp;</i>技术快报</a>
+        
+          <a class="main-nav-link" href="/about"><i class="fa fa-lemon-o">&nbsp;</i>关于</a>
+        
+      </nav>
+      <nav id="sub-nav">
+        
+          <a id="nav-rss-link" class="nav-icon" href="/atom.xml" title="RSS Feed"></a>
+        
+        <a id="nav-search-btn" class="nav-icon" title="Search"></a>
+      </nav>
+      <div id="search-form-wrap">
+        <form action="http://www.baidu.com/baidu" method="get" accept-charset="utf-8" class="search-form">
+          <input type="search" name="word" maxlength="20" class="search-form-input" placeholder="Search">
+          <input type="submit" value="" class="search-form-submit">
+          <input name=tn type=hidden value="bds">
+          <input name=cl type=hidden value="3">
+          <input name=ct type=hidden value="2097152">
+          <input type="hidden" name="si" value="colobu.com">
+        </form>
+      </div>
+    </div>
+  </div>
+</header>
+      <div class="outer">
+        <section id="main"><article id="post-Akka-actor-scheduling" class="article article-type-post" itemscope itemprop="blogPost">
+  <div class="article-meta">
+    <a href="/2015/05/28/Akka-actor-scheduling/" class="article-date">
+  <time datetime="2015-05-28T05:16:48.000Z" itemprop="datePublished">2015年05月28日</time>
+</a>
+    
+  <div class="article-category">
+    <a class="article-category-link" href="/categories/Scala/">Scala</a>
+  </div>
+
+	
+  <div class="article-author"> by smallnest</div>
+
+  </div>
+  <div class="article-inner">
+    
+    
+      <header class="article-header">
+        
+  
+    <h1 class="article-title" itemprop="name">
+      akka actor的运行原理
+	  
+    </h1>
+  
+
+      </header>
+    
+    <div class="article-entry" itemprop="articleBody">
+	  
+	  
+      
+        <p>最近在调研Scala web框架的性能时遇到一些问题， 比如生成巨多的Actor，GC时间过长，CPU使用率太高， 执行Actor的Receive是遇到耗时操作的问题等。怀疑Akka的调度器有些问题，特意整理了一些Akka调度器的背景知识，以及从源代码分析一下Actor是怎么执行地。<br><a id="more"></a></p>
+<h3 id="Dispatcher">Dispatcher</h3>
+<p>Akka MessageDispatcher驱动Akka actor运行(tick)，也可以说是这个机器的引擎。所有的MessageDispatcher都实现了ExecutionContext trait, 这意味着它们可以用来执行任何代码， 例如 <a href="http://doc.akka.io/docs/akka/snapshot/scala/futures.html#futures-scala" target="_blank" rel="external">Future</a>.</p>
+<p>如果对Actor不做额外配置的话，<code>ActorSystem</code>会使用一个缺省的Dispatcher。缺省的Dispatcher也可以进行参数调整，缺省它使用一个特定的<code>default-executor</code>。如果<code>ActorSystem</code>在创建时传入一个ExecutionContext，则此ExecutionContext 将作为此<code>ActorSystem</code>的所有Dispatcher的缺省<code>executor</code>。缺省的<code>default-executor</code>是<code>fork-join-executor</code>,在大部分情况下它的性能还是不错的。</p>
+<h4 id="可以通过下面的代码得到一个配置的Dispatcher:">可以通过下面的代码得到一个配置的Dispatcher:</h4>
+<figure class="highlight scala"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div></pre></td><td class="code"><pre><div class="line"><span class="comment">// for use with Futures, Scheduler, etc.</span></div><div class="line">implicit <span class="keyword">val</span> executionContext = system.dispatchers.lookup(<span class="string">"my-dispatcher"</span>)</div></pre></td></tr></table></figure>
+
+<h4 id="为Actor设置Dispatcher">为Actor设置Dispatcher</h4>
+<p>如果你希望为你的 Actor 设置非缺省的派发器，你需要做两件事:<br>首先要配置dispatcher:</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div></pre></td><td class="code"><pre><div class="line">my-dispatcher {</div><div class="line">  # Dispatcher is the name of the event-based dispatcher</div><div class="line">  type = Dispatcher</div><div class="line">  # What kind of ExecutionService to <span class="operator"><span class="keyword">use</span></span></div><div class="line">  executor = <span class="string">"fork-join-executor"</span></div><div class="line">  # Configuration <span class="keyword">for</span> the fork <span class="keyword">join</span> pool</div><div class="line">  fork-<span class="keyword">join</span>-executor {</div><div class="line">    # <span class="keyword">Min</span> <span class="built_in">number</span> <span class="keyword">of</span> threads <span class="keyword">to</span> cap factor-based parallelism <span class="built_in">number</span> <span class="keyword">to</span></div><div class="line">    parallelism-<span class="keyword">min</span> = <span class="number">2</span></div><div class="line">    # Parallelism (threads) ... <span class="keyword">ceil</span>(available processors * factor)</div><div class="line">    parallelism-factor = <span class="number">2.0</span></div><div class="line">    # <span class="keyword">Max</span> <span class="built_in">number</span> <span class="keyword">of</span> threads <span class="keyword">to</span> cap factor-based parallelism <span class="built_in">number</span> <span class="keyword">to</span></div><div class="line">    parallelism-<span class="keyword">max</span> = <span class="number">10</span></div><div class="line">  }</div><div class="line">  # Throughput defines the maximum <span class="built_in">number</span> <span class="keyword">of</span> messages <span class="keyword">to</span> be</div><div class="line">  # processed per actor <span class="keyword">before</span> the thread jumps <span class="keyword">to</span> the <span class="keyword">next</span> actor.</div><div class="line">  # <span class="keyword">Set</span> <span class="keyword">to</span> <span class="number">1</span> <span class="keyword">for</span> <span class="keyword">as</span> fair <span class="keyword">as</span> possible.</div><div class="line">  throughput = <span class="number">100</span></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>或者配置使用<code>thread-pool-executor</code></p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div></pre></td><td class="code"><pre><div class="line">my-thread-pool-dispatcher {</div><div class="line">  # Dispatcher is the name of the event-based dispatcher</div><div class="line">  type = Dispatcher</div><div class="line">  # What kind of ExecutionService to <span class="operator"><span class="keyword">use</span></span></div><div class="line">  executor = <span class="string">"thread-pool-executor"</span></div><div class="line">  # Configuration <span class="keyword">for</span> the thread pool</div><div class="line">  thread-pool-executor {</div><div class="line">    # minimum <span class="built_in">number</span> <span class="keyword">of</span> threads <span class="keyword">to</span> cap factor-based core <span class="built_in">number</span> <span class="keyword">to</span></div><div class="line">    core-pool-<span class="keyword">size</span>-<span class="keyword">min</span> = <span class="number">2</span></div><div class="line">    # <span class="keyword">No</span> <span class="keyword">of</span> core threads ... <span class="keyword">ceil</span>(available processors * factor)</div><div class="line">    core-pool-<span class="keyword">size</span>-factor = <span class="number">2.0</span></div><div class="line">    # maximum <span class="built_in">number</span> <span class="keyword">of</span> threads <span class="keyword">to</span> cap factor-based <span class="built_in">number</span> <span class="keyword">to</span></div><div class="line">    core-pool-<span class="keyword">size</span>-<span class="keyword">max</span> = <span class="number">10</span></div><div class="line">  }</div><div class="line">  # Throughput defines the maximum <span class="built_in">number</span> <span class="keyword">of</span> messages <span class="keyword">to</span> be</div><div class="line">  # processed per actor <span class="keyword">before</span> the thread jumps <span class="keyword">to</span> the <span class="keyword">next</span> actor.</div><div class="line">  # <span class="keyword">Set</span> <span class="keyword">to</span> <span class="number">1</span> <span class="keyword">for</span> <span class="keyword">as</span> fair <span class="keyword">as</span> possible.</div><div class="line">  throughput = <span class="number">100</span></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>这样，你就可以配置Actor使用图个特定的disptacher:</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div></pre></td><td class="code"><pre><div class="line"><span class="built_in">import</span> akka.actor.Props</div><div class="line">val <span class="variable">myActor =</span> context.actorOf(Props[MyActor], <span class="string">"myactor"</span>)</div></pre></td></tr></table></figure>
+
+
+
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div></pre></td><td class="code"><pre><div class="line"><span class="attribute">akka.actor.deployment {</span></div><div class="line">  /myactor {</div><div class="line">    dispatcher =<span class="string"> my-dispatcher</span></div><div class="line">  }</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>或者用另外一种方式,可以在代码中指定dispatcher：</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line"><span class="built_in">import</span> akka.actor.Props</div><div class="line">val <span class="variable">myActor =</span></div><div class="line">  context.actorOf(Props[MyActor].withDispatcher(<span class="string">"my-dispatcher"</span>), <span class="string">"myactor1"</span>)</div></pre></td></tr></table></figure>
+
+<h4 id="dispatcher的类型">dispatcher的类型</h4>
+<ul>
+<li><p>Dispatcher</p>
+<ul>
+<li>可共享性: 无限制</li>
+<li>邮箱: 任何一种类型，为每一个Actor创建一个</li>
+<li>使用场景: 缺省派发器，Bulkheading</li>
+<li>底层使用: <code>java.util.concurrent.ExecutorService</code><br>   可以指定“executor”使用“fork-join-executor”, “thread-pool-executor” 或者 the FQCN(类名的全称) of an akka.dispatcher.ExecutorServiceConfigurator</li>
+</ul>
+</li>
+<li><p>PinnedDispatcher</p>
+<ul>
+<li>可共享性: 无</li>
+<li>邮箱: 任何一种类型，为每个Actor创建一个</li>
+<li>使用场景: Bulkheading</li>
+<li>底层使用: 任何 akka.dispatch.ThreadPoolExecutorConfigurator<br>   缺省为一个 “thread-pool-executor”</li>
+</ul>
+</li>
+<li><p>BalancingDispatcher</p>
+<ul>
+<li>可共享性: 仅对同一类型的Actor共享</li>
+<li>邮箱: 任何，为所有的Actor创建一个</li>
+<li>使用场景: Work-sharing</li>
+<li>底层使用: java.util.concurrent.ExecutorService<br>   指定使用 “executor” 使用 “fork-join-executor”, “thread-pool-executor” 或 the FQCN(类名的全称) of an akka.dispatcher.ExecutorServiceConfigurator</li>
+</ul>
+</li>
+<li><p>CallingThreadDispatcher</p>
+<ul>
+<li>可共享性: 无限制</li>
+<li>邮箱: 任何，每Actor每线程创建一个（需要时）</li>
+<li>使用场景: 仅为测试使用</li>
+<li>底层使用: 调用的线程 (duh)</li>
+</ul>
+</li>
+</ul>
+<h4 id="邮箱">邮箱</h4>
+<p>kka Mailbox 保存发往某 Actor的消息. 通常每个 Actor 拥有自己的邮箱, 但是如果是使用 BalancingDispatcher 使用同一个 BalancingDispatcher 的所有Actor共享同一个邮箱实例.<br>内置的邮箱的类型：</p>
+<ul>
+<li>UnboundedMailbox - 缺省邮箱</li>
+<li>SingleConsumerOnlyUnboundedMailbox</li>
+<li>BoundedMailbox</li>
+<li>NonBlockingBoundedMailbox</li>
+<li>UnboundedPriorityMailbox</li>
+<li>BoundedPriorityMailbox</li>
+<li>UnboundedStablePriorityMailbox</li>
+<li>BoundedStablePriorityMailbox</li>
+<li>UnboundedControlAwareMailbox</li>
+<li>BoundedControlAwareMailbox</li>
+</ul>
+<h3 id="工作原理">工作原理</h3>
+<p>我们只看本地(同一个JVM进程)的ActRef: <code>LocalActorRef</code>,它定义了send (<code>!</code>)方法：</p>
+<figure class="highlight scala"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">override</span> <span class="keyword">def</span> !(message: Any)(implicit sender: ActorRef = Actor.noSender): Unit = actorCell.sendMessage(message, sender)</div></pre></td></tr></table></figure>
+
+<p><code>actorCell</code>实现了<code>akka.actor.dungeon.Dispatch</code> trait。它实现了具体的message的发送：</p>
+<figure class="highlight scala"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">def</span> sendMessage(msg: Envelope): Unit =</div><div class="line">  <span class="keyword">try</span> {</div><div class="line">    <span class="keyword">if</span> (system.settings.SerializeAllMessages) {</div><div class="line">      <span class="keyword">val</span> unwrapped = (msg.message <span class="keyword">match</span> {</div><div class="line">        <span class="keyword">case</span> DeadLetter(wrapped, _, _) ⇒ wrapped</div><div class="line">        <span class="keyword">case</span> other                     ⇒ other</div><div class="line">      }).asInstanceOf[AnyRef]</div><div class="line">      <span class="keyword">if</span> (!unwrapped.isInstanceOf[NoSerializationVerificationNeeded]) {</div><div class="line">        <span class="keyword">val</span> s = SerializationExtension(system)</div><div class="line">        s.deserialize(s.serialize(unwrapped).get, unwrapped.getClass).get</div><div class="line">      }</div><div class="line">    }</div><div class="line">    dispatcher.dispatch(<span class="keyword">this</span>, msg)</div><div class="line">  } <span class="keyword">catch</span> handleException</div></pre></td></tr></table></figure>
+
+<p>可以看到，还是交给dispatcher.dispatch进行消息的分发。<br>看具体的实现类<code>Dispatcher.dispatch</code>:</p>
+<figure class="highlight scala"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">protected</span>[akka] <span class="keyword">def</span> dispatch(receiver: ActorCell, invocation: Envelope): Unit = {</div><div class="line">  <span class="keyword">val</span> mbox = receiver.mailbox</div><div class="line">  mbox.enqueue(receiver.self, invocation)</div><div class="line">  registerForExecution(mbox, <span class="keyword">true</span>, <span class="keyword">false</span>)</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>将消息放在对应的actor的邮箱中后，就会调用<code>registerForExecution</code>方法。<br>这个方法最重要的一行就是执行mbox,因为mbox实现了<code>ForkJoinTask</code>和<code>Runnable</code>接口。 (如果执行失败，还可能执行一次)</p>
+<figure class="highlight scala"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">executorService execute mbox</div></pre></td></tr></table></figure>
+
+<p>其实是将mbox放到线程池中执行。<br>mbox并不是一次全部执行完的，而是有<code>throughput</code>参数确定。每次只执行<code>throughput</code>个消息，执行完会加入到线程池等待队列中，除非全部执行完毕。<br>因此当<code>throughput=1</code>的时候对actor来说比较“公平”，这样actor能平均的执行。</p>
+<p>由此得出几个结论：</p>
+<ul>
+<li>可以调解线程池的大小进行调优</li>
+<li>具体的dispatcher实现该如何执行actor。 比如我们可以实现一个优先级队列来执行优先级比较高的Actor。</li>
+<li>如果一个Actor执行比较耗时的操作，比如IO操作，就会影响线程池的执行，造成整体吞吐率下降。所以为这些耗时的Actor配置专门的线程池</li>
+<li>Akka会中断一个Actor而去执行别的actor吗，然后回来继续执行先前的Actor? 答案是不会。 因为一旦Actor交给线程池，线程就会去执行它。 如果你在Actor中sleep线程，会导致线程池中的此线程sleep。 所以你必须想一些办法，比如一个长的业务逻辑分成几个业务逻辑，每次只执行一个业务逻辑，通过状态变换分成多次执行。</li>
+<li>如果没有其它情况，线程会执行完actor 邮箱中的一部分消息，如果还有消息，会将此邮箱再放入线程池等待执行，直到没有待处理的消息为止。</li>
+</ul>
+<h3 id="参考资料">参考资料</h3>
+<ol>
+<li><a href="http://doc.akka.io/docs/akka/snapshot/scala/dispatchers.html" target="_blank" rel="external">Dispatchers</a></li>
+<li><a href="http://letitcrash.com/post/40755146949/tuning-dispatchers-in-akka-applications" target="_blank" rel="external">tuning dispatchers in akka applications</a></li>
+<li><a href="https://www.zybuluo.com/MiloXia/note/80283" target="_blank" rel="external">https://www.zybuluo.com/MiloXia/note/80283</a></li>
+<li><a href="https://github.com/akka/akka/tree/master/akka-actor/src/main/scala/akka/dispatch" target="_blank" rel="external">https://github.com/akka/akka/tree/master/akka-actor/src/main/scala/akka/dispatch</a></li>
+<li><a href="http://www.gtan.com/akka_doc/scala/dispatchers.html" target="_blank" rel="external">http://www.gtan.com/akka_doc/scala/dispatchers.html</a></li>
+</ol>
+
+      
+    </div>
+    <footer class="article-footer">
+	
+<div class="bdsharebuttonbox"><a title="分享到新浪微博" class="bds_tsina" href="#" data-cmd="tsina"></a><a title="分享到微信" class="bds_weixin" href="#" data-cmd="weixin"></a><a title="分享到QQ空间" class="bds_qzone" href="#" data-cmd="qzone"></a><a title="分享到印象笔记" class="bds_evernotecn" href="#" data-cmd="evernotecn"></a><a title="分享到有道云笔记" class="bds_youdao" href="#" data-cmd="youdao"></a><a title="分享到百度云收藏" class="bds_bdysc" href="#" data-cmd="bdysc"></a><a class="bds_more" href="#" data-cmd="more"></a></div>
+<script>window._bd_share_config={"common":{"bdSnsKey":{},"bdText":"","bdMini":"2","bdMiniList":false,"bdPic":"","bdStyle":"0","bdSize":"24"},"share":{}};with(document)0[(getElementsByTagName('head')[0]||body).appendChild(createElement('script')).src='http://bdimg.share.baidu.com/static/api/js/share.js?v=89860593.js?cdnversion='+~(-new Date()/36e5)];</script>
+      
+
+	  
+        <a href="http://colobu.com/2015/05/28/Akka-actor-scheduling/#comments" class="article-comment-link">评论</a>
+      
+
+      
+  <ul class="article-tag-list"><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/akka/">akka</a></li></ul>
+
+    </footer>
+  </div>
+  
+    
+<nav id="article-nav">
+  
+    <a href="/2015/06/11/Socket-sharding-implemented-by-netty/" id="article-nav-newer" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">Newer</strong>
+      <div class="article-nav-title">
+        
+          Socket分片:基于Netty的Java实现
+        
+      </div>
+    </a>
+  
+  
+    <a href="/2015/05/22/implement-C1000K-servers-by-spray-netty-undertow-and-node-js/" id="article-nav-older" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">Older</strong>
+      <div class="article-nav-title">使用四种框架分别实现百万websocket常连接的服务器</div>
+    </a>
+  
+</nav>
+
+  
+</article>
+
+
+<section id="comments">
+  <div class="ds-thread" data-thread-key="2015/05/28/Akka-actor-scheduling/" data-title="akka actor的运行原理" data-url="http://colobu.com/2015/05/28/Akka-actor-scheduling/"></div>
+
+</section>
+
+</section>
+        
+          <aside id="sidebar">
+  
+      <div class="widget-wrap">
+    <h3 class="widget-title">原创图书</h3>
+    <div class="widget">
+      <a href="/ScalaCollectionsCookbook/">
+        <img width="100%" src="/ScalaCollectionsCookbook/scala_collections_cookbook.jpg">
+        <img width="100%" src="/ScalaCollectionsCookbook/scala_collections_cookbook_tw.png">
+      </a>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">分类</h3>
+    <div class="widget">
+      <ul class="category-list"><li class="category-list-item"><a class="category-list-link" href="/categories/Android/">Android</a><span class="category-list-count">12</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/DOTNET/">DOTNET</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Docker/">Docker</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Go/">Go</a><span class="category-list-count">49</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Java/">Java</a><span class="category-list-count">58</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Linux/">Linux</a><span class="category-list-count">6</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Scala/">Scala</a><span class="category-list-count">18</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/前端开发/">前端开发</a><span class="category-list-count">18</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/大数据/">大数据</a><span class="category-list-count">54</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/工具/">工具</a><span class="category-list-count">14</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/架构/">架构</a><span class="category-list-count">21</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/算法/">算法</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/管理/">管理</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/网络编程/">网络编程</a><span class="category-list-count">8</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/读书笔记/">读书笔记</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/运维/">运维</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/高并发编程/">高并发编程</a><span class="category-list-count">20</span></li></ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">标签云</h3>
+    <div class="widget tagcloud">
+      <a href="/tags/Android/" style="font-size: 15.71px;">Android</a><a href="/tags/ApacheBench/" style="font-size: 11.43px;">ApacheBench</a><a href="/tags/Bower/" style="font-size: 10.00px;">Bower</a><a href="/tags/C/" style="font-size: 10.00px;">C#</a><a href="/tags/CDN/" style="font-size: 10.00px;">CDN</a><a href="/tags/CQRS/" style="font-size: 10.00px;">CQRS</a><a href="/tags/CRC/" style="font-size: 10.00px;">CRC</a><a href="/tags/CSS/" style="font-size: 11.43px;">CSS</a><a href="/tags/CompletableFuture/" style="font-size: 10.00px;">CompletableFuture</a><a href="/tags/Comsat/" style="font-size: 10.00px;">Comsat</a><a href="/tags/Curator/" style="font-size: 20.00px;">Curator</a><a href="/tags/DSL/" style="font-size: 10.00px;">DSL</a><a href="/tags/Disruptor/" style="font-size: 10.00px;">Disruptor</a><a href="/tags/Docker/" style="font-size: 11.43px;">Docker</a><a href="/tags/Ember/" style="font-size: 11.43px;">Ember</a><a href="/tags/FastJson/" style="font-size: 10.00px;">FastJson</a><a href="/tags/Fiber/" style="font-size: 10.00px;">Fiber</a><a href="/tags/GAE/" style="font-size: 10.00px;">GAE</a><a href="/tags/GC/" style="font-size: 12.86px;">GC</a><a href="/tags/Gnuplot/" style="font-size: 10.00px;">Gnuplot</a><a href="/tags/Go/" style="font-size: 11.43px;">Go</a><a href="/tags/Gradle/" style="font-size: 10.00px;">Gradle</a><a href="/tags/Grunt/" style="font-size: 10.00px;">Grunt</a><a href="/tags/Gulp/" style="font-size: 10.00px;">Gulp</a><a href="/tags/Hadoop/" style="font-size: 10.00px;">Hadoop</a><a href="/tags/Hazelcast/" style="font-size: 10.00px;">Hazelcast</a><a href="/tags/Ignite/" style="font-size: 10.00px;">Ignite</a><a href="/tags/JVM/" style="font-size: 10.00px;">JVM</a><a href="/tags/Java/" style="font-size: 17.14px;">Java</a><a href="/tags/Kafka/" style="font-size: 18.57px;">Kafka</a><a href="/tags/Lambda/" style="font-size: 14.29px;">Lambda</a><a href="/tags/Linux/" style="font-size: 12.86px;">Linux</a><a href="/tags/LongAdder/" style="font-size: 10.00px;">LongAdder</a><a href="/tags/MathJax/" style="font-size: 10.00px;">MathJax</a><a href="/tags/Maven/" style="font-size: 11.43px;">Maven</a><a href="/tags/Memcached/" style="font-size: 10.00px;">Memcached</a><a href="/tags/Metrics/" style="font-size: 10.00px;">Metrics</a><a href="/tags/Mongo/" style="font-size: 12.86px;">Mongo</a><a href="/tags/Netty/" style="font-size: 15.71px;">Netty</a><a href="/tags/Node/" style="font-size: 10.00px;">Node</a>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">归档</h3>
+    <div class="widget">
+      <ul class="archive-list"><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/12/">December 2016</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/11/">November 2016</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/10/">October 2016</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/09/">September 2016</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/08/">August 2016</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/07/">July 2016</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/06/">June 2016</a><span class="archive-list-count">14</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/05/">May 2016</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/04/">April 2016</a><span class="archive-list-count">14</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/03/">March 2016</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/02/">February 2016</a><span class="archive-list-count">8</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/01/">January 2016</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/12/">December 2015</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/11/">November 2015</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/10/">October 2015</a><span class="archive-list-count">9</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/09/">September 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/08/">August 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/07/">July 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/06/">June 2015</a><span class="archive-list-count">8</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/05/">May 2015</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/04/">April 2015</a><span class="archive-list-count">15</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/03/">March 2015</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/02/">February 2015</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/01/">January 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/12/">December 2014</a><span class="archive-list-count">28</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/11/">November 2014</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/10/">October 2014</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/09/">September 2014</a><span class="archive-list-count">28</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/08/">August 2014</a><span class="archive-list-count">19</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/07/">July 2014</a><span class="archive-list-count">1</span></li></ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">近期文章</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+            <a href="/2016/12/04/smooth-weighted-round-robin-algorithm/">平滑的基于权重的轮询算法</a>
+          </li>
+        
+          <li>
+            <a href="/2016/11/28/techempower-benchmarks-round13/">2016年Web框架性能基准</a>
+          </li>
+        
+          <li>
+            <a href="/2016/11/26/secrets-of-condoms/">嘘，啪啪啪的秘密</a>
+          </li>
+        
+          <li>
+            <a href="/2016/11/17/Benchmarking-Scala-Collections/">[译]Scala Collection的性能</a>
+          </li>
+        
+          <li>
+            <a href="/2016/11/11/microservices-anti-patterns-and-pitfalls/">微服务的反模式和陷阱</a>
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">友情链接</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+			 
+            <a href="http://old.colobu.com" target="_blank">旧的博客</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://stackshare.io" target="_blank">技术栈</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://weekly.manong.io/issues/" target="_blank">码农周刊</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.tuicool.com/mags" target="_blank">编程狂人周刊</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.importnew.com/" target="_blank">importnew</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://ifeve.com/" target="_blank">并发编程网</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://github.com" target="_blank">github</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://stackoverflow.com/" target="_blank">stackoverflow</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.javacodegeeks.com/" target="_blank">javacodegeeks</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.infoq.com/" target="_blank">infoq</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.dzone.com/links/index.html" target="_blank">dzone</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://oj.leetcode.com/problems/" target="_blank">leetcode</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.503error.com/" target="_blank">503error</a>
+			
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+      <div class="widget-wrap">
+    <h3 class="widget-title">热评文章</h3>
+    <div class="widget">
+		<div class="ds-top-threads" data-range="monthly" data-num-items="5"></div>
+    </div>
+  </div>
+
+  
+      <div class="widget-wrap">
+    <h3 class="widget-title">最新评论</h3>
+    <div class="widget">
+		<ul class="ds-recent-comments" data-num-items="10" data-show-avatars="1" data-show-time="1" data-show-admin="1" data-excerpt-length="70"></ul>
+		<script type="text/javascript">
+		var duoshuoQuery = {short_name:"colobu"};
+		(function() {
+			var ds = document.createElement('script');
+			ds.type = 'text/javascript';ds.async = true;
+			ds.src = 'http://static.duoshuo.com/embed.js';
+			ds.charset = 'UTF-8';
+			(document.getElementsByTagName('head')[0] || document.getElementsByTagName('body')[0]).appendChild(ds);
+		})();
+		</script>
+    </div>
+  </div>
+
+  
+</aside>
+        
+      </div>
+      <footer id="footer">
+  
+  <div class="outer">
+    <div id="footer-info" class="inner">
+      &copy; 2016 smallnest<br>
+	  Powered by <a href="http://hexo.io/" target="_blank">Hexo</a>
+    </div>
+  </div>
+</footer>
+    </div>
+    <nav id="mobile-nav">
+  
+    <a href="/" class="mobile-nav-link">首页</a>
+  
+    <a href="/archives" class="mobile-nav-link">归档</a>
+  
+    <a href="https://github.com/smallnest" class="mobile-nav-link">github</a>
+  
+    <a href="http://tr.colobu.com" class="mobile-nav-link">技术流</a>
+  
+    <a href="/ScalaCollectionsCookbook" class="mobile-nav-link">Scala集合技术手册</a>
+  
+    <a href="/techreview" class="mobile-nav-link">技术快报</a>
+  
+    <a href="/about" class="mobile-nav-link">关于</a>
+  
+</nav>
+    
+<script src="//cdn.staticfile.org/jquery/1.11.1/jquery.min.js"></script>
+<script src="//cdn.bootcss.com/jquery.lazyload/1.9.1/jquery.lazyload.min.js"></script>
+
+<script src="//libs.cncdn.cn/fancybox/2.1.5/jquery.fancybox.pack.js"></script>
+
+
+<script src="/js/script.js" type="text/javascript"></script>
+
+<!-- mathjax config similar to math.stackexchange -->
+<script type="text/x-mathjax-config">
+  MathJax.Hub.Config({
+    tex2jax: {
+      inlineMath: [ ['$','$'], ["\\(","\\)"] ],
+      processEscapes: true,
+      skipTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code']
+    }
+  });
+  MathJax.Hub.Queue(function() {
+      var all = MathJax.Hub.getAllJax(), i;
+      for(i=0; i < all.length; i += 1) {
+        all[i].SourceElement().parentNode.className += ' has-jax';
+      }
+  });
+</script>
+<script type="text/javascript" src="//cdn.bootcss.com/mathjax/2.6.0-beta.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML">
+</script>
+
+<div id="totop" style="position:fixed;bottom:150px;right:10px;cursor: pointer;z-index: 2000;">
+	<a title="返回顶部"><img src="/images/scrollup.png"/></a>
+</div>
+<script src="/js/totop.js" type="text/javascript"></script>
+
+
+
+<script type="text/javascript">
+  var _gaq = _gaq || [];
+  _gaq.push(['_setAccount', 'UA-142561-4']);
+  _gaq.push(['_trackPageview']);
+
+  (function() {
+    var ga = document.createElement('script'); ga.type = 'text/javascript'; ga.async = true;
+    ga.src = ('https:' == document.location.protocol ? 'https://ssl' : 'http://www') + '.google-analytics.com/ga.js';
+    var s = document.getElementsByTagName('script')[0]; s.parentNode.insertBefore(ga, s);
+  })();
+</script>
+
+
+<script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "//hm.baidu.com/hm.js?e085d87993250aab11f3e0c15f1c2785";
+  var s = document.getElementsByTagName("script")[0]; 
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+
+
+  </div>
+</body>
+</html>

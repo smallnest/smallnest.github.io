@@ -1,0 +1,654 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  
+  <title>Java中的纤程库 - Quasar | 鸟窝</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+  <meta name="description" content="最近遇到的一个问题大概是微服务架构中经常会遇到的一个问题：
+服务 A 是我们开发的系统，它的业务需要调用 B、C、D 等多个服务，这些服务是通过http的访问提供的。 问题是 B、C、D 这些服务都是第三方提供的，不能保证它们的响应时间，快的话十几毫秒，慢的话甚至1秒多，所以这些服务的Latency比较长。幸运地是这些服务都是集群部署的，容错率和并发支持都比较高，所以不担心它们的并发性能，唯一不爽">
+<meta property="og:type" content="article">
+<meta property="og:title" content="Java中的纤程库 - Quasar">
+<meta property="og:url" content="http://colobu.com/2016/07/14/Java-Fiber-Quasar/">
+<meta property="og:site_name" content="鸟窝">
+<meta property="og:description" content="最近遇到的一个问题大概是微服务架构中经常会遇到的一个问题：
+服务 A 是我们开发的系统，它的业务需要调用 B、C、D 等多个服务，这些服务是通过http的访问提供的。 问题是 B、C、D 这些服务都是第三方提供的，不能保证它们的响应时间，快的话十几毫秒，慢的话甚至1秒多，所以这些服务的Latency比较长。幸运地是这些服务都是集群部署的，容错率和并发支持都比较高，所以不担心它们的并发性能，唯一不爽">
+<meta property="og:image" content="/2016/07/14/Java-Fiber-Quasar/system.png">
+<meta property="og:image" content="proxy.png">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="Java中的纤程库 - Quasar">
+<meta name="twitter:description" content="最近遇到的一个问题大概是微服务架构中经常会遇到的一个问题：
+服务 A 是我们开发的系统，它的业务需要调用 B、C、D 等多个服务，这些服务是通过http的访问提供的。 问题是 B、C、D 这些服务都是第三方提供的，不能保证它们的响应时间，快的话十几毫秒，慢的话甚至1秒多，所以这些服务的Latency比较长。幸运地是这些服务都是集群部署的，容错率和并发支持都比较高，所以不担心它们的并发性能，唯一不爽">
+
+  
+    <link rel="alternative" href="/atom.xml" title="鸟窝" type="application/atom+xml">
+  
+  
+    <link rel="icon" href="/favicon.png">
+  
+  <link rel="stylesheet" href="/css/style.css" type="text/css">
+
+  <link href="//cdn.staticfile.org/font-awesome/4.2.0/css/font-awesome.css" rel="stylesheet">
+  
+  <link rel="stylesheet" href="//libs.cncdn.cn/fancybox/2.1.5/jquery.fancybox.css" media="screen" type="text/css">
+  
+  <link rel="stylesheet" href="//cdnjs.cloudflare.com/ajax/libs/animate.css/3.1.1/animate.min.css" media="screen" type="text/css">
+  <!--[if lt IE 9]><script src="//cdn.staticfile.org/html5shiv/3.7/html5shiv.min.js"></script><![endif]-->
+
+  <script type="text/javascript">
+	//visit my previous blog: http://old.colobu.com just like this http://colobu.com/?=123456
+    var blog_url = location.href.toString();
+	if (blog_url.indexOf("http://colobu.com/?p=") >= 0) {
+		blog_url = blog_url.replace("colobu.com", "old.colobu.com");
+		window.location.assign(blog_url);
+	} else if (blog_url.indexOf("http://smallnest.gitcafe.com") >= 0) {
+		blog_url = blog_url.replace("smallnest.gitcafe.com", "colobu.com");
+		window.location.assign(blog_url);
+	}  else if (blog_url.indexOf("http://smallnest.gitcafe.io") >= 0) {
+		blog_url = blog_url.replace("smallnest.gitcafe.io", "colobu.com");
+		window.location.assign(blog_url);
+	}
+</script>
+</head>
+
+<body>
+  <div id="container">
+    <div id="wrap">
+      <header id="header">
+  <div id="banner"></div>
+  <div id="header-outer" class="outer">
+    <div id="header-title" class="inner">
+      <h1 id="logo-wrap" class="animated bounceInLeft">
+        <a href="/" id="logo">鸟窝</a>
+      </h1>
+      
+        <h2 id="subtitle-wrap" class="animated bounceInLeft">
+          <a href="/" id="subtitle">大道至简 Simplicity is the ultimate form of sophistication</a>
+        </h2>
+      
+    </div>
+    <div id="header-inner" class="inner">
+      <nav id="main-nav">
+        <a id="main-nav-toggle" class="nav-icon"></a>
+        
+          <a class="main-nav-link" href="/"><i class="fa fa-home">&nbsp;</i>首页</a>
+        
+          <a class="main-nav-link" href="/archives"><i class="fa fa-folder-o">&nbsp;</i>归档</a>
+        
+          <a class="main-nav-link" href="https://github.com/smallnest"><i class="fa fa-github">&nbsp;</i>github</a>
+        
+          <a class="main-nav-link" href="http://tr.colobu.com"><i class="fa fa-spinner fa-pulse">&nbsp;</i>技术流</a>
+        
+          <a class="main-nav-link" href="/ScalaCollectionsCookbook"><i class="fa fa-book">&nbsp;</i>Scala集合技术手册</a>
+        
+          <a class="main-nav-link" href="/techreview"><i class="fa fa-newspaper-o">&nbsp;</i>技术快报</a>
+        
+          <a class="main-nav-link" href="/about"><i class="fa fa-lemon-o">&nbsp;</i>关于</a>
+        
+      </nav>
+      <nav id="sub-nav">
+        
+          <a id="nav-rss-link" class="nav-icon" href="/atom.xml" title="RSS Feed"></a>
+        
+        <a id="nav-search-btn" class="nav-icon" title="Search"></a>
+      </nav>
+      <div id="search-form-wrap">
+        <form action="http://www.baidu.com/baidu" method="get" accept-charset="utf-8" class="search-form">
+          <input type="search" name="word" maxlength="20" class="search-form-input" placeholder="Search">
+          <input type="submit" value="" class="search-form-submit">
+          <input name=tn type=hidden value="bds">
+          <input name=cl type=hidden value="3">
+          <input name=ct type=hidden value="2097152">
+          <input type="hidden" name="si" value="colobu.com">
+        </form>
+      </div>
+    </div>
+  </div>
+</header>
+      <div class="outer">
+        <section id="main"><article id="post-Java-Fiber-Quasar" class="article article-type-post" itemscope itemprop="blogPost">
+  <div class="article-meta">
+    <a href="/2016/07/14/Java-Fiber-Quasar/" class="article-date">
+  <time datetime="2016-07-14T08:18:47.000Z" itemprop="datePublished">2016年07月14日</time>
+</a>
+    
+  <div class="article-category">
+    <a class="article-category-link" href="/categories/Java/">Java</a>
+  </div>
+
+	
+  <div class="article-author"> by smallnest</div>
+
+  </div>
+  <div class="article-inner">
+    
+    
+      <header class="article-header">
+        
+  
+    <h1 class="article-title" itemprop="name">
+      Java中的纤程库 - Quasar
+	  
+    </h1>
+  
+
+      </header>
+    
+    <div class="article-entry" itemprop="articleBody">
+	  
+	  
+      
+        <p>最近遇到的一个问题大概是微服务架构中经常会遇到的一个问题：</p>
+<p>服务 <strong>A</strong> 是我们开发的系统，它的业务需要调用 <strong>B</strong>、<strong>C</strong>、<strong>D</strong> 等多个服务，这些服务是通过http的访问提供的。 问题是 <strong>B</strong>、<strong>C</strong>、<strong>D</strong> 这些服务都是第三方提供的，不能保证它们的响应时间，快的话十几毫秒，慢的话甚至1秒多，所以这些服务的Latency比较长。幸运地是这些服务都是集群部署的，容错率和并发支持都比较高，所以不担心它们的并发性能，唯一不爽的就是就是它们的Latency太高了。</p>
+<p><img src="/2016/07/14/Java-Fiber-Quasar/system.png" alt="简化的微服务架构"></p>
+<p>系统A会从Client接收Request, 每个Request的处理都需要多次调用B、C、D的服务，所以完成一个Request可能需要1到2秒的时间。为了让A能更好地支持并发数，系统中使用线程池处理这些Request。当然这是一个非常简化的模型，实际的业务处理比较复杂。</p>
+<p>可以预见，因为系统B、C、D的延迟，导致整个业务处理都很慢，即使使用线程池，但是每个线程还是会阻塞在B、C、D的调用上，导致I/O阻塞了这些线程， CPU利用率相对来说不是那么高。</p>
+<p>当然在测试的时候使用的是B、C、D的模拟器，没有预想到它们的响应是那么慢，因此测试数据的结果还不错，吞吐率还可以，但是在实际环境中问题就暴露出来了。</p>
+<a id="more"></a>
+<h3 id="概述">概述</h3>
+<p>最开始线程池设置的是200,然后用HttpUrlConnection作为http client发送请求到B、C、D。当然HttpUrlConnection也有一些坑，比如<a href="http://docs.oracle.com/javase/7/docs/technotes/guides/net/http-keepalive.html" target="_blank" rel="external">Persistent Connections</a>、<a href="http://techblog.bozho.net/caveats-of-httpurlconnection/" target="_blank" rel="external">Caveats of HttpURLConnection</a>,跳出坑后性能依然不行。</p>
+<p>通过测试，如果B、C、D等服务延迟接近0毫秒，则HttpUrlConnection的吞吐率(线程池的大小为200)能到40000 requests/秒,但是随着第三方服务的响应时间变慢，它的吞吐率急剧下降，B、C、D的服务的延迟为100毫秒的时候，则HttpUrlConnection的吞吐率降到1800 requests/秒，而B、C、D的服务的延迟为100毫秒的时候HttpUrlConnection的吞吐率降到550 requests／秒。</p>
+<p>增加<code>http.maxConnections</code>系统属性并不能显著增加吞吐率。</p>
+<p>如果增加调用HttpUrlConnection的线程池的大小，比如增加到2000，性能会好一些，但是B、C、D的服务的延迟为500毫秒的时候，吞吐率为3800 requests/秒，延迟为1秒的时候，吞吐率为1900 requests/秒。</p>
+<p>虽然线程池的增大能带来性能的提升，但是线程池也不能无限制的增大，因为每个线程都会占用一定的资源，而且随着线程的增多，线程之间的切换也更加的频繁，对CPU等资源也是一种浪费。</p>
+<p>切换成netty(channel pool)，与B、C、D通讯的性能还不错， latency为500ms的时候吞吐率能达到10000 requests/秒，通讯不成问题，问题是需要将业务代码改成异步的方式，异步地接收到这些response后在一个线程池中处理这些消息。</p>
+<p>下面列出了一些常用的http client:</p>
+<ul>
+<li>JDK’s <a href="http://docs.oracle.com/javase/8/docs/api/java/net/URLConnection.html" target="_blank" rel="external">URLConnection</a> uses traditional thread-blocking I/O.</li>
+<li><a href="https://hc.apache.org/httpcomponents-client-ga/index.html" target="_blank" rel="external">Apache HTTP Client</a> uses traditional thread-blocking I/O with thread-pools.</li>
+<li><a href="https://hc.apache.org/httpcomponents-asyncclient-4.1.x/index.html" target="_blank" rel="external">Apache Async HTTP Client</a> uses NIO.</li>
+<li><a href="https://jersey.java.net/documentation/latest/async.html#d0e10447" target="_blank" rel="external">Jersey</a> is a ReST client/server framework; the client API can use several HTTP client backends including URLConnection and Apache HTTP Client.</li>
+<li><a href="http://square.github.io/okhttp/" target="_blank" rel="external">OkHttp</a> uses traditional thread-blocking I/O with thread-pools.</li>
+<li><a href="http://square.github.io/retrofit/" target="_blank" rel="external">Retrofit</a> turns your HTTP API into a Java interface and can use several HTTP client backends including Apache HTTP Client.</li>
+<li><a href="https://grizzly.java.net/" target="_blank" rel="external">Grizzly</a> is network framework with low-level HTTP support; it was using NIO but it switched to AIO .</li>
+<li><a href="http://netty.io/" target="_blank" rel="external">Netty</a> is a network framework with HTTP support (low-level), multi-transport, includes NIO and native (the latter uses epoll on Linux).</li>
+<li><a href="http://www.eclipse.org/jetty/documentation/current/http-client.html" target="_blank" rel="external">Jetty Async HTTP Client</a> uses NIO.</li>
+<li><a href="https://github.com/AsyncHttpClient/async-http-client" target="_blank" rel="external">Async HTTP Client</a> wraps either Netty, Grizzly or JDK’s HTTP support.</li>
+<li><a href="https://github.com/dakrone/clj-http" target="_blank" rel="external">clj-http</a> wraps the Apache HTTP Client.</li>
+<li><a href="https://dzone.com/articles/www.http-kit.org/client.html" target="_blank" rel="external">http-kit</a> is an async subset of clj-http implemented partially in Java directly on top of NIO.</li>
+<li><a href="https://github.com/cch1/http.async.client" target="_blank" rel="external">http async client</a> wraps the Async HTTP Client for Java.</li>
+</ul>
+<p>这个列表摘自 <a href="https://dzone.com/articles/high-concurrency-http-clients-on-the-jvm" target="_blank" rel="external">High-Concurrency HTTP Clients on the JVM</a>,不止于此，这篇文章重点介绍基于java纤程库quasar的实现的http client库，并比较了性能。我们待会再说。</p>
+<p>回到我前面所说的系统，如何能更好的提供性能？有一种方案是借助其它语言的优势，比如Go，让Go来代理完成和B、C、D的请求，系统A通过一个TCP连接与Go程序交流。第三方服务B、C、D的Response结果可以异步地返回给系统A。</p>
+<p><img src="proxy.png" alt=""></p>
+<p>Go的优势在于可以实现request-per-goroutine,整个系统中可以有成千上万个goroutine。 goroutine是轻量级的，而且在I/O阻塞的时候可以不占用线程，这让Go可以轻松地处理上万个链接，即使I/O阻塞也没问题。Go和Java之间的通讯协议可以通过Protobuffer来实现，而且它们之间只保留一个TCP连接即可。</p>
+<p>当然这种架构的修改带来系统稳定性的降低，服务A和服务B、C、D之间的通讯增加了复杂性。同时，因为是异步方式，服务A的业务也要实现异步方式，否则200个线程依然等待Response的话，还是一个阻塞的架构。</p>
+<p>通过测试，这种架构可以带来稳定的吞吐率。 不管服务B、C、D的延迟有多久，A的吞吐率能维持15000 requests/秒。当然Go到B、C、D的并发连接数也有限制，我把最大值调高到20000。</p>
+<p>这种曲折的方案的最大的两个弊病就是架构的复杂性以及对原有系统需要进行大的重构。 高复杂性带来的是系统的稳定性的降低，包括部署、维护、网络状况、系统资源等。同时系统要改成异步模型，因为系统业务线程发送Request后不能等待Go返回Response,它需要从Client接收更多的Request,而收到Response之后它才继续执行剩下的业务，只有这样才不会阻塞，进而提到系统的吞吐率。</p>
+<blockquote>
+<p>将系统A改成异步，然后使用HttpUrlConnection线程池行不行？<br>HttpUrlConnection线程池还是导致和B、C、D通讯的吞吐率下降，但是Go这种方案和B、C、D通讯的吞吐率可以维持一个较高的水平。</p>
+</blockquote>
+<p>考虑到Go的优势，那么能不能在Java中使用类似Go的这种goroutine模型呢？那就是本文要介绍的Java纤程库: ［Quasar](<a href="http://docs.paralleluniverse.co/quasar/)。" target="_blank" rel="external">http://docs.paralleluniverse.co/quasar/)。</a></p>
+<p>实际测试结果表明Go和Netty都是两种比较好的解决方案，而且Netty的性能惊人的好，不好的地方正如前面所讲，我们需要将代码改成异步的处理。线程池中的业务单元用Netty发送完Request之后，不要等待Response, Response的处理交给另外的线程来处理，同时注意不要在Netty的Handler里面处理业务逻辑。要解决的问题就变成如何更高效的处理Response了，而不是第三方系统阻塞的问题。</p>
+<h3 id="quasar初步">quasar初步</h3>
+<p>以下介绍Java的另一个解决方案，也就是Java中的coroutine库，因为最近刚刚看这个库，感觉挺不错的，而且用它替换Thread改动较少。</p>
+<p>Java官方并没有纤程库。但是伟大的社区提供了一个优秀的库，它就是Quasar。</p>
+<p>创始人是<a href="http://www.paralleluniverse.co/about/" target="_blank" rel="external">Ron Pressler和Dafna Pressler</a>,由Y Combinator孵化。</p>
+<blockquote>
+<p>Quasar is a library that provides high-performance lightweight threads, Go-like channels, Erlang-like actors, and other asynchronous programming tools for Java and Kotlin.</p>
+</blockquote>
+<p>Quasar提供了高性能轻量级的线程，提供了类似Go的channel，Erlang风格的actor，以及其它的异步编程的工具，可以用在Java和Kotlin编程语言中。Scala目前的支持还不完善，我想如果这个公司能快速的发展壮大，或者被一些大公司收购的话，对Scala的支持才能提上日程。</p>
+<p>你需要把下面的包加入到你的依赖中：</p>
+<ul>
+<li><strong>Core (必须)</strong>    co.paralleluniverse:quasar-core:0.7.5[:jdk8] (对于 JDK 8，需要增加jdk8 classifier)</li>
+<li><strong>Actor</strong>    co.paralleluniverse:quasar-actors:0.7.5</li>
+<li><strong>Clustering</strong>    co.paralleluniverse:quasar-galaxy:0.7.5</li>
+<li><strong>Reactive Stream</strong>    co.paralleluniverse:quasar-reactive-streams:0.7.5</li>
+<li><strong>Kotlin</strong>    co.paralleluniverse:quasar-kotlin:0.7.5</li>
+</ul>
+<p>Quasar fiber依赖java instrumentation修改你的代码，可以在运行时通过java Agent实现，也可以在编译时使用ant task实现。</p>
+<p>通过java agent很简单，在程序启动的时候将下面的指令加入到命令行：</p>
+<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">-javaagent:path-to-quasar-jar.jar</div></pre></td></tr></table></figure>
+
+<p>对于maven来说，你可以使用插件<a href="http://maven.apache.org/plugins/maven-dependency-plugin/" target="_blank" rel="external">maven-dependency-plugin</a>,它会为你的每个依赖设置一个属性，以便在其它地方引用，我们主要想使用 <code>${co.paralleluniverse:quasar-core:jar}</code>:</p>
+<figure class="highlight xml"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div></pre></td><td class="code"><pre><div class="line"><span class="tag">&lt;<span class="title">plugin</span>&gt;</span></div><div class="line">    <span class="tag">&lt;<span class="title">artifactId</span>&gt;</span>maven-dependency-plugin<span class="tag">&lt;/<span class="title">artifactId</span>&gt;</span></div><div class="line">    <span class="tag">&lt;<span class="title">version</span>&gt;</span>2.5.1<span class="tag">&lt;/<span class="title">version</span>&gt;</span></div><div class="line">    <span class="tag">&lt;<span class="title">executions</span>&gt;</span></div><div class="line">        <span class="tag">&lt;<span class="title">execution</span>&gt;</span></div><div class="line">            <span class="tag">&lt;<span class="title">id</span>&gt;</span>getClasspathFilenames<span class="tag">&lt;/<span class="title">id</span>&gt;</span></div><div class="line">            <span class="tag">&lt;<span class="title">goals</span>&gt;</span></div><div class="line">                <span class="tag">&lt;<span class="title">goal</span>&gt;</span>properties<span class="tag">&lt;/<span class="title">goal</span>&gt;</span></div><div class="line">            <span class="tag">&lt;/<span class="title">goals</span>&gt;</span></div><div class="line">        <span class="tag">&lt;/<span class="title">execution</span>&gt;</span></div><div class="line">     <span class="tag">&lt;/<span class="title">executions</span>&gt;</span></div><div class="line"><span class="tag">&lt;/<span class="title">plugin</span>&gt;</span></div></pre></td></tr></table></figure>
+
+<p>然后你可以配置<code>exec-maven-plugin</code>或者<code>maven-surefire-plugin</code>加上agent参数，在执行maven任务的时候久可以使用Quasar了。</p>
+<p>官方提供了一个<a href="https://github.com/puniverse/quasar-mvn-archetype" target="_blank" rel="external">Quasar Maven archetype</a>,你可以通过下面的命令生成一个quasar应用原型：</p>
+<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div></pre></td><td class="code"><pre><div class="line">git clone https://github.com/puniverse/quasar-mvn-archetype</div><div class="line"><span class="built_in">cd</span> quasar-mvn-archetype</div><div class="line">mvn install</div><div class="line"><span class="built_in">cd</span> ..</div><div class="line">mvn archetype:generate -DarchetypeGroupId=co.paralleluniverse -DarchetypeArtifactId=quasar-mvn-archetype -DarchetypeVersion=<span class="number">0.7</span>.<span class="number">4</span> -DgroupId=testgrp -DartifactId=testprj</div><div class="line"><span class="built_in">cd</span> testprj</div><div class="line">mvn test</div><div class="line">mvn clean compile dependency:properties <span class="keyword">exec</span>:<span class="keyword">exec</span></div></pre></td></tr></table></figure>
+
+<p>如果你使用gradle，可以看一下gradle项目模版：<a href="https://github.com/puniverse/quasar-gradle-template" target="_blank" rel="external">Quasar Gradle template project</a>。</p>
+<p>最容易使用Quasar的方案就是使用Java Agent,它可以在运行时instrument程序。如果你想编译的时候就使用AOT instrumentation(Ahead-of-Time)，可以使用Ant任务<code>co.paralleluniverse.fibers.instrument.InstrumentationTask</code>，它包含在quasar-core.jar中。</p>
+<p>Quasar最主要的贡献就是提供了轻量级线程的实现，叫做fiber(纤程)。Fiber的功能和使用类似Thread, API接口也类似，所以使用起来没有违和感，但是它们不是被操作系统管理的，它们是由一个或者多个ForkJoinPool调度。一个idle fiber只占用400K内存，切换的时候占用更少的CPU，你的应用中可以有上百万的fiber，显然Thread做不到这一点。这一点和Go的goroutine类似。</p>
+<p><strong>Fiber并不意味着它可以在所有的场景中都可以替换Thread。当fiber的代码经常会被等待其它fiber阻塞的时候，就应该使用fiber。</strong><br><strong>对于那些需要CPU长时间计算的代码，很少遇到阻塞的时候，就应该首选thread</strong></p>
+<p>以上两条是选择fiber还是thread的判断条件，主要还是看任务是I/O blocking相关还是CPU相关。幸运地是，fiber API使用和thread使用类似，所以代码略微修改久就可以兼容。</p>
+<p>Fiber特别适合替换哪些异步回调的代码。使用<code>FiberAsync</code>异步回调很简单，而且性能很好，扩展性也更高。</p>
+<p>类似Thread, fiber也是用Fiber类表示：</p>
+<figure class="highlight java"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">new</span> Fiber&lt;V&gt;() {</div><div class="line">  <span class="annotation">@Override</span></div><div class="line">  <span class="keyword">protected</span> V <span class="title">run</span>() <span class="keyword">throws</span> SuspendExecution, InterruptedException {</div><div class="line">        <span class="comment">// your code</span></div><div class="line">    }</div><div class="line">}.start();</div></pre></td></tr></table></figure>
+
+<p>与Thread类似，但也有些不同。Fiber可以有一个返回值,类型为泛型V，也可以为空Void。<code>run</code>也可以抛出异常<code>InterruptedException</code>。</p>
+<p>你可以传递<code>SuspendableRunnable</code>  或 <code>SuspendableCallable</code> 给Fiber的构造函数:</p>
+<figure class="highlight java"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">new</span> Fiber&lt;Void&gt;(<span class="keyword">new</span> SuspendableRunnable() {</div><div class="line">  <span class="keyword">public</span> <span class="keyword">void</span> <span class="title">run</span>() <span class="keyword">throws</span> SuspendExecution, InterruptedException {</div><div class="line">    <span class="comment">// your code</span></div><div class="line">  }</div><div class="line">}).start();</div></pre></td></tr></table></figure>
+
+<p>甚至你可以调用Fiber的join方法等待它完成，调用<code>get</code>方法得到它的结果。</p>
+<p>Fiber继承Strand类。Strand类代表一个Fiber或者Thread，提供了一些底层的方法。</p>
+<p>逃逸的Fiber(Runaway Fiber)是指那些陷入循环而没有block、或者block fiber本身运行的线程的Fiber。偶尔有逃逸的fiber没有问题，但是太频繁会导致性能的下降，因为需要调度器的线程可能都忙于逃逸fiber了。Quasar会监控这些逃逸fiber,你可以通过JMX监控。如果你不想监控，可以设置系统属性<code>co.paralleluniverse.fibers.detectRunawayFibers</code>为<code>false</code>。</p>
+<p>fiber中的<code>ThreadLocal</code>是fiber local的。<code>InheritableThreadLocal</code>继承父fiber的值。</p>
+<p>Fiber、SuspendableRunnable 、SuspendableCallable 的<code>run</code>方法会抛出SuspendExecution异常。但这并不是真正意义的异常，而是fiber内部工作的机制，通过这个异常暂停因block而需要暂停的fiber。</p>
+<p>任何在Fiber中运行的方法，需要声明这个异常(或者标记@Suspendable),都被称为suspendable method。</p>
+<p>反射调用通常都被认为是suspendable, Java8 lambda 也被认为是suspendable。不应该将类构造函数或类初始化器标记为suspendable。</p>
+<p><code>synchronized</code>语句块或者方法会阻塞操作系统线程，所以它们不应该标记为suspendable。Blocking线程调用默认也不被quasar允许。但是这两种情况都可以被quasar处理，你需要在Quasar javaagent中分别加上<code>m</code>和<code>b</code>参数，或者ant任务中加上<code>allowMonitors</code>和<code>allowBlocking</code>属性。</p>
+<h3 id="quasar原理">quasar原理</h3>
+<p>Quasar最初fork自<a href="http://www.matthiasmann.de/content/view/24/26/" target="_blank" rel="external">Continuations Library</a>。</p>
+<p>如果你了解其它语言的coroutine, 比如Lua,你久比较容易理解quasar的fiber了。 Fiber实质上是 <em>continuation</em>， continuation可以捕获一个计算的状态，可以暂停当前的计算，等隔一段时间可以继续执行。Quasar通过instrument修改suspendable方法。Quasar的调度器使用<code>ForkJoinPool</code>调度这些fiber。</p>
+<p>Fiber调度器FiberScheduler是一个高效的、work-stealing、多线程的调度器。</p>
+<p>默认的调度器是<code>FiberForkJoinScheduler</code>,但是你可以使用自己的线程池去调度，请参考<code>FiberExecutorScheduler</code>。</p>
+<p>当一个类被加载时，Quasar的instrumentation模块 (使用 Java agent时) 搜索suspendable 方法。每一个suspendable 方法 <code>f</code>通过下面的方式 instrument:<br>它搜索对其它suspendable方法的调用。对suspendable方法<code>g</code>的调用，一些代码会在这个调用<code>g</code>的前后被插入，它们会保存和恢复fiber栈本地变量的状态，记录这个暂停点。在这个“suspendable function chain”的最后，我们会发现对<code>Fiber.park</code>的调用。<code>park</code>暂停这个fiber，扔出 SuspendExecution异常。</p>
+<p>当<code>g</code> block的时候，SuspendExecution异常会被Fiber捕获。 当Fiber被唤醒(使用unpark), 方法<code>f</code>会被调用， 执行记录显示它被block在g的调用上，所以程序会立即跳到<code>f</code>调用<code>g</code>的那一行,然后调用它。最终我们会到达暂停点，然后继续执行。当<code>g</code>返回时， <code>f</code>中插入的代码会恢复f的本地变量。</p>
+<p>过程听起来很复杂，但是它只会带来3% ~ 5%的性能的损失。</p>
+<p>下面看一个简单的例子, 方法m2声明抛出SuspendExecution异常，方法m1调用m2和m3,所以也声明抛出这个异常，最后这个异常会被Fiber所捕获：</p>
+<figure class="highlight java"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">public</span> <span class="class"><span class="keyword">class</span> <span class="title">Helloworld</span> </span>{</div><div class="line"></div><div class="line">    <span class="keyword">static</span> <span class="keyword">void</span> m1() <span class="keyword">throws</span> SuspendExecution, InterruptedException {</div><div class="line">        String m = <span class="string">"m1"</span>;</div><div class="line"></div><div class="line">        System.out.println(<span class="string">"m1 begin"</span>);</div><div class="line">        m = m2();</div><div class="line">        m = m3();</div><div class="line">        System.out.println(<span class="string">"m1 end"</span>);</div><div class="line">        System.out.println(m);</div><div class="line"></div><div class="line">    }</div><div class="line"></div><div class="line">    <span class="keyword">static</span> String m2() <span class="keyword">throws</span> SuspendExecution, InterruptedException {</div><div class="line">        <span class="keyword">return</span> <span class="string">"m2"</span>;</div><div class="line">    }</div><div class="line"></div><div class="line">    <span class="keyword">static</span> String m3() <span class="keyword">throws</span> SuspendExecution, InterruptedException {</div><div class="line">        <span class="keyword">return</span> <span class="string">"m3"</span>;</div><div class="line">    }</div><div class="line"></div><div class="line">    <span class="keyword">static</span> <span class="keyword">public</span> <span class="keyword">void</span> <span class="title">main</span>(String[] args) <span class="keyword">throws</span> ExecutionException, InterruptedException {</div><div class="line">        <span class="keyword">new</span> Fiber&lt;Void&gt;(<span class="string">"Caller"</span>, <span class="keyword">new</span> SuspendableRunnable() {</div><div class="line"></div><div class="line">            <span class="annotation">@Override</span></div><div class="line">            <span class="keyword">public</span> <span class="keyword">void</span> <span class="title">run</span>() <span class="keyword">throws</span> SuspendExecution, InterruptedException {</div><div class="line">                m1();</div><div class="line">            }</div><div class="line">        }).start();</div><div class="line">    }</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>反编译这段代码 (一般的反编译软件如jd-gui不能把这段代码反编译java文件，<a href="https://bitbucket.org/mstrobel/procyon/wiki/Java%20Decompiler" target="_blank" rel="external">Procyon</a>虽然能反编译，但是感觉反编译有错。所以我们还是看字节码吧)：</p>
+<figure class="highlight java"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div><div class="line">35</div><div class="line">36</div><div class="line">37</div><div class="line">38</div><div class="line">39</div><div class="line">40</div><div class="line">41</div><div class="line">42</div><div class="line">43</div><div class="line">44</div><div class="line">45</div><div class="line">46</div><div class="line">47</div><div class="line">48</div><div class="line">49</div><div class="line">50</div><div class="line">51</div><div class="line">52</div><div class="line">53</div><div class="line">54</div><div class="line">55</div><div class="line">56</div><div class="line">57</div><div class="line">58</div><div class="line">59</div><div class="line">60</div><div class="line">61</div><div class="line">62</div><div class="line">63</div><div class="line">64</div><div class="line">65</div><div class="line">66</div><div class="line">67</div><div class="line">68</div><div class="line">69</div><div class="line">70</div><div class="line">71</div><div class="line">72</div><div class="line">73</div><div class="line">74</div><div class="line">75</div><div class="line">76</div><div class="line">77</div><div class="line">78</div><div class="line">79</div><div class="line">80</div><div class="line">81</div><div class="line">82</div><div class="line">83</div><div class="line">84</div><div class="line">85</div><div class="line">86</div><div class="line">87</div><div class="line">88</div><div class="line">89</div><div class="line">90</div><div class="line">91</div><div class="line">92</div><div class="line">93</div><div class="line">94</div><div class="line">95</div><div class="line">96</div><div class="line">97</div><div class="line">98</div><div class="line">99</div><div class="line">100</div><div class="line">101</div><div class="line">102</div><div class="line">103</div></pre></td><td class="code"><pre><div class="line"><span class="annotation">@Instrumented</span>(suspendableCallSites={<span class="number">16</span>, <span class="number">17</span>}, methodStart=<span class="number">13</span>, methodEnd=<span class="number">21</span>, methodOptimized=<span class="keyword">false</span>)</div><div class="line"> <span class="keyword">static</span> <span class="keyword">void</span> m1()</div><div class="line">   <span class="keyword">throws</span> SuspendExecution, InterruptedException</div><div class="line"> {</div><div class="line">   <span class="comment">// Byte code:</span></div><div class="line">   <span class="comment">//   0: aconst_null</span></div><div class="line">   <span class="comment">//   1: astore_3</span></div><div class="line">   <span class="comment">//   2: invokestatic 88	co/paralleluniverse/fibers/Stack:getStack	()Lco/paralleluniverse/fibers/Stack;</span></div><div class="line">   <span class="comment">//   5: dup</span></div><div class="line">   <span class="comment">//   6: astore_1</span></div><div class="line">   <span class="comment">//   7: ifnull +42 -&gt; 49</span></div><div class="line">   <span class="comment">//   10: aload_1</span></div><div class="line">   <span class="comment">//   11: iconst_1</span></div><div class="line">   <span class="comment">//   12: istore_2</span></div><div class="line">   <span class="comment">//   13: invokevirtual 92	co/paralleluniverse/fibers/Stack:nextMethodEntry	()I</span></div><div class="line">   <span class="comment">//   16: tableswitch	default:+24-&gt;40, 1:+64-&gt;80, 2:+95-&gt;111</span></div><div class="line">   <span class="comment">//   40: aload_1</span></div><div class="line">   <span class="comment">//   41: invokevirtual 96	co/paralleluniverse/fibers/Stack:isFirstInStackOrPushed	()Z</span></div><div class="line">   <span class="comment">//   44: ifne +5 -&gt; 49</span></div><div class="line">   <span class="comment">//   47: aconst_null</span></div><div class="line">   <span class="comment">//   48: astore_1</span></div><div class="line">   <span class="comment">//   49: iconst_0</span></div><div class="line">   <span class="comment">//   50: istore_2</span></div><div class="line">   <span class="comment">//   51: ldc 2</span></div><div class="line">   <span class="comment">//   53: astore_0</span></div><div class="line">   <span class="comment">//   54: getstatic 3	java/lang/System:out	Ljava/io/PrintStream;</span></div><div class="line">   <span class="comment">//   57: ldc 4</span></div><div class="line">   <span class="comment">//   59: invokevirtual 5	java/io/PrintStream:println	(Ljava/lang/String;)V</span></div><div class="line">   <span class="comment">//   62: aload_1</span></div><div class="line">   <span class="comment">//   63: ifnull +26 -&gt; 89</span></div><div class="line">   <span class="comment">//   66: aload_1</span></div><div class="line">   <span class="comment">//   67: iconst_1</span></div><div class="line">   <span class="comment">//   68: iconst_1</span></div><div class="line">   <span class="comment">//   69: invokevirtual 100	co/paralleluniverse/fibers/Stack:pushMethod	(II)V</span></div><div class="line">   <span class="comment">//   72: aload_0</span></div><div class="line">   <span class="comment">//   73: aload_1</span></div><div class="line">   <span class="comment">//   74: iconst_0</span></div><div class="line">   <span class="comment">//   75: invokestatic 104	co/paralleluniverse/fibers/Stack:push	(Ljava/lang/Object;Lco/paralleluniverse/fibers/Stack;I)V</span></div><div class="line">   <span class="comment">//   78: iconst_0</span></div><div class="line">   <span class="comment">//   79: istore_2</span></div><div class="line">   <span class="comment">//   80: aload_1</span></div><div class="line">   <span class="comment">//   81: iconst_0</span></div><div class="line">   <span class="comment">//   82: invokevirtual 108	co/paralleluniverse/fibers/Stack:getObject	(I)Ljava/lang/Object;</span></div><div class="line">   <span class="comment">//   85: checkcast 110	java/lang/String</span></div><div class="line">   <span class="comment">//   88: astore_0</span></div><div class="line">   <span class="comment">//   89: invokestatic 6	com/colobu/fiber/Helloworld:m2	()Ljava/lang/String;</span></div><div class="line">   <span class="comment">//   92: astore_0</span></div><div class="line">   <span class="comment">//   93: aload_1</span></div><div class="line">   <span class="comment">//   94: ifnull +26 -&gt; 120</span></div><div class="line">   <span class="comment">//   97: aload_1</span></div><div class="line">   <span class="comment">//   98: iconst_2</span></div><div class="line">   <span class="comment">//   99: iconst_1</span></div><div class="line">   <span class="comment">//   100: invokevirtual 100	co/paralleluniverse/fibers/Stack:pushMethod	(II)V</span></div><div class="line">   <span class="comment">//   103: aload_0</span></div><div class="line">   <span class="comment">//   104: aload_1</span></div><div class="line">   <span class="comment">//   105: iconst_0</span></div><div class="line">   <span class="comment">//   106: invokestatic 104	co/paralleluniverse/fibers/Stack:push	(Ljava/lang/Object;Lco/paralleluniverse/fibers/Stack;I)V</span></div><div class="line">   <span class="comment">//   109: iconst_0</span></div><div class="line">   <span class="comment">//   110: istore_2</span></div><div class="line">   <span class="comment">//   111: aload_1</span></div><div class="line">   <span class="comment">//   112: iconst_0</span></div><div class="line">   <span class="comment">//   113: invokevirtual 108	co/paralleluniverse/fibers/Stack:getObject	(I)Ljava/lang/Object;</span></div><div class="line">   <span class="comment">//   116: checkcast 110	java/lang/String</span></div><div class="line">   <span class="comment">//   119: astore_0</span></div><div class="line">   <span class="comment">//   120: invokestatic 7	com/colobu/fiber/Helloworld:m3	()Ljava/lang/String;</span></div><div class="line">   <span class="comment">//   123: astore_0</span></div><div class="line">   <span class="comment">//   124: getstatic 3	java/lang/System:out	Ljava/io/PrintStream;</span></div><div class="line">   <span class="comment">//   127: ldc 8</span></div><div class="line">   <span class="comment">//   129: invokevirtual 5	java/io/PrintStream:println	(Ljava/lang/String;)V</span></div><div class="line">   <span class="comment">//   132: getstatic 3	java/lang/System:out	Ljava/io/PrintStream;</span></div><div class="line">   <span class="comment">//   135: aload_0</span></div><div class="line">   <span class="comment">//   136: invokevirtual 5	java/io/PrintStream:println	(Ljava/lang/String;)V</span></div><div class="line">   <span class="comment">//   139: aload_1</span></div><div class="line">   <span class="comment">//   140: ifnull +7 -&gt; 147</span></div><div class="line">   <span class="comment">//   143: aload_1</span></div><div class="line">   <span class="comment">//   144: invokevirtual 113	co/paralleluniverse/fibers/Stack:popMethod	()V</span></div><div class="line">   <span class="comment">//   147: return</span></div><div class="line">   <span class="comment">//   148: aload_1</span></div><div class="line">   <span class="comment">//   149: ifnull +7 -&gt; 156</span></div><div class="line">   <span class="comment">//   152: aload_1</span></div><div class="line">   <span class="comment">//   153: invokevirtual 113	co/paralleluniverse/fibers/Stack:popMethod	()V</span></div><div class="line">   <span class="comment">//   156: athrow</span></div><div class="line">   <span class="comment">// Line number table:</span></div><div class="line">   <span class="comment">//   Java source line #13	-&gt; byte code offset #51</span></div><div class="line">   <span class="comment">//   Java source line #15	-&gt; byte code offset #54</span></div><div class="line">   <span class="comment">//   Java source line #16	-&gt; byte code offset #62</span></div><div class="line">   <span class="comment">//   Java source line #17	-&gt; byte code offset #93</span></div><div class="line">   <span class="comment">//   Java source line #18	-&gt; byte code offset #124</span></div><div class="line">   <span class="comment">//   Java source line #19	-&gt; byte code offset #132</span></div><div class="line">   <span class="comment">//   Java source line #21	-&gt; byte code offset #139</span></div><div class="line">   <span class="comment">// Local variable table:</span></div><div class="line">   <span class="comment">//   start	length	slot	name	signature</span></div><div class="line">   <span class="comment">//   53	83	0	m	String</span></div><div class="line">   <span class="comment">//   6	147	1	localStack	co.paralleluniverse.fibers.Stack</span></div><div class="line">   <span class="comment">//   12	99	2	i	int</span></div><div class="line">   <span class="comment">//   1	1	3	localObject	Object</span></div><div class="line">   <span class="comment">//   156	1	4	localSuspendExecution	SuspendExecution</span></div><div class="line">   <span class="comment">// Exception table:</span></div><div class="line">   <span class="comment">//   from	to	target	type</span></div><div class="line">   <span class="comment">//   49	148	148	finally</span></div><div class="line">   <span class="comment">//   49	148	156	co/paralleluniverse/fibers/SuspendExecution</span></div><div class="line">   <span class="comment">//   49	148	156	co/paralleluniverse/fibers/RuntimeSuspendExecution</span></div><div class="line"> }</div></pre></td></tr></table></figure>
+
+<p>这段反编译的代码显示了方法m被instrument后的样子，虽然我们不能很清楚的看到代码执行的样子，但是也可以大概地看到它实际在方法的最开始加入了此方法的栈信息的检查（＃0 ～ ＃49，如果是第一次运行这个方法，则直接运行，<br>然后在一些暂停点上加上一些栈压入的处理，并且可以在下次执行的时候直接跳到上次的暂停点上。</p>
+<p>官方的工程师关于Quasar的instrument操作如下：</p>
+<blockquote>
+<ul>
+<li>Fully analyze the bytecode to find all the calls into suspendable methods. A method that (potentially) calls into other suspendable methods is itself considered suspendable, transitively.</li>
+<li>Inject minimal bytecode in suspendable methods (and only them) that will manage an user-mode stack, in the following places:<ul>
+<li>At the beginning we’ll check if we’re resuming the fiber and only in this case we’ll jump into the relevant bytecode index.</li>
+<li>Before a call into another suspendable method we’ll push a snapshot of the current activation frame, including the resume bytecode index; we can do it because we know the structure statically from the analysis phase.</li>
+<li>After a call into another suspendable method we’ll pop the top activation frame and, if resumed, we’ll restore it in the current fiber.</li>
+</ul>
+</li>
+</ul>
+</blockquote>
+<p>我并没有更深入的去了解Quasar的实现细节以及调度算法，有兴趣的读者可以翻翻它的代码。如果你有更深入的剖析，请留下相关的地址，以便我加到参考文档中。</p>
+<p>曾经， 陆陆续续也有一些Java coroutine的实现(<a href="http://stackoverflow.com/questions/2846428/available-coroutine-libraries-in-java" target="_blank" rel="external">coroutine-libraries</a>), 但是目前来说最好的应该还是Quasar。</p>
+<p>Oracle会实现一个官方的纤程库吗？目前来说没有看到这方面的计划，而且从Java的开发进度上来看，这个特性可能是遥遥无期的，所以目前还只能借助社区的力量，从第三方库如Quasar中寻找解决方案。</p>
+<p>更多的Quasar知识，比如Channel、Actor、Reactive Stream 的使用可以参考官方的文档，官方也提供了多个<a href="http://docs.paralleluniverse.co/quasar/#examples" target="_blank" rel="external">例子</a>。</p>
+<h3 id="Comsat介绍">Comsat介绍</h3>
+<p>Comsat又是什么？</p>
+<p>Comsat还是Parallel Universe提供的集成Quasar的一套开源库，可以提供web或者企业级的技术，如HTTP服务和数据库访问。</p>
+<p>Comsat并不是一套web框架。它并不提供新的API,只是为现有的技术如Servlet、JAX－RS、JDBC等提供Quasar fiber的集成。</p>
+<p>它包含非常多的库，比如Spring、ApacheHttpClient、OkHttp、Undertow、Netty、Kafka等。</p>
+<h3 id="性能对比">性能对比</h3>
+<p>刘小溪在CSDN上写了一篇关于Quasar的文章：<a href="http://geek.csdn.net/news/detail/71824" target="_blank" rel="external">次时代Java编程（一）：Java里的协程</a>，写的挺好，建议读者读一读。</p>
+<p>它参考<a href="https://github.com/atemerev/skynet" target="_blank" rel="external">Skynet</a>的测试写了代码进行对比，这个测试是并发执行整数的累加：<br>测试结果是Golang花了261毫秒，Quasar花了612毫秒。其实结果还不错，但是文中指出这个测试没有发挥Quasar的性能。因为quasar的性能主要在于阻塞代码的调度上。<br>虽然文中加入了排序的功能，显示Java要比Golang要好，但是我觉得这又陷入了另外一种错误的比较， Java的排序算法使用TimSort，排序效果相当好，Go的排序效果显然比不上Java的实现，所以最后的测试主要测试排序算法上。 真正要体现Quasar的性能还是测试在有阻塞的情况下fiber的调度性能。</p>
+<h4 id="HttpClient">HttpClient</h4>
+<p>话题扯的越来越远了，拉回来。我最初的目的是要解决的是在第三方服务响应慢的情况下提高系统 <strong>A</strong> 的吞吐率。最初A是使用200个线程处理业务逻辑，调用第三方服务。因为线程总是被第三方服务阻塞，所以系统A的吞吐率总是很低。</p>
+<p>虽然使用Go可以解决这个问题，但是对于系统A的改造比较大，还增加了系统的复杂性。Netty性能好，改动量还可以接受，但是不妨看一下这个场景，系统的问题是由http阻塞引起。</p>
+<p>这正是Quasar fiber适合的场景，如果一个Fiber被阻塞，它可以暂时放弃线程，以便线程可以用来执行其它的Fiber。虽然整个集成系统的吞吐率依然很低，这是无法避免的，但是系统的吞吐率确很高。</p>
+<p>Comsat提供了Apache Http Client的实现： <code>FiberHttpClientBuilder</code>：</p>
+<figure class="highlight java"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">final</span> CloseableHttpClient client = FiberHttpClientBuilder.</div><div class="line">        create(<span class="number">2</span>). <span class="comment">// use 2 io threads</span></div><div class="line">        setMaxConnPerRoute(concurrencyLevel).</div><div class="line">        setMaxConnTotal(concurrencyLevel).build();</div></pre></td></tr></table></figure>
+
+<p>然后在Fiber中久可以调用:</p>
+<figure class="highlight java"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">String response = client.execute(<span class="keyword">new</span> HttpGet(<span class="string">"http://localhost:8080"</span>), BASIC_RESPONSE_HANDLER);</div></pre></td></tr></table></figure>
+
+<p>你也可以使用异步的HttpClient:</p>
+<figure class="highlight java"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">final</span> CloseableHttpAsyncClient client = FiberCloseableHttpAsyncClient.wrap(HttpAsyncClients.</div><div class="line">        custom().</div><div class="line">        setMaxConnPerRoute(concurrencyLevel).</div><div class="line">        setMaxConnTotal(concurrencyLevel).</div><div class="line">        build());</div><div class="line">client.start();</div></pre></td></tr></table></figure>
+
+<p>Comsat还提供了Jersey Http Client: <code>AsyncClientBuilder.newClient()</code>。</p>
+<p>甚至提供了<code>Retrofit</code>、<code>OkHttp</code>的实现。</p>
+<p>经过测试，虽然随着系统B、C、D的响应时间的拉长，吞吐率有所降低，但是在latency为100毫秒的时候吞吐率依然能达到9900 requests/秒，可以满足我们的需求，而我们的代码改动的比较小。</p>
+<p>综上所述，如果想彻底改造系统A,则可以使用Go库重写，或者使用Netty + Rx的方式去处理，都能达到比较好的效果。如果想改动比较小，可以考虑使用quasar替换线程对代码进行维护。</p>
+<blockquote>
+<p>我希望本文不要给读者造成误解，以为Java NIO／Selector这种方式不能解决本文的问题，也就是第三方阻塞的问题。 事实上Java NIO也正是适合解决这样的问题， 比如Netty性能就不错，但是你需要小心的是， 不要让你的这个client对外又变成阻塞的方式，而是程序应该异步的去发送request和处理response。当然本文重点不是介绍这种实现，而是介绍Java的线程库，它可以改造传统的代码，即使有阻塞，也只是阻塞Fiber，而不是阻塞线程，这是另一个解决问题的思路。</p>
+</blockquote>
+<p>另一篇关于Quasar的文档： <a href="http://colobu.com/2016/08/01/talk-about-quasar-again/" target="_blank" rel="external">继续了解Java的纤程库 - Quasar</a></p>
+<h3 id="参考文档">参考文档</h3>
+<ul>
+<li><a href="http://docs.paralleluniverse.co/quasar/" target="_blank" rel="external">http://docs.paralleluniverse.co/quasar/</a></li>
+<li><a href="http://docs.paralleluniverse.co/comsat/" target="_blank" rel="external">http://docs.paralleluniverse.co/comsat/</a></li>
+<li><a href="http://geek.csdn.net/news/detail/71824" target="_blank" rel="external">http://geek.csdn.net/news/detail/71824</a></li>
+<li><a href="http://stackoverflow.com/questions/24722233/how-to-use-quasar-with-scala-under-sbt" target="_blank" rel="external">http://stackoverflow.com/questions/24722233/how-to-use-quasar-with-scala-under-sbt</a></li>
+<li><a href="http://blog.kazaff.me/2016/05/29/了解协程(coroutine)/" target="_blank" rel="external">http://blog.kazaff.me/2016/05/29/了解协程(coroutine)/</a></li>
+<li><a href="http://tieba.baidu.com/p/4244920191" target="_blank" rel="external">http://tieba.baidu.com/p/4244920191</a></li>
+<li><a href="http://javapapers.com/core-java/java-instrumentation/" target="_blank" rel="external">http://javapapers.com/core-java/java-instrumentation/</a></li>
+<li><a href="https://docs.oracle.com/javase/8/docs/api/java/lang/instrument/package-summary.html" target="_blank" rel="external">https://docs.oracle.com/javase/8/docs/api/java/lang/instrument/package-summary.html</a></li>
+<li><a href="http://zeroturnaround.com/rebellabs/what-are-fibers-and-why-you-should-care/" target="_blank" rel="external">http://zeroturnaround.com/rebellabs/what-are-fibers-and-why-you-should-care/</a></li>
+</ul>
+
+      
+    </div>
+    <footer class="article-footer">
+	
+<div class="bdsharebuttonbox"><a title="分享到新浪微博" class="bds_tsina" href="#" data-cmd="tsina"></a><a title="分享到微信" class="bds_weixin" href="#" data-cmd="weixin"></a><a title="分享到QQ空间" class="bds_qzone" href="#" data-cmd="qzone"></a><a title="分享到印象笔记" class="bds_evernotecn" href="#" data-cmd="evernotecn"></a><a title="分享到有道云笔记" class="bds_youdao" href="#" data-cmd="youdao"></a><a title="分享到百度云收藏" class="bds_bdysc" href="#" data-cmd="bdysc"></a><a class="bds_more" href="#" data-cmd="more"></a></div>
+<script>window._bd_share_config={"common":{"bdSnsKey":{},"bdText":"","bdMini":"2","bdMiniList":false,"bdPic":"","bdStyle":"0","bdSize":"24"},"share":{}};with(document)0[(getElementsByTagName('head')[0]||body).appendChild(createElement('script')).src='http://bdimg.share.baidu.com/static/api/js/share.js?v=89860593.js?cdnversion='+~(-new Date()/36e5)];</script>
+      
+
+	  
+        <a href="http://colobu.com/2016/07/14/Java-Fiber-Quasar/#comments" class="article-comment-link">评论</a>
+      
+
+      
+  <ul class="article-tag-list"><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/Comsat/">Comsat</a></li><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/Fiber/">Fiber</a></li><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/Quasar/">Quasar</a></li></ul>
+
+    </footer>
+  </div>
+  
+    
+<nav id="article-nav">
+  
+    <a href="/2016/07/22/using-go-disruptor/" id="article-nav-newer" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">Newer</strong>
+      <div class="article-nav-title">
+        
+          高性能的消息框架 go-disruptor
+        
+      </div>
+    </a>
+  
+  
+    <a href="/2016/07/13/Setup-Nginx-and-RTMP-module/" id="article-nav-older" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">Older</strong>
+      <div class="article-nav-title">[转]使用Nginx 和 RTMP 模块搭建视频直播系统</div>
+    </a>
+  
+</nav>
+
+  
+</article>
+
+
+<section id="comments">
+  <div class="ds-thread" data-thread-key="2016/07/14/Java-Fiber-Quasar/" data-title="Java中的纤程库 - Quasar" data-url="http://colobu.com/2016/07/14/Java-Fiber-Quasar/"></div>
+
+</section>
+
+</section>
+        
+          <aside id="sidebar">
+  
+      <div class="widget-wrap">
+    <h3 class="widget-title">原创图书</h3>
+    <div class="widget">
+      <a href="/ScalaCollectionsCookbook/">
+        <img width="100%" src="/ScalaCollectionsCookbook/scala_collections_cookbook.jpg">
+        <img width="100%" src="/ScalaCollectionsCookbook/scala_collections_cookbook_tw.png">
+      </a>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">分类</h3>
+    <div class="widget">
+      <ul class="category-list"><li class="category-list-item"><a class="category-list-link" href="/categories/Android/">Android</a><span class="category-list-count">12</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/DOTNET/">DOTNET</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Docker/">Docker</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Go/">Go</a><span class="category-list-count">49</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Java/">Java</a><span class="category-list-count">58</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Linux/">Linux</a><span class="category-list-count">6</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Scala/">Scala</a><span class="category-list-count">18</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/前端开发/">前端开发</a><span class="category-list-count">18</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/大数据/">大数据</a><span class="category-list-count">54</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/工具/">工具</a><span class="category-list-count">14</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/架构/">架构</a><span class="category-list-count">21</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/算法/">算法</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/管理/">管理</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/网络编程/">网络编程</a><span class="category-list-count">8</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/读书笔记/">读书笔记</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/运维/">运维</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/高并发编程/">高并发编程</a><span class="category-list-count">20</span></li></ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">标签云</h3>
+    <div class="widget tagcloud">
+      <a href="/tags/Android/" style="font-size: 15.71px;">Android</a><a href="/tags/ApacheBench/" style="font-size: 11.43px;">ApacheBench</a><a href="/tags/Bower/" style="font-size: 10.00px;">Bower</a><a href="/tags/C/" style="font-size: 10.00px;">C#</a><a href="/tags/CDN/" style="font-size: 10.00px;">CDN</a><a href="/tags/CQRS/" style="font-size: 10.00px;">CQRS</a><a href="/tags/CRC/" style="font-size: 10.00px;">CRC</a><a href="/tags/CSS/" style="font-size: 11.43px;">CSS</a><a href="/tags/CompletableFuture/" style="font-size: 10.00px;">CompletableFuture</a><a href="/tags/Comsat/" style="font-size: 10.00px;">Comsat</a><a href="/tags/Curator/" style="font-size: 20.00px;">Curator</a><a href="/tags/DSL/" style="font-size: 10.00px;">DSL</a><a href="/tags/Disruptor/" style="font-size: 10.00px;">Disruptor</a><a href="/tags/Docker/" style="font-size: 11.43px;">Docker</a><a href="/tags/Ember/" style="font-size: 11.43px;">Ember</a><a href="/tags/FastJson/" style="font-size: 10.00px;">FastJson</a><a href="/tags/Fiber/" style="font-size: 10.00px;">Fiber</a><a href="/tags/GAE/" style="font-size: 10.00px;">GAE</a><a href="/tags/GC/" style="font-size: 12.86px;">GC</a><a href="/tags/Gnuplot/" style="font-size: 10.00px;">Gnuplot</a><a href="/tags/Go/" style="font-size: 11.43px;">Go</a><a href="/tags/Gradle/" style="font-size: 10.00px;">Gradle</a><a href="/tags/Grunt/" style="font-size: 10.00px;">Grunt</a><a href="/tags/Gulp/" style="font-size: 10.00px;">Gulp</a><a href="/tags/Hadoop/" style="font-size: 10.00px;">Hadoop</a><a href="/tags/Hazelcast/" style="font-size: 10.00px;">Hazelcast</a><a href="/tags/Ignite/" style="font-size: 10.00px;">Ignite</a><a href="/tags/JVM/" style="font-size: 10.00px;">JVM</a><a href="/tags/Java/" style="font-size: 17.14px;">Java</a><a href="/tags/Kafka/" style="font-size: 18.57px;">Kafka</a><a href="/tags/Lambda/" style="font-size: 14.29px;">Lambda</a><a href="/tags/Linux/" style="font-size: 12.86px;">Linux</a><a href="/tags/LongAdder/" style="font-size: 10.00px;">LongAdder</a><a href="/tags/MathJax/" style="font-size: 10.00px;">MathJax</a><a href="/tags/Maven/" style="font-size: 11.43px;">Maven</a><a href="/tags/Memcached/" style="font-size: 10.00px;">Memcached</a><a href="/tags/Metrics/" style="font-size: 10.00px;">Metrics</a><a href="/tags/Mongo/" style="font-size: 12.86px;">Mongo</a><a href="/tags/Netty/" style="font-size: 15.71px;">Netty</a><a href="/tags/Node/" style="font-size: 10.00px;">Node</a>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">归档</h3>
+    <div class="widget">
+      <ul class="archive-list"><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/12/">December 2016</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/11/">November 2016</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/10/">October 2016</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/09/">September 2016</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/08/">August 2016</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/07/">July 2016</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/06/">June 2016</a><span class="archive-list-count">14</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/05/">May 2016</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/04/">April 2016</a><span class="archive-list-count">14</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/03/">March 2016</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/02/">February 2016</a><span class="archive-list-count">8</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/01/">January 2016</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/12/">December 2015</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/11/">November 2015</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/10/">October 2015</a><span class="archive-list-count">9</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/09/">September 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/08/">August 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/07/">July 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/06/">June 2015</a><span class="archive-list-count">8</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/05/">May 2015</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/04/">April 2015</a><span class="archive-list-count">15</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/03/">March 2015</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/02/">February 2015</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/01/">January 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/12/">December 2014</a><span class="archive-list-count">28</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/11/">November 2014</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/10/">October 2014</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/09/">September 2014</a><span class="archive-list-count">28</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/08/">August 2014</a><span class="archive-list-count">19</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/07/">July 2014</a><span class="archive-list-count">1</span></li></ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">近期文章</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+            <a href="/2016/12/04/smooth-weighted-round-robin-algorithm/">平滑的基于权重的轮询算法</a>
+          </li>
+        
+          <li>
+            <a href="/2016/11/28/techempower-benchmarks-round13/">2016年Web框架性能基准</a>
+          </li>
+        
+          <li>
+            <a href="/2016/11/26/secrets-of-condoms/">嘘，啪啪啪的秘密</a>
+          </li>
+        
+          <li>
+            <a href="/2016/11/17/Benchmarking-Scala-Collections/">[译]Scala Collection的性能</a>
+          </li>
+        
+          <li>
+            <a href="/2016/11/11/microservices-anti-patterns-and-pitfalls/">微服务的反模式和陷阱</a>
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">友情链接</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+			 
+            <a href="http://old.colobu.com" target="_blank">旧的博客</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://stackshare.io" target="_blank">技术栈</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://weekly.manong.io/issues/" target="_blank">码农周刊</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.tuicool.com/mags" target="_blank">编程狂人周刊</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.importnew.com/" target="_blank">importnew</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://ifeve.com/" target="_blank">并发编程网</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://github.com" target="_blank">github</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://stackoverflow.com/" target="_blank">stackoverflow</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.javacodegeeks.com/" target="_blank">javacodegeeks</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.infoq.com/" target="_blank">infoq</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.dzone.com/links/index.html" target="_blank">dzone</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://oj.leetcode.com/problems/" target="_blank">leetcode</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.503error.com/" target="_blank">503error</a>
+			
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+      <div class="widget-wrap">
+    <h3 class="widget-title">热评文章</h3>
+    <div class="widget">
+		<div class="ds-top-threads" data-range="monthly" data-num-items="5"></div>
+    </div>
+  </div>
+
+  
+      <div class="widget-wrap">
+    <h3 class="widget-title">最新评论</h3>
+    <div class="widget">
+		<ul class="ds-recent-comments" data-num-items="10" data-show-avatars="1" data-show-time="1" data-show-admin="1" data-excerpt-length="70"></ul>
+		<script type="text/javascript">
+		var duoshuoQuery = {short_name:"colobu"};
+		(function() {
+			var ds = document.createElement('script');
+			ds.type = 'text/javascript';ds.async = true;
+			ds.src = 'http://static.duoshuo.com/embed.js';
+			ds.charset = 'UTF-8';
+			(document.getElementsByTagName('head')[0] || document.getElementsByTagName('body')[0]).appendChild(ds);
+		})();
+		</script>
+    </div>
+  </div>
+
+  
+</aside>
+        
+      </div>
+      <footer id="footer">
+  
+  <div class="outer">
+    <div id="footer-info" class="inner">
+      &copy; 2016 smallnest<br>
+	  Powered by <a href="http://hexo.io/" target="_blank">Hexo</a>
+    </div>
+  </div>
+</footer>
+    </div>
+    <nav id="mobile-nav">
+  
+    <a href="/" class="mobile-nav-link">首页</a>
+  
+    <a href="/archives" class="mobile-nav-link">归档</a>
+  
+    <a href="https://github.com/smallnest" class="mobile-nav-link">github</a>
+  
+    <a href="http://tr.colobu.com" class="mobile-nav-link">技术流</a>
+  
+    <a href="/ScalaCollectionsCookbook" class="mobile-nav-link">Scala集合技术手册</a>
+  
+    <a href="/techreview" class="mobile-nav-link">技术快报</a>
+  
+    <a href="/about" class="mobile-nav-link">关于</a>
+  
+</nav>
+    
+<script src="//cdn.staticfile.org/jquery/1.11.1/jquery.min.js"></script>
+<script src="//cdn.bootcss.com/jquery.lazyload/1.9.1/jquery.lazyload.min.js"></script>
+
+<script src="//libs.cncdn.cn/fancybox/2.1.5/jquery.fancybox.pack.js"></script>
+
+
+<script src="/js/script.js" type="text/javascript"></script>
+
+<!-- mathjax config similar to math.stackexchange -->
+<script type="text/x-mathjax-config">
+  MathJax.Hub.Config({
+    tex2jax: {
+      inlineMath: [ ['$','$'], ["\\(","\\)"] ],
+      processEscapes: true,
+      skipTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code']
+    }
+  });
+  MathJax.Hub.Queue(function() {
+      var all = MathJax.Hub.getAllJax(), i;
+      for(i=0; i < all.length; i += 1) {
+        all[i].SourceElement().parentNode.className += ' has-jax';
+      }
+  });
+</script>
+<script type="text/javascript" src="//cdn.bootcss.com/mathjax/2.6.0-beta.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML">
+</script>
+
+<div id="totop" style="position:fixed;bottom:150px;right:10px;cursor: pointer;z-index: 2000;">
+	<a title="返回顶部"><img src="/images/scrollup.png"/></a>
+</div>
+<script src="/js/totop.js" type="text/javascript"></script>
+
+
+
+<script type="text/javascript">
+  var _gaq = _gaq || [];
+  _gaq.push(['_setAccount', 'UA-142561-4']);
+  _gaq.push(['_trackPageview']);
+
+  (function() {
+    var ga = document.createElement('script'); ga.type = 'text/javascript'; ga.async = true;
+    ga.src = ('https:' == document.location.protocol ? 'https://ssl' : 'http://www') + '.google-analytics.com/ga.js';
+    var s = document.getElementsByTagName('script')[0]; s.parentNode.insertBefore(ga, s);
+  })();
+</script>
+
+
+<script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "//hm.baidu.com/hm.js?e085d87993250aab11f3e0c15f1c2785";
+  var s = document.getElementsByTagName("script")[0]; 
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+
+
+  </div>
+</body>
+</html>
