@@ -4,7 +4,7 @@
   <subtitle><![CDATA[大道至简 Simplicity is the ultimate form of sophistication]]></subtitle>
   <link href="/atom.xml" rel="self"/>
   <link href="http://colobu.com/"/>
-  <updated>2017-04-17T05:42:03.916Z</updated>
+  <updated>2017-04-20T05:17:32.939Z</updated>
   <id>http://colobu.com/</id>
   
   <author>
@@ -13,6 +13,108 @@
   </author>
   
   <generator uri="http://zespia.tw/hexo/">Hexo</generator>
+  
+  <entry>
+    <title><![CDATA[Go HTTP Redirect的处理]]></title>
+    <link href="http://colobu.com/2017/04/19/go-http-redirect/"/>
+    <id>http://colobu.com/2017/04/19/go-http-redirect/</id>
+    <published>2017-04-19T08:28:01.000Z</published>
+    <updated>2017-04-20T05:15:49.000Z</updated>
+    <content type="html"><![CDATA[<p>HTTP 规范中定义了返回码为 <code>3xx</code> 代表客户端需要做一些额外的工作来完成请求，大部分<code>3xx</code>用来做转发(redirect)。</p>
+<p>状态码的详细说明可以参照规范或者 <a href="https://en.wikipedia.org/wiki/List_of_HTTP_status_codes#3xx_Redirection" target="_blank" rel="external">wikipedia</a>、<a href="https://zh.wikipedia.org/wiki/HTTP状态码#3xx" target="_blank" rel="external">维基百科</a>, 以下是代码的简短介绍。</p>
+<ul>
+<li>300 Multiple Choices: 返回多个可供选择的资源</li>
+<li>301 Moved Permanently: 请求的资源已永久移动到新位置，并且将来任何对此资源的引用都应该使用本响应返回的若干个URI之一</li>
+<li>302 Found: 请求的资源现在临时从不同的URI响应请求。由于这样的重定向是临时的，客户端应当继续向原有地址发送以后的请求,HTTP 1.0中的意义是<code>Moved Temporarily</code>,但是很多浏览器的实现是按照303的处实现的，所以HTTP 1.1中增加了 303和307的状态码来区分不同的行为</li>
+<li>303 See Other (since HTTP/1.1): 对应当前请求的响应可以在另一个URI上被找到，而且客户端应当采用GET的方式访问那个资源</li>
+<li>304 Not Modified (RFC 7232): 请求的资源没有改变</li>
+<li>305 Use Proxy (since HTTP/1.1): 被请求的资源必须通过指定的代理才能被访问</li>
+<li>306 Switch Proxy: 在最新版的规范中，306状态码已经不再被使用</li>
+<li>307 Temporary Redirect (since HTTP/1.1): 请求的资源现在临时从不同的URI响应请求,和303不同，它还是使用原先的Method</li>
+<li>308 Permanent Redirect (RFC 7538): 请求的资源已永久移动到新位置,并且新请求的Method不能改变</li>
+</ul>
+<p>Go 的 http 库在实现的过程中也在不断的完成和修改其中的Bug,在 1.8版本中解决了前面版本中实现的问题 (你可以在 Go issues中搜索 redirect 来查看相关的issue)。 本文介绍一下 Go 中 Redirect 的逻辑，以便你在遇到转发的问题时心中有数。</p>
+<a id="more"></a>
+<h3 id="转发策略和默认转发次数。">转发策略和默认转发次数。</h3>
+<p><a href="">http.Client</a>包含一个<code>CheckRedirect</code>字段，用来定义转发的策略，如果你没有设置，则默认使用<code>defaultCheckRedirect</code>:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> (c *Client) checkRedirect(req *Request, via []*Request) error {</div><div class="line">	fn := c.CheckRedirect</div><div class="line">	<span class="keyword">if</span> fn == <span class="constant">nil</span> {</div><div class="line">		fn = defaultCheckRedirect</div><div class="line">	}</div><div class="line">	<span class="keyword">return</span> fn(req, via)</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>这个函数会在执行转发之前被调用,可以看到这个函数如果返回err,则不再进行转发了。<br>这个函数的第一个参数<code>req</code>是即将转发使用的request，第二个参数 <code>via</code>已经请求的requests。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">for</span> {</div><div class="line">    ……</div><div class="line">    <span class="comment">//需要转发</span></div><div class="line">    {</div><div class="line">        ……</div><div class="line">        err = c.checkRedirect(req, reqs)</div><div class="line">		<span class="keyword">if</span> err == ErrUseLastResponse {</div><div class="line">			<span class="keyword">return</span> resp, <span class="constant">nil</span></div><div class="line">		}</div><div class="line"></div><div class="line">		<span class="comment">//discard previous response</span></div><div class="line">        ……</div><div class="line"></div><div class="line">		<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">			ue := uerr(err)</div><div class="line">			ue.(*url.Error).URL = loc</div><div class="line">			<span class="keyword">return</span> resp, ue</div><div class="line">		}</div><div class="line">    }</div><div class="line"></div><div class="line">    ……</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>默认的转发策略是最多10次转发， 避免转发次数过高或者死循环。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> defaultCheckRedirect(req *Request, via []*Request) error {</div><div class="line">	<span class="keyword">if</span> <span class="built_in">len</span>(via) &gt;=<span class="number"> 10</span> {</div><div class="line">		<span class="keyword">return</span> errors.New(<span class="string">"stopped after 10 redirects"</span>)</div><div class="line">	}</div><div class="line">	<span class="keyword">return</span> <span class="constant">nil</span></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>如果你要实现不同的转发策略，你需要定义自己的<code>CheckRedirect</code>。</p>
+<h3 id="转发安全">转发安全</h3>
+<p>1）当转发的request中包含安全的信息Header时， 比如<code>Authorization</code>、<code>WWW-Authenticate</code>、<code>Cookie</code>等Header,如果是跨域，则这些头部不会被复制到新的请求中。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> shouldCopyHeaderOnRedirect(headerKey <span class="typename">string</span>, initial, dest *url.URL) <span class="typename">bool</span> {</div><div class="line">	<span class="keyword">switch</span> CanonicalHeaderKey(headerKey) {</div><div class="line">	<span class="keyword">case</span> <span class="string">"Authorization"</span>, <span class="string">"Www-Authenticate"</span>, <span class="string">"Cookie"</span>, <span class="string">"Cookie2"</span>:</div><div class="line">		ihost := strings.ToLower(initial.Host)</div><div class="line">		dhost := strings.ToLower(dest.Host)</div><div class="line">		<span class="keyword">return</span> isDomainOrSubdomain(dhost, ihost)</div><div class="line">	}</div><div class="line">	<span class="keyword">return</span> <span class="constant">true</span></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>2）如果设置了一个非空的 cookie Jar, 转发响应会修改 cookie jar中的值，但是下一次转发的时候， <code>Cookie</code>header会被处理，忽略那些变动的cookie.</p>
+<p>  when forwarding the &quot;Cookie&quot; header with a non-nil cookie Jar.<br>  Since each redirect may mutate the state of the cookie jar,<br>  a redirect may possibly alter a cookie set in the initial request.<br>  When forwarding the &quot;Cookie&quot; header, any mutated cookies will be omitted,<br>  with the expectation that the Jar will insert those mutated cookies<br>  with the updated values (assuming the origin matches).<br>  If Jar is nil, the initial cookies are forwarded without change.</p>
+<p>  具体的你可以查看 <code>makeHeadersCopier</code>的实现。<br>  可以看到每次redirect会删除上次的Redirect造成的变动，再恢复原始的请求的Coookie。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div></pre></td><td class="code"><pre><div class="line">  <span class="keyword">if</span> c.Jar != <span class="constant">nil</span> && icookies != <span class="constant">nil</span> {</div><div class="line">	<span class="keyword">var</span> changed <span class="typename">bool</span></div><div class="line">	resp := req.Response <span class="comment">// The response that caused the upcoming redirect</span></div><div class="line">	<span class="keyword">for</span> _, c := <span class="keyword">range</span> resp.Cookies() {</div><div class="line">		<span class="keyword">if</span> _, ok := icookies[c.Name]; ok {</div><div class="line">			<span class="built_in">delete</span>(icookies, c.Name)</div><div class="line">			changed = <span class="constant">true</span></div><div class="line">		}</div><div class="line">	}</div><div class="line">	<span class="keyword">if</span> changed {</div><div class="line">		ireqhdr.Del(<span class="string">"Cookie"</span>)</div><div class="line">		<span class="keyword">var</span> ss []<span class="typename">string</span></div><div class="line">		<span class="keyword">for</span> _, cs := <span class="keyword">range</span> icookies {</div><div class="line">			<span class="keyword">for</span> _, c := <span class="keyword">range</span> cs {</div><div class="line">				ss = <span class="built_in">append</span>(ss, c.Name+<span class="string">"="</span>+c.Value)</div><div class="line">			}</div><div class="line">		}</div><div class="line">		sort.Strings(ss) <span class="comment">// Ensure deterministic headers</span></div><div class="line">		ireqhdr.Set(<span class="string">"Cookie"</span>, strings.Join(ss, <span class="string">"; "</span>))</div><div class="line">	}</div><div class="line">}</div><div class="line"></div><div class="line"><span class="comment">// Copy the initial request's Header values</span></div><div class="line"><span class="comment">// (at least the safe ones).</span></div><div class="line"><span class="keyword">for</span> k, vv := <span class="keyword">range</span> ireqhdr {</div><div class="line">	<span class="keyword">if</span> shouldCopyHeaderOnRedirect(k, preq.URL, req.URL) {</div><div class="line">		req.Header[k] = vv</div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<h3 id="转发规则">转发规则</h3>
+<p>当服务器返回一个转发response的时候， client首先使用<code>CheckRedirect</code>函数检查是否要进行转发。</p>
+<p>默认会处理下列请求：</p>
+<ul>
+<li>301 (Moved Permanently)</li>
+<li>302 (Found)</li>
+<li>303 (See Other)</li>
+<li>307 (Temporary Redirect)</li>
+<li>308 (Permanent Redirect)</li>
+</ul>
+<p>如果需要转发， 对于<code>301</code>、<code>302</code>、<code>303</code>的状态码， 接下来转发的请求会将请求<strong>Method</strong>转换成<code>GET</code> method (如果原始请求Method是<code>HEAD</code>则不变，还是<code>HEAD</code>)， 而且body为空， 尽管原始的请求可能包含body。 对于<code>307</code>、<code>308</code>状态码，接下来转发的请求的<strong>Method</strong>没有变化，和原始的请求保持一致， 并且还是使用原始的body内容来发送转发请求。</p>
+<p>代码处理的逻辑是由<code>redirectBehavior</code>函数实现的。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> redirectBehavior(reqMethod <span class="typename">string</span>, resp *Response, ireq *Request) (redirectMethod <span class="typename">string</span>, shouldRedirect, includeBody <span class="typename">bool</span>) {</div><div class="line">	<span class="keyword">switch</span> resp.StatusCode {</div><div class="line">	<span class="keyword">case</span><span class="number"> 301</span>,<span class="number"> 302</span>,<span class="number"> 303</span>:</div><div class="line">		redirectMethod = reqMethod</div><div class="line">		shouldRedirect = <span class="constant">true</span></div><div class="line">		includeBody = <span class="constant">false</span></div><div class="line"></div><div class="line">		<span class="keyword">if</span> reqMethod != <span class="string">"GET"</span> && reqMethod != <span class="string">"HEAD"</span> {</div><div class="line">			redirectMethod = <span class="string">"GET"</span></div><div class="line">		}</div><div class="line">	<span class="keyword">case</span><span class="number"> 307</span>,<span class="number"> 308</span>:</div><div class="line">		redirectMethod = reqMethod</div><div class="line">		shouldRedirect = <span class="constant">true</span></div><div class="line">		includeBody = <span class="constant">true</span></div><div class="line"></div><div class="line">	</div><div class="line">		<span class="keyword">if</span> resp.Header.Get(<span class="string">"Location"</span>) == <span class="string">""</span> {</div><div class="line">			shouldRedirect = <span class="constant">false</span></div><div class="line">			<span class="keyword">break</span></div><div class="line">		}</div><div class="line">		<span class="keyword">if</span> ireq.GetBody == <span class="constant">nil</span> && ireq.outgoingLength() !=<span class="number"> 0</span> {</div><div class="line">			shouldRedirect = <span class="constant">false</span></div><div class="line">		}</div><div class="line">	}</div><div class="line">	<span class="keyword">return</span> redirectMethod, shouldRedirect, includeBody</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>以上是介绍的http Redirect相关的内容，它们主要是客户端的代码逻辑。 下面两节介绍一下与http redirect有一点点关系的内容。</p>
+<h3 id="RedirectHandler">RedirectHandler</h3>
+<p>http定义了一个便利类型: <a href="https://golang.org/pkg/net/http/#RedirectHandler" target="_blank" rel="external">RedirectHandler</a>, 它是一个预定义的http handler,可以将指定的请求转发到指定的url中， 主要就是使用设定的 url 和 status code 设置 response 的 Location。</p>
+<p>它用作服务器端的开发中。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> RedirectHandler(url <span class="typename">string</span>, code <span class="typename">int</span>) Handler</div></pre></td></tr></table></figure>
+
+<p>注意 code应该是 <code>3xx</code>的状态码， 通常是<code>StatusMovedPermanently</code>, <code>StatusFound</code> 或者 <code>StatusSeeOther</code>。</p>
+<h3 id="RoundTripper">RoundTripper</h3>
+<p><a href="https://golang.org/pkg/net/http/#RoundTripper" target="_blank" rel="external">RoundTripper</a>也用作客户端的开发。</p>
+<p>RoundTripper代表一次http 的请求。 当使用redirect的时候，你可能redirect多次，也就是执行了n次的http请求。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> RoundTripper <span class="keyword">interface</span> {</div><div class="line">        RoundTrip(*Request) (*Response, error)</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p><code>DefaultTransport</code>是默认RoundTripper的实现。它建立网络连接，并且会缓存以便后续的请求重用。它会使用<code>$HTTP_PROXY</code>和<code>$NO_PROXY</code> (或者 $http_proxy， $no_proxy)环境变量来设置代理.</p>
+<p>其它的RoundTripper的实现还有<code>NewFileTransport</code>创建的RoundTripper,用来服务文件系统，将文件系统映射成http的处理方式。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">var</span> DefaultTransport RoundTripper = &Transport{</div><div class="line">        Proxy: ProxyFromEnvironment,</div><div class="line">        DialContext: (&net.Dialer{</div><div class="line">                Timeout:  <span class="number"> 30</span> * time.Second,</div><div class="line">                KeepAlive:<span class="number"> 30</span> * time.Second,</div><div class="line">                DualStack: <span class="constant">true</span>,</div><div class="line">        }).DialContext,</div><div class="line">        MaxIdleConns:         <span class="number"> 100</span>,</div><div class="line">        IdleConnTimeout:      <span class="number"> 90</span> * time.Second,</div><div class="line">        TLSHandshakeTimeout:  <span class="number"> 10</span> * time.Second,</div><div class="line">        ExpectContinueTimeout:<span class="number"> 1</span> * time.Second,</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>当<code>Redirect</code>的时候，默认转发是http库自动帮你实现的，如果你想对于转发过程做深入的跟踪的话(简单跟踪可以使用<a href="https://golang.org/pkg/net/http/httptrace/" target="_blank" rel="external">httptrace</a>),你可以自定义一个RoundTripper,比如下面的这个：</p>
+<figure class="highlight go"><figcaption><span>http://stackoverflow.com/questions/24577494/how-to-get-the-http-redirect-status-codes-in-golang</span></figcaption><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> LogRedirects <span class="keyword">struct</span> {</div><div class="line">    Transport http.RoundTripper</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> (l LogRedirects) RoundTrip(req *http.Request) (resp *http.Response, err error) {</div><div class="line">    t := l.Transport</div><div class="line">    <span class="keyword">if</span> t == <span class="constant">nil</span> {</div><div class="line">        t = http.DefaultTransport</div><div class="line">    }</div><div class="line">    resp, err = t.RoundTrip(req)</div><div class="line">    <span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">        <span class="keyword">return</span></div><div class="line">    }</div><div class="line">    <span class="keyword">switch</span> resp.StatusCode {</div><div class="line">    <span class="keyword">case</span> http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther, http.StatusTemporaryRedirect:</div><div class="line">        log.Println(<span class="string">"Request for"</span>, req.URL, <span class="string">"redirected with status"</span>, resp.StatusCode)</div><div class="line">    }</div><div class="line">    <span class="keyword">return</span></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>创建<code>Client</code>的时候可以使用下面的代码：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">client := &http.Client{Transport: LogRedirects{}}</div></pre></td></tr></table></figure>
+
+<p>这样每次转发过程我们都可以追踪。</p>
+]]></content>
+    <summary type="html">
+    <![CDATA[<p>HTTP 规范中定义了返回码为 <code>3xx</code> 代表客户端需要做一些额外的工作来完成请求，大部分<code>3xx</code>用来做转发(redirect)。</p>
+<p>状态码的详细说明可以参照规范或者 <a href="https://en.wikipedia.org/wiki/List_of_HTTP_status_codes#3xx_Redirection" target="_blank" rel="external">wikipedia</a>、<a href="https://zh.wikipedia.org/wiki/HTTP状态码#3xx" target="_blank" rel="external">维基百科</a>, 以下是代码的简短介绍。</p>
+<ul>
+<li>300 Multiple Choices: 返回多个可供选择的资源</li>
+<li>301 Moved Permanently: 请求的资源已永久移动到新位置，并且将来任何对此资源的引用都应该使用本响应返回的若干个URI之一</li>
+<li>302 Found: 请求的资源现在临时从不同的URI响应请求。由于这样的重定向是临时的，客户端应当继续向原有地址发送以后的请求,HTTP 1.0中的意义是<code>Moved Temporarily</code>,但是很多浏览器的实现是按照303的处实现的，所以HTTP 1.1中增加了 303和307的状态码来区分不同的行为</li>
+<li>303 See Other (since HTTP/1.1): 对应当前请求的响应可以在另一个URI上被找到，而且客户端应当采用GET的方式访问那个资源</li>
+<li>304 Not Modified (RFC 7232): 请求的资源没有改变</li>
+<li>305 Use Proxy (since HTTP/1.1): 被请求的资源必须通过指定的代理才能被访问</li>
+<li>306 Switch Proxy: 在最新版的规范中，306状态码已经不再被使用</li>
+<li>307 Temporary Redirect (since HTTP/1.1): 请求的资源现在临时从不同的URI响应请求,和303不同，它还是使用原先的Method</li>
+<li>308 Permanent Redirect (RFC 7538): 请求的资源已永久移动到新位置,并且新请求的Method不能改变</li>
+</ul>
+<p>Go 的 http 库在实现的过程中也在不断的完成和修改其中的Bug,在 1.8版本中解决了前面版本中实现的问题 (你可以在 Go issues中搜索 redirect 来查看相关的issue)。 本文介绍一下 Go 中 Redirect 的逻辑，以便你在遇到转发的问题时心中有数。</p>
+]]>
+    
+    </summary>
+    
+      <category term="Go" scheme="http://colobu.com/categories/Go/"/>
+    
+  </entry>
   
   <entry>
     <title><![CDATA[gRPC的那些事 - interceptor]]></title>
@@ -2898,69 +3000,6 @@ https://en.wikipedia.org/wiki/Cryptographically_secure_pseudorandom_number_gener
 ]]>
     
     </summary>
-    
-      <category term="Go" scheme="http://colobu.com/categories/Go/"/>
-    
-  </entry>
-  
-  <entry>
-    <title><![CDATA[平滑的基于权重的轮询算法]]></title>
-    <link href="http://colobu.com/2016/12/04/smooth-weighted-round-robin-algorithm/"/>
-    <id>http://colobu.com/2016/12/04/smooth-weighted-round-robin-algorithm/</id>
-    <published>2016-12-04T06:49:56.000Z</published>
-    <updated>2016-12-05T09:06:19.000Z</updated>
-    <content type="html"><![CDATA[<p>轮询算法是非常常用的一种调度/负载均衡的算法。依照百度百科上的解释:</p>
-<blockquote>
-<p>Round-Robin，轮询调度，通信中信道调度的一种策略，该调度策略使用户轮流使用共享资源，不会考虑瞬时信道条件。从相同数量无线资源（相同调度时间段）被分配给每条通信链路的角度讲，轮询调度可以被视为公平调度。然而，从提供相同服务质量给所有通信链路的角度而言，轮询调度是不公平的，此时，必须为带有较差信道条件的通信链路分配更多无线资源（更多时间）。此外，由于轮询调度在调度过程中不考虑瞬时信道条件，因此它将导致较低的整体系统性能，但与最大载干比调度相比，在各通信链路间具有更为均衡的服务质量。</p>
-</blockquote>
-<p>更广泛的轮询调度应用在广度的服务调度上面，尤其在面向服务或者是面向微服务的架构中，比可以在很多知名的软件中看到它的身影，比如LVS、Nginx、Dubblo等。但是正如上面的百度百科中的介绍一样，轮询调度有一个很大的问题，那就是它认为所有的服务的性能都是一样的，每个服务器都被公平的调度，在服务器的性能有显著差别的环境中，性能比较差的服务器被调度了相同的次数，这不是我们所期望的。所以本文要介绍的是加权的轮询算法，轮询算法可以看成是加权的轮询算法的一个特例，在这种情况下，每个服务器的权重都是一样的。</p>
-<p>本文介绍了Nginx和LVS的两种算法，比较了它们的优缺点，并提供了一个通用的 Go 语言实现的加权轮询算法库： <a href="https://github.com/smallnest/weighted" target="_blank" rel="external">weighted</a>,可以用在负载均衡/调度/微服务网关等场合。</p>
-<a id="more"></a>
-<p>WRR(weighted round-robin) 也是周而复始地轮询分组服务资源，但不同的是WRR算法为每个服务资源分配一个权值，当轮询到某个服务的时候，将根据它所具有权值的大小决定其是否可以提供服务。由于WRR是基于轮询的，因此它只是在大于一个轮询周期的时间上才能显示是公平的。</p>
-<p>本文介绍了Nginx和LVS基于权重的轮询算法，这两个算法都是通过巧妙的运算得到每次要提供的服务对象，但各自又有自己的特点。</p>
-<h3 id="Nginx算法">Nginx算法</h3>
-<p>Nginx基于权重的轮询算法的实现可以参考它的一次代码提交： <a href="https://github.com/phusion/nginx/commit/27e94984486058d73157038f7950a0a36ecc6e35" target="_blank" rel="external">Upstream: smooth weighted round-robin balancing</a>。</p>
-<p>它不但实现了基于权重的轮询算法，而且还实现了平滑的算法。所谓平滑，就是在一段时间内，不仅服务器被选择的次数的分布和它们的权重一致，而且调度算法还比较均匀的选择服务器，而不会集中一段时间之内只选择某一个权重比较高的服务器。如果使用随机算法选择或者普通的基于权重的轮询算法，就比较容易造成某个服务集中被调用压力过大。</p>
-<p>举个例子，比如权重为<code>{a:5, b:1, c:1)</code>的一组服务器，Nginx的平滑的轮询算法选择的序列为<code>{ a, a, b, a, c, a, a }</code>,这显然要比<code>{ c, b, a, a, a, a, a }</code>序列更平滑，更合理，不会造成对<code>a</code>服务器的集中访问。</p>
-<p>算法如下：</p>
-<blockquote>
-<p>on each peer selection we increase current_weight of each eligible peer by its weight, select peer with greatest current_weight and reduce its current_weight by total number of weight points distributed<br>among peers.</p>
-</blockquote>
-<figure class="highlight Go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> nextWeighted(servers []*Weighted) (best *Weighted) {</div><div class="line">	total :=<span class="number"> 0</span></div><div class="line"></div><div class="line">	<span class="keyword">for</span> i :=<span class="number"> 0</span>; i &lt; <span class="built_in">len</span>(servers); i++ {</div><div class="line">		w := servers[i]</div><div class="line"></div><div class="line">		<span class="keyword">if</span> w == <span class="constant">nil</span> {</div><div class="line">			<span class="keyword">continue</span></div><div class="line">		}</div><div class="line"></div><div class="line">		w.CurrentWeight += w.EffectiveWeight</div><div class="line">		total += w.EffectiveWeight</div><div class="line">		<span class="keyword">if</span> w.EffectiveWeight &lt; w.Weight {</div><div class="line">			w.EffectiveWeight++</div><div class="line">		}</div><div class="line"></div><div class="line">		<span class="keyword">if</span> best == <span class="constant">nil</span> || w.CurrentWeight &gt; best.CurrentWeight {</div><div class="line">			best = w</div><div class="line">		}</div><div class="line"></div><div class="line">	}</div><div class="line"></div><div class="line">	<span class="keyword">if</span> best == <span class="constant">nil</span> {</div><div class="line">		<span class="keyword">return</span> <span class="constant">nil</span></div><div class="line">	}</div><div class="line"></div><div class="line">	best.CurrentWeight -= total</div><div class="line">	<span class="keyword">return</span> best</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>如果你使用<a href="https://github.com/smallnest/weighted" target="_blank" rel="external">weighted</a>库，你可以通过下面的几行代码就可以使用这个算法进行调度：</p>
-<figure class="highlight Go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> ExampleW_() {</div><div class="line">	w := &W1{}</div><div class="line">	w.Add(<span class="string">"a"</span>,<span class="number"> 5</span>)</div><div class="line">	w.Add(<span class="string">"b"</span>,<span class="number"> 2</span>)</div><div class="line">	w.Add(<span class="string">"c"</span>,<span class="number"> 3</span>)</div><div class="line"></div><div class="line">	<span class="keyword">for</span> i :=<span class="number"> 0</span>; i &lt;<span class="number"> 10</span>; i++ {</div><div class="line">		fmt.Printf(<span class="string">"%s "</span>, w.Next())</div><div class="line">	}</div><div class="line"></div><div class="line">	<span class="comment">// Output: a c b a a c a b c a</span></div><div class="line">}</div></pre></td></tr></table></figure>
-
-<h3 id="LVS算法">LVS算法</h3>
-<p>LVS使用的另外一种算法，它的算法的介绍可以参考它的网站的<a href="http://kb.linuxvirtualserver.org/wiki/Weighted_Round-Robin_Scheduling" target="_blank" rel="external">wiki</a>。</p>
-<p>算法用伪代码表示如下：</p>
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div></pre></td><td class="code"><pre><div class="line">Supposing <span class="keyword">that</span> there <span class="keyword">is</span> a server <span class="keyword">set</span> S = {S0, S1, …, Sn-<span class="number">1</span>};</div><div class="line">W(Si) indicates <span class="keyword">the</span> weight <span class="keyword">of</span> Si;</div><div class="line">i indicates <span class="keyword">the</span> server selected <span class="keyword">last</span> <span class="property">time</span>, <span class="keyword">and</span> i <span class="keyword">is</span> initialized <span class="keyword">with</span> -<span class="number">1</span>;</div><div class="line">cw <span class="keyword">is</span> <span class="keyword">the</span> current weight <span class="keyword">in</span> scheduling, <span class="keyword">and</span> cw <span class="keyword">is</span> initialized <span class="keyword">with</span> zero; </div><div class="line">max(S) <span class="keyword">is</span> <span class="keyword">the</span> maximum weight <span class="keyword">of</span> all <span class="keyword">the</span> servers <span class="keyword">in</span> S;</div><div class="line">gcd(S) <span class="keyword">is</span> <span class="keyword">the</span> greatest common divisor <span class="keyword">of</span> all server weights <span class="keyword">in</span> S;</div><div class="line"></div><div class="line"><span class="keyword">while</span> (<span class="constant">true</span>) {</div><div class="line">    i = (i + <span class="number">1</span>) <span class="keyword">mod</span> n;</div><div class="line">    <span class="keyword">if</span> (i == <span class="number">0</span>) {</div><div class="line">        cw = cw - gcd(S); </div><div class="line">        <span class="keyword">if</span> (cw &lt;= <span class="number">0</span>) {</div><div class="line">            cw = max(S);</div><div class="line">            <span class="keyword">if</span> (cw == <span class="number">0</span>)</div><div class="line"><span class="command">            return</span> NULL;</div><div class="line">        }</div><div class="line">    } </div><div class="line">    <span class="keyword">if</span> (W(Si) &gt;= cw) </div><div class="line"><span class="command">        return</span> Si;</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>可以看到它的代码逻辑比较简单，所以性能也很快，但是如果服务器的权重差别较多，就不会像Nginx那样比较平滑，可以在短时间内对权重很大的那台服务器压力过大。</p>
-<p>使用<a href="https://github.com/smallnest/weighted" target="_blank" rel="external">weighted</a>库和上面一样简单，只是把类型<code>W</code>换成<code>W2</code>即可：</p>
-<figure class="highlight Go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> ExampleW_() {</div><div class="line">	w := &W2{}</div><div class="line">	w.Add(<span class="string">"a"</span>,<span class="number"> 5</span>)</div><div class="line">	w.Add(<span class="string">"b"</span>,<span class="number"> 2</span>)</div><div class="line">	w.Add(<span class="string">"c"</span>,<span class="number"> 3</span>)</div><div class="line"></div><div class="line">	<span class="keyword">for</span> i :=<span class="number"> 0</span>; i &lt;<span class="number"> 10</span>; i++ {</div><div class="line">		fmt.Printf(<span class="string">"%s "</span>, w.Next())</div><div class="line">	}</div><div class="line"></div><div class="line">	<span class="comment">// Output: a a a c a b c a b c</span></div><div class="line">}</div></pre></td></tr></table></figure>
-
-<h3 id="性能比较">性能比较</h3>
-<p>可以看到，上面两种方法的使用都非常的简单，只需生成一个相应的<code>W</code>对象，然后加入服务器和对应的权重即可，通过<code>Next</code>方法就可以获得下一个服务器。</p>
-<p>如果服务器的权重差别很大，出于平滑的考虑，避免短时间内会对服务器造成冲击，你可以选择Nginx的算法，如果服务器的差别不是很大，可以考虑使用LVS的算法，因为测试可以看到它的性能要好于Nginx的算法:</p>
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div></pre></td><td class="code"><pre><div class="line">BenchmarkW1_Next-4      20000000                50.1 ns/op             0 B/op          0 allocs/op</div><div class="line">BenchmarkW2_Next-4      50000000                29.1 ns/op             0 B/op          0 allocs/op</div></pre></td></tr></table></figure>
-
-<p>实际上两者的性能都非常的快，十个服务器的每次调度也就是几十纳秒的级别，而且没有额外的对象分配，所以无论使用哪种算法，这个调度不应成为你整个系统的瓶颈。</p>
-]]></content>
-    <summary type="html">
-    <![CDATA[<p>轮询算法是非常常用的一种调度/负载均衡的算法。依照百度百科上的解释:</p>
-<blockquote>
-<p>Round-Robin，轮询调度，通信中信道调度的一种策略，该调度策略使用户轮流使用共享资源，不会考虑瞬时信道条件。从相同数量无线资源（相同调度时间段）被分配给每条通信链路的角度讲，轮询调度可以被视为公平调度。然而，从提供相同服务质量给所有通信链路的角度而言，轮询调度是不公平的，此时，必须为带有较差信道条件的通信链路分配更多无线资源（更多时间）。此外，由于轮询调度在调度过程中不考虑瞬时信道条件，因此它将导致较低的整体系统性能，但与最大载干比调度相比，在各通信链路间具有更为均衡的服务质量。</p>
-</blockquote>
-<p>更广泛的轮询调度应用在广度的服务调度上面，尤其在面向服务或者是面向微服务的架构中，比可以在很多知名的软件中看到它的身影，比如LVS、Nginx、Dubblo等。但是正如上面的百度百科中的介绍一样，轮询调度有一个很大的问题，那就是它认为所有的服务的性能都是一样的，每个服务器都被公平的调度，在服务器的性能有显著差别的环境中，性能比较差的服务器被调度了相同的次数，这不是我们所期望的。所以本文要介绍的是加权的轮询算法，轮询算法可以看成是加权的轮询算法的一个特例，在这种情况下，每个服务器的权重都是一样的。</p>
-<p>本文介绍了Nginx和LVS的两种算法，比较了它们的优缺点，并提供了一个通用的 Go 语言实现的加权轮询算法库： <a href="https://github.com/smallnest/weighted" target="_blank" rel="external">weighted</a>,可以用在负载均衡/调度/微服务网关等场合。</p>
-]]>
-    
-    </summary>
-    
-      <category term="轮询" scheme="http://colobu.com/tags/%E8%BD%AE%E8%AF%A2/"/>
-    
-      <category term="Round-Robin" scheme="http://colobu.com/tags/Round-Robin/"/>
     
       <category term="Go" scheme="http://colobu.com/categories/Go/"/>
     
