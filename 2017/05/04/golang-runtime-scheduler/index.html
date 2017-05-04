@@ -1,0 +1,525 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  
+  <title>[转]Golang调度器源码分析 | 鸟窝</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+  <meta name="description" content="原文: Golang调度器源码分析, 作者: 无心之祸">
+<meta property="og:type" content="article">
+<meta property="og:title" content="[转]Golang调度器源码分析">
+<meta property="og:url" content="http://colobu.com/2017/05/04/golang-runtime-scheduler/">
+<meta property="og:site_name" content="鸟窝">
+<meta property="og:description" content="原文: Golang调度器源码分析, 作者: 无心之祸">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="[转]Golang调度器源码分析">
+<meta name="twitter:description" content="原文: Golang调度器源码分析, 作者: 无心之祸">
+
+  
+    <link rel="alternative" href="/atom.xml" title="鸟窝" type="application/atom+xml">
+  
+  
+    <link rel="icon" href="/favicon.png">
+  
+  <link rel="stylesheet" href="/css/style.css" type="text/css">
+
+  <link href="//cdn.staticfile.org/font-awesome/4.2.0/css/font-awesome.css" rel="stylesheet">
+  
+  <link rel="stylesheet" href="//libs.cncdn.cn/fancybox/2.1.5/jquery.fancybox.css" media="screen" type="text/css">
+  
+  <link rel="stylesheet" href="//cdnjs.cloudflare.com/ajax/libs/animate.css/3.1.1/animate.min.css" media="screen" type="text/css">
+  <!--[if lt IE 9]><script src="//cdn.staticfile.org/html5shiv/3.7/html5shiv.min.js"></script><![endif]-->
+
+  <script type="text/javascript">
+	//visit my previous blog: http://old.colobu.com just like this http://colobu.com/?=123456
+    var blog_url = location.href.toString();
+	if (blog_url.indexOf("http://colobu.com/?p=") >= 0) {
+		blog_url = blog_url.replace("colobu.com", "old.colobu.com");
+		window.location.assign(blog_url);
+	} else if (blog_url.indexOf("http://smallnest.gitcafe.com") >= 0) {
+		blog_url = blog_url.replace("smallnest.gitcafe.com", "colobu.com");
+		window.location.assign(blog_url);
+	}  else if (blog_url.indexOf("http://smallnest.gitcafe.io") >= 0) {
+		blog_url = blog_url.replace("smallnest.gitcafe.io", "colobu.com");
+		window.location.assign(blog_url);
+	}
+</script>
+  <style type="text/css">
+    .news-essay
+    {
+      display: inline !important;
+    }
+    .hot-news
+    {
+      text-align: left !important;
+    }
+  </style>
+</head>
+
+<body>
+  <div id="container">
+    <div id="wrap">
+      <header id="header">
+  <div id="banner"></div>
+  <div id="header-outer" class="outer">
+    <div id="header-title" class="inner">
+      <h1 id="logo-wrap" class="animated bounceInLeft">
+        <a href="/" id="logo">鸟窝</a>
+      </h1>
+      
+        <h2 id="subtitle-wrap" class="animated bounceInLeft">
+          <a href="/" id="subtitle">大道至简 Simplicity is the ultimate form of sophistication</a>
+        </h2>
+      
+    </div>
+    <div id="header-inner" class="inner">
+      <nav id="main-nav">
+        <a id="main-nav-toggle" class="nav-icon"></a>
+        
+          <a class="main-nav-link" href="/"><i class="fa fa-home">&nbsp;</i>首页</a>
+        
+          <a class="main-nav-link" href="/archives"><i class="fa fa-folder-o">&nbsp;</i>归档</a>
+        
+          <a class="main-nav-link" href="https://github.com/smallnest"><i class="fa fa-github">&nbsp;</i>github</a>
+        
+          <a class="main-nav-link" href="http://tr.colobu.com"><i class="fa fa-spinner fa-pulse">&nbsp;</i>技术流</a>
+        
+          <a class="main-nav-link" href="/ScalaCollectionsCookbook"><i class="fa fa-book">&nbsp;</i>Scala集合技术手册</a>
+        
+          <a class="main-nav-link" href="/techreview"><i class="fa fa-newspaper-o">&nbsp;</i>技术快报</a>
+        
+          <a class="main-nav-link" href="/about"><i class="fa fa-lemon-o">&nbsp;</i>关于</a>
+        
+      </nav>
+      <nav id="sub-nav">
+        
+          <a id="nav-rss-link" class="nav-icon" href="/atom.xml" title="RSS Feed"></a>
+        
+        <a id="nav-search-btn" class="nav-icon" title="Search"></a>
+      </nav>
+      <div id="search-form-wrap">
+        <form action="http://www.baidu.com/baidu" method="get" accept-charset="utf-8" class="search-form">
+          <input type="search" name="word" maxlength="20" class="search-form-input" placeholder="Search">
+          <input type="submit" value="" class="search-form-submit">
+          <input name=tn type=hidden value="bds">
+          <input name=cl type=hidden value="3">
+          <input name=ct type=hidden value="2097152">
+          <input type="hidden" name="si" value="colobu.com">
+        </form>
+      </div>
+    </div>
+  </div>
+</header>
+      <div class="outer">
+        <section id="main"><article id="post-golang-runtime-scheduler" class="article article-type-post" itemscope itemprop="blogPost">
+  <div class="article-meta">
+    <a href="/2017/05/04/golang-runtime-scheduler/" class="article-date">
+  <time datetime="2017-05-04T11:27:25.000Z" itemprop="datePublished">2017年05月04日</time>
+</a>
+    
+  <div class="article-category">
+    <a class="article-category-link" href="/categories/Go/">Go</a>
+  </div>
+
+	
+  <div class="article-author"> by 无心之祸</div>
+
+  </div>
+  <div class="article-inner">
+    
+    
+      <header class="article-header">
+        
+  
+    <h1 class="article-title" itemprop="name">
+      [转]Golang调度器源码分析
+	  
+    </h1>
+  
+
+      </header>
+    
+    <div class="article-entry" itemprop="articleBody">
+	  
+	  
+      
+        <p>原文: <a href="http://ga0.github.io/golang/2015/09/20/golang-runtime-scheduler.html" target="_blank" rel="external">Golang调度器源码分析</a>, 作者: 无心之祸<br><a id="more"></a></p>
+<h3 id="为什么Golang需要调度器？">为什么Golang需要调度器？</h3>
+<p>Goroutine的引入是为了方便高并发程序的编写。 一个Goroutine在进行阻塞操作（比如系统调用）时，会把当前线程中的其他Goroutine移交到其他线程中继续执行， 从而避免了整个程序的阻塞。</p>
+<p>由于Golang引入了垃圾回收（gc），在执行gc时就要求Goroutine是停止的。通过自己实现调度器，就可以方便的实现该功能。 通过多个Goroutine来实现并发程序，既有异步IO的优势，又具有多线程、多进程编写程序的便利性。</p>
+<p>引入Goroutine，也意味着引入了极大的复杂性。一个Goroutine既要包含要执行的代码， 又要包含用于执行该代码的栈和PC、SP指针。</p>
+<h3 id="调度器解决了什么问题？">调度器解决了什么问题？</h3>
+<h4 id="栈管理">栈管理</h4>
+<p>既然每个Goroutine都有自己的栈，那么在创建Goroutine时，就要同时创建对应的栈。 Goroutine在执行时，栈空间会不停增长。 栈通常是连续增长的，由于每个进程中的各个线程共享虚拟内存空间，当有多个线程时，就需要为每个线程分配不同起始地址的栈。 这就需要在分配栈之前先预估每个线程栈的大小。如果线程数量非常多，就很容易栈溢出。</p>
+<p>为了解决这个问题，就有了Split Stacks技术： 创建栈时，只分配一块比较小的内存，如果进行某次函数调用导致栈空间不足时，就会在其他地方分配一块新的栈空间。 新的空间不需要和老的栈空间连续。函数调用的参数会拷贝到新的栈空间中，接下来的函数执行都在新栈空间中进行。</p>
+<p>Golang的栈管理方式与此类似，但是为了更高的效率，使用了连续栈 （Golang连续栈） 实现方式也是先分配一块固定大小的栈，在栈空间不足时，分配一块更大的栈，并把旧的栈全部拷贝到新栈中。 这样避免了Split Stacks方法可能导致的频繁内存分配和释放。</p>
+<h4 id="抢占式调度">抢占式调度</h4>
+<p>Goroutine的执行是可以被抢占的。如果一个Goroutine一直占用CPU，长时间没有被调度过， 就会被runtime抢占掉，把CPU时间交给其他Goroutine。</p>
+<h3 id="调度器的设计">调度器的设计</h3>
+<p>Golang调度器引入了三个结构来对调度的过程建模：</p>
+<ul>
+<li>G 代表一个Goroutine；</li>
+<li>M 代表一个操作系统的线程；</li>
+<li>P 代表一个CPU处理器，通常P的数量等于CPU核数（GOMAXPROCS）。</li>
+</ul>
+<p>三者都在runtime2.go中定义，他们之间的关系如下：</p>
+<ul>
+<li>G需要绑定在M上才能运行；</li>
+<li>M需要绑定P才能运行；</li>
+<li>程序中的多个M并不会同时都处于执行状态，最多只有GOMAXPROCS个M在执行。</li>
+</ul>
+<p>早期版本的Golang是没有P的，调度是由G与M完成。 这样的问题在于每当创建、终止Goroutine或者需要调度时，需要一个全局的锁来保护调度的相关对象(sched)。 全局锁严重影响Goroutine的并发性能。 (<a href="https://docs.google.com/document/d/1TTj4T2JO42uD5ID9e89oa0sLKhJYD0Y_kqxDv3I3XMw/edit" target="_blank" rel="external">Scalable Go Scheduler</a>)</p>
+<p>通过引入P，实现了一种叫做work-stealing的调度算法：</p>
+<ul>
+<li>每个P维护一个G队列；</li>
+<li>当一个G被创建出来，或者变为可执行状态时，就把他放到P的可执行队列中；</li>
+<li>当一个G执行结束时，P会从队列中把该G取出；如果此时P的队列为空，即没有其他G可以执行， 就随机选择另外一个P，从其可执行的G队列中偷取一半。</li>
+</ul>
+<p>该算法避免了在Goroutine调度时使用全局锁。</p>
+<h3 id="调度器的实现">调度器的实现</h3>
+<h4 id="schedule()与findrunnable()函数">schedule()与findrunnable()函数</h4>
+<p>Goroutine调度是在P中进行，每当runtime需要进行调度时，会调用schedule()函数， 该函数在proc1.go文件中定义。</p>
+<p>schedule()函数首先调用runqget()从当前P的队列中取一个可以执行的G。 如果队列为空，继续调用findrunnable()函数。findrunnable()函数会按照以下顺序来取得G：</p>
+<ol>
+<li>调用runqget()从当前P的队列中取G（和schedule()中的调用相同）；</li>
+<li>调用globrunqget()从全局队列中取可执行的G；</li>
+<li>调用netpoll()取异步调用结束的G，该次调用为非阻塞调用，直接返回；</li>
+<li>调用runqsteal()从其他P的队列中“偷”。</li>
+</ol>
+<p>如果以上四步都没能获取成功，就继续执行一些低优先级的工作：</p>
+<ol>
+<li>如果处于垃圾回收标记阶段，就进行垃圾回收的标记工作；</li>
+<li>再次调用globrunqget()从全局队列中取可执行的G；</li>
+<li>再次调用netpoll()取异步调用结束的G，该次调用为阻塞调用。</li>
+</ol>
+<p>如果还没有获得G，就停止当前M的执行，返回findrunnable()函数开头重新执行。 如果findrunnable()正常返回一个G，shedule()函数会调用execute()函数执行该G。 execute()函数会调用gogo()函数（在汇编源文件asm_XXX.s中定义，XXX代表系统架构），gogo() 函数会从G.sched结构中恢复出G上次被调度器暂停时的寄存器现场（SP、PC等），然后继续执行。</p>
+<h4 id="如何进行抢占?">如何进行抢占?</h4>
+<p>runtime在程序启动时，会自动创建一个系统线程，运行sysmon()函数（在proc1.go中定义）。 sysmon()函数在整个程序生命周期中一直执行，负责监视各个Goroutine的状态、判断是否要进行垃圾回收等。</p>
+<p>sysmon()会调用retake()函数，retake()函数会遍历所有的P，如果一个P处于执行状态， 且已经连续执行了较长时间，就会被抢占。retake()调用preemptone()将P的stackguard0设为stackPreempt(关于stackguard的详细内容，可以参考 <a href="https://gcc.gnu.org/wiki/SplitStacks" target="_blank" rel="external">Split Stacks</a>)，这将导致该P中正在执行的G进行下一次函数调用时， 导致栈空间检查失败。进而触发morestack()（汇编代码，位于asm_XXX.s中）然后进行一连串的函数调用，主要的调用过程如下：</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">morestack<span class="function"><span class="params">()</span>（汇编代码）-&gt;</span> newstack<span class="function"><span class="params">()</span> -&gt;</span> gopreempt_m<span class="function"><span class="params">()</span> -&gt;</span> goschedImpl<span class="function"><span class="params">()</span> -&gt;</span> schedule()</div></pre></td></tr></table></figure>
+
+<p>在goschedImpl()函数中，会通过调用dropg()将G与M解除绑定；再调用globrunqput()将G加入全局runnable队列中。最后调用schedule() 来用为当前P设置新的可执行的G。</p>
+<p>关于Golang抢占式调度的进一步学习，可以参考 <a href="https://docs.google.com/document/d/1ETuA2IOmnaQ4j81AtTGT40Y4_Jr6_IDASEKg0t0dBR8/edit" target="_blank" rel="external">Go Preemptive Scheduler Design Doc</a>。</p>
+
+      
+    </div>
+    <footer class="article-footer">
+	
+<div class="bdsharebuttonbox"><a title="分享到新浪微博" class="bds_tsina" href="#" data-cmd="tsina"></a><a title="分享到微信" class="bds_weixin" href="#" data-cmd="weixin"></a><a title="分享到QQ空间" class="bds_qzone" href="#" data-cmd="qzone"></a><a title="分享到印象笔记" class="bds_evernotecn" href="#" data-cmd="evernotecn"></a><a title="分享到有道云笔记" class="bds_youdao" href="#" data-cmd="youdao"></a><a title="分享到百度云收藏" class="bds_bdysc" href="#" data-cmd="bdysc"></a><a class="bds_more" href="#" data-cmd="more"></a></div>
+<script>window._bd_share_config={"common":{"bdSnsKey":{},"bdText":"","bdMini":"2","bdMiniList":false,"bdPic":"","bdStyle":"0","bdSize":"24"},"share":{}};with(document)0[(getElementsByTagName('head')[0]||body).appendChild(createElement('script')).src='http://bdimg.share.baidu.com/static/api/js/share.js?v=89860593.js?cdnversion='+~(-new Date()/36e5)];</script>
+      
+
+	  
+        <a href="http://colobu.com/2017/05/04/golang-runtime-scheduler/#comments" class="article-comment-link">评论</a>
+      
+
+      
+    </footer>
+  </div>
+  
+    
+<nav id="article-nav">
+  
+  
+    <a href="/2017/05/04/go-scheduler/" id="article-nav-older" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">Older</strong>
+      <div class="article-nav-title">[译]Go 调度器: M, P 和 G</div>
+    </a>
+  
+</nav>
+
+  
+</article>
+
+
+<section id="comments">
+<div id="cloud-tie-wrapper" class="cloud-tie-wrapper"></div>
+</section>
+<script>
+  var cloudTieConfig = {
+    url: document.location.href, 
+    sourceId: "2017/05/04/golang-runtime-scheduler/",
+    productKey: "bb59dc3c143c4469940a0163afdb38d8",
+    target: "cloud-tie-wrapper"
+  };
+</script>
+<script src="https://img1.cache.netease.com/f2e/tie/yun/sdk/loader.js"></script>
+
+</section>
+        
+          <aside id="sidebar">
+  
+      <div class="widget-wrap">
+    <h3 class="widget-title">原创图书</h3>
+    <div class="widget">
+      <a href="/ScalaCollectionsCookbook/">
+        <img width="100%" src="/ScalaCollectionsCookbook/scala_collections_cookbook.jpg">
+        <img width="100%" src="/ScalaCollectionsCookbook/scala_collections_cookbook_tw.png">
+      </a>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">分类</h3>
+    <div class="widget">
+      <ul class="category-list"><li class="category-list-item"><a class="category-list-link" href="/categories/Android/">Android</a><span class="category-list-count">12</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/DOTNET/">DOTNET</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Docker/">Docker</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Go/">Go</a><span class="category-list-count">67</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Java/">Java</a><span class="category-list-count">59</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Linux/">Linux</a><span class="category-list-count">6</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Scala/">Scala</a><span class="category-list-count">18</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/前端开发/">前端开发</a><span class="category-list-count">18</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/大数据/">大数据</a><span class="category-list-count">55</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/工具/">工具</a><span class="category-list-count">19</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/架构/">架构</a><span class="category-list-count">21</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/算法/">算法</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/管理/">管理</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/网络编程/">网络编程</a><span class="category-list-count">8</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/读书笔记/">读书笔记</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/运维/">运维</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/高并发编程/">高并发编程</a><span class="category-list-count">20</span></li></ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">标签云</h3>
+    <div class="widget tagcloud">
+      <a href="/tags/Android/" style="font-size: 15.71px;">Android</a><a href="/tags/ApacheBench/" style="font-size: 11.43px;">ApacheBench</a><a href="/tags/Bower/" style="font-size: 10.00px;">Bower</a><a href="/tags/C/" style="font-size: 10.00px;">C#</a><a href="/tags/CDN/" style="font-size: 10.00px;">CDN</a><a href="/tags/CQRS/" style="font-size: 10.00px;">CQRS</a><a href="/tags/CRC/" style="font-size: 10.00px;">CRC</a><a href="/tags/CSS/" style="font-size: 11.43px;">CSS</a><a href="/tags/CompletableFuture/" style="font-size: 10.00px;">CompletableFuture</a><a href="/tags/Comsat/" style="font-size: 10.00px;">Comsat</a><a href="/tags/Curator/" style="font-size: 20.00px;">Curator</a><a href="/tags/DSL/" style="font-size: 10.00px;">DSL</a><a href="/tags/Disruptor/" style="font-size: 10.00px;">Disruptor</a><a href="/tags/Docker/" style="font-size: 11.43px;">Docker</a><a href="/tags/Ember/" style="font-size: 11.43px;">Ember</a><a href="/tags/FastJson/" style="font-size: 10.00px;">FastJson</a><a href="/tags/Fiber/" style="font-size: 10.00px;">Fiber</a><a href="/tags/GAE/" style="font-size: 10.00px;">GAE</a><a href="/tags/GC/" style="font-size: 12.86px;">GC</a><a href="/tags/Gnuplot/" style="font-size: 10.00px;">Gnuplot</a><a href="/tags/Go/" style="font-size: 11.43px;">Go</a><a href="/tags/Gradle/" style="font-size: 10.00px;">Gradle</a><a href="/tags/Grunt/" style="font-size: 10.00px;">Grunt</a><a href="/tags/Gulp/" style="font-size: 10.00px;">Gulp</a><a href="/tags/Hadoop/" style="font-size: 10.00px;">Hadoop</a><a href="/tags/Hazelcast/" style="font-size: 10.00px;">Hazelcast</a><a href="/tags/Ignite/" style="font-size: 10.00px;">Ignite</a><a href="/tags/JVM/" style="font-size: 10.00px;">JVM</a><a href="/tags/Java/" style="font-size: 17.14px;">Java</a><a href="/tags/Kafka/" style="font-size: 18.57px;">Kafka</a><a href="/tags/Lambda/" style="font-size: 14.29px;">Lambda</a><a href="/tags/Linux/" style="font-size: 12.86px;">Linux</a><a href="/tags/LongAdder/" style="font-size: 10.00px;">LongAdder</a><a href="/tags/MathJax/" style="font-size: 10.00px;">MathJax</a><a href="/tags/Maven/" style="font-size: 11.43px;">Maven</a><a href="/tags/Memcached/" style="font-size: 10.00px;">Memcached</a><a href="/tags/Metrics/" style="font-size: 10.00px;">Metrics</a><a href="/tags/Mongo/" style="font-size: 12.86px;">Mongo</a><a href="/tags/Netty/" style="font-size: 15.71px;">Netty</a><a href="/tags/Node/" style="font-size: 10.00px;">Node</a>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">归档</h3>
+    <div class="widget">
+      <ul class="archive-list"><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/05/">May 2017</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/04/">April 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/03/">March 2017</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/02/">February 2017</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/01/">January 2017</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/12/">December 2016</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/11/">November 2016</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/10/">October 2016</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/09/">September 2016</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/08/">August 2016</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/07/">July 2016</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/06/">June 2016</a><span class="archive-list-count">14</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/05/">May 2016</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/04/">April 2016</a><span class="archive-list-count">14</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/03/">March 2016</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/02/">February 2016</a><span class="archive-list-count">8</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/01/">January 2016</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/12/">December 2015</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/11/">November 2015</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/10/">October 2015</a><span class="archive-list-count">9</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/09/">September 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/08/">August 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/07/">July 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/06/">June 2015</a><span class="archive-list-count">8</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/05/">May 2015</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/04/">April 2015</a><span class="archive-list-count">15</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/03/">March 2015</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/02/">February 2015</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/01/">January 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/12/">December 2014</a><span class="archive-list-count">28</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/11/">November 2014</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/10/">October 2014</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/09/">September 2014</a><span class="archive-list-count">28</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/08/">August 2014</a><span class="archive-list-count">19</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/07/">July 2014</a><span class="archive-list-count">1</span></li></ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">近期文章</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+            <a href="/2017/05/04/golang-runtime-scheduler/">[转]Golang调度器源码分析</a>
+          </li>
+        
+          <li>
+            <a href="/2017/05/04/go-scheduler/">[译]Go 调度器: M, P 和 G</a>
+          </li>
+        
+          <li>
+            <a href="/2017/04/28/oauth2-rfc6749/">OAuth2 RFC6749中文翻译</a>
+          </li>
+        
+          <li>
+            <a href="/2017/04/26/new-in-spring-5-functional-web-framework/">[转]Spring 5 新功能：函数式 Web 框架</a>
+          </li>
+        
+          <li>
+            <a href="/2017/04/21/tc-introduction/">tc: 模拟网络异常的工具</a>
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">友情链接</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+			 
+            <a href="http://old.colobu.com" target="_blank">以前的博客</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://stackshare.io" target="_blank">技术栈</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://weekly.manong.io/issues/" target="_blank">码农周刊</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.tuicool.com/mags" target="_blank">编程狂人周刊</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.importnew.com/" target="_blank">importnew</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://ifeve.com/" target="_blank">并发编程网</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://github.com" target="_blank">github</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://stackoverflow.com/" target="_blank">stackoverflow</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.javacodegeeks.com/" target="_blank">javacodegeeks</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.infoq.com/" target="_blank">infoq</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.dzone.com/links/index.html" target="_blank">dzone</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://oj.leetcode.com/problems/" target="_blank">leetcode</a>
+			
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+      <div class="widget-wrap">
+<div id="hot-news-wrap" class="widget"></div>
+<script>var yunModuleEnv = true;</script>
+<script src="https://img1.cache.netease.com/f2e/tie/yun/sdk/loader.js"></script>
+<script>
+  var yunTieProductKey = "bb59dc3c143c4469940a0163afdb38d8";  
+  var yunHotNewsWrap = "hot-news-wrap"; 
+  Tie.loader("aHR0cHM6Ly9hcGkuZ2VudGllLjE2My5jb20vZXh0ZW5kL2hvdF9uZXdzX3NjcmlwdC5odG1s", true);
+</script>
+  </div>
+
+  
+</aside>
+        
+      </div>
+      <footer id="footer">
+  
+  <div class="outer">
+    <div id="footer-info" class="inner">
+      &copy; 2017 smallnest<br>
+	  Powered by <a href="http://hexo.io/" target="_blank">Hexo</a>
+    </div>
+  </div>
+</footer>
+    </div>
+    <nav id="mobile-nav">
+  
+    <a href="/" class="mobile-nav-link">首页</a>
+  
+    <a href="/archives" class="mobile-nav-link">归档</a>
+  
+    <a href="https://github.com/smallnest" class="mobile-nav-link">github</a>
+  
+    <a href="http://tr.colobu.com" class="mobile-nav-link">技术流</a>
+  
+    <a href="/ScalaCollectionsCookbook" class="mobile-nav-link">Scala集合技术手册</a>
+  
+    <a href="/techreview" class="mobile-nav-link">技术快报</a>
+  
+    <a href="/about" class="mobile-nav-link">关于</a>
+  
+</nav>
+    
+<script src="//cdn.staticfile.org/jquery/1.11.1/jquery.min.js"></script>
+<script src="//cdn.bootcss.com/jquery.lazyload/1.9.1/jquery.lazyload.min.js"></script>
+
+<script src="//libs.cncdn.cn/fancybox/2.1.5/jquery.fancybox.pack.js"></script>
+
+
+<script src="/js/script.js" type="text/javascript"></script>
+
+<!-- mathjax config similar to math.stackexchange -->
+<script type="text/x-mathjax-config">
+  MathJax.Hub.Config({
+    tex2jax: {
+      inlineMath: [ ['$','$'], ["\\(","\\)"] ],
+      processEscapes: true,
+      skipTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code']
+    }
+  });
+  MathJax.Hub.Queue(function() {
+      var all = MathJax.Hub.getAllJax(), i;
+      for(i=0; i < all.length; i += 1) {
+        all[i].SourceElement().parentNode.className += ' has-jax';
+      }
+  });
+</script>
+<script type="text/javascript" src="//cdn.bootcss.com/mathjax/2.6.0-beta.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML">
+</script>
+
+<div id="totop" style="position:fixed;bottom:150px;right:10px;cursor: pointer;z-index: 2000;">
+	<a title="返回顶部"><img src="/images/scrollup.png"/></a>
+</div>
+<script src="/js/totop.js" type="text/javascript"></script>
+
+
+
+<script type="text/javascript">
+  var _gaq = _gaq || [];
+  _gaq.push(['_setAccount', 'UA-142561-4']);
+  _gaq.push(['_trackPageview']);
+
+  (function() {
+    var ga = document.createElement('script'); ga.type = 'text/javascript'; ga.async = true;
+    ga.src = ('https:' == document.location.protocol ? 'https://ssl' : 'http://www') + '.google-analytics.com/ga.js';
+    var s = document.getElementsByTagName('script')[0]; s.parentNode.insertBefore(ga, s);
+  })();
+</script>
+
+
+<script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "//hm.baidu.com/hm.js?e085d87993250aab11f3e0c15f1c2785";
+  var s = document.getElementsByTagName("script")[0]; 
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+
+
+  </div>
+</body>
+</html>

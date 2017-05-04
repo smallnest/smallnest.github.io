@@ -4,7 +4,7 @@
   <subtitle><![CDATA[大道至简 Simplicity is the ultimate form of sophistication]]></subtitle>
   <link href="/atom.xml" rel="self"/>
   <link href="http://colobu.com/"/>
-  <updated>2017-04-28T03:53:52.077Z</updated>
+  <updated>2017-05-04T11:37:49.228Z</updated>
   <id>http://colobu.com/</id>
   
   <author>
@@ -13,6 +13,140 @@
   </author>
   
   <generator uri="http://zespia.tw/hexo/">Hexo</generator>
+  
+  <entry>
+    <title><![CDATA[[转]Golang调度器源码分析]]></title>
+    <link href="http://colobu.com/2017/05/04/golang-runtime-scheduler/"/>
+    <id>http://colobu.com/2017/05/04/golang-runtime-scheduler/</id>
+    <published>2017-05-04T11:27:25.000Z</published>
+    <updated>2017-05-04T11:37:10.000Z</updated>
+    <content type="html"><![CDATA[<p>原文: <a href="http://ga0.github.io/golang/2015/09/20/golang-runtime-scheduler.html" target="_blank" rel="external">Golang调度器源码分析</a>, 作者: 无心之祸<br><a id="more"></a></p>
+<h3 id="为什么Golang需要调度器？">为什么Golang需要调度器？</h3>
+<p>Goroutine的引入是为了方便高并发程序的编写。 一个Goroutine在进行阻塞操作（比如系统调用）时，会把当前线程中的其他Goroutine移交到其他线程中继续执行， 从而避免了整个程序的阻塞。</p>
+<p>由于Golang引入了垃圾回收（gc），在执行gc时就要求Goroutine是停止的。通过自己实现调度器，就可以方便的实现该功能。 通过多个Goroutine来实现并发程序，既有异步IO的优势，又具有多线程、多进程编写程序的便利性。</p>
+<p>引入Goroutine，也意味着引入了极大的复杂性。一个Goroutine既要包含要执行的代码， 又要包含用于执行该代码的栈和PC、SP指针。</p>
+<h3 id="调度器解决了什么问题？">调度器解决了什么问题？</h3>
+<h4 id="栈管理">栈管理</h4>
+<p>既然每个Goroutine都有自己的栈，那么在创建Goroutine时，就要同时创建对应的栈。 Goroutine在执行时，栈空间会不停增长。 栈通常是连续增长的，由于每个进程中的各个线程共享虚拟内存空间，当有多个线程时，就需要为每个线程分配不同起始地址的栈。 这就需要在分配栈之前先预估每个线程栈的大小。如果线程数量非常多，就很容易栈溢出。</p>
+<p>为了解决这个问题，就有了Split Stacks技术： 创建栈时，只分配一块比较小的内存，如果进行某次函数调用导致栈空间不足时，就会在其他地方分配一块新的栈空间。 新的空间不需要和老的栈空间连续。函数调用的参数会拷贝到新的栈空间中，接下来的函数执行都在新栈空间中进行。</p>
+<p>Golang的栈管理方式与此类似，但是为了更高的效率，使用了连续栈 （Golang连续栈） 实现方式也是先分配一块固定大小的栈，在栈空间不足时，分配一块更大的栈，并把旧的栈全部拷贝到新栈中。 这样避免了Split Stacks方法可能导致的频繁内存分配和释放。</p>
+<h4 id="抢占式调度">抢占式调度</h4>
+<p>Goroutine的执行是可以被抢占的。如果一个Goroutine一直占用CPU，长时间没有被调度过， 就会被runtime抢占掉，把CPU时间交给其他Goroutine。</p>
+<h3 id="调度器的设计">调度器的设计</h3>
+<p>Golang调度器引入了三个结构来对调度的过程建模：</p>
+<ul>
+<li>G 代表一个Goroutine；</li>
+<li>M 代表一个操作系统的线程；</li>
+<li>P 代表一个CPU处理器，通常P的数量等于CPU核数（GOMAXPROCS）。</li>
+</ul>
+<p>三者都在runtime2.go中定义，他们之间的关系如下：</p>
+<ul>
+<li>G需要绑定在M上才能运行；</li>
+<li>M需要绑定P才能运行；</li>
+<li>程序中的多个M并不会同时都处于执行状态，最多只有GOMAXPROCS个M在执行。</li>
+</ul>
+<p>早期版本的Golang是没有P的，调度是由G与M完成。 这样的问题在于每当创建、终止Goroutine或者需要调度时，需要一个全局的锁来保护调度的相关对象(sched)。 全局锁严重影响Goroutine的并发性能。 (<a href="https://docs.google.com/document/d/1TTj4T2JO42uD5ID9e89oa0sLKhJYD0Y_kqxDv3I3XMw/edit" target="_blank" rel="external">Scalable Go Scheduler</a>)</p>
+<p>通过引入P，实现了一种叫做work-stealing的调度算法：</p>
+<ul>
+<li>每个P维护一个G队列；</li>
+<li>当一个G被创建出来，或者变为可执行状态时，就把他放到P的可执行队列中；</li>
+<li>当一个G执行结束时，P会从队列中把该G取出；如果此时P的队列为空，即没有其他G可以执行， 就随机选择另外一个P，从其可执行的G队列中偷取一半。</li>
+</ul>
+<p>该算法避免了在Goroutine调度时使用全局锁。</p>
+<h3 id="调度器的实现">调度器的实现</h3>
+<h4 id="schedule()与findrunnable()函数">schedule()与findrunnable()函数</h4>
+<p>Goroutine调度是在P中进行，每当runtime需要进行调度时，会调用schedule()函数， 该函数在proc1.go文件中定义。</p>
+<p>schedule()函数首先调用runqget()从当前P的队列中取一个可以执行的G。 如果队列为空，继续调用findrunnable()函数。findrunnable()函数会按照以下顺序来取得G：</p>
+<ol>
+<li>调用runqget()从当前P的队列中取G（和schedule()中的调用相同）；</li>
+<li>调用globrunqget()从全局队列中取可执行的G；</li>
+<li>调用netpoll()取异步调用结束的G，该次调用为非阻塞调用，直接返回；</li>
+<li>调用runqsteal()从其他P的队列中“偷”。</li>
+</ol>
+<p>如果以上四步都没能获取成功，就继续执行一些低优先级的工作：</p>
+<ol>
+<li>如果处于垃圾回收标记阶段，就进行垃圾回收的标记工作；</li>
+<li>再次调用globrunqget()从全局队列中取可执行的G；</li>
+<li>再次调用netpoll()取异步调用结束的G，该次调用为阻塞调用。</li>
+</ol>
+<p>如果还没有获得G，就停止当前M的执行，返回findrunnable()函数开头重新执行。 如果findrunnable()正常返回一个G，shedule()函数会调用execute()函数执行该G。 execute()函数会调用gogo()函数（在汇编源文件asm_XXX.s中定义，XXX代表系统架构），gogo() 函数会从G.sched结构中恢复出G上次被调度器暂停时的寄存器现场（SP、PC等），然后继续执行。</p>
+<h4 id="如何进行抢占?">如何进行抢占?</h4>
+<p>runtime在程序启动时，会自动创建一个系统线程，运行sysmon()函数（在proc1.go中定义）。 sysmon()函数在整个程序生命周期中一直执行，负责监视各个Goroutine的状态、判断是否要进行垃圾回收等。</p>
+<p>sysmon()会调用retake()函数，retake()函数会遍历所有的P，如果一个P处于执行状态， 且已经连续执行了较长时间，就会被抢占。retake()调用preemptone()将P的stackguard0设为stackPreempt(关于stackguard的详细内容，可以参考 <a href="https://gcc.gnu.org/wiki/SplitStacks" target="_blank" rel="external">Split Stacks</a>)，这将导致该P中正在执行的G进行下一次函数调用时， 导致栈空间检查失败。进而触发morestack()（汇编代码，位于asm_XXX.s中）然后进行一连串的函数调用，主要的调用过程如下：</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">morestack<span class="function"><span class="params">()</span>（汇编代码）-&gt;</span> newstack<span class="function"><span class="params">()</span> -&gt;</span> gopreempt_m<span class="function"><span class="params">()</span> -&gt;</span> goschedImpl<span class="function"><span class="params">()</span> -&gt;</span> schedule()</div></pre></td></tr></table></figure>
+
+<p>在goschedImpl()函数中，会通过调用dropg()将G与M解除绑定；再调用globrunqput()将G加入全局runnable队列中。最后调用schedule() 来用为当前P设置新的可执行的G。</p>
+<p>关于Golang抢占式调度的进一步学习，可以参考 <a href="https://docs.google.com/document/d/1ETuA2IOmnaQ4j81AtTGT40Y4_Jr6_IDASEKg0t0dBR8/edit" target="_blank" rel="external">Go Preemptive Scheduler Design Doc</a>。</p>
+]]></content>
+    <summary type="html">
+    <![CDATA[<p>原文: <a href="http://ga0.github.io/golang/2015/09/20/golang-runtime-scheduler.html" target="_blank" rel="external">Golang调度器源码分析</a>, 作者: 无心之祸<br>]]>
+    
+    </summary>
+    
+      <category term="Go" scheme="http://colobu.com/categories/Go/"/>
+    
+  </entry>
+  
+  <entry>
+    <title><![CDATA[[译]Go 调度器: M, P 和 G]]></title>
+    <link href="http://colobu.com/2017/05/04/go-scheduler/"/>
+    <id>http://colobu.com/2017/05/04/go-scheduler/</id>
+    <published>2017-05-04T08:32:59.000Z</published>
+    <updated>2017-05-04T11:27:42.000Z</updated>
+    <content type="html"><![CDATA[<p>这是另一篇关于Go调度器(scheduler)的文章。 原文: <a href="https://povilasv.me/go-scheduler/" target="_blank" rel="external">GO SCHEDULER: MS, PS &amp; GS</a> by Uber工程师 Povilas。</p>
+<p>网上已经有很多关于Go调度器的文章了， 比如<a href="http://ga0.github.io/golang/2015/09/20/golang-runtime-scheduler.html" target="_blank" rel="external">Golang调度器源码分析</a>,多看一些，可以加深记忆，也可以对比查看文章中是否有不准确的地方,更全面的了解Go的调度器。</p>
+<p>我决定深入了解Go的内部机制， 因为很长时间没人写关于Go scheduler的文章了， 我觉得这是一个很有趣的知识点，所以让我们开始吧。<br><a id="more"></a></p>
+<h3 id="基础知识">基础知识</h3>
+<p>Go的运行时管理着调度、垃圾回收以及goroutine的运行环境。本文只关注于调度器。</p>
+<p>运行时负责运行goroutine并把它们影射到操作系统的线程上。goroutine比线程还轻量， 启动的时候花费很少。每个goroutine都是由一个<strong>G</strong>结构来表示，<br>这个结构体的字段用来跟踪此goroutine的栈(stack)和状态，所以你可以认为<code>G = goroutine</code>。</p>
+<p>运行时管理着<strong>G</strong>并把它们映射到<strong>Logical Processor</strong>(称之为<strong>P</strong>). <strong>P</strong>可以看作是一个抽象的资源或者一个上下文，它需要获取以便操作系统线程(称之为<strong>M</strong>)可以运行<strong>G</strong>。</p>
+<p>通过<code>runtime.GOMAXPROCS (numLogicalProcessors)</code>可以控制多少<strong>P</strong>可以获取。如果你需要调整这个参数(大部分情况下你无需调整)， 只设置一次， 因为它需要 <code>STW</code> gc pause。</p>
+<p>本质上，操作系统运行线程，线程运行你的代码。Go的技巧是编译器会在Go运行时的一些地方插入系统调用， （比如通过channel发送值,调用runtime包等），所以Go可以通知调度器执行特定的操作。</p>
+<p><img src="go-runtime.png" alt=""></p>
+<p>上图的理解来自 <a href="http://www.cs.columbia.edu/~aho/cs6998/reports/12-12-11_DeshpandeSponslerWeiss_GO.pdf" target="_blank" rel="external">Analysis of the Go runtime scheduler</a></p>
+<h3 id="M、P_和_G_之间的交互">M、P 和 G 之间的交互</h3>
+<p><strong>M</strong>、<strong>P</strong>和<strong>G</strong>之间的交互有点复杂。看看下面这张来自 Gao Chao的<a href="https://speakerdeck.com/retervision/go-runtime-scheduler" target="_blank" rel="external">go runtime scheduler</a> 幻灯片中的一张图：</p>
+<p><img src="go-sched.png" alt=""></p>
+<p>可以看到，Go运行时存在两种类型的queue： 一种是一个全局的queue(在<a href="https://github.com/golang/go/blob/5dd978a283ca445f8b5f255773b3904497365b61/src/runtime/runtime2.go#L536" target="_blank" rel="external">schedt结构体中</a>，很少用到)， 一种是每个<strong>P</strong>都维护自己的<strong>G</strong>的queue。</p>
+<p>为了运行goroutine, <strong>M</strong>需要持有上下文<strong>P</strong>。<strong>M</strong>会从<strong>P</strong>的queue弹出一个goroutine并执行。</p>
+<p>当你创建一个新的goroutine的时候(<code>go func()</code>方法)，它会被放入<strong>P</strong>的queue。当然还有一个 <code>work-stealing</code>调度算法，当<strong>M</strong>执行了一些<strong>G</strong>后,如果它的queue为空，它会随机的选择另外一个<strong>P</strong>,从它的queue中取走一半的<strong>G</strong>到自己的queue中执行。(偷!)</p>
+<p>当你的goroutine执行阻塞的系统调用的时候(syscall)，阻塞的系统调用会中断(intercepted)，如果当前有一些<strong>G</strong>在执行，运行时会把这个线程从<strong>P</strong>中摘除(detach)，然后再创建一个新的操作系统的线程(如果没有空闲的线程可用的话)来服务于这个<strong>P</strong>。</p>
+<p>当系统调用继续的时候，这个goroutine被放入到本地运行queue，线程会<code>park</code>它自己(休眠)， 加入到空闲线程中。</p>
+<p>如果一个goroutine执行网络调用，运行时会做类似的动作。调用会被中断，但是由于Go使用集成的network poller,它有自己的线程，所以还给它。</p>
+<p>Go运行时会在下面的goroutine被阻塞的情况下运行另外一个goroutine：</p>
+<p>－ blocking syscall (for example opening a file),<br>－ network input,<br>－ channel operations,<br>－ primitives in the sync package.</p>
+<h3 id="调度器跟踪调试">调度器跟踪调试</h3>
+<p>Go可以跟踪运行时的调度器，这是通过 <code>GODEBUG</code> 环境变量实现的:</p>
+<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">$ GODEBUG=scheddetail=<span class="number">1</span>,schedtrace=<span class="number">1000</span> ./program</div></pre></td></tr></table></figure>
+
+<p>下面是输出的例子:</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div></pre></td><td class="code"><pre><div class="line">SCHED <span class="number">0</span>ms: <span class="variable">gomaxprocs=</span><span class="number">8</span> <span class="variable">idleprocs=</span><span class="number">7</span> <span class="variable">threads=</span><span class="number">2</span> <span class="variable">spinningthreads=</span><span class="number">0</span> <span class="variable">idlethreads=</span><span class="number">0</span> <span class="variable">runqueue=</span><span class="number">0</span> <span class="variable">gcwaiting=</span><span class="number">0</span> <span class="variable">nmidlelocked=</span><span class="number">0</span> <span class="variable">stopwait=</span><span class="number">0</span> <span class="variable">sysmonwait=</span><span class="number">0</span></div><div class="line">  P0: <span class="variable">status=</span><span class="number">1</span> <span class="variable">schedtick=</span><span class="number">0</span> <span class="variable">syscalltick=</span><span class="number">0</span> <span class="variable">m=</span><span class="number">0</span> <span class="variable">runqsize=</span><span class="number">0</span> <span class="variable">gfreecnt=</span><span class="number">0</span></div><div class="line">  P1: <span class="variable">status=</span><span class="number">0</span> <span class="variable">schedtick=</span><span class="number">0</span> <span class="variable">syscalltick=</span><span class="number">0</span> <span class="variable">m=</span>-<span class="number">1</span> <span class="variable">runqsize=</span><span class="number">0</span> <span class="variable">gfreecnt=</span><span class="number">0</span></div><div class="line">  P2: <span class="variable">status=</span><span class="number">0</span> <span class="variable">schedtick=</span><span class="number">0</span> <span class="variable">syscalltick=</span><span class="number">0</span> <span class="variable">m=</span>-<span class="number">1</span> <span class="variable">runqsize=</span><span class="number">0</span> <span class="variable">gfreecnt=</span><span class="number">0</span></div><div class="line">  P3: <span class="variable">status=</span><span class="number">0</span> <span class="variable">schedtick=</span><span class="number">0</span> <span class="variable">syscalltick=</span><span class="number">0</span> <span class="variable">m=</span>-<span class="number">1</span> <span class="variable">runqsize=</span><span class="number">0</span> <span class="variable">gfreecnt=</span><span class="number">0</span></div><div class="line">  P4: <span class="variable">status=</span><span class="number">0</span> <span class="variable">schedtick=</span><span class="number">0</span> <span class="variable">syscalltick=</span><span class="number">0</span> <span class="variable">m=</span>-<span class="number">1</span> <span class="variable">runqsize=</span><span class="number">0</span> <span class="variable">gfreecnt=</span><span class="number">0</span></div><div class="line">  P5: <span class="variable">status=</span><span class="number">0</span> <span class="variable">schedtick=</span><span class="number">0</span> <span class="variable">syscalltick=</span><span class="number">0</span> <span class="variable">m=</span>-<span class="number">1</span> <span class="variable">runqsize=</span><span class="number">0</span> <span class="variable">gfreecnt=</span><span class="number">0</span></div><div class="line">  P6: <span class="variable">status=</span><span class="number">0</span> <span class="variable">schedtick=</span><span class="number">0</span> <span class="variable">syscalltick=</span><span class="number">0</span> <span class="variable">m=</span>-<span class="number">1</span> <span class="variable">runqsize=</span><span class="number">0</span> <span class="variable">gfreecnt=</span><span class="number">0</span></div><div class="line">  P7: <span class="variable">status=</span><span class="number">0</span> <span class="variable">schedtick=</span><span class="number">0</span> <span class="variable">syscalltick=</span><span class="number">0</span> <span class="variable">m=</span>-<span class="number">1</span> <span class="variable">runqsize=</span><span class="number">0</span> <span class="variable">gfreecnt=</span><span class="number">0</span></div><div class="line">  M1: <span class="variable">p=</span>-<span class="number">1</span> <span class="variable">curg=</span>-<span class="number">1</span> <span class="variable">mallocing=</span><span class="number">0</span> <span class="variable">throwing=</span><span class="number">0</span> <span class="variable">preemptoff=</span> <span class="variable">locks=</span><span class="number">1</span> <span class="variable">dying=</span><span class="number">0</span> <span class="variable">helpgc=</span><span class="number">0</span> <span class="variable">spinning=</span><span class="constant">false</span> <span class="variable">blocked=</span><span class="constant">false</span> <span class="variable">lockedg=</span>-<span class="number">1</span></div><div class="line">  M0: <span class="variable">p=</span><span class="number">0</span> <span class="variable">curg=</span><span class="number">1</span> <span class="variable">mallocing=</span><span class="number">0</span> <span class="variable">throwing=</span><span class="number">0</span> <span class="variable">preemptoff=</span> <span class="variable">locks=</span><span class="number">1</span> <span class="variable">dying=</span><span class="number">0</span> <span class="variable">helpgc=</span><span class="number">0</span> <span class="variable">spinning=</span><span class="constant">false</span> <span class="variable">blocked=</span><span class="constant">false</span> <span class="variable">lockedg=</span><span class="number">1</span></div><div class="line">  G1: <span class="variable">status=</span><span class="number">8</span>() <span class="variable">m=</span><span class="number">0</span> <span class="variable">lockedm=</span><span class="number">0</span></div></pre></td></tr></table></figure>
+
+<p>注意输出使用了 <strong>G</strong>、<strong>M</strong>和<strong>P</strong>的概念以及她们的状态， 比如<strong>P</strong>的queue的大小。 如果你不想关心这些细节，你可以使用：</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">$ <span class="variable">GODEBUG=</span><span class="variable">schedtrace=</span><span class="number">1000</span> ./program</div></pre></td></tr></table></figure>
+
+<p>William Kennedy写了一篇很好的<a href="https://www.goinggo.net/2015/02/scheduler-tracing-in-go.html" target="_blank" rel="external">文章</a>, 解释了这些细节。</p>
+<p>当然，还有一个go自己的工具 <code>go tool trace</code>, 它有一个UI, 允许你查看你的程序和运行时的状况。你可以阅读这篇文章:  <a href="https://making.pusher.com/go-tool-trace" target="_blank" rel="external">Pusher</a>。</p>
+<p><strong>参考文档</strong></p>
+<ol>
+<li><a href="https://www.slideshare.net/matthewrdale/demystifying-the-go-scheduler" target="_blank" rel="external">Slides by Matthew Dale</a></li>
+<li><a href="http://www.cs.columbia.edu/~aho/cs6998/reports/12-12-11_DeshpandeSponslerWeiss_GO.pdf" target="_blank" rel="external">Columbia University paper: Analysis of the Go runtime scheduler</a></li>
+<li><a href="https://docs.google.com/document/d/1TTj4T2JO42uD5ID9e89oa0sLKhJYD0Y_kqxDv3I3XMw/edit?usp=sharing" target="_blank" rel="external">Scalable Go Scheduler Design Doc</a></li>
+<li><a href="https://news.ycombinator.com/item?id=12459841" target="_blank" rel="external">Hacker news chat which explains a lot</a></li>
+<li><a href="https://speakerdeck.com/retervision/go-runtime-scheduler" target="_blank" rel="external">go runtime scheduler slides by Gao Chao</a></li>
+<li><a href="http://morsmachine.dk/go-scheduler" target="_blank" rel="external">Morsmachine article</a></li>
+</ol>
+]]></content>
+    <summary type="html">
+    <![CDATA[<p>这是另一篇关于Go调度器(scheduler)的文章。 原文: <a href="https://povilasv.me/go-scheduler/" target="_blank" rel="external">GO SCHEDULER: MS, PS &amp; GS</a> by Uber工程师 Povilas。</p>
+<p>网上已经有很多关于Go调度器的文章了， 比如<a href="http://ga0.github.io/golang/2015/09/20/golang-runtime-scheduler.html" target="_blank" rel="external">Golang调度器源码分析</a>,多看一些，可以加深记忆，也可以对比查看文章中是否有不准确的地方,更全面的了解Go的调度器。</p>
+<p>我决定深入了解Go的内部机制， 因为很长时间没人写关于Go scheduler的文章了， 我觉得这是一个很有趣的知识点，所以让我们开始吧。<br>]]>
+    
+    </summary>
+    
+      <category term="Go" scheme="http://colobu.com/categories/Go/"/>
+    
+  </entry>
   
   <entry>
     <title><![CDATA[OAuth2 RFC6749中文翻译]]></title>
@@ -3999,254 +4133,6 @@ https://en.wikipedia.org/wiki/Cryptographically_secure_pseudorandom_number_gener
     <![CDATA[<p>国内的Go开发已然蔚然成风，但是Go开发者比较痛苦的是，golang.org网站以及其它的一些相关的开发网站被GFW屏蔽了。下载Go开发包海容易些，国内有一些镜像站点，或者通过一些代理也能访问，但是下载一些开发库的时候，这些库可能直接或者间接引用了 ｀golang.org/x/...｀等依赖库， 通过<code>go get</code>命令确没有办法下载下来。</p>
 <p>我原先在Comcast，这是一家外企，在国内有vpn可以直接访问这些网站，所以以前没有觉得<code>go get</code>是一个问题，看到大家被GFW弄的焦头烂额的时候也没觉得是一件大事情，现在换到国内的互联网企业，切切实实的感觉到GFW的威力。首先是google.com, golang.org等网站被屏蔽掉了，其次 <code>go get</code> 一些库如<code>golangorg/x/net</code>失败。</p>
 ]]>
-    
-    </summary>
-    
-      <category term="Go" scheme="http://colobu.com/categories/Go/"/>
-    
-  </entry>
-  
-  <entry>
-    <title><![CDATA[[]T 还是 []*T, 这是一个问题]]></title>
-    <link href="http://colobu.com/2017/01/05/-T-or-T-it-s-a-question/"/>
-    <id>http://colobu.com/2017/01/05/-T-or-T-it-s-a-question/</id>
-    <published>2017-01-05T06:56:36.000Z</published>
-    <updated>2017-01-05T10:49:26.000Z</updated>
-    <content type="html"><![CDATA[<p>在编程语言深入讨论中，经常被大家提起也是争论最多的讨论之一就是按值(by value)还是按引用传递(by reference， by pointer)，你可以在C/C++或者Java的社区经常看到这样的讨论，也会看到很多这样的面试题。</p>
-<p>对于Go语言，严格意义上来讲，只有一种传递，也就是按值传递(by value)。当一个变量当作参数传递的时候，会创建一个变量的副本，然后传递给函数或者方法，你可以看到这个副本的地址和变量的地址是不一样的。</p>
-<p>当变量当做指针被传递的时候，一个新的指针被创建，它指向变量指向的同样的内存地址，所以你可以将这个指针看成原始变量指针的副本。当这样理解的时候，我们就可以理解成Go总是创建一个副本按值转递，只不过这个副本有时候是变量的副本，有时候是变量指针的副本。</p>
-<p>这是Go语言中你理解后续问题的基础。</p>
-<p>但是Go语言的情况比较复杂，我们什么时候选择 <code>T</code> 作为参数类型，什么时候选择 <code>*T</code>作为参数类型？ <code>[]T</code>是传递的指针还是值？选择<code>[]T</code>还是<code>[]*T</code>? 哪些类型复制和传递的时候会创建副本？什么情况下会发生副本创建？</p>
-<p>本文将详细介绍Go语言的变量的副本创建还是变量指针的副本创建的case以及各种类型在这些case的情况。</p>
-<a id="more"></a>
-<h2 id="副本的创建">副本的创建</h2>
-<p>前面已经讲到，<code>T</code>类型的变量和<code>*T</code>类型的变量在当做函数或者方法的参数时会传递它的副本。我们先看看例子。</p>
-<h3 id="T的副本创建">T的副本创建</h3>
-<p>首先看一下 参数类型为<code>T</code>的函数调用的情况：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> main</div><div class="line"></div><div class="line"><span class="keyword">import</span> <span class="string">"fmt"</span></div><div class="line"></div><div class="line"><span class="keyword">type</span> Bird <span class="keyword">struct</span> {</div><div class="line">	Age  <span class="typename">int</span></div><div class="line">	Name <span class="typename">string</span></div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> passV(b Bird) {</div><div class="line">	b.Age++</div><div class="line">	b.Name = <span class="string">"Great"</span> + b.Name</div><div class="line">	fmt.Printf(<span class="string">"传入修改后的Bird:\t %+v, \t内存地址：%p\n"</span>, b, &b)</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	parrot := Bird{Age:<span class="number"> 1</span>, Name: <span class="string">"Blue"</span>}</div><div class="line">	fmt.Printf(<span class="string">"原始的Bird:\t\t %+v, \t\t内存地址：%p\n"</span>, parrot, &parrot)</div><div class="line">	passV(parrot)</div><div class="line">	fmt.Printf(<span class="string">"调用后原始的Bird:\t %+v, \t\t内存地址：%p\n"</span>, parrot, &parrot)</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>运行后输入结果(每次运行指针的值可能不同):</p>
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line">原始的<span class="tag">Bird</span>:		 <span class="rules">{<span class="rule"><span class="attribute">Age</span>:<span class="value"><span class="number">1</span> Name:Blue</span></span></span>}, 		内存地址：0<span class="tag">xc420012260</span></div><div class="line">传入修改后的<span class="tag">Bird</span>:	 <span class="rules">{<span class="rule"><span class="attribute">Age</span>:<span class="value"><span class="number">2</span> Name:GreatBlue</span></span></span>}, 	内存地址：0<span class="tag">xc4200122c0</span></div><div class="line">调用后原始的<span class="tag">Bird</span>:	 <span class="rules">{<span class="rule"><span class="attribute">Age</span>:<span class="value"><span class="number">1</span> Name:Blue</span></span></span>}, 		内存地址：0<span class="tag">xc420012260</span></div></pre></td></tr></table></figure>
-
-<p>可以看到，在<code>T</code>类型作为参数的时候，传递的参数parrot会将它的副本(内存地址0xc4200122c0)传递给函数<code>passV</code>,在这个函数内对参数的改变不会影响原始的对象。</p>
-<h3 id="*T的副本创建">*T的副本创建</h3>
-<p>修改上面的例子，将函数的参数类型由<code>T</code>改为<code>*T</code>:</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> main</div><div class="line"></div><div class="line"><span class="keyword">import</span> <span class="string">"fmt"</span></div><div class="line"></div><div class="line"><span class="keyword">type</span> Bird <span class="keyword">struct</span> {</div><div class="line">	Age  <span class="typename">int</span></div><div class="line">	Name <span class="typename">string</span></div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> passP(b *Bird) {</div><div class="line">	b.Age++</div><div class="line">	b.Name = <span class="string">"Great"</span> + b.Name</div><div class="line">	fmt.Printf(<span class="string">"传入修改后的Bird:\t %+v, \t内存地址：%p, 指针的内存地址: %p\n"</span>, *b, b, &b)</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	parrot := &Bird{Age:<span class="number"> 1</span>, Name: <span class="string">"Blue"</span>}</div><div class="line">	fmt.Printf(<span class="string">"原始的Bird:\t\t %+v, \t\t内存地址：%p, 指针的内存地址: %p\n"</span>, *parrot, parrot, &parrot)</div><div class="line">	passP(parrot)</div><div class="line">	fmt.Printf(<span class="string">"调用后原始的Bird:\t %+v, \t内存地址：%p, 指针的内存地址: %p\n"</span>, *parrot, parrot, &parrot)</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>运行后输出结果：</p>
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line">原始的<span class="tag">Bird</span>:		 <span class="rules">{<span class="rule"><span class="attribute">Age</span>:<span class="value"><span class="number">1</span> Name:Blue</span></span></span>}, 		内存地址：0<span class="tag">xc420076000</span>, 指针的内存地址: 0<span class="tag">xc420074000</span></div><div class="line">传入修改后的<span class="tag">Bird</span>:	 <span class="rules">{<span class="rule"><span class="attribute">Age</span>:<span class="value"><span class="number">2</span> Name:GreatBlue</span></span></span>}, 	内存地址：0<span class="tag">xc420076000</span>, 指针的内存地址: 0<span class="tag">xc420074010</span></div><div class="line">调用后原始的<span class="tag">Bird</span>:	 <span class="rules">{<span class="rule"><span class="attribute">Age</span>:<span class="value"><span class="number">2</span> Name:GreatBlue</span></span></span>}, 	内存地址：0<span class="tag">xc420076000</span>, 指针的内存地址: 0<span class="tag">xc420074000</span></div></pre></td></tr></table></figure>
-
-<p>可以看到在函数<code>passP</code>中，参数<code>p</code>是一个指向Bird的指针，传递参数给它的时候会创建指针的副本(0xc420074010)，只不过指针<code>0xc420074000</code>和<code>0xc420074010</code>都指向内存地址<code>0xc420076000</code>。 函数内对<code>*T</code>的改变显然会影响原始的对象，因为它是对同一个对象的操作。</p>
-<p>当然，一位对Go有深入了解的读者都已经对这个知识有所了解，也明白了<code>T</code>和<code>*T</code>作为参数的时候副本创建的不同。</p>
-<h2 id="如何选择_T_和_*T">如何选择 <code>T</code> 和 <code>*T</code></h2>
-<p>在定义函数和方法的时候，作为一位资深的Go开发人员，一定会对函数的参数和返回值定义成<code>T</code>和<code>*T</code>深思熟虑，有些情况下可能还会有些苦恼。<br>那么什么时候才应该把参数定义成类型<code>T</code>,什么情况下定义成类型<code>*T</code>呢。</p>
-<p>一般的判断标准是看副本创建的成本和需求。</p>
-<ol>
-<li>不想变量被修改。 如果你不想变量被函数和方法所修改，那么选择类型<code>T</code>。相反，如果想修改原始的变量，则选择<code>*T</code></li>
-<li>如果变量是一个<strong>大</strong>的struct或者数组，则副本的创建相对会影响性能，这个时候考虑使用<code>*T</code>，只创建新的指针，这个区别是巨大的</li>
-<li>(不针对函数参数，只针对本地变量／本地变量)对于函数作用域内的参数，如果定义成<code>T</code>,Go编译器尽量将对象分配到栈上，而<code>*T</code>很可能会分配到对象上，这对垃圾回收会有影响</li>
-</ol>
-<h2 id="什么时候发生副本创建">什么时候发生副本创建</h2>
-<p>上面举的例子都是作为函数参数时发生的副本的创建，还有很多情况下会发生副本的创建，甚至有些“隐蔽”的情况。<br>编程的时候如何小心这些情况呢，一条原则就是：</p>
-<p><strong> A go assignment is a copy of the value itself </strong><br><strong> 赋值的时候就会创建对象副本</strong></p>
-<p>Assignment的语法表达式如下：</p>
-<blockquote>
-<p>Assignment = ExpressionList assign_op ExpressionList .<br>assign_op = [ add_op | mul_op ] &quot;=&quot; .</p>
-<p>Each left-hand side operand must be addressable, a map index expression, or (for = assignments only) the blank identifier. Operands may be parenthesized.</p>
-</blockquote>
-<h3 id="最常见的case">最常见的case</h3>
-<p>最常见的赋值的例子是对变量的赋值，包括函数内和函数外:</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> main</div><div class="line"></div><div class="line"><span class="keyword">import</span> <span class="string">"fmt"</span></div><div class="line"></div><div class="line"><span class="keyword">type</span> Bird <span class="keyword">struct</span> {</div><div class="line">	Age  <span class="typename">int</span></div><div class="line">	Name <span class="typename">string</span></div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">type</span> Parrot <span class="keyword">struct</span> {</div><div class="line">	Age  <span class="typename">int</span></div><div class="line">	Name <span class="typename">string</span></div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">var</span> parrot1 = Bird{Age:<span class="number"> 1</span>, Name: <span class="string">"Blue"</span>}</div><div class="line"><span class="keyword">var</span> parrot2 = parrot1</div><div class="line"></div><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	fmt.Printf(<span class="string">"parrot1:\t\t %+v, \t\t内存地址：%p\n"</span>, parrot1, &parrot1)</div><div class="line">	fmt.Printf(<span class="string">"parrot2:\t\t %+v, \t\t内存地址：%p\n"</span>, parrot2, &parrot2)</div><div class="line"></div><div class="line">	parrot3 := parrot1</div><div class="line">	fmt.Printf(<span class="string">"parrot2:\t\t %+v, \t\t内存地址：%p\n"</span>, parrot3, &parrot3)</div><div class="line"></div><div class="line">	parrot4 := Parrot(parrot1)</div><div class="line">	fmt.Printf(<span class="string">"parrot4:\t\t %+v, \t\t内存地址：%p\n"</span>, parrot4, &parrot4)</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>输出结果:</p>
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line"><span class="tag">parrot1</span>:		 <span class="rules">{<span class="rule"><span class="attribute">Age</span>:<span class="value"><span class="number">1</span> Name:Blue</span></span></span>}, 		内存地址：0<span class="tag">xfa0a0</span></div><div class="line"><span class="tag">parrot2</span>:		 <span class="rules">{<span class="rule"><span class="attribute">Age</span>:<span class="value"><span class="number">1</span> Name:Blue</span></span></span>}, 		内存地址：0<span class="tag">xfa0c0</span></div><div class="line"><span class="tag">parrot2</span>:		 <span class="rules">{<span class="rule"><span class="attribute">Age</span>:<span class="value"><span class="number">1</span> Name:Blue</span></span></span>}, 		内存地址：0<span class="tag">xc42007e0c0</span></div><div class="line"><span class="tag">parrot4</span>:		 <span class="rules">{<span class="rule"><span class="attribute">Age</span>:<span class="value"><span class="number">1</span> Name:Blue</span></span></span>}, 		内存地址：0<span class="tag">xc42007e100</span></div></pre></td></tr></table></figure>
-
-<p>可以看到这几个变量的内存地址都不相同，说明发生了赋值。</p>
-<h3 id="map、slice和数组">map、slice和数组</h3>
-<p>slice，map和数组在初始化和按索引设置的时候也会创建副本:</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div><div class="line">35</div><div class="line">36</div><div class="line">37</div><div class="line">38</div><div class="line">39</div><div class="line">40</div><div class="line">41</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> main</div><div class="line"></div><div class="line"><span class="keyword">import</span> <span class="string">"fmt"</span></div><div class="line"></div><div class="line"><span class="keyword">type</span> Bird <span class="keyword">struct</span> {</div><div class="line">	Age  <span class="typename">int</span></div><div class="line">	Name <span class="typename">string</span></div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">var</span> parrot1 = Bird{Age:<span class="number"> 1</span>, Name: <span class="string">"Blue"</span>}</div><div class="line"></div><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	fmt.Printf(<span class="string">"parrot1:\t\t %+v, \t\t内存地址：%p\n"</span>, parrot1, &parrot1)</div><div class="line"></div><div class="line">	<span class="comment">//slice</span></div><div class="line">	s := []Bird{parrot1}</div><div class="line">	s = <span class="built_in">append</span>(s, parrot1)</div><div class="line">	parrot1.Age =<span class="number"> 3</span></div><div class="line">	fmt.Printf(<span class="string">"parrot2:\t\t %+v, \t\t内存地址：%p\n"</span>, s<span class="number">[0</span>], &(s<span class="number">[0</span>]))</div><div class="line">	fmt.Printf(<span class="string">"parrot3:\t\t %+v, \t\t内存地址：%p\n"</span>, s<span class="number">[1</span>], &(s<span class="number">[1</span>]))</div><div class="line">	parrot1.Age =<span class="number"> 1</span></div><div class="line"></div><div class="line">	<span class="comment">//map</span></div><div class="line">	m := <span class="built_in">make</span>(<span class="keyword">map</span>[<span class="typename">int</span>]Bird)</div><div class="line">	m<span class="number">[0</span>] = parrot1</div><div class="line">	parrot1.Age =<span class="number"> 4</span></div><div class="line">	fmt.Printf(<span class="string">"parrot4:\t\t %+v\n"</span>, m<span class="number">[0</span>])</div><div class="line">	parrot1.Age =<span class="number"> 5</span></div><div class="line">	parrot5 := m<span class="number">[0</span>]</div><div class="line">	fmt.Printf(<span class="string">"parrot5:\t\t %+v, \t\t内存地址：%p\n"</span>, parrot5, &parrot5)</div><div class="line">	parrot1.Age =<span class="number"> 1</span></div><div class="line"></div><div class="line">	<span class="comment">//array</span></div><div class="line">	a := <span class="number">[2</span>]Bird{parrot1}</div><div class="line">	parrot1.Age =<span class="number"> 6</span></div><div class="line">	fmt.Printf(<span class="string">"parrot6:\t\t %+v, \t\t内存地址：%p\n"</span>, a<span class="number">[0</span>], &a<span class="number">[0</span>])</div><div class="line">	parrot1.Age =<span class="number"> 1</span></div><div class="line">	a<span class="number">[1</span>] = parrot1</div><div class="line">	parrot1.Age =<span class="number"> 7</span></div><div class="line">	fmt.Printf(<span class="string">"parrot7:\t\t %+v, \t\t内存地址：%p\n"</span>, a<span class="number">[1</span>], &a<span class="number">[1</span>])</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>输出结果</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div></pre></td><td class="code"><pre><div class="line">parrot1:		 {Age<span class="number">:1</span> Name:Blue}, 		内存地址<span class="number">：0</span>xfa0a0</div><div class="line">parrot2:		 {Age<span class="number">:1</span> Name:Blue}, 		内存地址<span class="number">：0</span>xc4200160f0</div><div class="line">parrot3:		 {Age<span class="number">:1</span> Name:Blue}, 		内存地址<span class="number">：0</span>xc420016108</div><div class="line">parrot4:		 {Age<span class="number">:1</span> Name:Blue}</div><div class="line">parrot5:		 {Age<span class="number">:1</span> Name:Blue}, 		内存地址<span class="number">：0</span>xc420012320</div><div class="line">parrot6:		 {Age<span class="number">:1</span> Name:Blue}, 		内存地址<span class="number">：0</span>xc420016120</div><div class="line">parrot7:		 {Age<span class="number">:1</span> Name:Blue}, 		内存地址<span class="number">：0</span>xc420016138</div></pre></td></tr></table></figure>
-
-<p>可以看到 slice/map/数组 的元素全是原始变量的副本， <strong>副本</strong>。</p>
-<h3 id="for－range循环">for－range循环</h3>
-<p>for-range循环也是将元素的副本赋值给循环变量，所以变量得到的是集合元素的副本。</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div><div class="line">35</div><div class="line">36</div><div class="line">37</div><div class="line">38</div><div class="line">39</div><div class="line">40</div><div class="line">41</div><div class="line">42</div><div class="line">43</div><div class="line">44</div><div class="line">45</div><div class="line">46</div><div class="line">47</div><div class="line">48</div><div class="line">49</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> main</div><div class="line"></div><div class="line"><span class="keyword">import</span> <span class="string">"fmt"</span></div><div class="line"></div><div class="line"><span class="keyword">type</span> Bird <span class="keyword">struct</span> {</div><div class="line">	Age  <span class="typename">int</span></div><div class="line">	Name <span class="typename">string</span></div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">var</span> parrot1 = Bird{Age:<span class="number"> 1</span>, Name: <span class="string">"Blue"</span>}</div><div class="line"></div><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	fmt.Printf(<span class="string">"parrot1:\t\t %+v, \t\t内存地址：%p\n"</span>, parrot1, &parrot1)</div><div class="line"></div><div class="line">	<span class="comment">//slice</span></div><div class="line">	s := []Bird{parrot1, parrot1, parrot1}</div><div class="line">	s<span class="number">[0</span>].Age =<span class="number"> 1</span></div><div class="line">	s<span class="number">[1</span>].Age =<span class="number"> 2</span></div><div class="line">	s<span class="number">[2</span>].Age =<span class="number"> 3</span></div><div class="line">	parrot1.Age =<span class="number"> 4</span></div><div class="line">	<span class="keyword">for</span> i, p := <span class="keyword">range</span> s {</div><div class="line">		fmt.Printf(<span class="string">"parrot%d:\t\t %+v, \t\t内存地址：%p\n"</span>, (i +<span class="number"> 2</span>), p, &p)</div><div class="line">	}</div><div class="line">	parrot1.Age =<span class="number"> 1</span></div><div class="line"></div><div class="line">	<span class="comment">//map</span></div><div class="line">	m := <span class="built_in">make</span>(<span class="keyword">map</span>[<span class="typename">int</span>]Bird)</div><div class="line">	parrot1.Age =<span class="number"> 1</span></div><div class="line">	m<span class="number">[0</span>] = parrot1</div><div class="line">	parrot1.Age =<span class="number"> 2</span></div><div class="line">	m<span class="number">[1</span>] = parrot1</div><div class="line">	parrot1.Age =<span class="number"> 3</span></div><div class="line">	m<span class="number">[2</span>] = parrot1</div><div class="line">	parrot1.Age =<span class="number"> 4</span></div><div class="line">	<span class="keyword">for</span> k, v := <span class="keyword">range</span> m {</div><div class="line">		fmt.Printf(<span class="string">"parrot%d:\t\t %+v, \t\t内存地址：%p\n"</span>, (k +<span class="number"> 2</span>), v, &v)</div><div class="line">	}</div><div class="line">	parrot1.Age =<span class="number"> 4</span></div><div class="line"></div><div class="line">	<span class="comment">//array</span></div><div class="line">	a := [...]Bird{parrot1, parrot1, parrot1}</div><div class="line">	a<span class="number">[0</span>].Age =<span class="number"> 1</span></div><div class="line">	a<span class="number">[1</span>].Age =<span class="number"> 2</span></div><div class="line">	a<span class="number">[2</span>].Age =<span class="number"> 3</span></div><div class="line">	parrot1.Age =<span class="number"> 4</span></div><div class="line">	<span class="keyword">for</span> i, p := <span class="keyword">range</span> a {</div><div class="line">		fmt.Printf(<span class="string">"parrot%d:\t\t %+v, \t\t内存地址：%p\n"</span>, (i +<span class="number"> 2</span>), p, &p)</div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>输出结果</p>
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div></pre></td><td class="code"><pre><div class="line"><span class="tag">parrot1</span>:		 <span class="rules">{<span class="rule"><span class="attribute">Age</span>:<span class="value"><span class="number">1</span> Name:Blue</span></span></span>}, 		内存地址：0<span class="tag">xfb0a0</span></div><div class="line"><span class="tag">parrot2</span>:		 <span class="rules">{<span class="rule"><span class="attribute">Age</span>:<span class="value"><span class="number">1</span> Name:Blue</span></span></span>}, 		内存地址：0<span class="tag">xc4200122a0</span></div><div class="line"><span class="tag">parrot3</span>:		 <span class="rules">{<span class="rule"><span class="attribute">Age</span>:<span class="value"><span class="number">2</span> Name:Blue</span></span></span>}, 		内存地址：0<span class="tag">xc4200122a0</span></div><div class="line"><span class="tag">parrot4</span>:		 <span class="rules">{<span class="rule"><span class="attribute">Age</span>:<span class="value"><span class="number">3</span> Name:Blue</span></span></span>}, 		内存地址：0<span class="tag">xc4200122a0</span></div><div class="line"><span class="tag">parrot2</span>:		 <span class="rules">{<span class="rule"><span class="attribute">Age</span>:<span class="value"><span class="number">1</span> Name:Blue</span></span></span>}, 		内存地址：0<span class="tag">xc420012320</span></div><div class="line"><span class="tag">parrot3</span>:		 <span class="rules">{<span class="rule"><span class="attribute">Age</span>:<span class="value"><span class="number">2</span> Name:Blue</span></span></span>}, 		内存地址：0<span class="tag">xc420012320</span></div><div class="line"><span class="tag">parrot4</span>:		 <span class="rules">{<span class="rule"><span class="attribute">Age</span>:<span class="value"><span class="number">3</span> Name:Blue</span></span></span>}, 		内存地址：0<span class="tag">xc420012320</span></div><div class="line"><span class="tag">parrot2</span>:		 <span class="rules">{<span class="rule"><span class="attribute">Age</span>:<span class="value"><span class="number">1</span> Name:Blue</span></span></span>}, 		内存地址：0<span class="tag">xc4200123a0</span></div><div class="line"><span class="tag">parrot3</span>:		 <span class="rules">{<span class="rule"><span class="attribute">Age</span>:<span class="value"><span class="number">2</span> Name:Blue</span></span></span>}, 		内存地址：0<span class="tag">xc4200123a0</span></div><div class="line"><span class="tag">parrot4</span>:		 <span class="rules">{<span class="rule"><span class="attribute">Age</span>:<span class="value"><span class="number">3</span> Name:Blue</span></span></span>}, 		内存地址：0<span class="tag">xc4200123a0</span></div></pre></td></tr></table></figure>
-
-<p>注意循环变量是重用的，所以你看到它们的地址是相同的。</p>
-<h3 id="channel">channel</h3>
-<p>往channel中send对象的时候也会创建对象的副本:</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> main</div><div class="line"></div><div class="line"><span class="keyword">import</span> <span class="string">"fmt"</span></div><div class="line"></div><div class="line"><span class="keyword">type</span> Bird <span class="keyword">struct</span> {</div><div class="line">	Age  <span class="typename">int</span></div><div class="line">	Name <span class="typename">string</span></div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">var</span> parrot1 = Bird{Age:<span class="number"> 1</span>, Name: <span class="string">"Blue"</span>}</div><div class="line"></div><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	ch := <span class="built_in">make</span>(<span class="keyword">chan</span> Bird,<span class="number"> 3</span>)</div><div class="line">	fmt.Printf(<span class="string">"parrot1:\t\t %+v, \t\t内存地址：%p\n"</span>, parrot1, &parrot1)</div><div class="line">	ch &lt;- parrot1</div><div class="line">	parrot1.Age =<span class="number"> 2</span></div><div class="line">	ch &lt;- parrot1</div><div class="line">	parrot1.Age =<span class="number"> 3</span></div><div class="line">	ch &lt;- parrot1</div><div class="line">	parrot1.Age =<span class="number"> 4</span></div><div class="line"></div><div class="line">	p := &lt;-ch</div><div class="line">	fmt.Printf(<span class="string">"parrot%d:\t\t %+v, \t\t内存地址：%p\n"</span>,<span class="number"> 2</span>, p, &p)</div><div class="line">	p = &lt;-ch</div><div class="line">	fmt.Printf(<span class="string">"parrot%d:\t\t %+v, \t\t内存地址：%p\n"</span>,<span class="number"> 3</span>, p, &p)</div><div class="line">	p = &lt;-ch</div><div class="line">	fmt.Printf(<span class="string">"parrot%d:\t\t %+v, \t\t内存地址：%p\n"</span>,<span class="number"> 4</span>, p, &p)</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>输出结果：</p>
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line"><span class="tag">parrot1</span>:		 <span class="rules">{<span class="rule"><span class="attribute">Age</span>:<span class="value"><span class="number">1</span> Name:Blue</span></span></span>}, 		内存地址：0<span class="tag">xfa0a0</span></div><div class="line"><span class="tag">parrot2</span>:		 <span class="rules">{<span class="rule"><span class="attribute">Age</span>:<span class="value"><span class="number">1</span> Name:Blue</span></span></span>}, 		内存地址：0<span class="tag">xc4200122a0</span></div><div class="line"><span class="tag">parrot3</span>:		 <span class="rules">{<span class="rule"><span class="attribute">Age</span>:<span class="value"><span class="number">2</span> Name:Blue</span></span></span>}, 		内存地址：0<span class="tag">xc4200122a0</span></div><div class="line"><span class="tag">parrot4</span>:		 <span class="rules">{<span class="rule"><span class="attribute">Age</span>:<span class="value"><span class="number">3</span> Name:Blue</span></span></span>}, 		内存地址：0<span class="tag">xc4200122a0</span></div></pre></td></tr></table></figure>
-
-<h3 id="函数参数和返回值">函数参数和返回值</h3>
-<p>将变量作为参数传递给函数和方法会发生副本的创建。<br>对于返回值，将返回值赋值给其它变量或者传递给其它的函数和方法，就会创建副本。</p>
-<h3 id="Method_Receiver">Method Receiver</h3>
-<p>因为方法(method)最终会产生一个receiver作为第一个参数的函数(参看规范)，所以就比较好理解method receiver的副本创建的规则了。<br>当receiver为<code>T</code>类型时，会发生创建副本，调用副本上的方法。<br>当receiver为<code>*T</code>类型时,只是会创建对象的指针，不创建对象的副本，方法内对receiver的改动会影响原始值。</p>
-<h2 id="不同类型的副本创建">不同类型的副本创建</h2>
-<h3 id="bool,数值和指针">bool,数值和指针</h3>
-<p>bool和数值类型一般不必考虑指针类型，原因在于这些对象很小，创建副本的开销可以忽略。只有你在想修改同一个变量的值的时候才考虑它们的指针。</p>
-<p>指针类型就不用多说了，和数值类型类似。</p>
-<h3 id="数组">数组</h3>
-<p>数组是值类型，赋值的时候会发生原始数组的复制，所以对于大的数组的参数传递和赋值，一定要慎重。</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> main</div><div class="line"></div><div class="line"><span class="keyword">import</span> <span class="string">"fmt"</span></div><div class="line"></div><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	a1 := <span class="number">[3</span>]<span class="typename">int</span><span class="number">{1</span>,<span class="number"> 2</span>,<span class="number"> 3</span>}</div><div class="line">	fmt.Printf(<span class="string">"a1:\t\t %+v, \t\t内存地址：%p\n"</span>, a1, &a1)</div><div class="line">	a2 := a1</div><div class="line">	a1<span class="number">[0</span>] =<span class="number"> 4</span></div><div class="line">	a1<span class="number">[1</span>] =<span class="number"> 5</span></div><div class="line">	a1<span class="number">[2</span>] =<span class="number"> 6</span></div><div class="line">	fmt.Printf(<span class="string">"a2:\t\t %+v, \t\t内存地址：%p\n"</span>, a2, &a2)</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>输出</p>
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div></pre></td><td class="code"><pre><div class="line"><span class="tag">a1</span>:		 <span class="attr_selector">[1 2 3]</span>, 		内存地址：0<span class="tag">xc420012260</span></div><div class="line"><span class="tag">a2</span>:		 <span class="attr_selector">[1 2 3]</span>, 		内存地址：0<span class="tag">xc4200122c0</span></div></pre></td></tr></table></figure>
-
-<p>对于<code>[...]T</code>和<code>[...]*T</code>的区别，我想你也应该清楚了，<code>[...]*T</code>创建的副本的元素时元数组元素指针的副本。</p>
-<h3 id="map、slice_和_channel">map、slice 和 channel</h3>
-<p>网上一般说， 这三种类型都是指向指针类型，指向一个底层的数据结构。<br>因此呢，在定义类型的时候就不必定义成<code>*T</code>了。</p>
-<p>当然你可以这么认为，不过我认为这是不准确的，比如slice,其实你可以看成是<code>SliceHeader</code>对象，只不过它的数据<code>Data</code>是一个指针，所以它的副本的创建对性能的影响可以忽略。</p>
-<h3 id="字符串">字符串</h3>
-<p>string类型类似slice,它等价<code>StringHeader</code>。所以很多情况下会用｀unsafe.Pointer｀与[]byte类型进行更有效的转换，因为直接进行类型转换<code>string([]byte)</code>会发生数据的复制。</p>
-<p>字符串比较特殊，它的值不能修改，任何想对字符串的值做修改都会生成新的字符串。</p>
-<p>大部分情况下你不需要定义成<code>*string</code>。唯一的例外你需要 <code>nil</code>值的时候。我们知道，类型<code>string</code>的空值/缺省值为<code>&quot;&quot;</code>,但是如果你需要<code>nil</code>，你就必须定义<code>*string</code>。举个例子，在对象序列化的时候<code>&quot;&quot;</code>和<code>nil</code>表示的意义是不一样的，<code>&quot;&quot;</code>表示字段存在，只不过字符串是空值，而<code>nil</code>表示字段不存在。</p>
-<h3 id="函数">函数</h3>
-<p>函数也是一个指针类型，对函数对象的赋值只是又创建了一个对次函数对象的指针。</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> main</div><div class="line"></div><div class="line"><span class="keyword">import</span> <span class="string">"fmt"</span></div><div class="line"></div><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	f1 := <span class="keyword">func</span>(i <span class="typename">int</span>) {}</div><div class="line">	fmt.Printf(<span class="string">"f1:\t\t %+v, \t\t内存地址：%p\n"</span>, f1, &f1)</div><div class="line">	f2 := f1</div><div class="line"></div><div class="line">	fmt.Printf(<span class="string">"f2:\t\t %+v, \t\t内存地址：%p\n"</span>, f2, &f2)</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>输出结果:</p>
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div></pre></td><td class="code"><pre><div class="line"><span class="label">f1:</span>		 <span class="number">0x2200</span>, 		内存地址：<span class="number">0xc420028020</span></div><div class="line"><span class="label">f2:</span>		 <span class="number">0x2200</span>, 		内存地址：<span class="number">0xc420028030</span></div></pre></td></tr></table></figure>
-
-<h2 id="参考文档">参考文档</h2>
-<ol>
-<li><a href="https://www.reddit.com/r/golang/comments/5lheyg/returning_t_vs_t/?" target="_blank" rel="external">https://www.reddit.com/r/golang/comments/5lheyg/returning_t_vs_t/?</a></li>
-<li><a href="https://github.com/google/go-github/issues/180" target="_blank" rel="external">https://github.com/google/go-github/issues/180</a></li>
-<li><a href="http://openmymind.net/Things-I-Wish-Someone-Had-Told-Me-About-Go/" target="_blank" rel="external">http://openmymind.net/Things-I-Wish-Someone-Had-Told-Me-About-Go/</a></li>
-<li><a href="http://goinbigdata.com/golang-pass-by-pointer-vs-pass-by-value/" target="_blank" rel="external">http://goinbigdata.com/golang-pass-by-pointer-vs-pass-by-value/</a></li>
-<li><a href="https://groups.google.com/forum/#!topic/golang-nuts/__BPVgK8LN0" target="_blank" rel="external">https://groups.google.com/forum/#!topic/golang-nuts/__BPVgK8LN0</a></li>
-<li><a href="https://golang.org/ref/spec" target="_blank" rel="external">https://golang.org/ref/spec</a></li>
-<li><a href="https://golang.org/doc/faq" target="_blank" rel="external">https://golang.org/doc/faq</a></li>
-<li><a href="https://golang.org/doc/effective_go.html" target="_blank" rel="external">https://golang.org/doc/effective_go.html</a></li>
-<li><a href="https://nathanleclaire.com/blog/2014/08/09/dont-get-bitten-by-pointer-vs-non-pointer-method-receivers-in-golang/" target="_blank" rel="external">https://nathanleclaire.com/blog/2014/08/09/dont-get-bitten-by-pointer-vs-non-pointer-method-receivers-in-golang/</a></li>
-<li><a href="https://dhdersch.github.io/golang/2016/01/23/golang-when-to-use-string-pointers.html" target="_blank" rel="external">https://dhdersch.github.io/golang/2016/01/23/golang-when-to-use-string-pointers.html</a></li>
-<li><a href="https://dave.cheney.net/2016/03/19/should-methods-be-declared-on-t-or-t" target="_blank" rel="external">https://dave.cheney.net/2016/03/19/should-methods-be-declared-on-t-or-t</a></li>
-<li><a href="http://colobu.com/2016/10/28/When-are-function-parameters-passed-by-value/" target="_blank" rel="external">http://colobu.com/2016/10/28/When-are-function-parameters-passed-by-value/</a></li>
-</ol>
-]]></content>
-    <summary type="html">
-    <![CDATA[<p>在编程语言深入讨论中，经常被大家提起也是争论最多的讨论之一就是按值(by value)还是按引用传递(by reference， by pointer)，你可以在C/C++或者Java的社区经常看到这样的讨论，也会看到很多这样的面试题。</p>
-<p>对于Go语言，严格意义上来讲，只有一种传递，也就是按值传递(by value)。当一个变量当作参数传递的时候，会创建一个变量的副本，然后传递给函数或者方法，你可以看到这个副本的地址和变量的地址是不一样的。</p>
-<p>当变量当做指针被传递的时候，一个新的指针被创建，它指向变量指向的同样的内存地址，所以你可以将这个指针看成原始变量指针的副本。当这样理解的时候，我们就可以理解成Go总是创建一个副本按值转递，只不过这个副本有时候是变量的副本，有时候是变量指针的副本。</p>
-<p>这是Go语言中你理解后续问题的基础。</p>
-<p>但是Go语言的情况比较复杂，我们什么时候选择 <code>T</code> 作为参数类型，什么时候选择 <code>*T</code>作为参数类型？ <code>[]T</code>是传递的指针还是值？选择<code>[]T</code>还是<code>[]*T</code>? 哪些类型复制和传递的时候会创建副本？什么情况下会发生副本创建？</p>
-<p>本文将详细介绍Go语言的变量的副本创建还是变量指针的副本创建的case以及各种类型在这些case的情况。</p>
-]]>
-    
-    </summary>
-    
-      <category term="Go" scheme="http://colobu.com/categories/Go/"/>
-    
-  </entry>
-  
-  <entry>
-    <title><![CDATA[一个有特色的有限状态机]]></title>
-    <link href="http://colobu.com/2016/12/24/a-featured-fsm/"/>
-    <id>http://colobu.com/2016/12/24/a-featured-fsm/</id>
-    <published>2016-12-24T07:12:48.000Z</published>
-    <updated>2017-03-23T02:55:23.000Z</updated>
-    <content type="html"><![CDATA[<p><a href="https://github.com/smallnest/gofsm" target="_blank" rel="external">gofsm</a>是一个简单、小巧而又特色的有限状态机（FSM）。</p>
-<p>github已经有了很多状态机的实现，比如文末列出的一些，还为什么要再发明轮子呢？</p>
-<p>原因在于这些状态机有一个特点，就是一个状态机维护一个对象的状态，这样一个状态机就和一个具体的图像实例关联在一起，在有些情况下，这没有什么问题，而且是很好的设计，而且比较符合状态机的定义。但是在有些情况下，当我们需要维护成千上百个对象的时候，需要创建成千上百个状态机对象，这其实是很大的浪费，因为在大部分情况下，对象本身自己会维护/保持自己当前的状态，我们只需把对象当前的状态传递给一个共用的状态机就可以了，也就是gofsm本身是“stateless”，本身它包维护一个或者多个对象的状态，所有需要的输入由调用者输入，它只负责状态的转换的逻辑，所以它的实现非常的简洁实用，这是创建gofsm的一个目的。</p>
-<p>第二个原因它提供了Moore和Mealy两种状态机的统一接口，并且提供了UML状态机风格的Action处理，以程序员更熟悉的方式处理状态的改变。</p>
-<p>第三个原因，当我们谈论起状态机的时候，我们总会画一个状态转换图，大家可以根据这这张图进行讨论、设计、实现和验证状态的迁移。但是对于代码来说，实现真的和你的设计是一致的吗，你怎么保证？gofsm提供了一个简单的方法，那就是它可以输出图片或者pdf文件，你可以利用输出的状态机图和你的设计进行比较，看看实现和设计是否一致。</p>
-<p><img src="/2016/12/24/a-featured-fsm/state.png" alt="gofsm生成的闸门状态图"><br><a id="more"></a></p>
-<h2 id="有限状态机">有限状态机</h2>
-<p>有限状态机（finite-state machine）常常用于计算机程序和时序逻辑电路的设计数学模型。它被看作是一种抽象的机器，可以有有限个状态。任意时刻这个机器只有唯一的一个状态，这个状态称为当前状态。当有外部的事件或者条件被触发，它可以从一个状态转换到另一个状态，这就是转换（transition）。一个FSM就是由所有的状态、初始状态和每个转换的触发条件所定义。有时候，当这个转换发生的时候，我们可以要执行一些事情，我们称之为动作（Action）。</p>
-<p>现实情况中，我们实际上遇到了很多的这种状态机的情况，只不过我们并没有把它们抽象出来，比如路口的红绿灯，总是在红、黄、绿的状态之间转变，比如电梯的状态，包括开、关、上、下等几个状态。</p>
-<p>有限状态机可以有效清晰的为一大堆的问题建立模型，大量应用于电子设计、通讯协议、语言解析和其它的工程应用中，比如TCP/IP协议栈。</p>
-<p><img src="tcpfsm.png" alt="图像来源 http://www.tcpipguide.com"></p>
-<p>以一个转门为例，这种专门在一些会展、博物馆、公园的门口很常见，顾客可以投币或者刷卡刷票进入，我们下面以投币(Coin)统称这个触发事件。如果你不投币，闸门是锁着的，你推不动它的转臂，而且投一次币只能进去一个人，过去之后闸门又是锁着的，挺智能的 ：）。</p>
-<p><img src="turnstile.jpg" alt="图片来源 wikipedia"></p>
-<p>如果我们抽象出来它的状态图，可以用下图表示：<br><img src="wiki-fsm.png" alt="图片来源 wikipedia"></p>
-<p>它有两个状态：<code>Locked</code>、<code>Unlocked</code>。有两个输入（input）会影响它的状态，投币(coin)和推动转臂（push）。</p>
-<ol>
-<li>在Locked状态， push没有作用。不管比push多少次闸门的状态还是lock</li>
-<li>在Locked状态，投币会让闸门开锁，闸门可以让一个人通过</li>
-<li>在Unlocked状态，投币不起作用，闸门还是开着</li>
-<li>在Unlocked状态，如果有人push通过，人通过后闸门会由Unlocked状态转变成Locked状态。</li>
-</ol>
-<p>这是一个简单的闸门的状态转换，却是一个很好的理解状态的典型例子。</p>
-<p>以表格来表示：</p>
-<table><tbody><tr><th>Current State</th><th>Input</th><th>Next State</th><th>Output</th></tr><tr><th rowspan="2">Locked</th><td>coin</td><td>Unlocked</td><td>Unlock turnstile so customer can push through</td></tr><tr><td>push</td><td>Locked</td><td>None</td></tr><tr><th rowspan="2">Unlocked</th><td>coin</td><td>Unlocked</td><td>None</td></tr><tr><td>push</td><td>Locked</td><td>When customer has pushed through, lock turnstile</td></tr></tbody></table>
-
-
-<p>UML也有状态图的改变，它扩展了FSM的概念，提供了层次化的嵌套状态（Hierarchically nested states）和正交区域（orthogonal regions），当然这和本文没有太多的关系，有兴趣的读者可以找UML的资料看看。但是它提供了一个很好的概念，也就是动作（Action）。就像Mealy状态机所需要的一样，动作依赖系统的状态和触发事件，而它的Entry Action和Exit Action，却又像Moore 状态机一样，不依赖输入，只依赖状态。所以UML的动作有三种，一种是事件被处理的时候，状态机会执行特定的动作，比如改变变量、执行I/O、调用方法、触发另一个事件等。而离开一个状态，可以执行Exit action，进入一个状态，则执行Entry action。记住，收到一个事件，对象的状态不会改变，比如上边闸门的例子，在Locked状态下push多少次状态都没改变，这这种情况下，不会执行Exit和Entry action。</p>
-<p>gofsm提供了这种扩展的模型，当然如果你不想使用这种扩展，你也可以不去实现Entry和Exit。</p>
-<p>可以提到了两种状态机，这两种状态机是这样来区分的：</p>
-<ul>
-<li><strong>Moore machine</strong><br>Moore状态机只使用entry action，输出只依赖状态，不依赖输入。</li>
-<li><strong>Mealy machine</strong><br>Mealy状态机只使用input action，输出依赖输入input和状态state。使用这种状态机通常可以减少状态的数量。</li>
-</ul>
-<p>gofsm提供了一个通用的接口，你可以根据需要确定使用哪个状态机。从软件开发的实践上来看，有时候你并不一定要关注状态机的区分，而是清晰的抽象、设计你所关注的对象的状态、触发条件以及要执行的动作。</p>
-<h2 id="gofsm">gofsm</h2>
-<p>gofsm参考了 <a href="https://github.com/elimisteve/fsm" target="_blank" rel="external">elimisteve/fsm</a> 的实现，实现了一种单一状态机处理多个对象的方法，并且提供了输出状态图的功能。</p>
-<p>它除了定义对象的状态外，还定义了触发事件以及处理的Action，这些都是通过字符串来表示的，在使用的时候很容易的和你的对象、方法对应起来。</p>
-<p>使用gofsm也很简单，当然第一步将库拉到本地：</p>
-<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">go get -u github.com/smallnest/gofsm</div></pre></td></tr></table></figure>
-
-<p>我们以上面的闸门为例，看看gofsm是如何使用的。</p>
-<p>注意下面的单个状态机可以处理并行地的处理多个闸门的状态改变，虽然例子中只生成了一个闸门对象。</p>
-<p>首先定义一个闸门对象,它包含一个State，表示它当前的状态：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> Turnstile <span class="keyword">struct</span> {</div><div class="line">	ID         <span class="typename">uint64</span></div><div class="line">	EventCount <span class="typename">uint64</span> <span class="comment">//事件统计</span></div><div class="line">	CoinCount  <span class="typename">uint64</span> <span class="comment">//投币事件统计</span></div><div class="line">	PassCount  <span class="typename">uint64</span> <span class="comment">//顾客通过事件统计</span></div><div class="line">	State      <span class="typename">string</span> <span class="comment">//当前状态</span></div><div class="line">	States     []<span class="typename">string</span> <span class="comment">//历史经过的状态</span></div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>状态机的初始化简单直接：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> initFSM() *StateMachine {</div><div class="line">	delegate := &DefaultDelegate{p: &TurnstileEventProcessor{}}</div><div class="line"></div><div class="line">	transitions := []Transition{</div><div class="line">		Transition{From: <span class="string">"Locked"</span>, Event: <span class="string">"Coin"</span>, To: <span class="string">"Unlocked"</span>, Action: <span class="string">"check"</span>},</div><div class="line">		Transition{From: <span class="string">"Locked"</span>, Event: <span class="string">"Push"</span>, To: <span class="string">"Locked"</span>, Action: <span class="string">"invalid-push"</span>},</div><div class="line">		Transition{From: <span class="string">"Unlocked"</span>, Event: <span class="string">"Push"</span>, To: <span class="string">"Locked"</span>, Action: <span class="string">"pass"</span>},</div><div class="line">		Transition{From: <span class="string">"Unlocked"</span>, Event: <span class="string">"Coin"</span>, To: <span class="string">"Unlocked"</span>, Action: <span class="string">"repeat-check"</span>},</div><div class="line">	}</div><div class="line"></div><div class="line">	<span class="keyword">return</span> NewStateMachine(delegate, transitions...)</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>你定义好转换对应关系<code>transitions</code>,一个<code>Transition</code>代表一个转换，从某个状态到另外一个状态，触发的事件名，要执行的Action。<br>因为Action是字符串，所以你需要实现<code>delegate</code>将Action和对应的要处理的方法对应起来。</p>
-<p>注意from和to的状态可以一样，在这种情况下，状态没有发生改变，只是需要处理Action就可以了。</p>
-<p>如果Action为空，也就是不需要处理事件，只是发生状态的改变而已。</p>
-<p>处理Action的类型如下：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> TurnstileEventProcessor <span class="keyword">struct</span>{}</div><div class="line"></div><div class="line"><span class="keyword">func</span> (p *TurnstileEventProcessor) OnExit(fromState <span class="typename">string</span>, args []<span class="keyword">interface</span>{}) {</div><div class="line">	……</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> (p *TurnstileEventProcessor) Action(action <span class="typename">string</span>, fromState <span class="typename">string</span>, toState <span class="typename">string</span>, args []<span class="keyword">interface</span>{}) {</div><div class="line">	……</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> (p *TurnstileEventProcessor) OnEnter(toState <span class="typename">string</span>, args []<span class="keyword">interface</span>{}) {</div><div class="line">    ……</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>然后我们就可以触发一些事件看看闸门的状态机是否正常工作：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div><div class="line">35</div><div class="line">36</div><div class="line">37</div><div class="line">38</div><div class="line">39</div><div class="line">40</div><div class="line">41</div><div class="line">42</div><div class="line">43</div><div class="line">44</div><div class="line">45</div><div class="line">46</div><div class="line">47</div><div class="line">48</div><div class="line">49</div><div class="line">50</div><div class="line">51</div><div class="line">52</div><div class="line">53</div><div class="line">54</div><div class="line">55</div><div class="line">56</div><div class="line">57</div><div class="line">58</div><div class="line">59</div><div class="line">60</div><div class="line">61</div><div class="line">62</div><div class="line">63</div></pre></td><td class="code"><pre><div class="line">ts := &Turnstile{</div><div class="line">	ID:    <span class="number"> 1</span>,</div><div class="line">	State:  <span class="string">"Locked"</span>,</div><div class="line">	States: []<span class="typename">string</span>{<span class="string">"Locked"</span>},</div><div class="line">}</div><div class="line">fsm := initFSM()</div><div class="line"></div><div class="line"><span class="comment">//推门</span></div><div class="line"><span class="comment">//没刷卡/投币不可进入</span></div><div class="line">err := fsm.Trigger(ts.State, <span class="string">"Push"</span>, ts)</div><div class="line"><span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">	t.Errorf(<span class="string">"trigger err: %v"</span>, err)</div><div class="line">}</div><div class="line"></div><div class="line"><span class="comment">//推门</span></div><div class="line"><span class="comment">//没刷卡/投币不可进入</span></div><div class="line">err = fsm.Trigger(ts.State, <span class="string">"Push"</span>, ts)</div><div class="line"><span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">	t.Errorf(<span class="string">"trigger err: %v"</span>, err)</div><div class="line">}</div><div class="line"></div><div class="line"><span class="comment">//刷卡或者投币</span></div><div class="line"><span class="comment">//不容易啊，终于解锁了</span></div><div class="line">err = fsm.Trigger(ts.State, <span class="string">"Coin"</span>, ts)</div><div class="line"><span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">	t.Errorf(<span class="string">"trigger err: %v"</span>, err)</div><div class="line">}</div><div class="line"></div><div class="line"><span class="comment">//刷卡或者投币</span></div><div class="line"><span class="comment">//这时才解锁</span></div><div class="line">err = fsm.Trigger(ts.State, <span class="string">"Coin"</span>, ts)</div><div class="line"><span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">	t.Errorf(<span class="string">"trigger err: %v"</span>, err)</div><div class="line">}</div><div class="line"></div><div class="line"><span class="comment">//推门</span></div><div class="line"><span class="comment">//这时才能进入，进入后闸门被锁</span></div><div class="line">err = fsm.Trigger(ts.State, <span class="string">"Push"</span>, ts)</div><div class="line"><span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">	t.Errorf(<span class="string">"trigger err: %v"</span>, err)</div><div class="line">}</div><div class="line"></div><div class="line"><span class="comment">//推门</span></div><div class="line"><span class="comment">//无法进入，闸门已锁</span></div><div class="line">err = fsm.Trigger(ts.State, <span class="string">"Push"</span>, ts)</div><div class="line"><span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">	t.Errorf(<span class="string">"trigger err: %v"</span>, err)</div><div class="line">}</div><div class="line"></div><div class="line">lastState := Turnstile{</div><div class="line">	ID:        <span class="number"> 1</span>,</div><div class="line">	EventCount:<span class="number"> 6</span>,</div><div class="line">	CoinCount: <span class="number"> 2</span>,</div><div class="line">	PassCount: <span class="number"> 1</span>,</div><div class="line">	State:      <span class="string">"Locked"</span>,</div><div class="line">	States:     []<span class="typename">string</span>{<span class="string">"Locked"</span>, <span class="string">"Unlocked"</span>, <span class="string">"Locked"</span>},</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">if</span> !compareTurnstile(&lastState, ts) {</div><div class="line">	t.Errorf(<span class="string">"Expected last state: %+v, but got %+v"</span>, lastState, ts)</div><div class="line">} <span class="keyword">else</span> {</div><div class="line">	t.Logf(<span class="string">"最终的状态: %+v"</span>, ts)</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>如果想将状态图输出图片，可以调用下面的方法，它实际是调用graphviz生成的，所以请确保你的机器上是否安装了这个软件，你可以执行<code>dot -h</code>检查一下：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">fsm.Export(<span class="string">"state.png"</span>)</div></pre></td></tr></table></figure>
-
-<p>生成的图片就是文首的闸门的状态机的图片。</p>
-<p>如果你想定制graphviz的参数，你可以调用另外一个方法：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> (m *StateMachine) ExportWithDetails(outfile <span class="typename">string</span>, format <span class="typename">string</span>, layout <span class="typename">string</span>, scale <span class="typename">string</span>, more <span class="typename">string</span>) error</div></pre></td></tr></table></figure>
-
-<h2 id="其它Go语言实现的FSM">其它Go语言实现的FSM</h2>
-<p>如果你发现gofsm的功能需要改进，或者有一些想法、或者发现了bug，请不用迟疑，在<a href="https://github.com/smallnest/gofsm/issues" target="_blank" rel="external">issue</a>中提交你的意见和建议，我会及时的进行反馈。</p>
-<p>如果你觉得本项目有用，或者将来可能会使用，请star这个项目 <a href="https://github.com/smallnest/gofsm" target="_blank" rel="external">smallnest/gofsm</a>。</p>
-<p>如果你想比较其它的Go语言实现的fsm，可以参考下面的列表：</p>
-<ul>
-<li><a href="https://github.com/elimisteve/fsm" target="_blank" rel="external">elimisteve/fsm</a></li>
-<li><a href="https://github.com/looplab/fsm" target="_blank" rel="external">looplab/fsm</a></li>
-<li><a href="https://github.com/vaughan0/go-fsm" target="_blank" rel="external">vaughan0/go-fsm</a></li>
-<li><a href="https://github.com/WatchBeam/fsm" target="_blank" rel="external">WatchBeam/fsm</a></li>
-<li><a href="https://github.com/DiscoViking/fsm" target="_blank" rel="external">DiscoViking/fsm</a></li>
-<li><a href="https://github.com/autocube/hsm" target="_blank" rel="external">autocube/hsm</a></li>
-<li><a href="https://github.com/theckman/go-fsm" target="_blank" rel="external">theckman/go-fsm</a></li>
-<li><a href="https://github.com/Zumata/fsm" target="_blank" rel="external">Zumata/fsm</a></li>
-<li><a href="https://github.com/syed/go-fsm" target="_blank" rel="external">syed/go-fsm</a></li>
-<li><a href="https://github.com/go-rut/fsm" target="_blank" rel="external">go-rut/fsm</a></li>
-<li><a href="https://github.com/yandd/fsm" target="_blank" rel="external">yandd/fsm</a></li>
-<li><a href="https://github.com/go-trellis/fsm" target="_blank" rel="external">go-trellis/fsm</a></li>
-<li>……</li>
-</ul>
-<h2 id="参考资料">参考资料</h2>
-<ol>
-<li><a href="https://en.wikipedia.org/wiki/Finite-state_machine" target="_blank" rel="external">https://en.wikipedia.org/wiki/Finite-state_machine</a></li>
-</ol>
-]]></content>
-    <summary type="html">
-    <![CDATA[<p><a href="https://github.com/smallnest/gofsm" target="_blank" rel="external">gofsm</a>是一个简单、小巧而又特色的有限状态机（FSM）。</p>
-<p>github已经有了很多状态机的实现，比如文末列出的一些，还为什么要再发明轮子呢？</p>
-<p>原因在于这些状态机有一个特点，就是一个状态机维护一个对象的状态，这样一个状态机就和一个具体的图像实例关联在一起，在有些情况下，这没有什么问题，而且是很好的设计，而且比较符合状态机的定义。但是在有些情况下，当我们需要维护成千上百个对象的时候，需要创建成千上百个状态机对象，这其实是很大的浪费，因为在大部分情况下，对象本身自己会维护/保持自己当前的状态，我们只需把对象当前的状态传递给一个共用的状态机就可以了，也就是gofsm本身是“stateless”，本身它包维护一个或者多个对象的状态，所有需要的输入由调用者输入，它只负责状态的转换的逻辑，所以它的实现非常的简洁实用，这是创建gofsm的一个目的。</p>
-<p>第二个原因它提供了Moore和Mealy两种状态机的统一接口，并且提供了UML状态机风格的Action处理，以程序员更熟悉的方式处理状态的改变。</p>
-<p>第三个原因，当我们谈论起状态机的时候，我们总会画一个状态转换图，大家可以根据这这张图进行讨论、设计、实现和验证状态的迁移。但是对于代码来说，实现真的和你的设计是一致的吗，你怎么保证？gofsm提供了一个简单的方法，那就是它可以输出图片或者pdf文件，你可以利用输出的状态机图和你的设计进行比较，看看实现和设计是否一致。</p>
-<p><img src="/2016/12/24/a-featured-fsm/state.png" alt="gofsm生成的闸门状态图"><br>]]>
     
     </summary>
     
