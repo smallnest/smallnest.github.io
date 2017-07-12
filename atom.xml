@@ -4,7 +4,7 @@
   <subtitle><![CDATA[大道至简 Simplicity is the ultimate form of sophistication]]></subtitle>
   <link href="/atom.xml" rel="self"/>
   <link href="http://colobu.com/"/>
-  <updated>2017-07-11T07:34:42.798Z</updated>
+  <updated>2017-07-12T10:14:05.522Z</updated>
   <id>http://colobu.com/</id>
   
   <author>
@@ -13,6 +13,128 @@
   </author>
   
   <generator uri="http://zespia.tw/hexo/">Hexo</generator>
+  
+  <entry>
+    <title><![CDATA[Go 1.9 sync.Map揭秘]]></title>
+    <link href="http://colobu.com/2017/07/11/dive-into-sync-Map/"/>
+    <id>http://colobu.com/2017/07/11/dive-into-sync-Map/</id>
+    <published>2017-07-11T10:09:48.000Z</published>
+    <updated>2017-07-12T10:11:39.000Z</updated>
+    <content type="html"><![CDATA[<p>在Go 1.6之前， 内置的map类型是部分goroutine安全的，并发的读没有问题，并发的写可能有问题。自go 1.6之后， 并发地读写map会报错，这在一些知名的开源库中都存在这个问题，所以go 1.9之前的解决方案是额外绑定一个锁，封装成一个新的struct或者单独使用锁都可以。</p>
+<p>本文带你深入到<code>sync.Map</code>的具体实现中，看看为了增加一个功能，代码是如何变的复杂的,以及作者在实现<code>sync.Map</code>的一些思想。</p>
+<a id="more"></a>
+<h3 id="有并发问题的map">有并发问题的map</h3>
+<p>官方的<a href="https://golang.org/doc/faq#atomic_maps" target="_blank" rel="external">faq</a>已经提到内建的<code>map</code>不是线程(goroutine)安全的。</p>
+<p>首先，让我们看一段并发读写的代码,下列程序中一个goroutine一直读，一个goroutine一只写同一个键值，即即使读写的键不相同，而且map也没有&quot;扩容&quot;等操作，代码还是会报错。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> main</div><div class="line"></div><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	m := <span class="built_in">make</span>(<span class="keyword">map</span>[<span class="typename">int</span>]<span class="typename">int</span>)</div><div class="line"></div><div class="line">	<span class="keyword">go</span> <span class="keyword">func</span>() {</div><div class="line">		<span class="keyword">for</span> {</div><div class="line">			_ = m<span class="number">[1</span>]</div><div class="line">		}</div><div class="line">	}()</div><div class="line"></div><div class="line">	<span class="keyword">go</span> <span class="keyword">func</span>() {</div><div class="line">		<span class="keyword">for</span> {</div><div class="line">			m<span class="number">[2</span>] =<span class="number"> 2</span></div><div class="line">		}</div><div class="line">	}()</div><div class="line"></div><div class="line">	<span class="keyword">select</span> {}</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>错误信息是: <code>fatal error: concurrent map read and map write</code>。</p>
+<p>如果你查看Go的源代码: <a href="https://github.com/golang/go/blob/master/src/runtime/hashmap_fast.go#L118" target="_blank" rel="external">hashmap_fast.go#L118</a>,会看到读的时候会检查<code>hashWriting</code>标志， 如果有这个标志，就会报并发错误。</p>
+<p>写的时候会设置这个标志: <a href="https://github.com/golang/go/blob/master/src/runtime/hashmap.go#L542" target="_blank" rel="external">hashmap.go#L542</a></p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">h.flags |= hashWriting</div></pre></td></tr></table></figure>
+
+<p><a href="https://github.com/golang/go/blob/master/src/runtime/hashmap.go#L628" target="_blank" rel="external">hashmap.go#L628</a>设置完之后会取消这个标记。</p>
+<p>当然，代码中还有好几处并发读写的检查， 比如写的时候也会检查是不是有并发的写，删除键的时候类似写，遍历的时候并发读写问题等。</p>
+<p>有时候，map的并发问题不是那么容易被发现, 你可以利用<code>-race</code>参数来检查。</p>
+<h3 id="Go_1-9之前的解决方案">Go 1.9之前的解决方案</h3>
+<p>但是，很多时候，我们会并发地使用map对象，尤其是在一定规模的项目中，map总会保存goroutine共享的数据。在Go官方blog的<a href="https://blog.golang.org/go-maps-in-action" target="_blank" rel="external">Go maps in action</a>一文中，提供了一种简便的解决方案。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">var</span> counter = <span class="keyword">struct</span>{</div><div class="line">    sync.RWMutex</div><div class="line">    m <span class="keyword">map</span>[<span class="typename">string</span>]<span class="typename">int</span></div><div class="line">}{m: <span class="built_in">make</span>(<span class="keyword">map</span>[<span class="typename">string</span>]<span class="typename">int</span>)}</div></pre></td></tr></table></figure>
+
+<p>它使用嵌入struct为map增加一个读写锁。</p>
+<p>读数据的时候很方便的加锁：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line">counter.RLock()</div><div class="line">n := counter.m[<span class="string">"some_key"</span>]</div><div class="line">counter.RUnlock()</div><div class="line">fmt.Println(<span class="string">"some_key:"</span>, n)</div></pre></td></tr></table></figure>
+
+<p>写数据的时候:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line">counter.Lock()</div><div class="line">counter.m[<span class="string">"some_key"</span>]++</div><div class="line">counter.Unlock()</div></pre></td></tr></table></figure>
+
+<h3 id="sync-Map">sync.Map</h3>
+<p>可以说，上面的解决方案相当简洁，并且利用读写锁而不是Mutex可以进一步减少读写的时候因为锁带来的性能。</p>
+<p>但是，它在一些场景下也有问题，如果熟悉Java的同学，可以对比一下java的<code>ConcurrentHashMap</code>的实现，在map的数据非常大的情况下，一把锁会导致大并发的客户端共争一把锁，Java的解决方案是<code>shard</code>, 内部使用多个锁，每个区间共享一把锁，这样减少了数据共享一把锁带来的性能影响，<a href="https://github.com/orcaman" target="_blank" rel="external">orcaman</a>提供了这个思路的一个实现： <a href="https://github.com/orcaman/concurrent-map" target="_blank" rel="external">concurrent-map</a>，他也询问了Go相关的开发人员是否在Go中也实现这种<a href="https://github.com/golang/go/issues/20360" target="_blank" rel="external">方案</a>，由于实现的复杂性，答案是<code>Yes, we considered it.</code>,但是除非有特别的性能提升和应用场景，否则没有进一步的开发消息。</p>
+<p>那么，在Go 1.9中<code>sync.Map</code>是怎么实现的呢？它是如何解决并发提升性能的呢？</p>
+<p><code>sync.Map</code>的实现有几个优化点，这里先列出来，我们后面慢慢分析。</p>
+<ol>
+<li>空间换时间。 通过冗余的两个数据结构(read、dirty),实现加锁对性能的影响。</li>
+<li>使用只读数据(read)，避免读写冲突。</li>
+<li>动态调整，miss次数多了之后，将dirty数据提升为read。</li>
+<li>double-checking。</li>
+<li>延迟删除。 删除一个键值只是打标记，只有在提升dirty的时候才清理删除的数据。</li>
+<li>优先从read读取、更新、删除，因为对read的读取不需要锁。</li>
+</ol>
+<p>下面我们介绍<code>sync.Map</code>的重点代码，以便理解它的实现思想。</p>
+<p>首先，我们看一下<code>sync.Map</code>的数据结构：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> Map <span class="keyword">struct</span> {</div><div class="line">	<span class="comment">// 当涉及到dirty数据的操作的时候，需要使用这个锁</span></div><div class="line">	mu Mutex</div><div class="line"></div><div class="line">	<span class="comment">// 一个只读的数据结构，因为只读，所以不会有读写冲突。</span></div><div class="line">	<span class="comment">// 所以从这个数据中读取总是安全的。</span></div><div class="line">	<span class="comment">// 实际上，实际也会更新这个数据的entries,如果entry是未删除的(unexpunged), 并不需要加锁。如果entry已经被删除了，需要加锁，以便更新dirty数据。</span></div><div class="line">	read atomic.Value <span class="comment">// readOnly</span></div><div class="line"></div><div class="line">	<span class="comment">// dirty数据包含当前的map包含的entries,它包含最新的entries(包括read中未删除的数据,虽有冗余，但是提升dirty字段为read的时候非常快，不用一个一个的复制，而是直接将这个数据结构作为read字段的一部分),有些数据还可能没有移动到read字段中。</span></div><div class="line">	<span class="comment">// 对于dirty的操作哦需要加锁，因为对它的操作可能会有读写竞争。</span></div><div class="line">	<span class="comment">// 当dirty为空的时候， 比如初始化或者刚提升完，下一次的写操作会复制read字段中未删除的数据到这个数据中。</span></div><div class="line">	dirty <span class="keyword">map</span>[<span class="keyword">interface</span>{}]*entry</div><div class="line"></div><div class="line">	<span class="comment">// 当从Map中读取entry的时候，如果read中不包含这个entry,会尝试从dirty中读取，这个时候会将misses加一，</span></div><div class="line">	<span class="comment">// 当misses累积到 dirty的长度的时候， 就会将dirty提升为read,避免从dirty中miss太多次。因为操作dirty需要加锁。</span></div><div class="line">	misses <span class="typename">int</span></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>它的数据结构很简单，值包含四个字段：<code>read</code>、<code>mu</code>、<code>dirty</code>、<code>misses</code>。</p>
+<p>它使用了冗余的数据结构<code>read</code>、<code>dirty</code>。<code>dirty</code>中会包含<code>read</code>中为删除的entries，新增加的entries会加入到<code>dirty</code>中。</p>
+<p><code>read</code>的数据结构是：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> readOnly <span class="keyword">struct</span> {</div><div class="line">	m       <span class="keyword">map</span>[<span class="keyword">interface</span>{}]*entry</div><div class="line">	amended <span class="typename">bool</span> <span class="comment">// 如果Map.dirty有些数据不在中的时候，这个值为true</span></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p><code>amended</code>指明<code>Map.dirty</code>中有<code>readOnly.m</code>未包含的数据，所以如果从<code>Map.read</code>找不到数据的话，还要进一步到<code>Map.dirty</code>中查找。</p>
+<p>对Map.read的修改是通过原子操作进行的。</p>
+<p>虽然<code>read</code>和<code>dirty</code>有冗余数据，但这些数据是通过指针指向同一个数据，所以尽管Map的value会很大，但是冗余的空间占用还是有限的。</p>
+<p><code>readOnly.m</code>和<code>Map.dirty</code>存储的值类型是<code>*entry</code>,它包含一个指针p, 指向用户存储的value值。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> entry <span class="keyword">struct</span> {</div><div class="line">	p unsafe.Pointer <span class="comment">// *interface{}</span></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>p有三种值：</p>
+<ul>
+<li>nil: entry已被删除了，并且m.dirty为nil</li>
+<li>expunged: entry已被删除了，并且m.dirty不为nil，而且这个entry不存在于m.dirty中</li>
+<li>其它： entry是一个正常的值</li>
+</ul>
+<p>以上是<code>sync.Map</code>的数据结构，下面我们重点看看<code>Load</code>、<code>Store</code>、<code>Delete</code>、<code>Range</code>这四个方法，其它辅助方法可以参考这四个方法来理解。</p>
+<h4 id="Load">Load</h4>
+<p>加载方法，也就是提供一个键<code>key</code>,查找对应的值<code>value</code>,如果不存在，通过<code>ok</code>反映：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> (m *Map) Load(key <span class="keyword">interface</span>{}) (value <span class="keyword">interface</span>{}, ok <span class="typename">bool</span>) {</div><div class="line">	<span class="comment">// 1.首先从m.read中得到只读readOnly,从它的map中查找，不需要加锁</span></div><div class="line">	read, _ := m.read.Load().(readOnly)</div><div class="line">	e, ok := read.m[key]</div><div class="line"></div><div class="line">	<span class="comment">// 2. 如果没找到，并且m.dirty中有新数据，需要从m.dirty查找，这个时候需要加锁</span></div><div class="line">	<span class="keyword">if</span> !ok && read.amended {</div><div class="line">		m.mu.Lock()</div><div class="line">		<span class="comment">// 双检查，避免加锁的时候m.dirty提升为m.read,这个时候m.read可能被替换了。</span></div><div class="line">		read, _ = m.read.Load().(readOnly)</div><div class="line">		e, ok = read.m[key]</div><div class="line"></div><div class="line">		<span class="comment">// 如果m.read中还是不存在，并且m.dirty中有新数据</span></div><div class="line">		<span class="keyword">if</span> !ok && read.amended {</div><div class="line">			<span class="comment">// 从m.dirty查找</span></div><div class="line">			e, ok = m.dirty[key]</div><div class="line">			<span class="comment">// 不管m.dirty中存不存在，都将misses计数加一</span></div><div class="line">			<span class="comment">// missLocked()中满足条件后就会提升m.dirty</span></div><div class="line">			m.missLocked()</div><div class="line">		}</div><div class="line">		m.mu.Unlock()</div><div class="line">	}</div><div class="line">	<span class="keyword">if</span> !ok {</div><div class="line">		<span class="keyword">return</span> <span class="constant">nil</span>, <span class="constant">false</span></div><div class="line">	}</div><div class="line">	<span class="keyword">return</span> e.load()</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>这里有两个值的关注的地方。一个是首先从<code>m.read</code>中加载，不存在的情况下，并且<code>m.dirty</code>中有新数据，加锁，然后从<code>m.dirty</code>中加载。</p>
+<p>二是这里使用了双检查的处理，因为在下面的两个语句中，这两行语句并不是一个原子操作。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">if</span> !ok && read.amended {</div><div class="line">		m.mu.Lock()</div></pre></td></tr></table></figure>
+
+<p>虽然第一句执行的时候条件满足，但是在加锁之前，<code>m.dirty</code>可能被提升为<code>m.read</code>,所以加锁后还得再检查<code>m.read</code>，后续的方法中都使用了这个方法。</p>
+<p>双检查的技术Java程序员非常熟悉了，单例模式的实现之一就是利用双检查的技术。</p>
+<p>可以看到，如果我们查询的键值正好存在于<code>m.read</code>中，无须加锁，直接返回，理论上性能优异。即使不存在于<code>m.read</code>中，经过<code>miss</code>几次之后，<code>m.dirty</code>会被提升为<code>m.read</code>，又会从<code>m.read</code>中查找。所以对于更新／增加较少，加载存在的key很多的case,性能基本和无锁的map类似。</p>
+<p>下面看看<code>m.dirty</code>是如何被提升的。 <code>missLocked</code>方法中可能会将<code>m.dirty</code>提升。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> (m *Map) missLocked() {</div><div class="line">	m.misses++</div><div class="line">	<span class="keyword">if</span> m.misses &lt; <span class="built_in">len</span>(m.dirty) {</div><div class="line">		<span class="keyword">return</span></div><div class="line">	}</div><div class="line">	m.read.Store(readOnly{m: m.dirty})</div><div class="line">	m.dirty = <span class="constant">nil</span></div><div class="line">	m.misses =<span class="number"> 0</span></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>上面的最后三行代码就是提升<code>m.dirty</code>的，很简单的将<code>m.dirty</code>作为<code>readOnly</code>的<code>m</code>字段，原子更新<code>m.read</code>。提升后<code>m.dirty</code>、<code>m.misses</code>重置， 并且<code>m.read.amended</code>为false。</p>
+<h4 id="Store">Store</h4>
+<p>这个方法是更新或者新增一个entry。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div><div class="line">35</div><div class="line">36</div><div class="line">37</div><div class="line">38</div><div class="line">39</div><div class="line">40</div><div class="line">41</div><div class="line">42</div><div class="line">43</div><div class="line">44</div><div class="line">45</div><div class="line">46</div><div class="line">47</div><div class="line">48</div><div class="line">49</div><div class="line">50</div><div class="line">51</div><div class="line">52</div><div class="line">53</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> (m *Map) Store(key, value <span class="keyword">interface</span>{}) {</div><div class="line">	<span class="comment">// 如果m.read存在这个键，并且这个entry没有被标记删除，尝试直接存储。</span></div><div class="line">	<span class="comment">// 因为m.dirty也指向这个entry,所以m.dirty也保持最新的entry。</span></div><div class="line">	read, _ := m.read.Load().(readOnly)</div><div class="line">	<span class="keyword">if</span> e, ok := read.m[key]; ok && e.tryStore(&value) {</div><div class="line">		<span class="keyword">return</span></div><div class="line">	}</div><div class="line"></div><div class="line">	<span class="comment">// 如果`m.read`不存在或者已经被标记删除</span></div><div class="line">	m.mu.Lock()</div><div class="line">	read, _ = m.read.Load().(readOnly)</div><div class="line"></div><div class="line">	<span class="keyword">if</span> e, ok := read.m[key]; ok {</div><div class="line">		<span class="keyword">if</span> e.unexpungeLocked() { <span class="comment">//标记成未被删除</span></div><div class="line">			m.dirty[key] = e <span class="comment">//m.dirty中不存在这个键，所以加如m.dirty</span></div><div class="line">		}</div><div class="line">		e.storeLocked(&value) <span class="comment">//更新</span></div><div class="line">	} <span class="keyword">else</span> <span class="keyword">if</span> e, ok := m.dirty[key]; ok { <span class="comment">// m.dirty存在这个键，更新</span></div><div class="line">		e.storeLocked(&value)</div><div class="line">	} <span class="keyword">else</span> { <span class="comment">//新键值</span></div><div class="line">		<span class="keyword">if</span> !read.amended { <span class="comment">//m.dirty中没有新的数据，往m.dirty中增加第一个新键</span></div><div class="line">			m.dirtyLocked() <span class="comment">//从m.read中复制未删除的数据</span></div><div class="line">			m.read.Store(readOnly{m: read.m, amended: <span class="constant">true</span>})</div><div class="line">		}</div><div class="line">		m.dirty[key] = newEntry(value) <span class="comment">//将这个entry加入到m.dirty中</span></div><div class="line">	}</div><div class="line">	m.mu.Unlock()</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> (m *Map) dirtyLocked() {</div><div class="line">	<span class="keyword">if</span> m.dirty != <span class="constant">nil</span> {</div><div class="line">		<span class="keyword">return</span></div><div class="line">	}</div><div class="line"></div><div class="line">	read, _ := m.read.Load().(readOnly)</div><div class="line">	m.dirty = <span class="built_in">make</span>(<span class="keyword">map</span>[<span class="keyword">interface</span>{}]*entry, <span class="built_in">len</span>(read.m))</div><div class="line">	<span class="keyword">for</span> k, e := <span class="keyword">range</span> read.m {</div><div class="line">		<span class="keyword">if</span> !e.tryExpungeLocked() {</div><div class="line">			m.dirty[k] = e</div><div class="line">		}</div><div class="line">	}</div><div class="line">}</div><div class="line"><span class="keyword">func</span> (e *entry) tryExpungeLocked() (isExpunged <span class="typename">bool</span>) {</div><div class="line">	p := atomic.LoadPointer(&e.p)</div><div class="line">	<span class="keyword">for</span> p == <span class="constant">nil</span> {</div><div class="line">		<span class="comment">// 将已经删除标记为nil的数据标记为expunged</span></div><div class="line">		<span class="keyword">if</span> atomic.CompareAndSwapPointer(&e.p, <span class="constant">nil</span>, expunged) {</div><div class="line">			<span class="keyword">return</span> <span class="constant">true</span></div><div class="line">		}</div><div class="line">		p = atomic.LoadPointer(&e.p)</div><div class="line">	}</div><div class="line">	<span class="keyword">return</span> p == expunged</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>你可以看到，以上操作都是先从操作<code>m.read</code>开始的，不满足条件再加锁，然后操作<code>m.dirty</code>。</p>
+<p><code>Store</code>可能会在某种情况下(初始化或者m.dirty刚被提升后)从<code>m.read</code>中复制数据，如果这个时候<code>m.read</code>中数据量非常大，可能会影响性能。</p>
+<h4 id="Delete">Delete</h4>
+<p>删除一个键值。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> (m *Map) Delete(key <span class="keyword">interface</span>{}) {</div><div class="line">	read, _ := m.read.Load().(readOnly)</div><div class="line">	e, ok := read.m[key]</div><div class="line">	<span class="keyword">if</span> !ok && read.amended {</div><div class="line">		m.mu.Lock()</div><div class="line">		read, _ = m.read.Load().(readOnly)</div><div class="line">		e, ok = read.m[key]</div><div class="line">		<span class="keyword">if</span> !ok && read.amended {</div><div class="line">			<span class="built_in">delete</span>(m.dirty, key)</div><div class="line">		}</div><div class="line">		m.mu.Unlock()</div><div class="line">	}</div><div class="line">	<span class="keyword">if</span> ok {</div><div class="line">		e.<span class="built_in">delete</span>()</div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>同样，删除操作还是从<code>m.read</code>中开始， 如果这个entry不存在于<code>m.read</code>中，并且<code>m.dirty</code>中有新数据，则加锁尝试从<code>m.dirty</code>中删除。</p>
+<p>注意，还是要双检查的。 从<code>m.dirty</code>中直接删除即可，就当它没存在过，但是如果是从<code>m.read</code>中删除，并不会直接删除，而是打标记：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> (e *entry) <span class="built_in">delete</span>() (hadValue <span class="typename">bool</span>) {</div><div class="line">	<span class="keyword">for</span> {</div><div class="line">		p := atomic.LoadPointer(&e.p)</div><div class="line">		<span class="comment">// 已标记为删除</span></div><div class="line">		<span class="keyword">if</span> p == <span class="constant">nil</span> || p == expunged {</div><div class="line">			<span class="keyword">return</span> <span class="constant">false</span></div><div class="line">		}</div><div class="line">		<span class="comment">// 原子操作，e.p标记为nil</span></div><div class="line">		<span class="keyword">if</span> atomic.CompareAndSwapPointer(&e.p, p, <span class="constant">nil</span>) {</div><div class="line">			<span class="keyword">return</span> <span class="constant">true</span></div><div class="line">		}</div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<h4 id="Range">Range</h4>
+<p>因为<code>for ... range map</code>是内建的语言特性，所以没有办法使用<code>for range</code>遍历<code>sync.Map</code>, 但是可以使用它的<code>Range</code>方法，通过回调的方式遍历。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> (m *Map) Range(f <span class="keyword">func</span>(key, value <span class="keyword">interface</span>{}) <span class="typename">bool</span>) {</div><div class="line">	read, _ := m.read.Load().(readOnly)</div><div class="line"></div><div class="line">	<span class="comment">// 如果m.dirty中有新数据，则提升m.dirty,然后在遍历</span></div><div class="line">	<span class="keyword">if</span> read.amended {</div><div class="line">		<span class="comment">//提升m.dirty</span></div><div class="line">		m.mu.Lock()</div><div class="line">		read, _ = m.read.Load().(readOnly) <span class="comment">//双检查</span></div><div class="line">		<span class="keyword">if</span> read.amended {</div><div class="line">			read = readOnly{m: m.dirty}</div><div class="line">			m.read.Store(read)</div><div class="line">			m.dirty = <span class="constant">nil</span></div><div class="line">			m.misses =<span class="number"> 0</span></div><div class="line">		}</div><div class="line">		m.mu.Unlock()</div><div class="line">	}</div><div class="line"></div><div class="line">	<span class="comment">// 遍历, for range是安全的</span></div><div class="line">	<span class="keyword">for</span> k, e := <span class="keyword">range</span> read.m {</div><div class="line">		v, ok := e.load()</div><div class="line">		<span class="keyword">if</span> !ok {</div><div class="line">			<span class="keyword">continue</span></div><div class="line">		}</div><div class="line">		<span class="keyword">if</span> !f(k, v) {</div><div class="line">			<span class="keyword">break</span></div><div class="line">		}</div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>Range方法调用前可能会做一个<code>m.dirty</code>的提升，不过提升<code>m.dirty</code>不是一个耗时的操作。</p>
+<h3 id="sync-Map的性能">sync.Map的性能</h3>
+<p>Go 1.9源代码中提供了性能的测试： <a href="https://github.com/golang/go/blob/master/src/sync/map_bench_test.go" target="_blank" rel="external">map_bench_test.go</a>、<a href="https://github.com/golang/go/blob/master/src/sync/map_reference_test.go" target="_blank" rel="external">map_reference_test.go</a></p>
+<p>我也基于这些代码修改了一下，得到下面的测试数据，相比较以前的解决方案，性能多少回有些提升，如果你特别关注性能，可以考虑<code>sync.Map</code>。</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div></pre></td><td class="code"><pre><div class="line">BenchmarkHitAll/*<span class="keyword">sync</span>.RWMutexMap-<span class="number">4</span>   	<span class="number">20000000</span>	        <span class="number">83.8</span> ns/op</div><div class="line">BenchmarkHitAll/*<span class="keyword">sync</span>.Map-<span class="number">4</span>          	<span class="number">30000000</span>	        <span class="number">59.9</span> ns/op</div><div class="line">BenchmarkHitAll_WithoutPrompting/*<span class="keyword">sync</span>.RWMutexMap-<span class="number">4</span>         	<span class="number">20000000</span>	        <span class="number">96.9</span> ns/op</div><div class="line">BenchmarkHitAll_WithoutPrompting/*<span class="keyword">sync</span>.Map-<span class="number">4</span>                	<span class="number">20000000</span>	        <span class="number">64.1</span> ns/op</div><div class="line">BenchmarkHitNone/*<span class="keyword">sync</span>.RWMutexMap-<span class="number">4</span>                         	<span class="number">20000000</span>	        <span class="number">79.1</span> ns/op</div><div class="line">BenchmarkHitNone/*<span class="keyword">sync</span>.Map-<span class="number">4</span>                                	<span class="number">30000000</span>	        <span class="number">43.3</span> ns/op</div><div class="line">BenchmarkHit_WithoutPrompting/*<span class="keyword">sync</span>.RWMutexMap-<span class="number">4</span>            	<span class="number">20000000</span>	        <span class="number">81.5</span> ns/op</div><div class="line">BenchmarkHit_WithoutPrompting/*<span class="keyword">sync</span>.Map-<span class="number">4</span>                   	<span class="number">30000000</span>	        <span class="number">44.0</span> ns/op</div><div class="line">BenchmarkUpdate/*<span class="keyword">sync</span>.RWMutexMap-<span class="number">4</span>                          	 <span class="number">5000000</span>	       <span class="number">328</span> ns/op</div><div class="line">BenchmarkUpdate/*<span class="keyword">sync</span>.Map-<span class="number">4</span>                                 	<span class="number">10000000</span>	       <span class="number">146</span> ns/op</div><div class="line">BenchmarkUpdate_WithoutPrompting/*<span class="keyword">sync</span>.RWMutexMap-<span class="number">4</span>         	 <span class="number">5000000</span>	       <span class="number">336</span> ns/op</div><div class="line">BenchmarkUpdate_WithoutPrompting/*<span class="keyword">sync</span>.Map-<span class="number">4</span>                	 <span class="number">5000000</span>	       <span class="number">324</span> ns/op</div><div class="line">BenchmarkDelete/*<span class="keyword">sync</span>.RWMutexMap-<span class="number">4</span>                          	<span class="number">10000000</span>	       <span class="number">155</span> ns/op</div><div class="line">BenchmarkDelete/*<span class="keyword">sync</span>.Map-<span class="number">4</span>                                 	<span class="number">30000000</span>	        <span class="number">55.0</span> ns/op</div><div class="line">BenchmarkDelete_WithoutPrompting/*<span class="keyword">sync</span>.RWMutexMap-<span class="number">4</span>         	<span class="number">10000000</span>	       <span class="number">173</span> ns/op</div><div class="line">BenchmarkDelete_WithoutPrompting/*<span class="keyword">sync</span>.Map-<span class="number">4</span>                	<span class="number">10000000</span>	       <span class="number">147</span> ns/op</div></pre></td></tr></table></figure>
+
+<h3 id="其它">其它</h3>
+<p><code>sync.Map</code>没有<code>Len</code>方法，并且目前没有迹象要加上 (<a href="https://github.com/golang/go/issues/20680" target="_blank" rel="external">issue#20680</a>),所以如果想得到当前Map中有效的entries的数量，需要使用<code>Range</code>方法遍历一次， 比较X疼。</p>
+<p><code>LoadOrStore</code>方法如果提供的key存在，则返回已存在的值(Load)，否则保存提供的键值(Store)。</p>
+]]></content>
+    <summary type="html">
+    <![CDATA[<p>在Go 1.6之前， 内置的map类型是部分goroutine安全的，并发的读没有问题，并发的写可能有问题。自go 1.6之后， 并发地读写map会报错，这在一些知名的开源库中都存在这个问题，所以go 1.9之前的解决方案是额外绑定一个锁，封装成一个新的struct或者单独使用锁都可以。</p>
+<p>本文带你深入到<code>sync.Map</code>的具体实现中，看看为了增加一个功能，代码是如何变的复杂的,以及作者在实现<code>sync.Map</code>的一些思想。</p>
+]]>
+    
+    </summary>
+    
+      <category term="Go" scheme="http://colobu.com/categories/Go/"/>
+    
+  </entry>
   
   <entry>
     <title><![CDATA[Mac OS X显示连接]]></title>
@@ -2617,76 +2739,6 @@ name-<span class="keyword">char</span>   = <span class="string">"-"</span> <span
     </summary>
     
       <category term="gRPC" scheme="http://colobu.com/tags/gRPC/"/>
-    
-      <category term="Go" scheme="http://colobu.com/categories/Go/"/>
-    
-  </entry>
-  
-  <entry>
-    <title><![CDATA[Go Web 框架性能比拼 2017 春季版]]></title>
-    <link href="http://colobu.com/2017/04/07/go-webframework-benchmark-2017-Spring/"/>
-    <id>http://colobu.com/2017/04/07/go-webframework-benchmark-2017-Spring/</id>
-    <published>2017-04-07T05:04:22.000Z</published>
-    <updated>2017-04-17T02:05:28.000Z</updated>
-    <content type="html"><![CDATA[<p><a href="http://colobu.com/2016/04/06/the-fastest-golang-web-framework/" target="_blank" rel="external">谁是最快的Go Web框架?</a>, 这是我去年发布的Go web 框架的评测。现在一年过去了，有些框架因为缺乏维护而被放弃了，又有新的轮子被创造出来，既有的轮子也在不停的演化升级，来去之间，Go的版本也已经升级的1.8了。 青年节前， <a href="https://github.com/kirillDanshin" target="_blank" rel="external">kirillDanshin</a>提了一个issue,希望能更新最新的测试结果，现在这篇文章就记录了最新的测试结果。</p>
-<a id="more"></a>
-<p><strong>测试环境</strong></p>
-<ul>
-<li>CPU:      Intel(R) Xeon(R) CPU E5-2630 v3 @ 2.40GHz, 32 cores</li>
-<li>Memory:   32G</li>
-<li>Go:       1.8.0</li>
-<li>OS:       CentOS 7 / 3.10.0-229.el7.x86_64</li>
-</ul>
-<p>所有的评测的 web 框架都已经更新到 2017-04-01 的最新版本。</p>
-<p><strong>说明</strong><br>Julien Schmidt实现的 <a href="https://github.com/julienschmidt/go-http-routing-benchmark" target="_blank" rel="external">go-http-routing-benchmark</a> 是对 router的一个评测，但是作为完整的web框架，从接收用户请求到发送给客户端／浏览器，中间会经过多个组件的处理， router的性能影响到底在整体的web请求处理中影像多大呢？看测试结果。</p>
-<p>本项目的代码在 <a href="https://github.com/smallnest/go-web-framework-benchmark" target="_blank" rel="external">go-web-framework-benchmark</a>, 你可以查看，也欢迎提 pull request。</p>
-<p>测试中的 <strong>gear</strong> 测试代码有问题，没有加上router中间件， 你可以在这次测试中忽略它的benchmark。参看 <a href="https://github.com/smallnest/go-web-framework-benchmark/pull/33" target="_blank" rel="external"># 33</a></p>
-<h3 id="模拟业务不同的处理时间框架的性能">模拟业务不同的处理时间框架的性能</h3>
-<p>使用 5000 个客户端模拟请求，比较各web框架在不同的处理时间下的性能。</p>
-<h4 id="1、0ms">1、0ms</h4>
-<p><code>0ms</code>模拟理想的业务处理。在这种处理时间下， 每个请求基本只耗费小于1毫秒的处理时间，这是理想的极端的情况，比如访问内存中缓存的对象就返回。 </p>
-<p><img src="benchmark.png" alt="吞吐率"></p>
-<p><img src="benchmark_latency.png" alt="延迟"></p>
-<p><img src="benchmark_alloc.png" alt="对象分配"></p>
-<h4 id="2、10ms">2、10ms</h4>
-<p><code>10ms</code>模拟比较好的业务处理。在这种情况下，服务器只需在极短的情况下(10ms)处理完请求，如果业务不是太复杂，没有访问本地磁盘、数据库或者其它远程服务的情况下，比较符合这种测试。</p>
-<p><img src="benchmark10.png" alt="吞吐率"></p>
-<p><img src="benchmark_latency10.png" alt="延迟"></p>
-<p><img src="benchmark_alloc10.png" alt="对象分配"></p>
-<h4 id="3、100ms">3、100ms</h4>
-<p><code>100ms</code>模拟一般的业务处理。一般接收请求后，可能访问本地磁盘上的文件、数据库或者调用一个或多个远程服务，在这种情况下，完成一次请求可能要花费较少的时间。</p>
-<p><img src="benchmark100.png" alt="吞吐率"></p>
-<p><img src="benchmark_latency100.png" alt="延迟"></p>
-<p><img src="benchmark_alloc100.png" alt="对象分配"></p>
-<h3 id="pipelining">pipelining</h3>
-<p>这个测试是模拟在 <a href="https://en.wikipedia.org/wiki/HTTP_pipelining" target="_blank" rel="external">pipelining</a> 情况下 web 框架的表现。</p>
-<p>HTTP管线化（HTTP pipelining）是将多个HTTP请求（request）整批提交的技术，而在发送过程中不需先等待服务端的回应。<br>请求结果管线化使得 HTML 网页加载时间动态提升，特别是在具体有高延迟的连接环境下，如卫星上网。在宽带连接中，加速不是那么显著的，因为需要服务器端应用 HTTP/1.1 协议:服务器端必须按照客户端的请求顺序恢复请求，这样整个连接还是先进先出的，对头阻塞（HOL blocking）可能会发生，造成延迟。未来的 HTTP/2.0 或者SPDY中的异步操作将会解决这个问题。因为它可能将多个 HTTP 请求填充在一个TCP数据包内，HTTP 管线化需要在网络上传输较少的 TCP 数据包，减少了网络负载。</p>
-<p><img src="pipelining.png" alt="来自 wikipedia"></p>
-<p>下图是使用 5000 客户端 测试不同的处理时间的性能比较图。</p>
-<p><img src="benchmark-pipeline.png" alt=""></p>
-<h3 id="并发">并发</h3>
-<p>下面这组测试是在业务处理时间限定在<code>30ms</code>的情况下， 使用100、1000、5000的并发client的吞吐情况。</p>
-<h4 id="1、100并发">1、100并发</h4>
-<p><img src="concurrency100.png" alt="吞吐率"></p>
-<p><img src="concurrency_latency100.png" alt="延迟"></p>
-<h4 id="2、1000并发">2、1000并发</h4>
-<p><img src="concurrency1000.png" alt="吞吐率"></p>
-<p><img src="concurrency_latency1000.png" alt="延迟"></p>
-<h4 id="3、5000并发">3、5000并发</h4>
-<p><img src="concurrency5000.png" alt="吞吐率"></p>
-<p><img src="concurrency_latency5000.png" alt="延迟"></p>
-<h3 id="总结">总结</h3>
-<p>Go Web框架目前已经非常多了，不断的有人造轮子，这是Go Web的设计简单易扩展有关。如果我觉得官方的路由不方便，我就可以很容易的再造一个轮子，这也是go web 框架／router泛滥的缘故， 以至于有人呼吁不要再早轮子了。</p>
-<p>从目前既有的web框架看，根据框架的低层看，可以分为两类。一类是基于官方 <code>net/http</code>标准库开发的web框架，一类是基于<code>fasthttp</code>开发的标准库框架。很明显基于<code>fasthttp</code>有更好的性能，但是这类框架也有它们的缺点，不完全支持HTTP协议，比如不支持<code>HEAD</code>，不支持 HTTP2， 各有优缺点，如何选择交给使用者，结合自己实际的情况来选择。比如Echo框架，在最新版中就把对<code>fasthttp</code>的支持去掉了。</p>
-<p>另外，julienschmidt的<a href="https://github.com/julienschmidt/httprouter" target="_blank" rel="external">httprouter</a>有着良好的性能，这也是很几个web框架的路由器使用它的原因。</p>
-<p>为什么没有关注量很高<a href="https://github.com/kataras/iris" target="_blank" rel="external">iris</a>？这是一个复杂而又有争议的问题，参照<a href="https://github.com/smallnest/go-web-framework-benchmark/issues/29" target="_blank" rel="external">issue #29</a>、<a href="https://github.com/smallnest/go-web-framework-benchmark/pull/16" target="_blank" rel="external">issue #16</a>， 暂时把iris去掉了。</p>
-<p>测试代码和最新结果都在 <a href="https://github.com/smallnest/go-web-framework-benchmark" target="_blank" rel="external">go-web-framework-benchmark</a></p>
-]]></content>
-    <summary type="html">
-    <![CDATA[<p><a href="http://colobu.com/2016/04/06/the-fastest-golang-web-framework/" target="_blank" rel="external">谁是最快的Go Web框架?</a>, 这是我去年发布的Go web 框架的评测。现在一年过去了，有些框架因为缺乏维护而被放弃了，又有新的轮子被创造出来，既有的轮子也在不停的演化升级，来去之间，Go的版本也已经升级的1.8了。 青年节前， <a href="https://github.com/kirillDanshin" target="_blank" rel="external">kirillDanshin</a>提了一个issue,希望能更新最新的测试结果，现在这篇文章就记录了最新的测试结果。</p>
-]]>
-    
-    </summary>
     
       <category term="Go" scheme="http://colobu.com/categories/Go/"/>
     
