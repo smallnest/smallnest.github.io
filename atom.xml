@@ -4,7 +4,7 @@
   <subtitle><![CDATA[大道至简 Simplicity is the ultimate form of sophistication]]></subtitle>
   <link href="/atom.xml" rel="self"/>
   <link href="http://colobu.com/"/>
-  <updated>2017-08-04T10:02:16.638Z</updated>
+  <updated>2017-08-23T05:58:44.883Z</updated>
   <id>http://colobu.com/</id>
   
   <author>
@@ -13,6 +13,107 @@
   </author>
   
   <generator uri="http://zespia.tw/hexo/">Hexo</generator>
+  
+  <entry>
+    <title><![CDATA[[转]设计一个容错的微服务架构]]></title>
+    <link href="http://colobu.com/2017/08/23/Designing-a-Microservices-Architecture-for-Failure/"/>
+    <id>http://colobu.com/2017/08/23/Designing-a-Microservices-Architecture-for-Failure/</id>
+    <published>2017-08-23T05:31:10.000Z</published>
+    <updated>2017-08-23T05:52:09.000Z</updated>
+    <content type="html"><![CDATA[<p>原文: <a href="https://blog.risingstack.com/designing-microservices-architecture-for-failure/" target="_blank" rel="external">Designing a Microservices Architecture for Failure</a><br>翻译: <a href="https://github.com/jasonGeng88/blog" target="_blank" rel="external">设计一个容错的微服务架构</a> by Jason Geng</p>
+<p>微服务架构使得可以通过明确定义的服务边界来隔离故障。但是像在每个分布式系统中一样，发生网络、硬件、应用级别的错误都是很常见的。由于服务依赖关系，任何组件可能暂时无法提供服务。为了尽量减少部分中断的影响，我们需要构建容错服务，来优雅地处理这些中断的响应结果。</p>
+<p>本文介绍了基于<a href="https://risingstack.com/" target="_blank" rel="external">RisingStack 的 Node.js 咨询和开发经验</a>构建和操作高可用性微服务系统的最常见技术和架构模式。</p>
+<p>如果你不熟悉本文中的模式，那并不一定意味着你做错了。建立可靠的系统总是会带来额外的成本。</p>
+<a id="more"></a>
+<h2 id="微服务架构的风险">微服务架构的风险</h2>
+<p>微服务架构将应用程序逻辑移动到服务，并使用网络层在它们之间进行通信。这种通过网络间通信代替单应用程序内调用的做法，会带来额外的延迟，以及需要协调多个物理和逻辑组件的系统复杂度。分布式系统的复杂性增加也将导致更高的网络故障率。</p>
+<blockquote>
+<p>microservices allow you to achieve graceful service degradation as components can be set up to fail separately.</p>
+</blockquote>
+<p>微服务体系结构的最大优势之一是，团队可以独立设计，开发和部署他们的服务。他们对服务的生命周期拥有完全的所有权。这也意味着团队无法控制他们依赖的服务，因为它更有可能由不同的团队管理。使用微服务架构，我们需要记住，提供者服务可能会临时不可用，由于其他人员发行的错误版本，配置以及其他更改等。</p>
+<h2 id="优雅的服务降级">优雅的服务降级</h2>
+<p>微服务架构的最大优点之一是您可以隔离故障，并在当组件单独故障时，进行优雅的服务降级。 例如，在中断期间，照片共享应用程序中的客户可能无法上传新图片，但仍可以浏览，编辑和共享其现有照片。</p>
+<p><img src="microservices-fail-separately-in-theory.png" alt="微服务容错隔离"></p>
+<p>在大多数情况下，由于分布式系统中的应用程序相互依赖，因此很难实现这种优雅的服务降级，您需要应用几种故障转移的逻辑（其中一些将在本文后面介绍），以为暂时的故障和中断做准备。</p>
+<p><img src="Microservices-depend-on-each-other.png" alt="服务间彼此依赖，再没有故障转移逻辑下，服务全部失败。"></p>
+<h2 id="变更管理">变更管理</h2>
+<p>Google的网站可靠性小组发现，<strong>大约70％的中断是由现有系统的变化引起的</strong>。当您更改服务中的某些内容时，您将部署新版本的代码或更改某些配置 - 这总有可能会造成故障，或者引入新的bug。</p>
+<p>在微服务架构中，服务依赖于彼此。这就是为什么你应该尽量减少故障并限制它的负面影响。要处理变更中的问题，您可以实施变更管理策略和<strong>自动回滚</strong>机制。</p>
+<p>例如，当您部署新代码或更改某些配置时，您应该先小范围的进行部分的替换，以渐进式的方式替换服务的全部实例。在这期间，需要监视它们，如果您发现它们对您的关键指标有负面影响，应立即进行服务回滚，这称为“金丝雀部署”。</p>
+<p><img src="microservices-change-management.png" alt="变更管理 - 回滚部署"></p>
+<p>另一个解决方案可能是您运行两个生产环境。您始终只能部署其中一个，并且在验证新版本是否符合预期之后才，将负载均衡器指向新的。这称为蓝绿或红黑部署。</p>
+<p><strong>回滚代码不是坏事</strong>。你不应该在生产中遗留错误的代码，然后考虑出了什么问题。如果必要，越早回滚你的代码越好。</p>
+<h2 id="健康检查与负载均衡">健康检查与负载均衡</h2>
+<p>实例由于出现故障、部署或自动缩放的情况，会进行持续启动、重新启动或停止操作。它可能导致它们暂时或永久不可用。为避免问题，您的负载均衡器应该从路由中<strong>跳过不健康的实例</strong>，因为它们当前无法为客户或子系统提供服务。</p>
+<p>应用实例健康状况可以通过外部观察来确定。您可以通过重复调用<strong>GET /health</strong>端点或通过自我报告来实现。现在主流的<strong>服务发现</strong>解决方案，会持续从实例中收集健康信息，并配置负载均衡器，将流量仅路由到健康的组件上。</p>
+<h2 id="自我修复">自我修复</h2>
+<p>自我修复可以帮助应用程序从错误中恢复过来。当应用程序可以<strong>采取必要步骤</strong>从故障状态恢复时，我们就可以说它是可以实现自我修复的。在大多数情况下，它由外部系统实现，该系统会监视实例运行状况，并在较长时间内处于故障状态时重新启动它们。自我修复在大多数情况下是非常有用的。但是在某些情况下，持续地重启应用程序可能会<strong>导致麻烦</strong>。 当您的应用程序由于超负荷或其数据库连接超时而无法给出健康的运行状况时，这种情况下的频繁的重启就可能就不太合适了。</p>
+<p>对于这种特殊的场景（如丢失的数据库连接），要实现满足它的高级自我修复的解决方案可能很棘手。在这种情况下，您需要为应用程序添加额外的逻辑来处理边缘情况，并让外部系统知道实例不需要立即重新启动。</p>
+<h2 id="故障转移缓存">故障转移缓存</h2>
+<p>由于网络问题和我们系统的变化，服务经常会失败。然而，由于自我修复和负载均衡的保障，它们中的大多数中断是临时的，我们应该找到一个解决方案，使我们的服务在这些故障时服务仍就可以工作。这就是<strong>故障转移缓存</strong> (failover caching)的作用，它可以帮助并为我们的应用程序在服务故障时提供必要的数据。</p>
+<p>故障转移缓存通常使用<strong>两个不同的过期日期</strong>; 较短的时间告诉您在正常情况下缓存可以使用的过期时间，而较长的时间可以在服务故障时缓存依旧可用的过期时间。</p>
+<p><img src="microservices-failover-caching.png" alt="故障转移缓存"></p>
+<p>请务必提及，只有当服务使用过时的数据比没有数据更好时，才能使用故障转移缓存。</p>
+<p>要设置缓存和故障转移缓存，可以在 HTTP 中使用标准响应头。</p>
+<p>例如，使用 <code>max-age</code> 属性可以指定资源被视为有效的最大时间。使用 <code>stale-if-error</code> 属性，您可以明确在出现故障的情况下，依旧可以从缓存中获取资源的最大时间。</p>
+<p>现代的 CDN 和负载均衡器都提供各种缓存和故障转移行为，但您也可以为拥有标准可靠性解决方案的公司创建一个共享库。</p>
+<h2 id="重试逻辑">重试逻辑</h2>
+<p>在某些情况下，我们无法缓存数据，或者我们想对其进行更改，但是我们的操作最终都失败了。对于此，我们可以重试我们的操作，因为我们可以预期资源将在一段时间后恢复，或者我们的负载均衡器将请求发送到了健康的实例上。</p>
+<p>您应该小心地为您的应用程序和客户端添加重试逻辑，因为大量的<strong>重试可能会使事情更糟</strong>，甚至阻止应用程序恢复，如当服务超载时，大量的重试只能使状况更糟。</p>
+<p>在分布式系统中，微服务系统重试可以触发多个其他请求或重试，并启动<strong>级联效应</strong>。为了最小化重试的影响，您应该限制它们的数量，并使用指数退避算法来持续增加重试之间的延迟，直到达到最大限制。</p>
+<p>当客户端（浏览器，其他微服务等）发起重试，并且客户端不知道在处理请求之前或之后操作失败时，您应该为你的应用程序做好<strong>幂等处理</strong>的准备。例如，当您重试购买操作时，您不应该再次向客户收取费用。为每个交易使用唯一的<strong>幂等值键</strong>可以帮助处理重试。</p>
+<h2 id="限流器和负载降级">限流器和负载降级</h2>
+<p>流量限制是在一段时间内定义特定客户或应用程序可以接收或处理多少个请求的技术。例如，通过流量限制，您可以过滤掉造成流量峰值的客户和服务，或者您可以确保您的应用程序在自动缩放无法满足时，依然不会超载。</p>
+<p>您还可以阻止较低优先级的流量，为关键事务提供足够的资源。</p>
+<p><img src="microservices-rate-limiter.png" alt="限流器可以阻止流量峰值产生"></p>
+<p>有一个不同类型的限流器，叫做并发请求限制器。当您有重要的端点，您不应该被调用超过指定的次数，而您仍然想要能提供服务时，这将是有用的。</p>
+<p>负载降级的一系列使用，可以确保总是有足够的资源来提供关键交易。它为高优先级请求保留一些资源，不允许低优先级的事务使用它们。负载降级开关是根据系统的整体状态做出决定，而不是基于单个用户的请求量大小。负载降级有助于您的系统恢复，因为当你有一个偶发事件时（可能是一个热点事件），您仍能保持核心功能的正常工作。</p>
+<p>要了解有关限流器和负载降级的更多信息，我建议查看这篇<a href="https://stripe.com/blog/rate-limiters" target="_blank" rel="external">Stripe的文章</a>。</p>
+<h2 id="快速失败原则与独立性">快速失败原则与独立性</h2>
+<p>在微服务架构中，我们想要做到让我们的服务具备快速失败与相互独立的能力。为了在服务级别上进行故障隔离，我们可以使用舱壁模式。你可以在本文的后面阅读更多有关舱壁的内容。</p>
+<p>我们也希望我们的组件能够快速失败，因为我们不希望对于有故障的服务，在请求超时后才断开。没有什么比挂起的请求和无响应的 UI 更令人失望。这不仅浪费资源，而且还会影响用户体验。我们的服务在调用链中是相互调用的，所以在这些延迟累加之前，我们应该特别注意防止挂起操作。</p>
+<p>你想到的第一个想法是对每个服务调用都设置明确的超时等级。这种方法的问题是，您不能知道真正合理的超时值是多少，因为网络故障和其他问题发生的某些情况只会影响一两次操作。在这种情况下，如果只有其中一些超时，您可能不想拒绝这些请求。</p>
+<p>我们可以说，在微服务种通过使用超时来达到快速失败的效果是一种反模式的，你应该避免使用它。取而代之，您可以应用断路器模式，依据操作的成功与失败统计数据决定。</p>
+<h2 id="舱壁模式">舱壁模式</h2>
+<p>工业中使用舱壁将船舶划分为几个部分，以便在船体破坏的情况下，可以将船舶各个部件密封起来。</p>
+<p>舱壁的概念在软件开发中可以被应用在隔离资源上。</p>
+<p>通过应用舱壁模式，我们可以保护有限的资源不被耗尽。例如，对于一个有连接数限制的数据库实例来说，如果我们有两种连接它的操作，我们采用可以采用两个连接池的方式进行连接，来代替仅采用一个共享连接池的方式。由于这种客户端与资源进行了隔离，超时或过度使用池的操作页不会使其他操作失败。</p>
+<p>泰坦尼克号沉没的主要原因之一是其舱壁设计失败，水可以通过上面的甲板倒在舱壁的顶部，导致整个船体淹没。</p>
+<p><img src="titanic-bulkhead-microservices.png" alt="泰坦尼克号舱壁设计（无效的设计）"></p>
+<h2 id="断路器">断路器</h2>
+<p>为了限制操作的持续时间，我们可以使用超时。超时可以防止挂起操作并保持系统响应。然而，在微服务中使用静态、精细的超时是一种反模式，因为我们处于高度动态的环境中，几乎不可能提出在每种情况下都能正常工作的正确的时间限制。</p>
+<p>替代这种静态超时的手段是，我们可以使用断路器来处理错误。断路器以现实世界的电子元件命名，因为它们的作用是相同的。您可以保护资源，并帮助他们使用断路器进行恢复。它们在分布式系统中非常有用，因为在分布式系统中，重复故障可能导致雪球效应并使整个系统瘫痪。</p>
+<p>当特定类型的错误在短时间内多次发生时，断路器会被断开。开路的断路器可以防止进一步的请求 - 就像我们平时所说的电路跳闸一样。断路器通常在一定时间后关闭，在这期间可以为底层服务提供足够的空间来恢复。</p>
+<p>请记住，并不是所有的错误都应该触发断路器。例如，您可能希望跳过客户端问题，例如具有4xx响应代码的请求，但不包括5xx服务器端故障。一些断路器也具有半开状态。在这种状态下，服务发送第一个请求以检查系统可用性，同时让其他请求失败。如果这个第一个请求成功，它将使断路器恢复到关闭状态并使流量流动。否则，它保持打开。</p>
+<p><img src="microservices-circuit-breakers.png" alt="断路器"></p>
+<h2 id="测试故障">测试故障</h2>
+<p>您应该不断测试您系统的常见问题，以确保您的服务可以抵抗各种故障。您应经常测试故障，让您的团队具备故障处理的能力。</p>
+<p>对于测试，您可以使用外部服务来标识实例组，并随机终止此组中的一个实例。这样，您可以准备单个实例故障，但您甚至可以关闭整个区域来模拟云提供商的故障。</p>
+<p>最流行的测试解决方案之一是 Netflix 的 <a href="https://github.com/Netflix/chaosmonkey" target="_blank" rel="external">ChaosMonkey 弹性工具</a>。</p>
+<h2 id="结尾">结尾</h2>
+<p>实施和运行可靠的服务并不容易。 您需要付出很多努力，同时公司也要有相应的财力投入。</p>
+<p>可靠性有很多层次和方面，因此找到最适合您团队的解决方案很重要。您应该使可靠性成为您的业务决策流程中的一个因素，并为其分配足够的预算和时间。</p>
+<h2 id="关键点">关键点</h2>
+<ul>
+<li>动态环境和分布式系统（如微服务）会导致更高的故障机率；</li>
+<li>服务应该做到故障隔离，到达优雅降级，来提升用户体验；</li>
+<li>70％的中断是由变化引起的，代码回滚不是一件坏事；</li>
+<li>做到服务快速失败与独立性。团队是无法控制他们所依赖的服务情况；</li>
+<li>缓存、舱壁、断路器和限流器等架构模式与技术有助于构建可靠的微服务架构。</li>
+</ul>
+]]></content>
+    <summary type="html">
+    <![CDATA[<p>原文: <a href="https://blog.risingstack.com/designing-microservices-architecture-for-failure/" target="_blank" rel="external">Designing a Microservices Architecture for Failure</a><br>翻译: <a href="https://github.com/jasonGeng88/blog" target="_blank" rel="external">设计一个容错的微服务架构</a> by Jason Geng</p>
+<p>微服务架构使得可以通过明确定义的服务边界来隔离故障。但是像在每个分布式系统中一样，发生网络、硬件、应用级别的错误都是很常见的。由于服务依赖关系，任何组件可能暂时无法提供服务。为了尽量减少部分中断的影响，我们需要构建容错服务，来优雅地处理这些中断的响应结果。</p>
+<p>本文介绍了基于<a href="https://risingstack.com/" target="_blank" rel="external">RisingStack 的 Node.js 咨询和开发经验</a>构建和操作高可用性微服务系统的最常见技术和架构模式。</p>
+<p>如果你不熟悉本文中的模式，那并不一定意味着你做错了。建立可靠的系统总是会带来额外的成本。</p>
+]]>
+    
+    </summary>
+    
+      <category term="架构" scheme="http://colobu.com/categories/%E6%9E%B6%E6%9E%84/"/>
+    
+  </entry>
   
   <entry>
     <title><![CDATA[再谈谈获取 goroutine id 的方法]]></title>
@@ -2636,108 +2737,6 @@ name-<span class="keyword">char</span>   = <span class="string">"-"</span> <span
     </summary>
     
       <category term="工具" scheme="http://colobu.com/categories/%E5%B7%A5%E5%85%B7/"/>
-    
-  </entry>
-  
-  <entry>
-    <title><![CDATA[Go HTTP Redirect的知识点总结]]></title>
-    <link href="http://colobu.com/2017/04/19/go-http-redirect/"/>
-    <id>http://colobu.com/2017/04/19/go-http-redirect/</id>
-    <published>2017-04-19T08:28:01.000Z</published>
-    <updated>2017-04-20T06:10:21.000Z</updated>
-    <content type="html"><![CDATA[<p>HTTP 规范中定义了返回码为 <code>3xx</code> 代表客户端需要做一些额外的工作来完成请求，大部分<code>3xx</code>用来做转发(redirect)。</p>
-<p>状态码的详细说明可以参照规范或者 <a href="https://en.wikipedia.org/wiki/List_of_HTTP_status_codes#3xx_Redirection" target="_blank" rel="external">wikipedia</a>、<a href="https://zh.wikipedia.org/wiki/HTTP状态码#3xx" target="_blank" rel="external">维基百科</a>, 以下是代码的简短介绍。</p>
-<ul>
-<li>300 Multiple Choices: 返回多个可供选择的资源</li>
-<li>301 Moved Permanently: 请求的资源已永久移动到新位置，并且将来任何对此资源的引用都应该使用本响应返回的若干个URI之一</li>
-<li>302 Found: 请求的资源现在临时从不同的URI响应请求。由于这样的重定向是临时的，客户端应当继续向原有地址发送以后的请求,HTTP 1.0中的意义是<code>Moved Temporarily</code>,但是很多浏览器的实现是按照303的处实现的，所以HTTP 1.1中增加了 303和307的状态码来区分不同的行为</li>
-<li>303 See Other (since HTTP/1.1): 对应当前请求的响应可以在另一个URI上被找到，而且客户端应当采用GET的方式访问那个资源</li>
-<li>304 Not Modified (RFC 7232): 请求的资源没有改变</li>
-<li>305 Use Proxy (since HTTP/1.1): 被请求的资源必须通过指定的代理才能被访问</li>
-<li>306 Switch Proxy: 在最新版的规范中，306状态码已经不再被使用</li>
-<li>307 Temporary Redirect (since HTTP/1.1): 请求的资源现在临时从不同的URI响应请求,和303不同，它还是使用原先的Method</li>
-<li>308 Permanent Redirect (RFC 7538): 请求的资源已永久移动到新位置,并且新请求的Method不能改变</li>
-</ul>
-<p>Go 的 http 库在实现的过程中也在不断的完成和修改其中的Bug,在 1.8版本中解决了前面版本中实现的问题 (你可以在 Go issues中搜索 redirect 来查看相关的issue)。 本文梳理了 Go 中 Redirect 的相关知识，以便你在遇到转发的问题时心中有数。</p>
-<a id="more"></a>
-<h3 id="转发策略和默认转发次数。">转发策略和默认转发次数。</h3>
-<p><a href="">http.Client</a>包含一个<code>CheckRedirect</code>字段，用来定义转发的策略，如果你没有设置，则默认使用<code>defaultCheckRedirect</code>:</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> (c *Client) checkRedirect(req *Request, via []*Request) error {</div><div class="line">	fn := c.CheckRedirect</div><div class="line">	<span class="keyword">if</span> fn == <span class="constant">nil</span> {</div><div class="line">		fn = defaultCheckRedirect</div><div class="line">	}</div><div class="line">	<span class="keyword">return</span> fn(req, via)</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>这个函数会在执行转发之前被调用,可以看到这个函数如果返回err,则不再进行转发了。<br>这个函数的第一个参数<code>req</code>是即将转发使用的request，第二个参数 <code>via</code>已经请求的requests。</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">for</span> {</div><div class="line">    ……</div><div class="line">    <span class="comment">//需要转发</span></div><div class="line">    {</div><div class="line">        ……</div><div class="line">        err = c.checkRedirect(req, reqs)</div><div class="line">		<span class="keyword">if</span> err == ErrUseLastResponse {</div><div class="line">			<span class="keyword">return</span> resp, <span class="constant">nil</span></div><div class="line">		}</div><div class="line"></div><div class="line">		<span class="comment">//discard previous response</span></div><div class="line">        ……</div><div class="line"></div><div class="line">		<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">			ue := uerr(err)</div><div class="line">			ue.(*url.Error).URL = loc</div><div class="line">			<span class="keyword">return</span> resp, ue</div><div class="line">		}</div><div class="line">    }</div><div class="line"></div><div class="line">    ……</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>默认的转发策略是最多10次转发， 避免转发次数过高或者死循环。</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> defaultCheckRedirect(req *Request, via []*Request) error {</div><div class="line">	<span class="keyword">if</span> <span class="built_in">len</span>(via) &gt;=<span class="number"> 10</span> {</div><div class="line">		<span class="keyword">return</span> errors.New(<span class="string">"stopped after 10 redirects"</span>)</div><div class="line">	}</div><div class="line">	<span class="keyword">return</span> <span class="constant">nil</span></div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>如果你要实现不同的转发策略，你需要定义自己的<code>CheckRedirect</code>。</p>
-<h3 id="转发安全">转发安全</h3>
-<p>1）当转发的request中包含安全的信息Header时， 比如<code>Authorization</code>、<code>WWW-Authenticate</code>、<code>Cookie</code>等Header,如果是跨域，则这些头部不会被复制到新的请求中。</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> shouldCopyHeaderOnRedirect(headerKey <span class="typename">string</span>, initial, dest *url.URL) <span class="typename">bool</span> {</div><div class="line">	<span class="keyword">switch</span> CanonicalHeaderKey(headerKey) {</div><div class="line">	<span class="keyword">case</span> <span class="string">"Authorization"</span>, <span class="string">"Www-Authenticate"</span>, <span class="string">"Cookie"</span>, <span class="string">"Cookie2"</span>:</div><div class="line">		ihost := strings.ToLower(initial.Host)</div><div class="line">		dhost := strings.ToLower(dest.Host)</div><div class="line">		<span class="keyword">return</span> isDomainOrSubdomain(dhost, ihost)</div><div class="line">	}</div><div class="line">	<span class="keyword">return</span> <span class="constant">true</span></div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>2）如果设置了一个非空的 cookie Jar, 转发响应会修改 cookie jar中的值，但是下一次转发的时候， <code>Cookie</code>header会被处理，忽略那些变动的cookie.</p>
-<p>  when forwarding the &quot;Cookie&quot; header with a non-nil cookie Jar.<br>  Since each redirect may mutate the state of the cookie jar,<br>  a redirect may possibly alter a cookie set in the initial request.<br>  When forwarding the &quot;Cookie&quot; header, any mutated cookies will be omitted,<br>  with the expectation that the Jar will insert those mutated cookies<br>  with the updated values (assuming the origin matches).<br>  If Jar is nil, the initial cookies are forwarded without change.</p>
-<p>  具体的你可以查看 <code>makeHeadersCopier</code>的实现。<br>  可以看到每次redirect会删除上次的Redirect造成的变动，再恢复原始的请求的Coookie。</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div></pre></td><td class="code"><pre><div class="line">  <span class="keyword">if</span> c.Jar != <span class="constant">nil</span> && icookies != <span class="constant">nil</span> {</div><div class="line">	<span class="keyword">var</span> changed <span class="typename">bool</span></div><div class="line">	resp := req.Response <span class="comment">// The response that caused the upcoming redirect</span></div><div class="line">	<span class="keyword">for</span> _, c := <span class="keyword">range</span> resp.Cookies() {</div><div class="line">		<span class="keyword">if</span> _, ok := icookies[c.Name]; ok {</div><div class="line">			<span class="built_in">delete</span>(icookies, c.Name)</div><div class="line">			changed = <span class="constant">true</span></div><div class="line">		}</div><div class="line">	}</div><div class="line">	<span class="keyword">if</span> changed {</div><div class="line">		ireqhdr.Del(<span class="string">"Cookie"</span>)</div><div class="line">		<span class="keyword">var</span> ss []<span class="typename">string</span></div><div class="line">		<span class="keyword">for</span> _, cs := <span class="keyword">range</span> icookies {</div><div class="line">			<span class="keyword">for</span> _, c := <span class="keyword">range</span> cs {</div><div class="line">				ss = <span class="built_in">append</span>(ss, c.Name+<span class="string">"="</span>+c.Value)</div><div class="line">			}</div><div class="line">		}</div><div class="line">		sort.Strings(ss) <span class="comment">// Ensure deterministic headers</span></div><div class="line">		ireqhdr.Set(<span class="string">"Cookie"</span>, strings.Join(ss, <span class="string">"; "</span>))</div><div class="line">	}</div><div class="line">}</div><div class="line"></div><div class="line"><span class="comment">// Copy the initial request's Header values</span></div><div class="line"><span class="comment">// (at least the safe ones).</span></div><div class="line"><span class="keyword">for</span> k, vv := <span class="keyword">range</span> ireqhdr {</div><div class="line">	<span class="keyword">if</span> shouldCopyHeaderOnRedirect(k, preq.URL, req.URL) {</div><div class="line">		req.Header[k] = vv</div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<h3 id="转发规则">转发规则</h3>
-<p>当服务器返回一个转发response的时候， client首先使用<code>CheckRedirect</code>函数检查是否要进行转发。</p>
-<p>默认会处理下列请求：</p>
-<ul>
-<li>301 (Moved Permanently)</li>
-<li>302 (Found)</li>
-<li>303 (See Other)</li>
-<li>307 (Temporary Redirect)</li>
-<li>308 (Permanent Redirect)</li>
-</ul>
-<p>如果需要转发， 对于<code>301</code>、<code>302</code>、<code>303</code>的状态码， 接下来转发的请求会将请求<strong>Method</strong>转换成<code>GET</code> method (如果原始请求Method是<code>HEAD</code>则不变，还是<code>HEAD</code>)， 而且body为空， 尽管原始的请求可能包含body。 对于<code>307</code>、<code>308</code>状态码，接下来转发的请求的<strong>Method</strong>没有变化，和原始的请求保持一致， 并且还是使用原始的body内容来发送转发请求。</p>
-<p>代码处理的逻辑是由<code>redirectBehavior</code>函数实现的。</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> redirectBehavior(reqMethod <span class="typename">string</span>, resp *Response, ireq *Request) (redirectMethod <span class="typename">string</span>, shouldRedirect, includeBody <span class="typename">bool</span>) {</div><div class="line">	<span class="keyword">switch</span> resp.StatusCode {</div><div class="line">	<span class="keyword">case</span><span class="number"> 301</span>,<span class="number"> 302</span>,<span class="number"> 303</span>:</div><div class="line">		redirectMethod = reqMethod</div><div class="line">		shouldRedirect = <span class="constant">true</span></div><div class="line">		includeBody = <span class="constant">false</span></div><div class="line"></div><div class="line">		<span class="keyword">if</span> reqMethod != <span class="string">"GET"</span> && reqMethod != <span class="string">"HEAD"</span> {</div><div class="line">			redirectMethod = <span class="string">"GET"</span></div><div class="line">		}</div><div class="line">	<span class="keyword">case</span><span class="number"> 307</span>,<span class="number"> 308</span>:</div><div class="line">		redirectMethod = reqMethod</div><div class="line">		shouldRedirect = <span class="constant">true</span></div><div class="line">		includeBody = <span class="constant">true</span></div><div class="line"></div><div class="line">	</div><div class="line">		<span class="keyword">if</span> resp.Header.Get(<span class="string">"Location"</span>) == <span class="string">""</span> {</div><div class="line">			shouldRedirect = <span class="constant">false</span></div><div class="line">			<span class="keyword">break</span></div><div class="line">		}</div><div class="line">		<span class="keyword">if</span> ireq.GetBody == <span class="constant">nil</span> && ireq.outgoingLength() !=<span class="number"> 0</span> {</div><div class="line">			shouldRedirect = <span class="constant">false</span></div><div class="line">		}</div><div class="line">	}</div><div class="line">	<span class="keyword">return</span> redirectMethod, shouldRedirect, includeBody</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>以上是介绍的http Redirect相关的内容，它们主要是客户端的代码逻辑。 下面两节介绍一下与http redirect有一点点关系的内容。</p>
-<h3 id="RedirectHandler">RedirectHandler</h3>
-<p>http定义了一个便利类型: <a href="https://golang.org/pkg/net/http/#RedirectHandler" target="_blank" rel="external">RedirectHandler</a>, 它是一个预定义的http handler,可以将指定的请求转发到指定的url中， 主要就是使用设定的 url 和 status code 设置 response 的 Location。</p>
-<p>它用作服务器端的开发中。</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> RedirectHandler(url <span class="typename">string</span>, code <span class="typename">int</span>) Handler</div></pre></td></tr></table></figure>
-
-<p>注意 code应该是 <code>3xx</code>的状态码， 通常是<code>StatusMovedPermanently</code>, <code>StatusFound</code> 或者 <code>StatusSeeOther</code>。</p>
-<h3 id="RoundTripper">RoundTripper</h3>
-<p><a href="https://golang.org/pkg/net/http/#RoundTripper" target="_blank" rel="external">RoundTripper</a>也用作客户端的开发。</p>
-<p>RoundTripper代表一次http 的请求。 当使用redirect的时候，你可能redirect多次，也就是执行了n次的http请求。</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> RoundTripper <span class="keyword">interface</span> {</div><div class="line">        RoundTrip(*Request) (*Response, error)</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p><code>DefaultTransport</code>是默认RoundTripper的实现。它建立网络连接，并且会缓存以便后续的请求重用。它会使用<code>$HTTP_PROXY</code>和<code>$NO_PROXY</code> (或者 $http_proxy， $no_proxy)环境变量来设置代理.</p>
-<p>其它的RoundTripper的实现还有<code>NewFileTransport</code>创建的RoundTripper,用来服务文件系统，将文件系统映射成http的处理方式。</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">var</span> DefaultTransport RoundTripper = &Transport{</div><div class="line">        Proxy: ProxyFromEnvironment,</div><div class="line">        DialContext: (&net.Dialer{</div><div class="line">                Timeout:  <span class="number"> 30</span> * time.Second,</div><div class="line">                KeepAlive:<span class="number"> 30</span> * time.Second,</div><div class="line">                DualStack: <span class="constant">true</span>,</div><div class="line">        }).DialContext,</div><div class="line">        MaxIdleConns:         <span class="number"> 100</span>,</div><div class="line">        IdleConnTimeout:      <span class="number"> 90</span> * time.Second,</div><div class="line">        TLSHandshakeTimeout:  <span class="number"> 10</span> * time.Second,</div><div class="line">        ExpectContinueTimeout:<span class="number"> 1</span> * time.Second,</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>当<code>Redirect</code>的时候，默认转发是http库自动帮你实现的，如果你想对于转发过程做深入的跟踪的话(简单跟踪可以使用<a href="https://golang.org/pkg/net/http/httptrace/" target="_blank" rel="external">httptrace</a>),你可以自定义一个RoundTripper,比如下面的这个：</p>
-<figure class="highlight go"><figcaption><span>http://stackoverflow.com/questions/24577494/how-to-get-the-http-redirect-status-codes-in-golang</span></figcaption><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> LogRedirects <span class="keyword">struct</span> {</div><div class="line">    Transport http.RoundTripper</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> (l LogRedirects) RoundTrip(req *http.Request) (resp *http.Response, err error) {</div><div class="line">    t := l.Transport</div><div class="line">    <span class="keyword">if</span> t == <span class="constant">nil</span> {</div><div class="line">        t = http.DefaultTransport</div><div class="line">    }</div><div class="line">    resp, err = t.RoundTrip(req)</div><div class="line">    <span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">        <span class="keyword">return</span></div><div class="line">    }</div><div class="line">    <span class="keyword">switch</span> resp.StatusCode {</div><div class="line">    <span class="keyword">case</span> http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther, http.StatusTemporaryRedirect:</div><div class="line">        log.Println(<span class="string">"Request for"</span>, req.URL, <span class="string">"redirected with status"</span>, resp.StatusCode)</div><div class="line">    }</div><div class="line">    <span class="keyword">return</span></div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>创建<code>Client</code>的时候可以使用下面的代码：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">client := &http.Client{Transport: LogRedirects{}}</div></pre></td></tr></table></figure>
-
-<p>这样每次转发过程我们都可以追踪。</p>
-]]></content>
-    <summary type="html">
-    <![CDATA[<p>HTTP 规范中定义了返回码为 <code>3xx</code> 代表客户端需要做一些额外的工作来完成请求，大部分<code>3xx</code>用来做转发(redirect)。</p>
-<p>状态码的详细说明可以参照规范或者 <a href="https://en.wikipedia.org/wiki/List_of_HTTP_status_codes#3xx_Redirection" target="_blank" rel="external">wikipedia</a>、<a href="https://zh.wikipedia.org/wiki/HTTP状态码#3xx" target="_blank" rel="external">维基百科</a>, 以下是代码的简短介绍。</p>
-<ul>
-<li>300 Multiple Choices: 返回多个可供选择的资源</li>
-<li>301 Moved Permanently: 请求的资源已永久移动到新位置，并且将来任何对此资源的引用都应该使用本响应返回的若干个URI之一</li>
-<li>302 Found: 请求的资源现在临时从不同的URI响应请求。由于这样的重定向是临时的，客户端应当继续向原有地址发送以后的请求,HTTP 1.0中的意义是<code>Moved Temporarily</code>,但是很多浏览器的实现是按照303的处实现的，所以HTTP 1.1中增加了 303和307的状态码来区分不同的行为</li>
-<li>303 See Other (since HTTP/1.1): 对应当前请求的响应可以在另一个URI上被找到，而且客户端应当采用GET的方式访问那个资源</li>
-<li>304 Not Modified (RFC 7232): 请求的资源没有改变</li>
-<li>305 Use Proxy (since HTTP/1.1): 被请求的资源必须通过指定的代理才能被访问</li>
-<li>306 Switch Proxy: 在最新版的规范中，306状态码已经不再被使用</li>
-<li>307 Temporary Redirect (since HTTP/1.1): 请求的资源现在临时从不同的URI响应请求,和303不同，它还是使用原先的Method</li>
-<li>308 Permanent Redirect (RFC 7538): 请求的资源已永久移动到新位置,并且新请求的Method不能改变</li>
-</ul>
-<p>Go 的 http 库在实现的过程中也在不断的完成和修改其中的Bug,在 1.8版本中解决了前面版本中实现的问题 (你可以在 Go issues中搜索 redirect 来查看相关的issue)。 本文梳理了 Go 中 Redirect 的相关知识，以便你在遇到转发的问题时心中有数。</p>
-]]>
-    
-    </summary>
-    
-      <category term="Go" scheme="http://colobu.com/categories/Go/"/>
     
   </entry>
   
