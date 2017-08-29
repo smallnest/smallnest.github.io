@@ -4,7 +4,7 @@
   <subtitle><![CDATA[大道至简 Simplicity is the ultimate form of sophistication]]></subtitle>
   <link href="/atom.xml" rel="self"/>
   <link href="http://colobu.com/"/>
-  <updated>2017-08-29T11:58:21.183Z</updated>
+  <updated>2017-08-29T12:05:01.831Z</updated>
   <id>http://colobu.com/</id>
   
   <author>
@@ -13,6 +13,77 @@
   </author>
   
   <generator uri="http://zespia.tw/hexo/">Hexo</generator>
+  
+  <entry>
+    <title><![CDATA[Go Plugin的一个bug]]></title>
+    <link href="http://colobu.com/2017/08/26/panic-on-go-plugin-Open-for-different-plugins/"/>
+    <id>http://colobu.com/2017/08/26/panic-on-go-plugin-Open-for-different-plugins/</id>
+    <published>2017-08-26T15:14:04.000Z</published>
+    <updated>2017-08-29T12:03:57.000Z</updated>
+    <content type="html"><![CDATA[<p>Go 1.8中增加了 <a href="https://golang.org/pkg/plugin/" target="_blank" rel="external">plugin</a> package,但是仅支持Linux操作系统，并且还有一些已知的bug。可以说，这个插件系统的实现还未达到&quot;产品级&quot;的水平。</p>
+<blockquote>
+<p>The plugin support is currently incomplete, only supports Linux, and has known bugs.</p>
+</blockquote>
+<p>一些已知的bug已经推到 Go1.10甚至以后的版本中修复了。</p>
+<p>今天在测试Go 1.9中的功能的时候就遇到了plugin的一个bug。</p>
+<a id="more"></a>
+<p>按照官方的文档, 开发一个插件很简单：</p>
+<figure class="highlight go"><figcaption><span>plugin1/main.go</span></figcaption><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> main</div><div class="line"></div><div class="line"><span class="keyword">import</span> <span class="string">"fmt"</span></div><div class="line"></div><div class="line"><span class="keyword">var</span> V <span class="typename">int</span></div><div class="line"></div><div class="line"><span class="keyword">func</span> F() { fmt.Printf(<span class="string">"Hello, number %d\n"</span>, V) }</div></pre></td></tr></table></figure>
+
+<p>插件中定义了变量<code>V</code>和方法<code>F</code>，可以通过下面的命令生成一个<code>so</code>文件：</p>
+<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">go build -buildmode=plugin -o ../p1.so main.go</div></pre></td></tr></table></figure>
+
+<p>然后通过<code>plugin</code>包可以加载插件：</p>
+<figure class="highlight go"><figcaption><span>main.go</span></figcaption><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div></pre></td><td class="code"><pre><div class="line">p, err := plugin.Open(<span class="string">"p1.so"</span>)</div><div class="line"><span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">	<span class="built_in">panic</span>(err)</div><div class="line">}</div><div class="line">v, err := p.Lookup(<span class="string">"V"</span>)</div><div class="line"><span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">	<span class="built_in">panic</span>(err)</div><div class="line">}</div><div class="line">f, err := p.Lookup(<span class="string">"F"</span>)</div><div class="line"><span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">	<span class="built_in">panic</span>(err)</div><div class="line">}</div><div class="line">*v.(*<span class="typename">int</span>) =<span class="number"> 7</span></div><div class="line">f.(<span class="keyword">func</span>())() <span class="comment">// prints "Hello, number 7"</span></div></pre></td></tr></table></figure>
+
+<p>当然作为插件系统，我们希望可以加载新的插件，来替换已有的插件， 如果你复制<code>p1.so</code>为<code>p2.so</code>,然后上上面的测试代码中再加载<code>p2.so</code>会报错：</p>
+<figure class="highlight go"><figcaption><span>main.go</span></figcaption><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div></pre></td><td class="code"><pre><div class="line"></div><div class="line">p, err := plugin.Open(<span class="string">"p1.so"</span>)</div><div class="line"><span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">	<span class="built_in">panic</span>(err)</div><div class="line">}</div><div class="line"></div><div class="line">......</div><div class="line"></div><div class="line">p, err = plugin.Open(<span class="string">"p2.so"</span>)</div><div class="line"><span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">	<span class="built_in">panic</span>(err)</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>错误信息如下：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">go</span> run main.<span class="keyword">go</span></div><div class="line">Hello, number<span class="number"> 7</span></div><div class="line">plugin: plugin plugin/unnamed-f0c47a2a99a0d8e8fb40defabb50f238c78f5d58 already loaded</div><div class="line">fatal error: plugin: plugin already loaded</div><div class="line">......</div></pre></td></tr></table></figure>
+
+<p>这一步我们还能理解，相同的plugin即使文件名更改了，加载进去还是一样的，所以会报<code>plugin already loaded</code>错误。</p>
+<p>我们将<code>plugin1/main.go</code>中的代码<strong>稍微改一下</strong>：</p>
+<figure class="highlight go"><figcaption><span>plugin1/main.go</span></figcaption><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> main</div><div class="line"></div><div class="line"><span class="keyword">import</span> <span class="string">"fmt"</span></div><div class="line"></div><div class="line"><span class="keyword">var</span> V <span class="typename">int</span></div><div class="line"></div><div class="line"><span class="keyword">func</span> F() { fmt.Printf(<span class="string">"Hello world,  %d\n"</span>, V) }</div></pre></td></tr></table></figure>
+
+<p>然后生成插件<code>p2.so</code>：</p>
+<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">go build -buildmode=plugin -o ../p2.so main.go</div></pre></td></tr></table></figure>
+
+<p>按说这次我们修改了代码，生成了一个新的插件，如果代码同时加载这两个插件，因为没什么问题，但是运行上面的加载两个插件的测试代码，发现还是出错：</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div></pre></td><td class="code"><pre><div class="line">go <span class="command">run</span> main.go</div><div class="line">Hello, <span class="type">number</span> <span class="number">7</span></div><div class="line">plugin: plugin plugin/unnamed-f0c47a2a99a0d8e8fb40defabb50f238c78f5d58 already loaded</div><div class="line">fatal <span class="keyword">error</span>: plugin: plugin already loaded</div><div class="line">......</div></pre></td></tr></table></figure>
+
+<p>怪异吧，两个不同代码的生成插件，居然被认为是同一个插件（plugin/unnamed-f0c47a2a99a0d8e8fb40defabb50f238c78f5d58）。</p>
+<p>使用<code>nm</code>查看两个插件的符号表：</p>
+<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div></pre></td><td class="code"><pre><div class="line">[root@colobu t]<span class="comment"># nm p1.so |grep unname</span></div><div class="line"><span class="number">00000000001</span>acfc0 R go.link.pkghashbytes.plugin/unnamed<span class="operator">-f</span>0c47a2a99a0d8e8fb40defabb50f238c78f5d58</div><div class="line"><span class="number">00000000003</span>f9620 D go.link.pkghash.plugin/unnamed<span class="operator">-f</span>0c47a2a99a0d8e8fb40defabb50f238c78f5d58</div><div class="line"><span class="number">0000000000199080</span> t local.plugin/unnamed<span class="operator">-f</span>0c47a2a99a0d8e8fb40defabb50f238c78f5d58.F</div><div class="line"><span class="number">0000000000199130</span> t local.plugin/unnamed<span class="operator">-f</span>0c47a2a99a0d8e8fb40defabb50f238c78f5d58.init</div><div class="line"><span class="number">0000000000199080</span> T plugin/unnamed<span class="operator">-f</span>0c47a2a99a0d8e8fb40defabb50f238c78f5d58.F</div><div class="line"><span class="number">0000000000199130</span> T plugin/unnamed<span class="operator">-f</span>0c47a2a99a0d8e8fb40defabb50f238c78f5d58.init</div><div class="line"><span class="number">000000000048</span>e027 B plugin/unnamed<span class="operator">-f</span>0c47a2a99a0d8e8fb40defabb50f238c78f5d58.initdone·</div><div class="line"><span class="number">000000000048</span>e088 B plugin/unnamed<span class="operator">-f</span>0c47a2a99a0d8e8fb40defabb50f238c78f5d58.V</div><div class="line">[root@colobu t]<span class="comment">#</span></div><div class="line">[root@colobu t]<span class="comment">#</span></div><div class="line">[root@colobu t]<span class="comment"># nm p2.so |grep unname</span></div><div class="line"><span class="number">00000000001</span>acfc0 R go.link.pkghashbytes.plugin/unnamed<span class="operator">-f</span>0c47a2a99a0d8e8fb40defabb50f238c78f5d58</div><div class="line"><span class="number">00000000003</span>f9620 D go.link.pkghash.plugin/unnamed<span class="operator">-f</span>0c47a2a99a0d8e8fb40defabb50f238c78f5d58</div><div class="line"><span class="number">0000000000199080</span> t local.plugin/unnamed<span class="operator">-f</span>0c47a2a99a0d8e8fb40defabb50f238c78f5d58.F</div><div class="line"><span class="number">0000000000199130</span> t local.plugin/unnamed<span class="operator">-f</span>0c47a2a99a0d8e8fb40defabb50f238c78f5d58.init</div><div class="line"><span class="number">0000000000199080</span> T plugin/unnamed<span class="operator">-f</span>0c47a2a99a0d8e8fb40defabb50f238c78f5d58.F</div><div class="line"><span class="number">0000000000199130</span> T plugin/unnamed<span class="operator">-f</span>0c47a2a99a0d8e8fb40defabb50f238c78f5d58.init</div><div class="line"><span class="number">000000000048</span>e027 B plugin/unnamed<span class="operator">-f</span>0c47a2a99a0d8e8fb40defabb50f238c78f5d58.initdone·</div><div class="line"><span class="number">000000000048</span>e088 B plugin/unnamed<span class="operator">-f</span>0c47a2a99a0d8e8fb40defabb50f238c78f5d58.V</div><div class="line">[root@colobu t]<span class="comment">#</span></div></pre></td></tr></table></figure>
+
+<p>可以看到两个插件中生成的符号表符号表是相同的，所以被误认为了同一个插件。</p>
+<p>这种情况是在特殊情况下产生的，如果两个插件的文件名不同，或者引用包不同，或者引用的cgo不同，则会生成不同的插件，同时加载不会有问题。但是如果文件名相同，相关的引用也相同，则可能生成相同的插件，尽管插件内包含的方法和变量不同，实现也不同。</p>
+<p>这是Go plugin生成的时候一个bug: <a href="https://github.com/golang/go/issues/19358" target="_blank" rel="external">issue#19358</a>, 期望在Go 1.10中解决，目前的解决办法就是插件的go文件使用不同的名字，或者编译的时候指定<code>pluginpath</code>:</p>
+<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div></pre></td><td class="code"><pre><div class="line">go build -ldflags <span class="string">"-pluginpath=p1"</span>-buildmode=plugin -o ../p1.so main.go</div><div class="line">go build -ldflags <span class="string">"-pluginpath=p2"</span>-buildmode=plugin -o ../p2.so main.go</div></pre></td></tr></table></figure>
+
+<p>导致问题的原因正如  LionNatsu 在bug中指出的， Go 判断两个插件是否相同是通过比较<a href="https://github.com/golang/go/blob/0efc8b21881ab35fdb45547088b1935fc8ebf263/src/runtime/plugin.go#L23" target="_blank" rel="external">pluginpath</a>实现的，如果你在编译的时候指定了不同的<code>pluginpath</code>，则编译出来的插件是不同的，但是如果没有指定<code>pluginpath</code>，则由内部的算法生成, <a href="https://github.com/golang/go/blob/f8b0231639859de7b8f1bfe7df1be0132aec9ad6/src/cmd/go/internal/work/build.go#L2426" target="_blank" rel="external">生成</a>的格式为<code>plugin/unnamed-&quot; + root.Package.Internal.BuildID</code> 。</p>
+<p><a href="https://github.com/golang/go/blob/be04da8f0c5cb57e2736cfac8c76971d7d8cfc6f/src/cmd/go/internal/load/pkg.go#L1621" target="_blank" rel="external">func computeBuildID(p *Package)</a> 生成一个SHA-1的哈希值作为BuildID。</p>
+<figure class="highlight go"><figcaption><span>go/src/cmd/go/internal/load/pkg.go</span></figcaption><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div><div class="line">35</div><div class="line">36</div><div class="line">37</div><div class="line">38</div><div class="line">39</div><div class="line">40</div><div class="line">41</div><div class="line">42</div><div class="line">43</div><div class="line">44</div><div class="line">45</div><div class="line">46</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> computeBuildID(p *Package) {</div><div class="line">	h := sha1.New()</div><div class="line"></div><div class="line">	<span class="comment">// Include the list of files compiled as part of the package.</span></div><div class="line">	<span class="comment">// This lets us detect removed files. See issue 3895.</span></div><div class="line">	inputFiles := str.StringList(</div><div class="line">		p.GoFiles,</div><div class="line">		p.CgoFiles,</div><div class="line">		p.CFiles,</div><div class="line">		p.CXXFiles,</div><div class="line">		p.MFiles,</div><div class="line">		p.HFiles,</div><div class="line">		p.SFiles,</div><div class="line">		p.SysoFiles,</div><div class="line">		p.SwigFiles,</div><div class="line">		p.SwigCXXFiles,</div><div class="line">	)</div><div class="line">	<span class="keyword">for</span> _, file := <span class="keyword">range</span> inputFiles {</div><div class="line">		fmt.Fprintf(h, <span class="string">"file %s\n"</span>, file)</div><div class="line">	}</div><div class="line"></div><div class="line">	<span class="comment">// Include the content of runtime/internal/sys/zversion.go in the hash</span></div><div class="line">	<span class="comment">// for package runtime. This will give package runtime a</span></div><div class="line">	<span class="comment">// different build ID in each Go release.</span></div><div class="line">	<span class="keyword">if</span> p.Standard && p.ImportPath == <span class="string">"runtime/internal/sys"</span> && cfg.BuildContext.Compiler != <span class="string">"gccgo"</span> {</div><div class="line">		data, err := ioutil.ReadFile(filepath.Join(p.Dir, <span class="string">"zversion.go"</span>))</div><div class="line">		<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">			base.Fatalf(<span class="string">"go: %s"</span>, err)</div><div class="line">		}</div><div class="line">		fmt.Fprintf(h, <span class="string">"zversion %q\n"</span>, <span class="typename">string</span>(data))</div><div class="line">	}</div><div class="line"></div><div class="line">	<span class="comment">// Include the build IDs of any dependencies in the hash.</span></div><div class="line">	<span class="comment">// This, combined with the runtime/zversion content,</span></div><div class="line">	<span class="comment">// will cause packages to have different build IDs when</span></div><div class="line">	<span class="comment">// compiled with different Go releases.</span></div><div class="line">	<span class="comment">// This helps the go command know to recompile when</span></div><div class="line">	<span class="comment">// people use the same GOPATH but switch between</span></div><div class="line">	<span class="comment">// different Go releases. See issue 10702.</span></div><div class="line">	<span class="comment">// This is also a better fix for issue 8290.</span></div><div class="line">	<span class="keyword">for</span> _, p1 := <span class="keyword">range</span> p.Internal.Deps {</div><div class="line">		fmt.Fprintf(h, <span class="string">"dep %s %s\n"</span>, p1.ImportPath, p1.Internal.BuildID)</div><div class="line">	}</div><div class="line"></div><div class="line">	p.Internal.BuildID = fmt.Sprintf(<span class="string">"%x"</span>, h.Sum(<span class="constant">nil</span>))</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>函数的后半部分为Go不同的版本生成不同的哈希，避免用户使用不同的Go版本生成相同的ID。重点看前半部分，可以发现计算哈希的时候只依赖文件名，并不关心文件的内容，这也是我们前面稍微修改一下插件的代码会生成相同的原因， 如果你在代码中<code>import _ &quot;fmt&quot;</code>也会产生不同的插件。</p>
+<p>总之，在Go 1.10之前，为了避免插件冲突， 最好是在编译的时候指定<code>pluginpath</code>, 比如：</p>
+<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">go build -ldflags <span class="string">"-pluginpath=plugin/hot-<span class="variable">$(date +%s)</span>"</span> -buildmode=plugin -o hotload.so hotload.go</div></pre></td></tr></table></figure>
+
+]]></content>
+    <summary type="html">
+    <![CDATA[<p>Go 1.8中增加了 <a href="https://golang.org/pkg/plugin/" target="_blank" rel="external">plugin</a> package,但是仅支持Linux操作系统，并且还有一些已知的bug。可以说，这个插件系统的实现还未达到&quot;产品级&quot;的水平。</p>
+<blockquote>
+<p>The plugin support is currently incomplete, only supports Linux, and has known bugs.</p>
+</blockquote>
+<p>一些已知的bug已经推到 Go1.10甚至以后的版本中修复了。</p>
+<p>今天在测试Go 1.9中的功能的时候就遇到了plugin的一个bug。</p>
+]]>
+    
+    </summary>
+    
+      <category term="Go" scheme="http://colobu.com/categories/Go/"/>
+    
+  </entry>
   
   <entry>
     <title><![CDATA[[转]设计一个容错的微服务架构]]></title>
@@ -2655,88 +2726,6 @@ name-<span class="keyword">char</span>   = <span class="string">"-"</span> <span
       <category term="Spring" scheme="http://colobu.com/tags/Spring/"/>
     
       <category term="Java" scheme="http://colobu.com/categories/Java/"/>
-    
-  </entry>
-  
-  <entry>
-    <title><![CDATA[tc: 模拟网络异常的工具]]></title>
-    <link href="http://colobu.com/2017/04/21/tc-introduction/"/>
-    <id>http://colobu.com/2017/04/21/tc-introduction/</id>
-    <published>2017-04-21T06:34:24.000Z</published>
-    <updated>2017-04-21T07:59:11.000Z</updated>
-    <content type="html"><![CDATA[<p><img src="/2017/04/21/tc-introduction/network.png" alt=""></p>
-<p>Linux Traffic Control (tc)的扩展 Network Emulation (netem)可以很方便的模拟网络不好的情况，一般新的linux内核中(&gt;= 2.6)已经内置了这个工具，可以方便的进行测试。</p>
-<p>本文罗列了了 <code>tc</code>的常用的模拟命令， 以备将来使用的时候查询。</p>
-<p>主要参考了Linux基金会的官方介绍: <a href="https://wiki.linuxfoundation.org/networking/netem" target="_blank" rel="external">netem</a><br><a id="more"></a></p>
-<h3 id="监控网卡。">监控网卡。</h3>
-<p>首先要查看你的网卡信息，如: <code>eth0</code>，然后将这个网卡加入监控列表 <code>sudo tc qdisc add dev eth0 root netem</code>。 </p>
-<p>如果不想再监控，可以移除这个网卡 <code>sudo tc qdisc del dev eth0 root netem</code></p>
-<p>如果想查看监控列表， 可以使用 <code>tc -s qdisc</code>。</p>
-<p><code>qdisc</code>是<code>queueing discipline</code>的缩写。</p>
-<h3 id="模拟网络延迟">模拟网络延迟</h3>
-<h4 id="固定延迟">固定延迟</h4>
-<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">tc qdisc add dev eth0 root netem delay <span class="number">100</span>ms</div></pre></td></tr></table></figure>
-
-<p>每个包都固定延迟 <code>100</code>毫秒， 设置好后你可以使用<code>ping</code>命令测试。</p>
-<h4 id="固定延迟+小随机值">固定延迟+小随机值</h4>
-<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">tc qdisc change dev eth0 root netem delay <span class="number">100</span>ms <span class="number">10</span>ms</div></pre></td></tr></table></figure>
-
-<p>延迟时间变成了 <code>100ms ± 10ms</code>。</p>
-<h4 id="固定延迟+小随机值+相关系数">固定延迟+小随机值+相关系数</h4>
-<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">tc qdisc change dev eth0 root netem delay <span class="number">100</span>ms <span class="number">10</span>ms <span class="number">25</span>%</div></pre></td></tr></table></figure>
-
-<blockquote>
-<p>This causes the added delay to be 100ms ± 10ms with the next random element depending 25% on the last one. This isn&#39;t true statistical correlation, but an approximation.</p>
-</blockquote>
-<h4 id="遵循正态分布的延迟">遵循正态分布的延迟</h4>
-<p>典型情况下延迟并不是均分分布的，而是遵循类似正态分布的规律。所以你可以使用某种分布模拟延迟。</p>
-<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">tc qdisc change dev eth0 root netem delay <span class="number">100</span>ms <span class="number">20</span>ms distribution normal</div></pre></td></tr></table></figure>
-
-<p>分布为<code>normal</code>、 <code>pareto</code>、 <code>paretonormal</code>等。</p>
-<h3 id="模拟丢包">模拟丢包</h3>
-<p>随机丢弃一些包， 丢弃比率可以设置。丢失比最小为 <code>232 = 0.0000000232%</code>。</p>
-<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">tc qdisc change dev eth0 root netem loss <span class="number">0.1</span>%</div></pre></td></tr></table></figure>
-
-<p>上述命令会随机丢弃千分之一的包。</p>
-<p>你还可以增加一个相关参数：</p>
-<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">tc qdisc change dev eth0 root netem loss <span class="number">0.3</span>% <span class="number">25</span>%</div></pre></td></tr></table></figure>
-
-<p>丢弃率为千分之三， 后一个的丢弃的可能性和前一个的可能性的25%相关：</p>
-<p>Prob<sub>n</sub> = .25 <em> Prob<sub>n-1</sub> + .75 </em> Random</p>
-<h3 id="模拟包重复">模拟包重复</h3>
-<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">tc qdisc change dev eth0 root netem duplicate <span class="number">1</span>%</div></pre></td></tr></table></figure>
-
-<p>类似丢包的命令，上面命令产生百分之一的重复包。</p>
-<h3 id="模拟错误包">模拟错误包</h3>
-<p>模拟随机噪音(错误包)， 这个功能在 2.6.16以及以后的版本中才加入。它会在包中随机位置更改一个bit。</p>
-<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">tc qdisc change dev eth0 root netem corrupt <span class="number">0.1</span>%</div></pre></td></tr></table></figure>
-
-<h3 id="模拟包乱序">模拟包乱序</h3>
-<p>1） 方式一<br>使用 gap。 第5th包（5、10、15、20）立即发送，其它的包会延迟10毫秒。</p>
-<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">tc qdisc change dev eth0 root netem gap <span class="number">5</span> delay <span class="number">10</span>ms</div></pre></td></tr></table></figure>
-
-<p>2） 方式二<br>方式一乱序方式是固定的，可以预测的。方式二引入随机性：</p>
-<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">tc qdisc change dev eth0 root netem delay <span class="number">10</span>ms reorder <span class="number">25</span>% <span class="number">50</span>%</div></pre></td></tr></table></figure>
-
-<p>25%的包会立即发送， 其它的包会延迟10毫秒。相关系数为50%。</p>
-<p>新版的netem的包延迟设置也可能导致包乱序，如果包延迟的有一定的随机性的话：</p>
-<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">tc qdisc change dev eth0 root netem delay <span class="number">100</span>ms <span class="number">75</span>ms</div></pre></td></tr></table></figure>
-
-<p>因为延迟时间在<code>100ms ± 75ms</code>返回内， 就有可能第二包的延迟比第一个包的延迟小，先发出去。</p>
-<h3 id="控制包速(带宽)">控制包速(带宽)</h3>
-<p>没有直接命令，需要两条命令配合使用。</p>
-<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div></pre></td><td class="code"><pre><div class="line"><span class="comment"># tc qdisc add dev eth0 root handle 1:0 netem delay 100ms</span></div><div class="line"><span class="comment"># tc qdisc add dev eth0 parent 1:1 handle 10: tbf rate 256kbit buffer 1600 limit 3000</span></div><div class="line"><span class="comment"># tc -s qdisc ls dev eth0</span></div><div class="line">qdisc netem <span class="number">1</span>: limit <span class="number">1000</span> delay <span class="number">100.0</span>ms</div><div class="line"> Sent <span class="number">0</span> bytes <span class="number">0</span> pkts (dropped <span class="number">0</span>, overlimits <span class="number">0</span> )</div><div class="line">qdisc tbf <span class="number">10</span>: rate <span class="number">256</span>Kbit burst <span class="number">1599</span>b lat <span class="number">26.6</span>ms</div><div class="line"> Sent <span class="number">0</span> bytes <span class="number">0</span> pkts (dropped <span class="number">0</span>, overlimits <span class="number">0</span> )</div></pre></td></tr></table></figure>
-
-]]></content>
-    <summary type="html">
-    <![CDATA[<p><img src="/2017/04/21/tc-introduction/network.png" alt=""></p>
-<p>Linux Traffic Control (tc)的扩展 Network Emulation (netem)可以很方便的模拟网络不好的情况，一般新的linux内核中(&gt;= 2.6)已经内置了这个工具，可以方便的进行测试。</p>
-<p>本文罗列了了 <code>tc</code>的常用的模拟命令， 以备将来使用的时候查询。</p>
-<p>主要参考了Linux基金会的官方介绍: <a href="https://wiki.linuxfoundation.org/networking/netem" target="_blank" rel="external">netem</a><br>]]>
-    
-    </summary>
-    
-      <category term="工具" scheme="http://colobu.com/categories/%E5%B7%A5%E5%85%B7/"/>
     
   </entry>
   
