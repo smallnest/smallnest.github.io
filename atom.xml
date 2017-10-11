@@ -4,7 +4,7 @@
   <subtitle><![CDATA[大道至简 Simplicity is the ultimate form of sophistication]]></subtitle>
   <link href="/atom.xml" rel="self"/>
   <link href="http://colobu.com/"/>
-  <updated>2017-10-11T04:18:53.319Z</updated>
+  <updated>2017-10-11T07:18:41.476Z</updated>
   <id>http://colobu.com/</id>
   
   <author>
@@ -13,6 +13,49 @@
   </author>
   
   <generator uri="http://zespia.tw/hexo/">Hexo</generator>
+  
+  <entry>
+    <title><![CDATA[有趣的问题：GOMAXPROCS需要设置吗？]]></title>
+    <link href="http://colobu.com/2017/10/11/interesting-things-about-GOMAXPROCS/"/>
+    <id>http://colobu.com/2017/10/11/interesting-things-about-GOMAXPROCS/</id>
+    <published>2017-10-11T06:27:38.000Z</published>
+    <updated>2017-10-11T07:18:20.000Z</updated>
+    <content type="html"><![CDATA[<p>你已经知道， 自 Go 1.5开始， Go的<code>GOMAXPROCS</code>默认值已经设置为 CPU的核数， 这允许我们的Go程序充分使用机器的每一个CPU,最大程度的提高我们程序的并发性能， 而且，在大部分情况下， 我们并不会去设置这个参数。因为默认值已经足够好了， 以至于fasthttp的作者valyala<a href="https://github.com/golang/go/issues/20303" target="_blank" rel="external">提议</a>禁止<code>runtime.GOMAXPROCS</code>设置这个数值, 对于所有的case, <code>GOMAXPROCS</code>默认值是否是最好的值呢？</p>
+<p><a href="https://github.com/dgraph-io/badger" target="_blank" rel="external">badger</a>的作者Manish Rai Jain就遇到了这样一个<a href="https://groups.google.com/forum/#!topic/golang-nuts/jPb_h3TvlKE/discussion" target="_blank" rel="external">问题</a>。</p>
+<a id="more"></a>
+<p>Manish Rai Jain 写了一段<a href="https://github.com/dgraph-io/badger-bench/blob/master/randread/main.go" target="_blank" rel="external">Go代码</a>, 用来测试Go的读写SSD的性能，看看是否能打到Linux的I/O测试工具<a href="https://linux.die.net/man/1/fio" target="_blank" rel="external">fio</a>的读写性能。 使用fio，可以在 AWS(Amazon i3.large instance with NVMe SSD)达到100K IOPS， 但是使用这个Go程序，怎么也无法接近这个IOPS。</p>
+<p>他尝试了三个case:</p>
+<ol>
+<li>单个goroutine随机读</li>
+<li>使用一定数量的goroutine随机读</li>
+<li>类似#2,但是使用一个channel</li>
+</ol>
+<p>明显#1, #3比不上#2的性能，但是#2怎么也达不到fio的吞吐率。如果大家都使用小于CPU的核数, Go和Fio的吞吐率接近，但是如果把goroutine设置为大于CPU的核数，Fio性能提升明显，直到达到最大的IOPS，但是Go程序却没有显著变化。</p>
+<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div></pre></td><td class="code"><pre><div class="line">$ fio --name=randread --ioengine=psync --iodepth=<span class="number">32</span> --rw=randread --bs=<span class="number">4</span>k --direct=<span class="number">0</span> --size=<span class="number">2</span>G --numjobs=<span class="number">16</span> --runtime=<span class="number">120</span> --group_reporting</div><div class="line">Gives around <span class="number">62</span>K, tested via sar <span class="operator">-d</span> <span class="number">1</span> -p, <span class="keyword">while</span></div><div class="line"></div><div class="line">$ go build . && GOMAXPROCS=<span class="number">16</span> ./randread --dir ~/diskfio --jobs <span class="number">16</span> --num <span class="number">2000000</span> --mode <span class="number">1</span></div><div class="line">Gives around <span class="number">44</span>K, via sar. Number of cores on my machine are <span class="number">4</span>.</div></pre></td></tr></table></figure>
+
+<p>通过将<code>GOMAXPROCS</code>设置更大的数(64/128, 数倍CPU核数), Go 程序可以取得几乎和Fio一样的吞吐率。</p>
+<p>在今年的Gophercon上，Manish Rai Jain碰到了Russ Cox，问到了这个问题：</p>
+<blockquote>
+<p>If File::Read blocks goroutines, which then spawn new OS threads, in a long running job, there should be plenty of OS threads created already, so the random read throughput should increase over time and stabilize to the maximum possible value. But, that&#39;s not what I see in my benchmarks.</p>
+</blockquote>
+<p>大意是如果文件读取倍 block， Go会产生新的OS Thread,因为有很多的OS Thread,所以随机读的吞吐率应该也会上升才对，但是实际却不是。</p>
+<p>Russ Cox解释说<code>GOMAXPROCS</code>就像一个多路复用器，所以<code>GOMAXPROCS</code>就会是一个瓶颈。</p>
+<blockquote>
+<p>The GOMAXPROCS in a way acts like a multiplexer. From docs, &quot;the GOMAXPROCS variable limits the number of operating system threads that can execute user-level Go code simultaneously.&quot; Which basically means, all reads must first be run only via GOMAXPROCS number of goroutines, before switching over to some OS thread (not really a switch, but conceptually speaking). This introduces a bottleneck for throughput.</p>
+</blockquote>
+<p>最后Manish Rai Jain在他的高性能的K/V数据库调大了这个<a href="https://github.com/dgraph-io/dgraph/commit/30237a1429debab73eff38fea2f724914ca38b77" target="_blank" rel="external">参数</a>。</p>
+<p>这是一个有趣的讨论，很明显默认的<code>GOMAXPROCS</code>在某些情况下也不是最好的值，特别是在Manish Rai Jain这种写block的情况下，设置<code>GOMAXPROCS</code>更大一些会提高I/O的吞吐率。</p>
+]]></content>
+    <summary type="html">
+    <![CDATA[<p>你已经知道， 自 Go 1.5开始， Go的<code>GOMAXPROCS</code>默认值已经设置为 CPU的核数， 这允许我们的Go程序充分使用机器的每一个CPU,最大程度的提高我们程序的并发性能， 而且，在大部分情况下， 我们并不会去设置这个参数。因为默认值已经足够好了， 以至于fasthttp的作者valyala<a href="https://github.com/golang/go/issues/20303" target="_blank" rel="external">提议</a>禁止<code>runtime.GOMAXPROCS</code>设置这个数值, 对于所有的case, <code>GOMAXPROCS</code>默认值是否是最好的值呢？</p>
+<p><a href="https://github.com/dgraph-io/badger" target="_blank" rel="external">badger</a>的作者Manish Rai Jain就遇到了这样一个<a href="https://groups.google.com/forum/#!topic/golang-nuts/jPb_h3TvlKE/discussion" target="_blank" rel="external">问题</a>。</p>
+]]>
+    
+    </summary>
+    
+      <category term="Go" scheme="http://colobu.com/categories/Go/"/>
+    
+  </entry>
   
   <entry>
     <title><![CDATA[badger 一个高性能的LSM K/V store]]></title>
@@ -1442,51 +1485,6 @@
     <![CDATA[<p><a href="https://github.com/taowen" target="_blank" rel="external">taowen</a>是<a href="https://github.com/json-iterator/go" target="_blank" rel="external">json-iterator</a>的作者。 序列化和反序列化需要处理JSON和struct的关系，其中会用到一些技巧。 原文 <a href="http://jsoniter.com/go-tips.cn.html" target="_blank" rel="external">Golang 中使用 JSON 的小技巧</a>是他的经验之谈，介绍了一些struct解析成json的技巧，以及 json-iterator 库的一些便利的处理。</p>
 <p>有的时候上游传过来的字段是string类型的，但是我们却想用变成数字来使用。 本来用一个json:&quot;,string&quot; 就可以支持了，如果不知道golang的这些小技巧，就要大费周章了。</p>
 <p>参考文章：<a href="http://attilaolah.eu/2014/09/10/json-and-struct-composition-in-go/" target="_blank" rel="external">http://attilaolah.eu/2014/09/10/json-and-struct-composition-in-go/</a></p>
-]]>
-    
-    </summary>
-    
-      <category term="Go" scheme="http://colobu.com/categories/Go/"/>
-    
-  </entry>
-  
-  <entry>
-    <title><![CDATA[Go 1.9 的新特性]]></title>
-    <link href="http://colobu.com/2017/06/20/what-s-new-in-Go-1-9/"/>
-    <id>http://colobu.com/2017/06/20/what-s-new-in-Go-1-9/</id>
-    <published>2017-06-20T05:17:18.000Z</published>
-    <updated>2017-06-20T06:24:06.000Z</updated>
-    <content type="html"><![CDATA[<p>现在 Go 1.9 beta版已发布， 正式版预期在8月初发布，让我们先来看看你Go 1.9带来了那些新特性。</p>
-<a id="more"></a>
-<h3 id="type_alias">type alias</h3>
-<p>类型别名原本在1.8中加入的，但是临时发现有些问题，为了能全面的设计 <code>type alias</code> 被移到了 Go 1.9中了。</p>
-<p>这个特性主要用在类型从一个package移动到另外一个package中的时候，导致的项目中对引入的路径不一致导致的问题， 比如原先 <code>context</code>是在<code>golang.org／x/net/context</code>包下，在Go 1.7中菜正式移到标准库<code>context</code>。</p>
-<p>相关的issue: <a href="https://github.com/golang/go/issues/16339" target="_blank" rel="external">go#16339</a> <a href="https://github.com/golang/go/issues/18130" target="_blank" rel="external">go#18130</a><br>提案: <a href="https://github.com/golang/proposal/blob/master/design/18130-type-alias.md" target="_blank" rel="external">type alias</a></p>
-<h3 id="并发map">并发map</h3>
-<p>在Go 1.6之前， 内置的<code>map</code>类型是部分goroutine安全的，并发的读没有问题，并发的写可能有问题。自go 1.6之后， 并发地读写map会报错，这在一些知名的开源库中都存在这个问题，所以go 1.9之前的解决方案是额外绑定一个锁，封装成一个新的struct或者单独使用锁都可以。</p>
-<p>群众的呼声是响亮的，并发map在项目中大量使用，所以Go 1.9中在包<code>sync</code>加入了新的map， 查询、存储和删除都是平均常数时间，可以并发访问。</p>
-<h3 id="Monotonic_Time">Monotonic Time</h3>
-<p>先前的<code>time</code>包的实现都是基于<code>wall time</code>的，但是当机器的时钟调整后会有问题。 比如在计算duration的时候，如果时钟往回拨，可能导致end时间比start时间还早。</p>
-<p>所以Go 1.9使用<code>monotonic Time</code>来实现大部分的<code>time</code>中的函数，在计算duration的时候不会出现因为时钟调整出现的误差了。</p>
-<p>设计文档: <a href="https://github.com/golang/proposal/blob/master/design/12914-monotonic.md" target="_blank" rel="external">monotonic time</a></p>
-<h3 id="位处理操作">位处理操作</h3>
-<p>新增加了<code>math/bits</code>包， 提供了很多位运算的函数。</p>
-<h3 id="Test_Helper函数">Test Helper函数</h3>
-<p>新加｀(<em>T).Helper<code>和</code>(</em>B).Helper m｀， 用来标记调用的函数是一个测试辅助函数，当输出文件名和行数的时候，这个函数回呗忽略。</p>
-<h3 id="标准库的微小改动">标准库的微小改动</h3>
-<p>标准库也有一些小的功能的加入和提升， 比如<code>image</code>、<code>net</code>、<code>runtime</code>、<code>sync</code>等。</p>
-<h3 id="并行编译">并行编译</h3>
-<p>支持并行地编译函数，并且在Go 1.9中势默认设置。如果不想并行编译，设置GO19CONCURRENTCOMPILATION为0。</p>
-<h3 id="-/-_会忽略vendor下的包">./... 会忽略vendor下的包</h3>
-<p>这一条很有用，以后你在Makefile中可以直接使用<code>./...</code>,而不是曲折地将vendor文件夹排除。</p>
-<p>如果你想使用vendor下的包， 可以使用<code>./vendor/...</code>通配符。</p>
-<h3 id="性能提升">性能提升</h3>
-<p>性能提升多少势很难精确描述的，对于大部分的程序，应该运行更快一点。</p>
-<p>主要在于垃圾回收器的优化、更好的生成的代码以及核心库的优化。</p>
-<p>完整的信息可以参考 <a href="https://golang.org/doc/go1.9" target="_blank" rel="external">Tip Go 1.9 Release Notes</a>, Go 1.9发布后可以访问<a href="https://golang.org/doc/go1.9" target="_blank" rel="external">Go 1.9 Release Notes</a></p>
-]]></content>
-    <summary type="html">
-    <![CDATA[<p>现在 Go 1.9 beta版已发布， 正式版预期在8月初发布，让我们先来看看你Go 1.9带来了那些新特性。</p>
 ]]>
     
     </summary>
