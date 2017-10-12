@@ -4,7 +4,7 @@
   <subtitle><![CDATA[大道至简 Simplicity is the ultimate form of sophistication]]></subtitle>
   <link href="/atom.xml" rel="self"/>
   <link href="http://colobu.com/"/>
-  <updated>2017-10-11T07:42:05.994Z</updated>
+  <updated>2017-10-12T09:05:44.193Z</updated>
   <id>http://colobu.com/</id>
   
   <author>
@@ -13,6 +13,69 @@
   </author>
   
   <generator uri="http://zespia.tw/hexo/">Hexo</generator>
+  
+  <entry>
+    <title><![CDATA[“[译] Kafka 存储的工作机制"]]></title>
+    <link href="http://colobu.com/2017/10/12/How-Kafka%E2%80%99s-Storage-Internals-Work/"/>
+    <id>http://colobu.com/2017/10/12/How-Kafka’s-Storage-Internals-Work/</id>
+    <published>2017-10-12T07:35:15.000Z</published>
+    <updated>2017-10-12T09:01:56.000Z</updated>
+    <content type="html"><![CDATA[<p>翻译自 Kafka/Confluent 公司的工程师 Travis Jeffery 的文章: <a href="https://thehoard.blog/how-Kafkas-storage-internals-work-3a29b02e026" target="_blank" rel="external">How Kafka’s Storage Internals Work</a>。</p>
+<p>通过本文我会帮助你理解Kafka是如何存储它的数据的。<br>对于调优Kafka的性能以及了解broker配置实际是干什么的， 了解Kafka的存储很有用。 我受Kafka的简单性的启发， 用我所学开始实现一个Go的Kafka: (jocko)[<a href="https://github.com/travisjeffery/jocko]。" target="_blank" rel="external">https://github.com/travisjeffery/jocko]。</a></p>
+<p>那么， Kafka存储内部是如何工作的呢？<br><a id="more"></a></p>
+<h2 id="Kafka_的存储单元是分区">Kafka 的存储单元是分区</h2>
+<p>分区(partition)是有序的， 新的不可变的消息增加到尾部。一个分区不能扩多个boker，甚至不能跨多个磁盘。</p>
+<p><img src="1.png" alt=""></p>
+<h2 id="保留策略管理kakfa如何保留消息">保留策略管理kakfa如何保留消息</h2>
+<p>你可以指定保留多少数据和多久的数据(大小和时间策略)， 之后kakfa会按照顺序清理数据， 不管数据是否已经倍消费。</p>
+<h2 id="分区被分割成多个分段">分区被分割成多个分段</h2>
+<p>所以Kafka会定期地查找磁盘中需要清理的消息。如果一个分区单一的文件比较打， 操作会很慢，而且容易出错。为了解决这个问题(和其它问题)， 分区文件被分割成几个分段(segment)。</p>
+<p>当Kafka往分区中写数据时， 它实际是往分段文件中写的。如果这个分段文件达到文件大小的限制，一个新的分段文件会被创建，以后往这个分区上写的数据会写入到这个新的分段文件中。</p>
+<p>分段文件使用它们的基偏移量(<code>base offset</code>)作为文件名。 一个分段文件的基偏移量 要大于前一个分段中的偏移量， 小于或者等于本分段文件中的偏移量。</p>
+<p><img src="2.png" alt=""></p>
+<p>在磁盘中， 每个分区一个文件夹， 包含分段文件， 分段文件由索引文件和log文件两个文件组成。</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div></pre></td><td class="code"><pre><div class="line">$ tree Kafka | head -<span class="keyword">n</span> <span class="number">6</span></div><div class="line">Kafka</div><div class="line">├── events-<span class="number">1</span></div><div class="line">│ ├── <span class="number">00000000003064504069</span>.<span class="built_in">index</span></div><div class="line">│ ├── <span class="number">00000000003064504069</span>.<span class="built_in">log</span></div><div class="line">│ ├── <span class="number">00000000003065011416</span>.<span class="built_in">index</span></div><div class="line">│ ├── <span class="number">00000000003065011416</span>.<span class="built_in">log</span></div></pre></td></tr></table></figure>
+
+<h2 id="分段日志文件存储消息">分段日志文件存储消息</h2>
+<p>每个消息包含它的值，偏移量，时间戳，key,消息大小、编解码器器、checksum 以及消息的版本。</p>
+<p>磁盘上的数据格式和broker从producer接收到网络消息时一样的， 也和发送给consumer的消息格式一样。这种设计的好处时可以使用<a href="https://www.ibm.com/developerworks/library/j-zerocopy/" target="_blank" rel="external">零拷贝</a>进行数据传输。</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div></pre></td><td class="code"><pre><div class="line">$ bin/Kafka-<span class="command">run</span>-<span class="type">class</span>.sh Kafka.tools.DumpLogSegments <span class="comment">--deep-iteration --print-data-log --files /data/Kafka/events-1/00000000003065011416.log | head -n 4</span></div><div class="line">Dumping /data/Kafka/appusers-<span class="number">1</span>/<span class="number">00000000003065011416.</span><span class="command">log</span></div><div class="line">Starting <span class="command">offset</span>: <span class="number">3065011416</span></div><div class="line"><span class="command">offset</span>: <span class="number">3065011416</span> position: <span class="number">0</span> isvalid: <span class="constant">true</span> payloadsize: <span class="number">2820</span> magic: <span class="number">1</span> compresscodec: NoCompressionCodec crc: <span class="number">811055132</span> payload: {<span class="string">"name"</span>: <span class="string">"Travis"</span>, msg: <span class="string">"Hey, what's up?"</span>}</div><div class="line"><span class="command">offset</span>: <span class="number">3065011417</span> position: <span class="number">1779</span> isvalid: <span class="constant">true</span> payloadsize: <span class="number">2244</span> magic: <span class="number">1</span> compresscodec: NoCompressionCodec crc: <span class="number">151590202</span> payload: {<span class="string">"name"</span>: <span class="string">"Wale"</span>, msg: <span class="string">"Starving."</span>}</div></pre></td></tr></table></figure>
+
+<h2 id="分段索引文件记录消息在日志文件中的位置(偏移量)">分段索引文件记录消息在日志文件中的位置(偏移量)</h2>
+<p>分段索引文件记录消息在日志文件中的位置(偏移量)。</p>
+<p><img src="3.png" alt=""></p>
+<p>索引文件映射到内存中。偏移量的查找使用二分查找， 找到最接近偏移量的位置(小于或者等于目标偏移量)。</p>
+<p>索引文件是由8字节的entry组成。4个字节存储相相对偏移量， 4个字节存储位置。相对偏移量加上基偏移量才是实际偏移量，这样只用4个字节久可以了。 例如，假设基偏移量是<code>10000000000000000000</code>，之后的偏移量<code>10000000000000000001</code>、<code>10000000000000000002</code>只需用<code>1</code>、<code>2</code>来表示即可。</p>
+<h2 id="Kafka保持压缩的消息">Kafka保持压缩的消息</h2>
+<p>Producer发送的一批消息会呗压缩在一起，作为一个消息的payload发送给broker。和前面的介绍一样，数据保持原样压缩存在磁盘上。</p>
+<p><img src="4.png" alt=""></p>
+<h2 id="回顾">回顾</h2>
+<p>Now you know how Kafka storage internals work:</p>
+<p>现在， 你应该了解了Kafka是如何存储日志(消息)的：</p>
+<ul>
+<li>分区时存储的基本单元</li>
+<li>分区文件被分割成分段文件</li>
+<li>分段文件包含两个文件：索引文件和日志</li>
+<li>索引文件记录消息在日志文件中的位置，用来快速查询消息</li>
+<li>索引文件中存在的是相对偏移值</li>
+<li>压缩的批量消息保持不变存储</li>
+<li>磁盘上的文件和收发的消息时一样的</li>
+</ul>
+<h2 id="实现Go语言的kafak">实现Go语言的kafak</h2>
+<p>我正在用Go实现Kafka。 目前我已经实现了在单个broker上读写分段，正在实现分布式。欢迎贡献。</p>
+]]></content>
+    <summary type="html">
+    <![CDATA[<p>翻译自 Kafka/Confluent 公司的工程师 Travis Jeffery 的文章: <a href="https://thehoard.blog/how-Kafkas-storage-internals-work-3a29b02e026" target="_blank" rel="external">How Kafka’s Storage Internals Work</a>。</p>
+<p>通过本文我会帮助你理解Kafka是如何存储它的数据的。<br>对于调优Kafka的性能以及了解broker配置实际是干什么的， 了解Kafka的存储很有用。 我受Kafka的简单性的启发， 用我所学开始实现一个Go的Kafka: (jocko)[<a href="https://github.com/travisjeffery/jocko]。" target="_blank" rel="external">https://github.com/travisjeffery/jocko]。</a></p>
+<p>那么， Kafka存储内部是如何工作的呢？<br>]]>
+    
+    </summary>
+    
+      <category term="Kafka" scheme="http://colobu.com/tags/Kafka/"/>
+    
+      <category term="大数据" scheme="http://colobu.com/categories/%E5%A4%A7%E6%95%B0%E6%8D%AE/"/>
+    
+  </entry>
   
   <entry>
     <title><![CDATA[GOMAXPROCS需要设置吗？]]></title>
@@ -1366,126 +1429,6 @@
     <summary type="html">
     <![CDATA[<p>如你所知， 类型别名(type aliases) 最终还是加入到Go 1.9中， Go 1.9 beta2今天已经发布了, 正式版预计8月初发布， 是时候深入了解一下它的新特性了，本文介绍的就是它的重要的新特性之一： 类型别名。 </p>
 <p>当然，如果你想尝试这些新特性，需要安装Go 1.9的版本，目前是beta2版，可以在官方网站下载。<br>]]>
-    
-    </summary>
-    
-      <category term="Go" scheme="http://colobu.com/categories/Go/"/>
-    
-  </entry>
-  
-  <entry>
-    <title><![CDATA[[转]Golang 中使用 JSON 的小技巧]]></title>
-    <link href="http://colobu.com/2017/06/21/json-tricks-in-Go/"/>
-    <id>http://colobu.com/2017/06/21/json-tricks-in-Go/</id>
-    <published>2017-06-21T09:59:14.000Z</published>
-    <updated>2017-06-22T09:55:11.000Z</updated>
-    <content type="html"><![CDATA[<p><a href="https://github.com/taowen" target="_blank" rel="external">taowen</a>是<a href="https://github.com/json-iterator/go" target="_blank" rel="external">json-iterator</a>的作者。 序列化和反序列化需要处理JSON和struct的关系，其中会用到一些技巧。 原文 <a href="http://jsoniter.com/go-tips.cn.html" target="_blank" rel="external">Golang 中使用 JSON 的小技巧</a>是他的经验之谈，介绍了一些struct解析成json的技巧，以及 json-iterator 库的一些便利的处理。</p>
-<p>有的时候上游传过来的字段是string类型的，但是我们却想用变成数字来使用。 本来用一个json:&quot;,string&quot; 就可以支持了，如果不知道golang的这些小技巧，就要大费周章了。</p>
-<p>参考文章：<a href="http://attilaolah.eu/2014/09/10/json-and-struct-composition-in-go/" target="_blank" rel="external">http://attilaolah.eu/2014/09/10/json-and-struct-composition-in-go/</a></p>
-<a id="more"></a>
-<h3 id="临时忽略struct空字段">临时忽略struct空字段</h3>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> User <span class="keyword">struct</span> {</div><div class="line">    Email    <span class="typename">string</span> <span class="string">`json:"email"`</span></div><div class="line">    Password <span class="typename">string</span> <span class="string">`json:"password"`</span></div><div class="line">    <span class="comment">// many more fields…</span></div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>如果想临时忽略掉空<code>Password</code>字段,可以用<code>omitempty</code>:</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div></pre></td><td class="code"><pre><div class="line">json.Marshal(<span class="keyword">struct</span> {</div><div class="line">    *User</div><div class="line">    Password <span class="typename">bool</span> <span class="string">`json:"password,omitempty"`</span></div><div class="line">}{</div><div class="line">    User: user,</div><div class="line">})</div></pre></td></tr></table></figure>
-
-<h3 id="临时添加额外的字段">临时添加额外的字段</h3>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> User <span class="keyword">struct</span> {</div><div class="line">    Email    <span class="typename">string</span> <span class="string">`json:"email"`</span></div><div class="line">    Password <span class="typename">string</span> <span class="string">`json:"password"`</span></div><div class="line">    <span class="comment">// many more fields…</span></div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>临时忽略掉空<code>Password</code>字段，并且添加<code>token</code>字段</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div></pre></td><td class="code"><pre><div class="line">json.Marshal(<span class="keyword">struct</span> {</div><div class="line">    *User</div><div class="line">    Token    <span class="typename">string</span> <span class="string">`json:"token"`</span></div><div class="line">    Password <span class="typename">bool</span> <span class="string">`json:"password,omitempty"`</span></div><div class="line">}{</div><div class="line">    User: user,</div><div class="line">    Token: token,</div><div class="line">})</div></pre></td></tr></table></figure>
-
-<h3 id="临时粘合两个struct">临时粘合两个struct</h3>
-<p>通过嵌入struct的方式:</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> BlogPost <span class="keyword">struct</span> {</div><div class="line">    URL   <span class="typename">string</span> <span class="string">`json:"url"`</span></div><div class="line">    Title <span class="typename">string</span> <span class="string">`json:"title"`</span></div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">type</span> Analytics <span class="keyword">struct</span> {</div><div class="line">    Visitors  <span class="typename">int</span> <span class="string">`json:"visitors"`</span></div><div class="line">    PageViews <span class="typename">int</span> <span class="string">`json:"page_views"`</span></div><div class="line">}</div><div class="line"></div><div class="line">json.Marshal(<span class="keyword">struct</span>{</div><div class="line">    *BlogPost</div><div class="line">    *Analytics</div><div class="line">}{post, analytics})</div></pre></td></tr></table></figure>
-
-<h3 id="一个json切分成两个struct">一个json切分成两个struct</h3>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div></pre></td><td class="code"><pre><div class="line">json.Unmarshal([]<span class="typename">byte</span>(<span class="string">`{</span></div><div class="line">  "url": "attila@attilaolah.eu",</div><div class="line">  "title": "Attila's Blog",</div><div class="line">  "visitors": 6,</div><div class="line">  "page_views": 14</div><div class="line">}`), &<span class="keyword">struct</span> {</div><div class="line">  *BlogPost</div><div class="line">  *Analytics</div><div class="line">}{&post, &analytics})</div></pre></td></tr></table></figure>
-
-<h3 id="临时改名struct的字段">临时改名struct的字段</h3>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> CacheItem <span class="keyword">struct</span> {</div><div class="line">    Key    <span class="typename">string</span> <span class="string">`json:"key"`</span></div><div class="line">    MaxAge <span class="typename">int</span>    <span class="string">`json:"cacheAge"`</span></div><div class="line">    Value  Value  <span class="string">`json:"cacheValue"`</span></div><div class="line">}</div><div class="line"></div><div class="line">json.Marshal(<span class="keyword">struct</span>{</div><div class="line">    *CacheItem</div><div class="line"></div><div class="line">    <span class="comment">// Omit bad keys</span></div><div class="line">    OmitMaxAge omit <span class="string">`json:"cacheAge,omitempty"`</span></div><div class="line">    OmitValue  omit <span class="string">`json:"cacheValue,omitempty"`</span></div><div class="line"></div><div class="line">    <span class="comment">// Add nice keys</span></div><div class="line">    MaxAge <span class="typename">int</span>    <span class="string">`json:"max_age"`</span></div><div class="line">    Value  *Value <span class="string">`json:"value"`</span></div><div class="line">}{</div><div class="line">    CacheItem: item,</div><div class="line"></div><div class="line">    <span class="comment">// Set the int by value:</span></div><div class="line">    MaxAge: item.MaxAge,</div><div class="line"></div><div class="line">    <span class="comment">// Set the nested struct by reference, avoid making a copy:</span></div><div class="line">    Value: &item.Value,</div><div class="line">})</div></pre></td></tr></table></figure>
-
-<h3 id="用字符串传递数字">用字符串传递数字</h3>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> TestObject <span class="keyword">struct</span> {</div><div class="line">    Field1 <span class="typename">int</span>    <span class="string">`json:",string"`</span></div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>这个对应的json是 <code>{&quot;Field1&quot;: &quot;100&quot;}</code></p>
-<p>如果json是 <code>{&quot;Field1&quot;: 100}</code> 则会报错</p>
-<h3 id="容忍字符串和数字互转">容忍字符串和数字互转</h3>
-<p>如果你使用的是jsoniter，可以启动<strong>模糊模式</strong>来支持 PHP 传递过来的 JSON。</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">import</span> <span class="string">"github.com/json-iterator/go/extra"</span></div><div class="line"></div><div class="line">extra.RegisterFuzzyDecoders()</div></pre></td></tr></table></figure>
-
-<p>这样就可以处理字符串和数字类型不对的问题了。比如</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">var</span> val <span class="typename">string</span></div><div class="line">jsoniter.UnmarshalFromString(<span class="string">`100`</span>, &val)</div></pre></td></tr></table></figure>
-
-<p>又比如</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">var</span> val <span class="typename">float32</span></div><div class="line">jsoniter.UnmarshalFromString(<span class="string">`"1.23"`</span>, &val)</div></pre></td></tr></table></figure>
-
-<h3 id="容忍空数组作为对象">容忍空数组作为对象</h3>
-<p>PHP另外一个令人崩溃的地方是，如果 PHP array是空的时候，序列化出来是<code>[]</code>。但是不为空的时候，序列化出来的是<code>{&quot;key&quot;:&quot;value&quot;}</code>。 我们需要把 <code>[]</code> 当成 <code>{}</code> 处理。</p>
-<p>如果你使用的是jsoniter，可以启动模糊模式来支持 PHP 传递过来的 JSON。</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">import</span> <span class="string">"github.com/json-iterator/go/extra"</span></div><div class="line"></div><div class="line">extra.RegisterFuzzyDecoders()</div></pre></td></tr></table></figure>
-
-<p>这样就可以支持了</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">var</span> val <span class="keyword">map</span>[<span class="typename">string</span>]<span class="keyword">interface</span>{}</div><div class="line">jsoniter.UnmarshalFromString(<span class="string">`[]`</span>, &val)</div></pre></td></tr></table></figure>
-
-<h3 id="使用_MarshalJSON支持time-Time">使用 MarshalJSON支持time.Time</h3>
-<p>golang 默认会把 <code>time.Time</code> 用字符串方式序列化。如果我们想用其他方式表示 <code>time.Time</code>，需要自定义类型并定义 <code>MarshalJSON</code>。</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> timeImplementedMarshaler time.Time</div><div class="line"></div><div class="line"><span class="keyword">func</span> (obj timeImplementedMarshaler) MarshalJSON() ([]<span class="typename">byte</span>, error) {</div><div class="line">    seconds := time.Time(obj).Unix()</div><div class="line">    <span class="keyword">return</span> []<span class="typename">byte</span>(strconv.FormatInt(seconds,<span class="number"> 10</span>)), <span class="constant">nil</span></div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>序列化的时候会调用 MarshalJSON</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> TestObject <span class="keyword">struct</span> {</div><div class="line">    Field timeImplementedMarshaler</div><div class="line">}</div><div class="line">should := require.New(t)</div><div class="line">val := timeImplementedMarshaler(time.Unix<span class="number">(123</span>,<span class="number"> 0</span>))</div><div class="line">obj := TestObject{val}</div><div class="line">bytes, err := jsoniter.Marshal(obj)</div><div class="line">should.Nil(err)</div><div class="line">should.Equal(<span class="string">`{"Field":123}`</span>, <span class="typename">string</span>(bytes))</div></pre></td></tr></table></figure>
-
-<h3 id="使用_RegisterTypeEncoder支持time-Time">使用 RegisterTypeEncoder支持time.Time</h3>
-<p>jsoniter 能够对不是你定义的type自定义JSON编解码方式。比如对于 <code>time.Time</code> 可以用 epoch int64 来序列化</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">import</span> <span class="string">"github.com/json-iterator/go/extra"</span></div><div class="line"></div><div class="line">extra.RegisterTimeAsInt64Codec(time.Microsecond)</div><div class="line">output, err := jsoniter.Marshal(time.Unix<span class="number">(1</span>,<span class="number"> 1002</span>))</div><div class="line">should.Equal(<span class="string">"1000001"</span>, <span class="typename">string</span>(output))</div></pre></td></tr></table></figure>
-
-<p>如果要自定义的话，参见 <code>RegisterTimeAsInt64Codec</code> 的实现代码</p>
-<h3 id="使用_MarshalText支持非字符串作为key的map">使用 MarshalText支持非字符串作为key的map</h3>
-<p>虽然 JSON 标准里只支持 <code>string</code> 作为 <code>key</code> 的 <code>map</code>。但是 golang 通过 <code>MarshalText()</code> 接口，使得其他类型也可以作为 <code>map</code> 的 <code>key</code>。例如</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line">f, _, _ := big.ParseFloat(<span class="string">"1"</span>,<span class="number"> 10</span>,<span class="number"> 64</span>, big.ToZero)</div><div class="line">val := <span class="keyword">map</span>[*big.Float]<span class="typename">string</span>{f: <span class="string">"2"</span>}</div><div class="line">str, err := MarshalToString(val)</div><div class="line">should.Equal(<span class="string">`{"1":"2"}`</span>, str)</div></pre></td></tr></table></figure>
-
-<p>其中 <code>big.Float</code> 就实现了 <code>MarshalText()</code></p>
-<h3 id="使用_json-RawMessage">使用 json.RawMessage</h3>
-<p>如果部分json文档没有标准格式，我们可以把原始的信息用<code>[]byte</code>保存下来。</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> TestObject <span class="keyword">struct</span> {</div><div class="line">    Field1 <span class="typename">string</span></div><div class="line">    Field2 json.RawMessage</div><div class="line">}</div><div class="line"><span class="keyword">var</span> data TestObject</div><div class="line">json.Unmarshal([]<span class="typename">byte</span>(<span class="string">`{"field1": "hello", "field2": [1,2,3]}`</span>), &data)</div><div class="line">should.Equal(<span class="string">` [1,2,3]`</span>, <span class="typename">string</span>(data.Field2))</div></pre></td></tr></table></figure>
-
-<h3 id="使用_json-Number">使用 json.Number</h3>
-<p>默认情况下，如果是 <code>interface{}</code> 对应数字的情况会是 <code>float64</code> 类型的。如果输入的数字比较大，这个表示会有损精度。所以可以 <code>UseNumber()</code> 启用 <code>json.Number</code> 来用字符串表示数字。</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div></pre></td><td class="code"><pre><div class="line">decoder1 := json.NewDecoder(bytes.NewBufferString(<span class="string">`123`</span>))</div><div class="line">decoder1.UseNumber()</div><div class="line"><span class="keyword">var</span> obj1 <span class="keyword">interface</span>{}</div><div class="line">decoder1.Decode(&obj1)</div><div class="line">should.Equal(json.Number(<span class="string">"123"</span>), obj1)</div></pre></td></tr></table></figure>
-
-<p>jsoniter 支持标准库的这个用法。同时，扩展了行为使得 <code>Unmarshal</code> 也可以支持 <code>UseNumber</code> 了。</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line">json := Config{UseNumber:<span class="constant">true</span>}.Froze()</div><div class="line"><span class="keyword">var</span> obj <span class="keyword">interface</span>{}</div><div class="line">json.UnmarshalFromString(<span class="string">"123"</span>, &obj)</div><div class="line">should.Equal(json.Number(<span class="string">"123"</span>), obj)</div></pre></td></tr></table></figure>
-
-<h3 id="统一更改字段的命名风格">统一更改字段的命名风格</h3>
-<p>经常 JSON 里的字段名 Go 里的字段名是不一样的。我们可以用 field tag 来修改。</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div></pre></td><td class="code"><pre><div class="line">output, err := jsoniter.Marshal(<span class="keyword">struct</span> {</div><div class="line">    UserName      <span class="typename">string</span> <span class="string">`json:"user_name"`</span></div><div class="line">    FirstLanguage <span class="typename">string</span> <span class="string">`json:"first_language"`</span></div><div class="line">}{</div><div class="line">    UserName:      <span class="string">"taowen"</span>,</div><div class="line">    FirstLanguage: <span class="string">"Chinese"</span>,</div><div class="line">})</div><div class="line">should.Equal(<span class="string">`{"user_name":"taowen","first_language":"Chinese"}`</span>, <span class="typename">string</span>(output))</div></pre></td></tr></table></figure>
-
-<p>但是一个个字段来设置，太麻烦了。如果使用 jsoniter，我们可以统一设置命名风格。</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">import</span> <span class="string">"github.com/json-iterator/go/extra"</span></div><div class="line"></div><div class="line">extra.SetNamingStrategy(LowerCaseWithUnderscores)</div><div class="line">output, err := jsoniter.Marshal(<span class="keyword">struct</span> {</div><div class="line">    UserName      <span class="typename">string</span></div><div class="line">    FirstLanguage <span class="typename">string</span></div><div class="line">}{</div><div class="line">    UserName:      <span class="string">"taowen"</span>,</div><div class="line">    FirstLanguage: <span class="string">"Chinese"</span>,</div><div class="line">})</div><div class="line">should.Nil(err)</div><div class="line">should.Equal(<span class="string">`{"user_name":"taowen","first_language":"Chinese"}`</span>, <span class="typename">string</span>(output))</div></pre></td></tr></table></figure>
-
-<h3 id="使用私有的字段">使用私有的字段</h3>
-<p>Go 的标准库只支持 public 的 field。jsoniter 额外支持了 private 的 field。需要使用 <code>SupportPrivateFields()</code> 来开启开关。</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">import</span> <span class="string">"github.com/json-iterator/go/extra"</span></div><div class="line"></div><div class="line">extra.SupportPrivateFields()</div><div class="line"><span class="keyword">type</span> TestObject <span class="keyword">struct</span> {</div><div class="line">    field1 <span class="typename">string</span></div><div class="line">}</div><div class="line">obj := TestObject{}</div><div class="line">jsoniter.UnmarshalFromString(<span class="string">`{"field1":"Hello"}`</span>, &obj)</div><div class="line">should.Equal(<span class="string">"Hello"</span>, obj.field1)</div></pre></td></tr></table></figure>
-
-<p>下面是我补充的内容</p>
-<h3 id="忽略掉一些字段">忽略掉一些字段</h3>
-<p>原文中第一节有个错误，我更正过来了。<code>omitempty</code>不会忽略某个字段，而是忽略空的字段，当字段的值为空值的时候，它不会出现在JSON数据中。</p>
-<p>如果想忽略某个字段，需要使用 <code>json:&quot;-&quot;</code>格式。</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> User <span class="keyword">struct</span> {</div><div class="line">    Email    <span class="typename">string</span> <span class="string">`json:"email"`</span></div><div class="line">    Password <span class="typename">string</span> <span class="string">`json:"password"`</span></div><div class="line">    <span class="comment">// many more fields…</span></div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>如果想临时忽略掉空<code>Password</code>字段,可以用<code>-</code>:</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div></pre></td><td class="code"><pre><div class="line">json.Marshal(<span class="keyword">struct</span> {</div><div class="line">    *User</div><div class="line">    Password <span class="typename">bool</span> <span class="string">`json:"-"`</span></div><div class="line">}{</div><div class="line">    User: user,</div><div class="line">})</div></pre></td></tr></table></figure>
-
-<h3 id="忽略掉一些字段2">忽略掉一些字段2</h3>
-<p>如果不想更改原struct,还可以使用下面的方法：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> User <span class="keyword">struct</span> {</div><div class="line">    Email    <span class="typename">string</span> <span class="string">`json:"email"`</span></div><div class="line">    Password <span class="typename">string</span> <span class="string">`json:"password"`</span></div><div class="line">    <span class="comment">// many more fields…</span></div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">type</span> omit *<span class="keyword">struct</span>{}</div><div class="line"></div><div class="line"><span class="keyword">type</span> PublicUser <span class="keyword">struct</span> {</div><div class="line">    *User</div><div class="line">    Password omit <span class="string">`json:"-"`</span></div><div class="line">}</div><div class="line"></div><div class="line">json.Marshal(PublicUser{</div><div class="line">    User: user,</div><div class="line">})</div></pre></td></tr></table></figure>
-
-]]></content>
-    <summary type="html">
-    <![CDATA[<p><a href="https://github.com/taowen" target="_blank" rel="external">taowen</a>是<a href="https://github.com/json-iterator/go" target="_blank" rel="external">json-iterator</a>的作者。 序列化和反序列化需要处理JSON和struct的关系，其中会用到一些技巧。 原文 <a href="http://jsoniter.com/go-tips.cn.html" target="_blank" rel="external">Golang 中使用 JSON 的小技巧</a>是他的经验之谈，介绍了一些struct解析成json的技巧，以及 json-iterator 库的一些便利的处理。</p>
-<p>有的时候上游传过来的字段是string类型的，但是我们却想用变成数字来使用。 本来用一个json:&quot;,string&quot; 就可以支持了，如果不知道golang的这些小技巧，就要大费周章了。</p>
-<p>参考文章：<a href="http://attilaolah.eu/2014/09/10/json-and-struct-composition-in-go/" target="_blank" rel="external">http://attilaolah.eu/2014/09/10/json-and-struct-composition-in-go/</a></p>
-]]>
     
     </summary>
     
