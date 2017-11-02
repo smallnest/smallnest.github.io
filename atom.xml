@@ -4,7 +4,7 @@
   <subtitle><![CDATA[大道至简 Simplicity is the ultimate form of sophistication]]></subtitle>
   <link href="/atom.xml" rel="self"/>
   <link href="http://colobu.com/"/>
-  <updated>2017-10-31T08:21:58.877Z</updated>
+  <updated>2017-11-02T12:17:23.916Z</updated>
   <id>http://colobu.com/</id>
   
   <author>
@@ -13,6 +13,94 @@
   </author>
   
   <generator uri="http://zespia.tw/hexo/">Hexo</generator>
+  
+  <entry>
+    <title><![CDATA[Kafka的复制机制]]></title>
+    <link href="http://colobu.com/2017/11/02/kafka-replication/"/>
+    <id>http://colobu.com/2017/11/02/kafka-replication/</id>
+    <published>2017-11-02T10:15:34.000Z</published>
+    <updated>2017-11-02T11:57:20.000Z</updated>
+    <content type="html"><![CDATA[<p>最近在设计一个多分区多副本的消息系统，以前对kafka有一些了解，在阅读了阿里的RocketMQ、小米的Pegasus等分布式系统后，再仔细阅读的kafka的复制设计，整理出本篇文档，可以和其它系统做一个对比。</p>
+<p>Kafka是一种高吞吐量的分布式发布订阅消息系统，有如下特性：</p>
+<ol>
+<li>通过O(1)的磁盘数据结构提供消息的持久化，这种结构对于即使数以TB的消息存储也能够保持长时间的稳定性能。</li>
+<li>高吞吐量：即使是非常普通的硬件Kafka也可以支持每秒数百万的消息。</li>
+<li>支持通过Kafka服务器和消费机集群来分区消息。</li>
+<li>支持流式处理。</li>
+</ol>
+<p>7年过去了， kafka已经成为一个羽翼丰满的发布订阅平台、消息存储、流处理的工具。财富500强企业中有三分之一的公司使用了kafka平台。也就是在昨天(2017年11月1日)，kafka发布了它的<code>1.0.0</code>版本。</p>
+<p>本文主要参考了Jun Rao的<a href="https://engineering.linkedin.com/kafka/intra-cluster-replication-apache-kafka" target="_blank" rel="external">Intra-cluster Replication in Apache Kafka</a>, Jun Rao毕业于清华大学，哥读到博士，后来在IBM、LinkedIn工作，在LinkedIn期间任Kafka组的技术leader。2014年Kafka一帮人成立了Confluent公司，推广Kafka的商业应用，Jun Rao是共同创始人。</p>
+<a id="more"></a>
+<p>复制提供了高可用， 即使有些节点出现了失败：</p>
+<ol>
+<li>Producer可以继续发布消息</li>
+<li>Consumer可以继续接收消息</li>
+</ol>
+<p>有两种方案可以保证强一致的数据复制: primary-backup replication 和 quorum-based replication。两种方案都要求选举出一个leader，其它的副本作为follower。所有的写都发给leader, 然后leader将消息发给follower。</p>
+<p>基于quorum的复制可以采用raft、paxos等算法， 比如Zookeeper、 Google Spanner、etcd等。在有 2n + 1个节点的情况下，最多可以容忍n个节点失败。</p>
+<p>基于primary-backup的复制等primary和backup都写入成功才算消息接收成功， 在有n个节点的情况下，最多可以容忍n-1节点失败，比如微软的<a href="https://www.microsoft.com/en-us/research/publication/pacifica-replication-in-log-based-distributed-storage-systems/" target="_blank" rel="external">PacifiaA</a>。</p>
+<p>这两种方式各有优缺点。<br>1、基于quorum的方式延迟(latency)可能会好于primary-backup,因为基于quorum的方式只需要部分节点写入成功就可以返回。<br>2、在同样多的节点下基于primary-backup的复制可以容忍更多的节点失败，只要有一个节点活着就可以工作。<br>3、primary-backup在两个节点的情况下就可以提供容错，而基于quorum的方式至少需要三个节点。</p>
+<p>Kafka采用了第二种方式，也就是主从模式， 主要是基于容错的考虑，并且在两个节点的情况下也可以提供高可用。</p>
+<p>万一一个节点慢了怎么办？首先这种情况是很少发生的，万一发生了可以设置timeout参数处理这种情况。</p>
+<p><img src="kafka_replication_diagram.png" alt=""></p>
+<p>kafka的复制是针对分区的。比如上图中有四个broker,一个topic,2个分区，复制因子是3。当producer发送一个消息的时候，它会选择一个分区，比如<code>topic1-part1</code>分区，将消息发送给这个分区的leader， broker2、broker3会拉取这个消息，一旦消息被拉取过来，slave会发送ack给master，这时候master才commit这个log。</p>
+<p>这个过程中producer有两个选择：一是等所有的副本都拉取成功producer菜收到写入成功的response,二是等leader写入成功就得到成功的response。第一个中可以确保在异常情况下不丢消息，但是latency就下来了。后一种latency提高很多，但是一旦有异常情况，slave还没有来得及拉取到最新的消息leader就挂了，这种情况下就有可能丢消息了。</p>
+<p><img src="kafka-architecture-topics-replication-to-partition-0" alt=""></p>
+<p><img src="kafka-architecture-topics-replication-to-partition-1" alt=""></p>
+<p>一个Broker既可能是一个分区的leader,也可能是另一个分区的slave，如上图所示。</p>
+<p>kafka实际是保证在<strong>足够多</strong>的slave写入成功的情况下就认为消息写入成功，而不是全部写入成功。这是因为有可能一些节点网络不好，或者机器有问题hang住了，如果leader一直等着，那么所有后续的消息都堆积起来了， 所以kafka认为只要足够多的副本写入就可以饿。那么，怎么才认为是<strong>足够多</strong>呢？</p>
+<p>Kafka引入了 <strong>ISR</strong>的概念。ISR是<code>in-sync replicas</code>的简写。ISR的副本保持和leader的同步，当然leader本身也在ISR中。初始状态所有的副本都处于ISR中，当一个消息发送给leader的时候，leader会等待ISR中所有的副本告诉它已经接收了这个消息，如果一个副本失败了，那么它会被移除ISR。下一条消息来的时候，leader就会将消息发送给当前的ISR中节点了。</p>
+<p>同时，leader还维护这HW(high watermark),这是一个分区的最后一条消息的offset。HW会持续的将HW发送给slave，broker可以将它写入到磁盘中以便将来恢复。</p>
+<p>当一个失败的副本重启的时候，它首先恢复磁盘中记录的HW，然后将它的消息truncate到HW这个offset。这是因为HW之后的消息不保证已经commit。这时它变成了一个slave， 从HW开始从Leader中同步数据，一旦追上leader，它就可以再加入到ISR中。</p>
+<p>kafka使用Zookeeper实现leader选举。如果leader失败，controller会从ISR选出一个新的leader。leader 选举的时候可能会有数据丢失，但是committed的消息保证不会丢失。</p>
+<h3 id="Leader_failure">Leader failure</h3>
+<p>There are 3 cases of leader failure which should be considered -</p>
+<ol>
+<li>The leader crashes before writing the messages to its local log. In this case, the client will timeout and resend the message to the new leader.</li>
+<li>The leader crashes after writing the messages to its local log, but before sending the response back to the client<br>Atomicity has to be guaranteed: Either all the replicas wrote the messages or none of them<br>The client will retry sending the message. In this scenario, the system should ideally ensure that the messages are not written twice. Maybe, one of the replicas had written the message to its local log, committed it, and it gets elected as the new leader.</li>
+<li>The leader crashes after sending the response. In this case, a new leader will be elected and start receiving requests.</li>
+</ol>
+<p>When this happens, we need to perform the following steps to elect a new leader.</p>
+<p>1.Each surviving replica in ISR registers itself in Zookeeper.</p>
+<ol>
+<li>The replica that registers first becomes the new leader. The new leader chooses its LEO as the new HW.</li>
+<li>Each replica registers a listener in Zookeeper so that it will be informed of any leader change. Everytime a replica is notified about a new leader:<br>If the replica is not the new leader (it must be a follower), it truncates its log to its HW and then starts to catch up from the new leader.</li>
+<li>The leader waits until all surviving replicas in ISR have caught up or a configured time has passed. The leader writes the current ISR to Zookeeper and opens itself up for both reads and writes.<br>(Note, during the initial startup when ISR is empty, any replica can become the leader.)</li>
+</ol>
+<h3 id="参考文档">参考文档</h3>
+<ol>
+<li><a href="https://www.confluent.io/blog/apache-kafka-goes-1-0/" target="_blank" rel="external">https://www.confluent.io/blog/apache-kafka-goes-1-0/</a></li>
+<li><a href="https://engineering.linkedin.com/kafka/intra-cluster-replication-apache-kafka" target="_blank" rel="external">https://engineering.linkedin.com/kafka/intra-cluster-replication-apache-kafka</a></li>
+<li><a href="https://cwiki.apache.org/confluence/display/KAFKA/Kafka+Replication" target="_blank" rel="external">https://cwiki.apache.org/confluence/display/KAFKA/Kafka+Replication</a></li>
+<li><a href="https://www.youtube.com/watch?v=XcvHmqmh16g" target="_blank" rel="external">Intra-cluster Replication in Apache Kafka</a></li>
+<li><a href="https://www.youtube.com/watch?v=kDx8hZhvCQ0" target="_blank" rel="external">Kafka Tutorial - Fault Tolerance</a></li>
+<li><a href="https://dzone.com/articles/kafka-topic-architecture-replication-failover-and" target="_blank" rel="external">https://dzone.com/articles/kafka-topic-architecture-replication-failover-and</a></li>
+<li><a href="http://meuslivros.github.io/kafka/ch04s04.html" target="_blank" rel="external">http://meuslivros.github.io/kafka/ch04s04.html</a></li>
+<li><a href="https://www.confluent.io/blog/hands-free-kafka-replication-a-lesson-in-operational-simplicity/" target="_blank" rel="external">https://www.confluent.io/blog/hands-free-kafka-replication-a-lesson-in-operational-simplicity/</a></li>
+<li><a href="https://engineering.linkedin.com/kafka/benchmarking-apache-kafka-2-million-writes-second-three-cheap-machines" target="_blank" rel="external">https://engineering.linkedin.com/kafka/benchmarking-apache-kafka-2-million-writes-second-three-cheap-machines</a></li>
+<li><a href="https://www.confluent.io/product/multi-datacenter/" target="_blank" rel="external">https://www.confluent.io/product/multi-datacenter/</a></li>
+</ol>
+]]></content>
+    <summary type="html">
+    <![CDATA[<p>最近在设计一个多分区多副本的消息系统，以前对kafka有一些了解，在阅读了阿里的RocketMQ、小米的Pegasus等分布式系统后，再仔细阅读的kafka的复制设计，整理出本篇文档，可以和其它系统做一个对比。</p>
+<p>Kafka是一种高吞吐量的分布式发布订阅消息系统，有如下特性：</p>
+<ol>
+<li>通过O(1)的磁盘数据结构提供消息的持久化，这种结构对于即使数以TB的消息存储也能够保持长时间的稳定性能。</li>
+<li>高吞吐量：即使是非常普通的硬件Kafka也可以支持每秒数百万的消息。</li>
+<li>支持通过Kafka服务器和消费机集群来分区消息。</li>
+<li>支持流式处理。</li>
+</ol>
+<p>7年过去了， kafka已经成为一个羽翼丰满的发布订阅平台、消息存储、流处理的工具。财富500强企业中有三分之一的公司使用了kafka平台。也就是在昨天(2017年11月1日)，kafka发布了它的<code>1.0.0</code>版本。</p>
+<p>本文主要参考了Jun Rao的<a href="https://engineering.linkedin.com/kafka/intra-cluster-replication-apache-kafka" target="_blank" rel="external">Intra-cluster Replication in Apache Kafka</a>, Jun Rao毕业于清华大学，哥读到博士，后来在IBM、LinkedIn工作，在LinkedIn期间任Kafka组的技术leader。2014年Kafka一帮人成立了Confluent公司，推广Kafka的商业应用，Jun Rao是共同创始人。</p>
+]]>
+    
+    </summary>
+    
+      <category term="kafka" scheme="http://colobu.com/tags/kafka/"/>
+    
+      <category term="架构" scheme="http://colobu.com/categories/%E6%9E%B6%E6%9E%84/"/>
+    
+  </entry>
   
   <entry>
     <title><![CDATA[如何整个替换git master分支?]]></title>
@@ -1248,111 +1336,6 @@
       <category term="Nginx" scheme="http://colobu.com/tags/Nginx/"/>
     
       <category term="工具" scheme="http://colobu.com/categories/%E5%B7%A5%E5%85%B7/"/>
-    
-  </entry>
-  
-  <entry>
-    <title><![CDATA[[译]像牛人一样改进你的Go代码]]></title>
-    <link href="http://colobu.com/2017/06/27/Lint-your-golang-code-like-a-mad-man/"/>
-    <id>http://colobu.com/2017/06/27/Lint-your-golang-code-like-a-mad-man/</id>
-    <published>2017-06-27T11:04:33.000Z</published>
-    <updated>2017-06-27T11:41:58.000Z</updated>
-    <content type="html"><![CDATA[<p>原文: <a href="https://medium.com/@arshamshirvani/lint-your-golang-code-like-a-pro-668dc6637b39" target="_blank" rel="external">Lint your #golang code like a mad man!</a>, 作者: <a href="https://medium.com/@arshamshirvani?source=post_header_lockup" target="_blank" rel="external">Arsham Shirvani</a></p>
-<p>我使用下面的工具来改进我的代码，除了<code>vendor</code>文件夹。我的操作系统是<code>GNU/Linux</code>,但是稍微修改一下脚本应该也能运行在你的操作系统上。我使用<a href="https://github.com/Masterminds/glide" target="_blank" rel="external">glide</a>来处理依赖(vendor),但你也可以使用你的包依赖管理工具来替换<code>glide nv</code>， 这个命令列出了所有的文件夹，除了vender (译者按： Go 1.9中可以直接使用<code>./...</code>，它会排除vendor文件夹)。有些情况下<code>glide nv</code>不适合，所以我使用了它的老式风格。</p>
-<p>注意我使用<code>$</code>作为shell的提示符。</p>
-<a id="more"></a>
-<h3 id="gofmt">gofmt</h3>
-<p>Go安装程序中自带了<code>gofmt</code>工具，可以使用它来格式化代码，保持一致的代码风格：</p>
-<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">$ find . -name <span class="string">"*.go"</span> -not -path <span class="string">"./vendor/*"</span> -not -path <span class="string">".git/*"</span> | xargs gofmt <span class="operator">-s</span> <span class="operator">-d</span></div></pre></td></tr></table></figure>
-
-<h3 id="gocyclo">gocyclo</h3>
-<p>gocyclo 用来检查函数的复杂度。</p>
-<p>安装：</p>
-<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">$ go get -u github.com/fzipp/gocyclo</div></pre></td></tr></table></figure>
-
-<p>使用：</p>
-<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">$ gocyclo -over <span class="number">12</span> $(ls <span class="operator">-d</span> */ | grep -v vendor)</div></pre></td></tr></table></figure>
-
-<p>上面的命令列出了所有复杂度大于12的函数。你还可以提出最复杂的几个：</p>
-<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">$ gocyclo -top <span class="number">10</span> $(ls <span class="operator">-d</span> */ | grep -v vendor)</div></pre></td></tr></table></figure>
-
-<h3 id="interfacer">interfacer</h3>
-<p>interfacer 是一个有趣的工具，依照作者所说：</p>
-<blockquote>
-<p>这个工具提供接口类型的建议，换句话说，它会对可以本没有必要定义成具体的类型的代码提出警告</p>
-</blockquote>
-<p>安装:</p>
-<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">$ go get -u github.com/mvdan/interfacer/cmd/interfacer</div></pre></td></tr></table></figure>
-
-<p>使用:</p>
-<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">$ interfacer $(glide nv)</div></pre></td></tr></table></figure>
-
-<p>译者按：看官方的例子就明白这个工具的作用了：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> ProcessInput(f *os.File) error {</div><div class="line">        b, err := ioutil.ReadAll(f)</div><div class="line">        <span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">                <span class="keyword">return</span> err</div><div class="line">        }</div><div class="line">        <span class="keyword">return</span> processBytes(b)</div><div class="line">}</div></pre></td></tr></table></figure>
-
-
-
-<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div></pre></td><td class="code"><pre><div class="line">$ interfacer $(go list ./... | grep -v /vendor/)</div><div class="line">foo.go:<span class="number">10</span>:<span class="number">19</span>: f can be io.Reader</div></pre></td></tr></table></figure>
-
-<h3 id="deadcode">deadcode</h3>
-<p>deadcode会告诉你哪些代码片段根本没用。</p>
-<p>安装:</p>
-<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">$ go get -u github.com/tsenart/deadcode</div></pre></td></tr></table></figure>
-
-<p>使用：</p>
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">$ <span class="keyword">find</span> . -<span class="built_in">type</span> <span class="keyword">d</span> -not -path <span class="string">"./vendor/*"</span> | xargs deadcode</div></pre></td></tr></table></figure>
-
-<h3 id="gotype">gotype</h3>
-<p>gotype会对go文件和包进行语义(semantic)和句法(syntactic)的分析,这是google提供的一个工具。</p>
-<p>安装：</p>
-<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">$ go get -u golang.org/x/tools/cmd/gotype</div></pre></td></tr></table></figure>
-
-<p>使用：</p>
-<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">$ find . -name <span class="string">"*.go"</span> -not -path <span class="string">"./vendor/*"</span> -not -path <span class="string">".git/*"</span> -print0 | xargs -<span class="number">0</span> gotype <span class="operator">-a</span></div></pre></td></tr></table></figure>
-
-<h3 id="misspell">misspell</h3>
-<p>misspell用来拼写检查，对国内英语不太熟练的同学很有帮助。</p>
-<p>安装:</p>
-<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">$ go get -u github.com/client9/misspell</div></pre></td></tr></table></figure>
-
-<p>使用:</p>
-<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">$ find . -type f -not -path <span class="string">"./vendor/*"</span> -print0 | xargs -<span class="number">0</span> misspell</div></pre></td></tr></table></figure>
-
-<h3 id="staticcheck">staticcheck</h3>
-<p>staticcheck是一个超牛的工具，提供了巨多的静态检查，就像 C#生态圈的 ReSharper 一样。</p>
-<p>安装：</p>
-<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">$ go get -u honnef.co/go/staticcheck/cmd/staticcheck</div></pre></td></tr></table></figure>
-
-<p>使用：</p>
-<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">$ staticcheck $(glide nv)</div></pre></td></tr></table></figure>
-
-<h3 id="gosimple">gosimple</h3>
-<p>gosimple 提供信息，帮助你了解哪些代码可以简化。</p>
-<p>安装：</p>
-<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">$ go get -u honnef.co/go/simple/cmd/gosimple</div></pre></td></tr></table></figure>
-
-<p>使用：</p>
-<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">$ gosimple $(glide nv)</div></pre></td></tr></table></figure>
-
-<p>译者按： 事实上这个工具和上面的staticcheck工具已经合并为同一个项目了：<a href="https://github.com/dominikh/go-tools" target="_blank" rel="external">go-tools</a>，这个项目提供了非常好的工具， 还包括 <code>structlayout-optimize</code>、<code>unused</code>、<code>rdeps</code>、<code>keyify</code>等，值的你去探索。</p>
-<h3 id="goconst">goconst</h3>
-<p>goconst 会查找重复的字符串，这些字符串可以抽取成常量。</p>
-<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">$ go get -u github.com/jgautheron/goconst/cmd/goconst</div></pre></td></tr></table></figure>
-
-<p>使用:</p>
-<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">$ goconst ./… | grep -v vendor</div></pre></td></tr></table></figure>
-
-<p>以上是作者列出的一些工具， 和我以前的一篇文章中列出的工具有很多重合的： <a href="http://colobu.com/2017/02/07/write-idiomatic-golang-codes/#使用工具检查你的代码" target="_blank" rel="external">使用工具检查你的代码</a>， 事实上我在项目中已经使用了文中很多的代码，非常非常的有帮助，希望你在阅读后能有所收获，快将这些工具加入到你的Makefile文件中吧。</p>
-]]></content>
-    <summary type="html">
-    <![CDATA[<p>原文: <a href="https://medium.com/@arshamshirvani/lint-your-golang-code-like-a-pro-668dc6637b39" target="_blank" rel="external">Lint your #golang code like a mad man!</a>, 作者: <a href="https://medium.com/@arshamshirvani?source=post_header_lockup" target="_blank" rel="external">Arsham Shirvani</a></p>
-<p>我使用下面的工具来改进我的代码，除了<code>vendor</code>文件夹。我的操作系统是<code>GNU/Linux</code>,但是稍微修改一下脚本应该也能运行在你的操作系统上。我使用<a href="https://github.com/Masterminds/glide" target="_blank" rel="external">glide</a>来处理依赖(vendor),但你也可以使用你的包依赖管理工具来替换<code>glide nv</code>， 这个命令列出了所有的文件夹，除了vender (译者按： Go 1.9中可以直接使用<code>./...</code>，它会排除vendor文件夹)。有些情况下<code>glide nv</code>不适合，所以我使用了它的老式风格。</p>
-<p>注意我使用<code>$</code>作为shell的提示符。</p>
-]]>
-    
-    </summary>
-    
-      <category term="Go" scheme="http://colobu.com/categories/Go/"/>
     
   </entry>
   
