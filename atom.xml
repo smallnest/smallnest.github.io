@@ -4,7 +4,7 @@
   <subtitle><![CDATA[大道至简 Simplicity is the ultimate form of sophistication]]></subtitle>
   <link href="/atom.xml" rel="self"/>
   <link href="http://colobu.com/"/>
-  <updated>2017-11-29T04:01:35.518Z</updated>
+  <updated>2017-11-29T09:44:39.541Z</updated>
   <id>http://colobu.com/</id>
   
   <author>
@@ -13,6 +13,49 @@
   </author>
   
   <generator uri="http://zespia.tw/hexo/">Hexo</generator>
+  
+  <entry>
+    <title><![CDATA[Go语言中实现基于 event-loop 网络处理]]></title>
+    <link href="http://colobu.com/2017/11/29/event-loop-networking-in-Go/"/>
+    <id>http://colobu.com/2017/11/29/event-loop-networking-in-Go/</id>
+    <published>2017-11-29T07:59:07.000Z</published>
+    <updated>2017-11-29T09:33:48.320Z</updated>
+    <content type="html"><![CDATA[<p>我们知道， Go语言为并发编程提供了简洁的编程方式， 你可以以&quot;同步&quot;的编程风格来并发执行代码， 比如使用<code>go</code>关键字新开一个goroutine。 对于网络编程，Go标准库和运行时内部采用 <code>epoll/kqueue/IoCompletionPort</code>来实现基于 <code>event-loop</code>的网络异步处理，但是通过<code>netpoll</code>的方式对外提供同步的访问。具体代码可以参考 <a href="https://golang.org/src/runtime/" target="_blank" rel="external">runtime/netpoll</a>、<a href="https://golang.org/src/net/" target="_blank" rel="external">net</a>和<a href="https://golang.org/src/internal/poll/" target="_blank" rel="external">internal/poll</a>。</p>
+<blockquote>
+<p>Package poll supports non-blocking I/O on file descriptors with polling.<br>This supports I/O operations that block only a goroutine, not a thread.<br>This is used by the net and os packages.<br>It uses a poller built into the runtime, with support from the<br>runtime scheduler.</p>
+</blockquote>
+<p>当然，我们平常不会设计到这些封装的细节，正常使用<code>net</code>包就很方便的开发网络程序了， 但是，如果我们想自己实现基于<code>epoll</code>的 <code>event-loop</code>网络程序呢？</p>
+<a id="more"></a>
+<h2 id="基于epoll的简单程序">基于epoll的简单程序</h2>
+<p><code>man epoll</code>可以查看epoll的相关介绍。下面这个例子来自<a href="https://gist.github.com/tevino/3a4f4ec4ea9d0ca66d4f" target="_blank" rel="external">tevino</a>， 采用<code>edge-triggered</code>方式处理事件。</p>
+<p>它采用 <code>syscall.Socket</code>、<code>syscall.SetNonblock</code>、<code>syscall.Bind</code>、<code>syscall.Listen</code>系统调用来监听端口，然后采用<code>syscall.EpollCreate1</code>、<code>syscall.EpollCtl</code>、<code>syscall.EpollWait</code>来关联这个监听的file descriptor， 一旦有新的连接的事件过来，使用<code>syscall.Accept</code>接收连接请求，并对这个连接file descriptor调用<code>syscall.EpollCtl</code>监听数据事件。一旦连接有数据ready, 调用<code>syscall.Read</code>读数据，调用<code>syscall.Write</code>写数据。</p>
+<figure class="highlight go"><figcaption><span>来自https://gist.github.com/tevino/3a4f4ec4ea9d0ca66d4f</span></figcaption><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div><div class="line">35</div><div class="line">36</div><div class="line">37</div><div class="line">38</div><div class="line">39</div><div class="line">40</div><div class="line">41</div><div class="line">42</div><div class="line">43</div><div class="line">44</div><div class="line">45</div><div class="line">46</div><div class="line">47</div><div class="line">48</div><div class="line">49</div><div class="line">50</div><div class="line">51</div><div class="line">52</div><div class="line">53</div><div class="line">54</div><div class="line">55</div><div class="line">56</div><div class="line">57</div><div class="line">58</div><div class="line">59</div><div class="line">60</div><div class="line">61</div><div class="line">62</div><div class="line">63</div><div class="line">64</div><div class="line">65</div><div class="line">66</div><div class="line">67</div><div class="line">68</div><div class="line">69</div><div class="line">70</div><div class="line">71</div><div class="line">72</div><div class="line">73</div><div class="line">74</div><div class="line">75</div><div class="line">76</div><div class="line">77</div><div class="line">78</div><div class="line">79</div><div class="line">80</div><div class="line">81</div><div class="line">82</div><div class="line">83</div><div class="line">84</div><div class="line">85</div><div class="line">86</div><div class="line">87</div><div class="line">88</div><div class="line">89</div><div class="line">90</div><div class="line">91</div><div class="line">92</div><div class="line">93</div><div class="line">94</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> main</div><div class="line"></div><div class="line"><span class="keyword">import</span> (</div><div class="line">	<span class="string">"fmt"</span></div><div class="line">	<span class="string">"net"</span></div><div class="line">	<span class="string">"os"</span></div><div class="line">	<span class="string">"syscall"</span></div><div class="line">)</div><div class="line"></div><div class="line"><span class="keyword">const</span> (</div><div class="line">	EPOLLET        =<span class="number"> 1</span> &lt;&lt;<span class="number"> 31</span></div><div class="line">	MaxEpollEvents =<span class="number"> 32</span></div><div class="line">)</div><div class="line"></div><div class="line"><span class="keyword">func</span> echo(fd <span class="typename">int</span>) {</div><div class="line">	<span class="keyword">defer</span> syscall.Close(fd)</div><div class="line">	<span class="keyword">var</span> buf <span class="number">[32</span> *<span class="number"> 1024</span>]<span class="typename">byte</span></div><div class="line">	<span class="keyword">for</span> {</div><div class="line">		nbytes, e := syscall.Read(fd, buf[:])</div><div class="line">		<span class="keyword">if</span> nbytes &gt;<span class="number"> 0</span> {</div><div class="line">			fmt.Printf(<span class="string">"&gt;&gt;&gt; %s"</span>, buf)</div><div class="line">			syscall.Write(fd, buf[:nbytes])</div><div class="line">			fmt.Printf(<span class="string">"&lt;&lt;&lt; %s"</span>, buf)</div><div class="line">		}</div><div class="line">		<span class="keyword">if</span> e != <span class="constant">nil</span> {</div><div class="line">			<span class="keyword">break</span></div><div class="line">		}</div><div class="line">	}</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	<span class="keyword">var</span> event syscall.EpollEvent</div><div class="line">	<span class="keyword">var</span> events [MaxEpollEvents]syscall.EpollEvent</div><div class="line"></div><div class="line">	fd, err := syscall.Socket(syscall.AF_INET, syscall.O_NONBLOCK|syscall.SOCK_STREAM,<span class="number"> 0</span>)</div><div class="line">	<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">		fmt.Println(err)</div><div class="line">		os.Exit<span class="number">(1</span>)</div><div class="line">	}</div><div class="line">	<span class="keyword">defer</span> syscall.Close(fd)</div><div class="line"></div><div class="line">	<span class="keyword">if</span> err = syscall.SetNonblock(fd, <span class="constant">true</span>); err != <span class="constant">nil</span> {</div><div class="line">		fmt.Println(<span class="string">"setnonblock1: "</span>, err)</div><div class="line">		os.Exit<span class="number">(1</span>)</div><div class="line">	}</div><div class="line"></div><div class="line">	addr := syscall.SockaddrInet4{Port:<span class="number"> 2000</span>}</div><div class="line">	<span class="built_in">copy</span>(addr.Addr[:], net.ParseIP(<span class="string">"0.0.0.0"</span>).To4())</div><div class="line"></div><div class="line">	syscall.Bind(fd, &addr)</div><div class="line">	syscall.Listen(fd,<span class="number"> 10</span>)</div><div class="line"></div><div class="line">	epfd, e := syscall.EpollCreate1<span class="number">(0</span>)</div><div class="line">	<span class="keyword">if</span> e != <span class="constant">nil</span> {</div><div class="line">		fmt.Println(<span class="string">"epoll_create1: "</span>, e)</div><div class="line">		os.Exit<span class="number">(1</span>)</div><div class="line">	}</div><div class="line">	<span class="keyword">defer</span> syscall.Close(epfd)</div><div class="line"></div><div class="line">	event.Events = syscall.EPOLLIN</div><div class="line">	event.Fd = <span class="typename">int32</span>(fd)</div><div class="line">	<span class="keyword">if</span> e = syscall.EpollCtl(epfd, syscall.EPOLL_CTL_ADD, fd, &event); e != <span class="constant">nil</span> {</div><div class="line">		fmt.Println(<span class="string">"epoll_ctl: "</span>, e)</div><div class="line">		os.Exit<span class="number">(1</span>)</div><div class="line">	}</div><div class="line"></div><div class="line">	<span class="keyword">for</span> {</div><div class="line">		nevents, e := syscall.EpollWait(epfd, events[:],<span class="number"> -1</span>)</div><div class="line">		<span class="keyword">if</span> e != <span class="constant">nil</span> {</div><div class="line">			fmt.Println(<span class="string">"epoll_wait: "</span>, e)</div><div class="line">			<span class="keyword">break</span></div><div class="line">		}</div><div class="line"></div><div class="line">		<span class="keyword">for</span> ev :=<span class="number"> 0</span>; ev &lt; nevents; ev++ {</div><div class="line">			<span class="keyword">if</span> <span class="typename">int</span>(events[ev].Fd) == fd {</div><div class="line">				connFd, _, err := syscall.Accept(fd)</div><div class="line">				<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">					fmt.Println(<span class="string">"accept: "</span>, err)</div><div class="line">					<span class="keyword">continue</span></div><div class="line">				}</div><div class="line">				syscall.SetNonblock(fd, <span class="constant">true</span>)</div><div class="line">				event.Events = syscall.EPOLLIN | EPOLLET</div><div class="line">				event.Fd = <span class="typename">int32</span>(connFd)</div><div class="line">				<span class="keyword">if</span> err := syscall.EpollCtl(epfd, syscall.EPOLL_CTL_ADD, connFd, &event); err != <span class="constant">nil</span> {</div><div class="line">					fmt.Print(<span class="string">"epoll_ctl: "</span>, connFd, err)</div><div class="line">					os.Exit<span class="number">(1</span>)</div><div class="line">				}</div><div class="line">			} <span class="keyword">else</span> {</div><div class="line">				<span class="keyword">go</span> echo(<span class="typename">int</span>(events[ev].Fd))</div><div class="line">			}</div><div class="line">		}</div><div class="line"></div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>上面的基于<code>epoll</code>只是一个简单的<code>event-loop</code>处理原型，而且在有些平台下(MAC OS)也不能执行，事件的处理也很粗糙，如果你想实现一个完整的<code>event-loop</code>的网络程序， 可以参考下节的库。</p>
+<h2 id="evio">evio</h2>
+<p><a href="https://github.com/tidwall/evio" target="_blank" rel="external">evio</a>是一个性能很高的event-loop网络库，代码简单，功能强大。它直接使用 <code>epoll</code>和<code>kqueue</code>系统调用，除了Go标准net库提供了另外一种思路， 类似<a href="https://github.com/libuv/libuv" target="_blank" rel="external">libuv</a>和<a href="https://github.com/libevent/libevent" target="_blank" rel="external">libevent</a>。</p>
+<p>这个库实现redis和haproxy等同的包处理机制，但并不想完全替代标准的net包。对于一个需要长时间运行的请求(大于1毫秒)， 比如数据库访问、身份验证等，建议还是使用Go net/http库。</p>
+<p>你可能知道， 由很多基于event-loop的程序， 比如Nginx、Haproxy、redis、memcached等，性能都非常不错，而且它们都是单线程运行的，非常快。</p>
+<p>这个库还有一个好处， 你可以在一个event-loop中处理多个network binding。</p>
+<p>一个简单的例子：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> main</div><div class="line"></div><div class="line"><span class="keyword">import</span> <span class="string">"github.com/tidwall/evio"</span></div><div class="line"></div><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	<span class="keyword">var</span> events evio.Events</div><div class="line">	events.Data = <span class="keyword">func</span>(id <span class="typename">int</span>, in []<span class="typename">byte</span>) (out []<span class="typename">byte</span>, action evio.Action) {</div><div class="line">		out = in</div><div class="line">		<span class="keyword">return</span></div><div class="line">	}</div><div class="line">	<span class="keyword">if</span> err := evio.Serve(events, <span class="string">"tcp://localhost:5000"</span>, <span class="string">"tcp://192.168.0.10:5001"</span>, <span class="string">"tcp://192.168.0.10:5002"</span>,<span class="string">"unix://socket"</span>); err != <span class="constant">nil</span> {</div><div class="line">		<span class="built_in">panic</span>(err.Error())</div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>作者对性能做了对比，性能非常不错。</p>
+<p><img src="echo.png" alt="简单的echo例子"><br><img src="http.png" alt="http对比"><br><img src="redis_pipeline_1.png" alt="pipeline 为1"><br><img src="redis_pipeline_8.png" alt="pipeline 为8"></p>
+]]></content>
+    <summary type="html">
+    <![CDATA[<p>我们知道， Go语言为并发编程提供了简洁的编程方式， 你可以以&quot;同步&quot;的编程风格来并发执行代码， 比如使用<code>go</code>关键字新开一个goroutine。 对于网络编程，Go标准库和运行时内部采用 <code>epoll/kqueue/IoCompletionPort</code>来实现基于 <code>event-loop</code>的网络异步处理，但是通过<code>netpoll</code>的方式对外提供同步的访问。具体代码可以参考 <a href="https://golang.org/src/runtime/" target="_blank" rel="external">runtime/netpoll</a>、<a href="https://golang.org/src/net/" target="_blank" rel="external">net</a>和<a href="https://golang.org/src/internal/poll/" target="_blank" rel="external">internal/poll</a>。</p>
+<blockquote>
+<p>Package poll supports non-blocking I/O on file descriptors with polling.<br>This supports I/O operations that block only a goroutine, not a thread.<br>This is used by the net and os packages.<br>It uses a poller built into the runtime, with support from the<br>runtime scheduler.</p>
+</blockquote>
+<p>当然，我们平常不会设计到这些封装的细节，正常使用<code>net</code>包就很方便的开发网络程序了， 但是，如果我们想自己实现基于<code>epoll</code>的 <code>event-loop</code>网络程序呢？</p>
+]]>
+    
+    </summary>
+    
+      <category term="Go" scheme="http://colobu.com/categories/Go/"/>
+    
+  </entry>
   
   <entry>
     <title><![CDATA[[译]Go TCP Socket的实现]]></title>
@@ -1245,83 +1288,6 @@
 ]]></content>
     <summary type="html">
     <![CDATA[<p><code>select</code> 和 <code>switch</code> 是 Go语言中进行分支操作的两个方式，各有各的应用场景。</p>
-]]>
-    
-    </summary>
-    
-      <category term="Go" scheme="http://colobu.com/categories/Go/"/>
-    
-  </entry>
-  
-  <entry>
-    <title><![CDATA[[转]golang concurrency tricks]]></title>
-    <link href="http://colobu.com/2017/07/07/golang-concurrency-tricks/"/>
-    <id>http://colobu.com/2017/07/07/golang-concurrency-tricks/</id>
-    <published>2017-07-07T10:58:21.000Z</published>
-    <updated>2017-07-07T11:27:40.000Z</updated>
-    <content type="html"><![CDATA[<p>原文地址: <a href="https://udhos.github.io/golang-concurrency-tricks/" target="_blank" rel="external">Golang Concurrency Tricks</a></p>
-<p>Golang concurrency model based on goroutines and channels is not free from sharp edges.</p>
-<p>This page intends both (1) to collect helpful guidelines for writing concurrent code in Go and (2) to bring up well known potential issues to attention.</p>
-<a id="more"></a>
-<h2 id="Channel_Hints">Channel Hints</h2>
-<ul>
-<li><p>C1. Some channel operations cause runtime panic:</p>
-<ul>
-<li>P1. Closing the nil channel.</li>
-<li>P2. Closing a closed channel.</li>
-<li>P3. Sending on a closed channel.</li>
-</ul>
-</li>
-<li><p>C2. Do not close a channel from a receiver goroutine. Closing the channel from a receiver could make future sender goroutines to panic.</p>
-</li>
-<li><p>C3. If a channel has multiple senders, do not close the channel from a sender goroutine. Closing the channel from a sender could make future sender goroutine to panic.</p>
-</li>
-</ul>
-<p>Alternatively, coordinate senders so that only the last sender to leave closes the channel (for instance by using either atomic int or sync.WaitGroup)</p>
-<p>Last one sender to leave, turns off the lights, which can be controlled by a atomic int.<br><a href="https://groups.google.com/d/msg/golang-nuts/LM648yrPpck/oZFSD-oMAwAJ" target="_blank" rel="external">https://groups.google.com/d/msg/golang-nuts/LM648yrPpck/oZFSD-oMAwAJ</a></p>
-<ul>
-<li>C4. It is not required to close an unused channel. If no goroutine is left referencing the channel, it will be garbage collected.</li>
-</ul>
-<p>Note that it is only necessary to close a channel if the receiver is looking for a close. Closing the channel is a control signal on the channel indicating that no more data follows.<br><a href="https://groups.google.com/forum/#!msg/golang-nuts/pZwdYRGxCIk/qpbHxRRPJdUJ" target="_blank" rel="external">https://groups.google.com/forum/#!msg/golang-nuts/pZwdYRGxCIk/qpbHxRRPJdUJ</a></p>
-<ul>
-<li>C5. Channels work well when enclosed in a &#39;select&#39;.</li>
-</ul>
-<p>If you are ever using a channel outside of a select in production code, you are probably doing it wrong.<br><a href="https://groups.google.com/d/msg/golang-nuts/LM648yrPpck/j5eHsPc2AwAJ" target="_blank" rel="external">https://groups.google.com/d/msg/golang-nuts/LM648yrPpck/j5eHsPc2AwAJ</a></p>
-<ul>
-<li><p>C6. If you need bidirectional communication between two goroutines, consider using two unidirectional channels. Thus both channel sides will be able to use the close idiom to signal termination.</p>
-</li>
-<li><p>C7. Beware: one sender goroutine risks blocking indefinitely when writing on a channel if there is no goroutine left receiving from it.</p>
-</li>
-<li><p>C8. When designing a goroutine which provides service through channels, and at some point a running goroutine is no longer needed, consider exactly how it will finish. Otherwise, unused goroutines may leak idly servicing an unattended channel.</p>
-</li>
-<li><p>C9. Keep Dave Cheney&#39;s Four Channel Axioms in mind:</p>
-<ul>
-<li>A1. A send to a nil channel blocks forever.</li>
-<li>A2. A receive from a nil channel blocks forever. (Why? Here is why. Example.)</li>
-<li>A3. A send to a closed channel panics.</li>
-<li>A4. A receive from a closed channel returns the zero value immediately.</li>
-</ul>
-</li>
-<li><p>C10. &#39;select&#39; never selects a blocking case.</p>
-</li>
-</ul>
-<h2 id="Goroutine_Hints">Goroutine Hints</h2>
-<ul>
-<li>G1. Only one goroutine accessing a piece of data is good practice.</li>
-</ul>
-<p>In particular, consider structuring your program so that only one goroutine at a time is ever responsible for a particular piece of data.<br><a href="https://golang.org/doc/faq#What_operations_are_atomic_What_about_mutexes" target="_blank" rel="external">https://golang.org/doc/faq#What_operations_are_atomic_What_about_mutexes</a></p>
-<ul>
-<li>G2. runtime.Goexit() terminates the goroutine that calls it.</li>
-</ul>
-<h2 id="See_also:">See also:</h2>
-<p><a href="http://www.slideshare.net/cloudflare/a-channel-compendium" target="_blank" rel="external">http://www.slideshare.net/cloudflare/a-channel-compendium</a><br><a href="https://github.com/golang/go/wiki/LearnConcurrency" target="_blank" rel="external">https://github.com/golang/go/wiki/LearnConcurrency</a><br><a href="http://dave.cheney.net/2014/03/19/channel-axioms" target="_blank" rel="external">http://dave.cheney.net/2014/03/19/channel-axioms</a></p>
-<hr>
-<p>Repository: git clone <a href="https://github.com/udhos/golang-concurrency-tricks.git" target="_blank" rel="external">https://github.com/udhos/golang-concurrency-tricks.git</a><br>Web URL: <a href="http://udhos.github.io/golang-concurrency-tricks" target="_blank" rel="external">http://udhos.github.io/golang-concurrency-tricks</a></p>
-]]></content>
-    <summary type="html">
-    <![CDATA[<p>原文地址: <a href="https://udhos.github.io/golang-concurrency-tricks/" target="_blank" rel="external">Golang Concurrency Tricks</a></p>
-<p>Golang concurrency model based on goroutines and channels is not free from sharp edges.</p>
-<p>This page intends both (1) to collect helpful guidelines for writing concurrent code in Go and (2) to bring up well known potential issues to attention.</p>
 ]]>
     
     </summary>
