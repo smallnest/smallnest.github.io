@@ -4,7 +4,7 @@
   <subtitle><![CDATA[大道至简 Simplicity is the ultimate form of sophistication]]></subtitle>
   <link href="/atom.xml" rel="self"/>
   <link href="http://colobu.com/"/>
-  <updated>2017-12-12T08:00:07.677Z</updated>
+  <updated>2017-12-13T09:42:40.221Z</updated>
   <id>http://colobu.com/</id>
   
   <author>
@@ -13,6 +13,167 @@
   </author>
   
   <generator uri="http://zespia.tw/hexo/">Hexo</generator>
+  
+  <entry>
+    <title><![CDATA[[转][译]百万级WebSockets和Go语言]]></title>
+    <link href="http://colobu.com/2017/12/13/A-Million-WebSockets-and-Go/"/>
+    <id>http://colobu.com/2017/12/13/A-Million-WebSockets-and-Go/</id>
+    <published>2017-12-13T09:05:07.000Z</published>
+    <updated>2017-12-13T09:42:02.455Z</updated>
+    <content type="html"><![CDATA[<p>原文: <a href="https://medium.freecodecamp.org/million-websockets-and-go-cc58418460bb" target="_blank" rel="external">A Million WebSockets and Go</a><br>作者: Sergey Kamardin</p>
+<p>译文: <a href="http://xiecode.cn/post/cn_06_a_million_websockets_and_go/" target="_blank" rel="external">性能优化实战：百万级WebSockets和Go语言</a><br>译者: 曼托斯</p>
+<a id="more"></a>
+<p>大家好！我的名字叫Sergey Kamardin。我是来自Mail.Ru的一名工程师。这篇文章将讲述我们是如何用Go语言开发一个高负荷的WebSocket服务。即使你对WebSockets熟悉但对Go语言知之甚少，我还是希望这篇文章里讲到的性能优化的思路和技术对你有所启发。</p>
+<h2 id="介绍">介绍</h2>
+<p>作为全文的铺垫，我想先讲一下我们为什么要开发这个服务。</p>
+<p>Mail.Ru有许多包含状态的系统。用户的电子邮件存储是其中之一。有很多办法来跟踪这些状态的改变。不外乎通过定期的轮询或者系统通知来得到状态的变化。这两种方法都有它们的优缺点。对邮件这个产品来说，让用户尽快收到新的邮件是一个考量指标。邮件的轮询会产生大概每秒5万个HTTP请求，其中60%的请求会返回304状态（表示邮箱没有变化）。因此，为了减少服务器的负荷并加速邮件的接收，我们决定重写一个publisher-subscriber服务（这个服务通常也会称作bus，message broker或者event-channel）。这个服务负责接收状态更新的通知，然后还处理对这些更新的订阅。</p>
+<p>重写publisher-subscriber服务之前：</p>
+<p><img src="1.png" alt=""></p>
+<p>现在：<br><img src="2.png" alt=""></p>
+<p>上面第一个图为旧的架构。浏览器（Browser）会定期轮询API服务来获得邮件存储服务（Storage）的更新。</p>
+<p>第二张图展示的是新的架构。浏览器（Browser）和通知API服务（notificcation API）建立一个WebSocket连接。通知API服务会发送相关的订阅到Bus服务上。当收到新的电子邮件时，存储服务（Storage）向Bus（1）发送一个通知，Bus又将通知发送给相应的订阅者（2）。API服务为收到的通知找到相应的连接，然后把通知推送到用户的浏览器（3）。</p>
+<p>我们今天就来讨论一下这个API服务（也可以叫做WebSocket服务）。在开始之前，我想提一下这个在线服务处理将近<strong>3百万个连接</strong>。</p>
+<h2 id="惯用的做法（The_idiomatic_way）">惯用的做法（The idiomatic way）</h2>
+<p>首先，我们看一下不做任何优化会如何用Go来实现这个服务的部分功能。在使用<code>net/http</code> 实现具体功能前，让我们先讨论下我们将如何发送和接收数据。这些数据是定义在WebSocket协议之上的（例如JSON对象）。我们在下文中会成他们为packet。</p>
+<p>我们先来实现<code>Channel</code> 结构。它包含相应的逻辑来通过WebScoket连接发送和接收packet。</p>
+<h3 id="Channel结构">Channel结构</h3>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div></pre></td><td class="code"><pre><div class="line"><span class="comment">// Packet represents application level data.</span></div><div class="line"><span class="keyword">type</span> Packet <span class="keyword">struct</span> {</div><div class="line">    ...</div><div class="line">}</div><div class="line"></div><div class="line"><span class="comment">// Channel wraps user connection.</span></div><div class="line"><span class="keyword">type</span> Channel <span class="keyword">struct</span> {</div><div class="line">    conn net.Conn    <span class="comment">// WebSocket connection.</span></div><div class="line">    send <span class="keyword">chan</span> Packet <span class="comment">// Outgoing packets queue.</span></div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> NewChannel(conn net.Conn) *Channel {</div><div class="line">    c := &Channel{</div><div class="line">        conn: conn,</div><div class="line">        send: <span class="built_in">make</span>(<span class="keyword">chan</span> Packet, N),</div><div class="line">    }</div><div class="line"></div><div class="line">    <span class="keyword">go</span> c.reader()</div><div class="line">    <span class="keyword">go</span> c.writer()</div><div class="line"></div><div class="line">    <span class="keyword">return</span> c</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>这里我要强调的是读和写这两个goroutines。每个goroutine都需要各自的内存栈。栈的初始大小由操作系统和Go的版本决定，通常在2KB到8KB之间。我们之前提到有3百万个在线连接，如果每个goroutine栈需要4KB的话，所有连接就需要24GB的内存。这还没算上给<code>Channel</code> 结构，发送packet用的<code>ch.send</code> 和其它一些内部字段分配的内存空间。</p>
+<h2 id="I/O_goroutines">I/O goroutines</h2>
+<p>接下来看一下“reader”的实现：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> (c *Channel) reader() {</div><div class="line">    <span class="comment">// We make a buffered read to reduce read syscalls.</span></div><div class="line">    buf := bufio.NewReader(c.conn)</div><div class="line"></div><div class="line">    <span class="keyword">for</span> {</div><div class="line">        pkt, _ := readPacket(buf)</div><div class="line">        c.handle(pkt)</div><div class="line">    }</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>这里我们使用了bufio.Reader 。每次都会在buf 大小允许的范围内尽量读取多的字节，从而减少read() 系统调用的次数。在无限循环中，我们期望会接收到新的数据。请记住之前这句话：期望接收到新的数据。我们之后会讨论到这一点。</p>
+<p>我们把packet的解析和处理逻辑都忽略掉了，因为它们和我们要讨论的优化不相关。不过buf 值得我们的关注：它的缺省大小是4KB。这意味着所有连接将消耗掉额外的12 GB内存。“writer”也是类似的情况：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> (c *Channel) writer() {</div><div class="line">    <span class="comment">// We make buffered write to reduce write syscalls. </span></div><div class="line">    buf := bufio.NewWriter(c.conn)</div><div class="line"></div><div class="line">    <span class="keyword">for</span> pkt := <span class="keyword">range</span> c.send {</div><div class="line">        _ := writePacket(buf, pkt)</div><div class="line">        buf.Flush()</div><div class="line">    }</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>我们在待发送packet的<code>c.send</code> channel上循环将packet写到缓存（buffer）里。细心的读者肯定已经发现，这又是额外的4KB内存。3百万个连接会占用<strong>12GB</strong>的内存。</p>
+<h3 id="HTTP">HTTP</h3>
+<p>我们已经有了一个简单的Channel 实现。现在我们需要一个WebSocket连接。因为还在<strong>通常做法</strong>（Idiomatic Way)的标题下，那么就先来看看通常是如何实现的。</p>
+<blockquote>
+<p>注：如果你不知道WebSocket是怎么工作的，那么这里值得一提的是客户端是通过一个叫升级（Upgrade）请求的特殊HTTP机制来建立WebSocket的。在成功处理升级请求以后，服务端和客户端使用TCP连接来交换二进制的WebSocket帧（frames）。这里有关于帧结构的描述。</p>
+</blockquote>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">import</span> (</div><div class="line">    <span class="string">"net/http"</span></div><div class="line">    <span class="string">"some/websocket"</span></div><div class="line">)</div><div class="line"></div><div class="line">http.HandleFunc(<span class="string">"/v1/ws"</span>, <span class="keyword">func</span>(w http.ResponseWriter, r *http.Request) {</div><div class="line">    conn, _ := websocket.Upgrade(r, w)</div><div class="line">    ch := NewChannel(conn)</div><div class="line">    <span class="comment">//...</span></div><div class="line">})</div></pre></td></tr></table></figure>
+
+<p>请注意这里的<code>http.ResponseWriter</code> 结构包含<code>bufio.Reader</code> 和<code>bufio.Writer</code> （各自分别包含4KB的缓存）。它们用于<code>*http.Request</code> 初始化和返回结果。</p>
+<p>不管是哪个WebSocket，在成功回应一个升级请求之后，服务端在调用<code>responseWriter.Hijack()</code> 之后会接收到一个I/O缓存和对应的TCP连接。</p>
+<blockquote>
+<p>注：有时候我们可以通过<code>net/http.putBufio{Reader,Writer}</code> 调用把缓存释放回<code>net/http</code> 里的<code>sync.Pool</code> 。</p>
+</blockquote>
+<p>这样，这3百万个连接又需要额外的<strong>24GB</strong>内存。</p>
+<p>所以，为了这个什么都不干的程序，我们已经占用了<strong>72GB</strong>的内存！</p>
+<h2 id="优化">优化</h2>
+<p>我们来回顾一下前面介绍的用户连接的工作流程。在建立WebSocket之后，客户端会发送请求订阅相关事件（我们这里忽略类似ping/pong 的请求）。接下来，在整个连接的生命周期里，客户端可能就不会发送任何其它数据了。</p>
+<p>连接的生命周期可能会持续几秒钟到几天。</p>
+<p>所以在大部分时间里，<code>Channel.reader()</code> 和<code>Channel.writer()</code> 都在等待接收和发送数据。与它们一起等待的是各自分配的4 KB的I/O缓存。</p>
+<p>现在，我们发现有些地方是可以做进一步优化的，对吧？</p>
+<h3 id="Netpoll">Netpoll</h3>
+<p>你还记得<code>Channel.reader()</code> 的实现使用了<code>bufio.Reader.Read()</code> 吗？<code>bufio.Reader.Read()</code> 又会调用<code>conn.Read()</code> 。这个调用会被阻塞以等待接收连接上的新数据。如果连接上有新的数据，Go的运行环境（runtime）就会唤醒相应的goroutine让它去读取下一个packet。之后，goroutine会被再次阻塞来等待新的数据。我们来研究下Go的运行环境是怎么知道goroutine需要被唤醒的。</p>
+<p>如果我们看一下<code>conn.Read()</code> 的实现，就会看到它调用了<code>net.netFD.Read()</code> ：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div></pre></td><td class="code"><pre><div class="line"><span class="comment">// net/fd_unix.go</span></div><div class="line"></div><div class="line"><span class="keyword">func</span> (fd *netFD) Read(p []<span class="typename">byte</span>) (n <span class="typename">int</span>, err error) {</div><div class="line">    <span class="comment">//...</span></div><div class="line">    <span class="keyword">for</span> {</div><div class="line">        n, err = syscall.Read(fd.sysfd, p)</div><div class="line">        <span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">            n =<span class="number"> 0</span></div><div class="line">            <span class="keyword">if</span> err == syscall.EAGAIN {</div><div class="line">                <span class="keyword">if</span> err = fd.pd.waitRead(); err == <span class="constant">nil</span> {</div><div class="line">                    <span class="keyword">continue</span></div><div class="line">                }</div><div class="line">            }</div><div class="line">        }</div><div class="line">        <span class="comment">//...</span></div><div class="line">        <span class="keyword">break</span></div><div class="line">    }</div><div class="line">    <span class="comment">//...</span></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<blockquote>
+<p>Go使用了sockets的非阻塞模式。EAGAIN表示socket里没有数据了但不会阻塞在空的socket上，OS会把控制权返回给用户进程。</p>
+</blockquote>
+<p>这里它首先对连接文件描述符进行<code>read()</code> 系统调用。如果<code>read()</code> 返回的是<code>EAGAIN</code> 错误，运行环境就是调用<code>pollDesc.waitRead()</code> ：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div></pre></td><td class="code"><pre><div class="line"><span class="comment">// net/fd_poll_runtime.go</span></div><div class="line"></div><div class="line"><span class="keyword">func</span> (pd *pollDesc) waitRead() error {</div><div class="line">   <span class="keyword">return</span> pd.wait(<span class="string">'r'</span>)</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> (pd *pollDesc) wait(mode <span class="typename">int</span>) error {</div><div class="line">   res := runtime_pollWait(pd.runtimeCtx, mode)</div><div class="line">   <span class="comment">//...</span></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>如果继续深挖，我们可以看到netpoll的实现在Linux里用的是epoll而在BSD里用的是kqueue。我们的这些连接为什么不采用类似的方式呢？只有在socket上有可读数据时，才分配缓存空间并启用读数据的goroutine。</p>
+<p>在github.com/golang/go上，有一个关于 暴露(export) netpoll函数的<a href="https://github.com/golang/go/issues/15735#issuecomment-266574151" target="_blank" rel="external">请求</a>。</p>
+<h3 id="干掉goroutines">干掉goroutines</h3>
+<p>假设我们用Go语言实现了netpoll。我们现在可以避免创建Channel.reader() 的goroutine，取而代之的是从订阅连接里收到新数据的事件。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div></pre></td><td class="code"><pre><div class="line">ch := NewChannel(conn)</div><div class="line"></div><div class="line"><span class="comment">// Make conn to be observed by netpoll instance.</span></div><div class="line">poller.Start(conn, netpoll.EventRead, <span class="keyword">func</span>() {</div><div class="line">    <span class="comment">// We spawn goroutine here to prevent poller wait loop</span></div><div class="line">    <span class="comment">// to become locked during receiving packet from ch.</span></div><div class="line">    <span class="keyword">go</span> Receive(ch)</div><div class="line">})</div><div class="line"></div><div class="line"><span class="comment">// Receive reads a packet from conn and handles it somehow.</span></div><div class="line"><span class="keyword">func</span> (ch *Channel) Receive() {</div><div class="line">    buf := bufio.NewReader(ch.conn)</div><div class="line">    pkt := readPacket(buf)</div><div class="line">    c.handle(pkt)</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p><code>Channel.writer()</code> 相对容易一点，因为我们只需在发送packet的时候创建goroutine并分配缓存。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> (ch *Channel) Send(p Packet) {</div><div class="line">    <span class="keyword">if</span> c.noWriterYet() {</div><div class="line">        <span class="keyword">go</span> ch.writer()</div><div class="line">    }</div><div class="line">    ch.send &lt;- p</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<blockquote>
+<p>注意，这里我们没有处理<code>write()</code> 系统调用时返回的<code>EAGAIN</code> 。我们依赖Go运行环境去处理它。这种情况很少发生。如果需要的话我们还是可以像之前那样来处理。</p>
+</blockquote>
+<p>从<code>ch.send</code> 读取待发送的packets之后，<code>ch.writer()</code> 会完成它的操作，最后释放goroutine的栈和用于发送的缓存。</p>
+<p>很不错！通过避免这两个连续运行的goroutine所占用的I/O缓存和栈内存，我们已经节省了<strong>48GB</strong>。</p>
+<h3 id="控制资源">控制资源</h3>
+<p>大量的连接不仅仅会造成大量的内存消耗。在开发服务端的时候，我们还不停地遇到竞争条件（race conditions）和死锁（deadlocks）。随之而来的是所谓的自我分布式阻断攻击（self-DDOS）。在这种情况下，客户端会悍然地尝试重新连接服务端而把情况搞得更加糟糕。</p>
+<p>举个例子，如果因为某种原因我们突然无法处理ping/pong 消息，这些空闲连接就会不断地被关闭（它们会以为这些连接已经无效因此不会收到数据）。然后客户端每N秒就会以为失去了连接并尝试重新建立连接，而不是继续等待服务端发来的消息。</p>
+<p>在这种情况下，比较好的办法是让负载过重的服务端停止接受新的连接，这样负载均衡器（例如nginx）就可以把请求转到其它的服务端上去。</p>
+<p>撇开服务端的负载不说，如果所有的客户端突然（很可能是因为某个bug）向服务端发送一个packet，我们之前节省的48 GB内存又将会被消耗掉。因为这时我们又会和开始一样给每个连接创建goroutine并分配缓存。</p>
+<h4 id="Goroutine池">Goroutine池</h4>
+<p>可以用一个goroutine池来限制同时处理packets的数目。下面的代码是一个简单的实现：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> gopool</div><div class="line"></div><div class="line"><span class="keyword">func</span> New(size <span class="typename">int</span>) *Pool {</div><div class="line">    <span class="keyword">return</span> &Pool{</div><div class="line">        work: <span class="built_in">make</span>(<span class="keyword">chan</span> <span class="keyword">func</span>()),</div><div class="line">        sem:  <span class="built_in">make</span>(<span class="keyword">chan</span> <span class="keyword">struct</span>{}, size),</div><div class="line">    }</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> (p *Pool) Schedule(task <span class="keyword">func</span>()) error {</div><div class="line">    <span class="keyword">select</span> {</div><div class="line">    <span class="keyword">case</span> p.work &lt;- task:</div><div class="line">    <span class="keyword">case</span> p.sem &lt;- <span class="keyword">struct</span>{}{}:</div><div class="line">        <span class="keyword">go</span> p.worker(task)</div><div class="line">    }</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> (p *Pool) worker(task <span class="keyword">func</span>()) {</div><div class="line">    <span class="keyword">defer</span> <span class="keyword">func</span>() { &lt;-p.sem }</div><div class="line">    <span class="keyword">for</span> {</div><div class="line">        task()</div><div class="line">        task = &lt;-p.work</div><div class="line">    }</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>我们使用netpoll的代码就变成下面这样：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div></pre></td><td class="code"><pre><div class="line">pool := gopool.New<span class="number">(128</span>)</div><div class="line"></div><div class="line">poller.Start(conn, netpoll.EventRead, <span class="keyword">func</span>() {</div><div class="line">    <span class="comment">// We will block poller wait loop when</span></div><div class="line">    <span class="comment">// all pool workers are busy.</span></div><div class="line">    pool.Schedule(<span class="keyword">func</span>() {</div><div class="line">        Receive(ch)</div><div class="line">    })</div><div class="line">})</div></pre></td></tr></table></figure>
+
+<p>现在我们不仅要等可读的数据出现在socket上才能读packet，还必须等到从池里获取到空闲的goroutine。</p>
+<p>同样的，我们修改下Send() 的代码：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div></pre></td><td class="code"><pre><div class="line">pool := gopool.New<span class="number">(128</span>)</div><div class="line"></div><div class="line"><span class="keyword">func</span> (ch *Channel) Send(p Packet) {</div><div class="line">    <span class="keyword">if</span> c.noWriterYet() {</div><div class="line">        pool.Schedule(ch.writer)</div><div class="line">    }</div><div class="line">    ch.send &lt;- p</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>这里我们没有调用<code>go ch.writer()</code> ，而是想重复利用池里goroutine来发送数据。 所以，如果一个池有<code>N</code> 个goroutines的话，我们可以保证有<code>N</code> 个请求被同时处理。而<code>N + 1</code> 个请求不会分配<code>N + 1</code> 个缓存。goroutine池允许我们限制对新连接的<code>Accept()</code> 和<code>Upgrade()</code> ，这样就避免了大部分DDoS的情况。</p>
+<h3 id="零拷贝升级（Zero-copy_upgrade）">零拷贝升级（Zero-copy upgrade）</h3>
+<p>之前已经提到，客户端通过HTTP升级（Upgrade）请求切换到WebSocket协议。下面显示的是一个升级请求：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div></pre></td><td class="code"><pre><div class="line">GET /ws HTTP<span class="number">/1.1</span></div><div class="line">Host: mail.ru</div><div class="line">Connection: Upgrade</div><div class="line">Sec-Websocket-Key: A3xNe7sEB9HixkmBhVrYaA==</div><div class="line">Sec-Websocket-Version:<span class="number"> 13</span></div><div class="line">Upgrade: websocket</div><div class="line"></div><div class="line">HTTP<span class="number">/1.1</span><span class="number"> 101</span> Switching Protocols</div><div class="line">Connection: Upgrade</div><div class="line">Sec-Websocket-Accept: ksu0wXWG+YmkVx+KQR2agP0cQn4=</div><div class="line">Upgrade: websocket</div></pre></td></tr></table></figure>
+
+<p>我们接收HTTP请求和它的头部只是为了切换到WebSocket协议，而<code>http.Request</code> 里保存了所有头部的数据。从这里可以得到启发，如果是为了优化，我们可以放弃使用标准的<code>net/http</code> 服务并在处理HTTP请求的时候避免无用的内存分配和拷贝。</p>
+<blockquote>
+<p>举个例子，<code>http.Request</code> 包含了一个叫做Header的字段。标准<code>net/http</code> 服务会将请求里的所有头部数据全部无条件地拷贝到Header字段里。你可以想象这个字段会保存许多冗余的数据，例如一个包含很长cookie的头部。</p>
+</blockquote>
+<p>我们如何来优化呢？</p>
+<h4 id="WebSocket实现">WebSocket实现</h4>
+<p>不幸的是，在我们优化服务端的时候所有能找到的库只支持对标准net/http 服务做升级。而且没有一个库允许我们实现上面提到的读和写的优化。为了使这些优化成为可能，我们必须有一套底层的API来操作WebSocket。为了重用缓存，我们需要类似下面这样的协议函数：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> ReadFrame(io.Reader) (Frame, error)</div><div class="line"><span class="keyword">func</span> WriteFrame(io.Writer, Frame) error</div></pre></td></tr></table></figure>
+
+<p>如果我们有一个包含这样API的库，我们就按照下面的方式从连接上读取packets：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div></pre></td><td class="code"><pre><div class="line"><span class="comment">// getReadBuf, putReadBuf are intended to</span></div><div class="line"><span class="comment">// reuse *bufio.Reader (with sync.Pool for example).</span></div><div class="line"><span class="keyword">func</span> getReadBuf(io.Reader) *bufio.Reader</div><div class="line"><span class="keyword">func</span> putReadBuf(*bufio.Reader)</div><div class="line"></div><div class="line"><span class="comment">// readPacket must be called when data could be read from conn.</span></div><div class="line"><span class="keyword">func</span> readPacket(conn io.Reader) error {</div><div class="line">    buf := getReadBuf()</div><div class="line">    <span class="keyword">defer</span> putReadBuf(buf)</div><div class="line"></div><div class="line">    buf.Reset(conn)</div><div class="line">    frame, _ := ReadFrame(buf)</div><div class="line">    parsePacket(frame.Payload)</div><div class="line">    <span class="comment">//...</span></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>简而言之，我们需要自己写一个库。</p>
+<h4 id="github-com/gobwas/ws">github.com/gobwas/ws</h4>
+<p>ws 库的主要设计思想是不将协议的操作逻辑暴露给用户。所有读写函数都接受通用的<code>io.Reader</code> 和<code>io.Writer</code> 接口。因此它可以随意搭配是否使用缓存以及其它I/O的库。</p>
+<p>除了标准库<code>net/http</code> 里的升级请求，<code>ws</code> 还支持零拷贝升级。它能够处理升级请求并切换到WebSocket模式而不产生任何内存分配或者拷贝。<code>ws.Upgrade()</code> 接受<code>io.ReadWriter</code> （<code>net.Conn</code> 实现了这个接口）。换句话说，我们可以使用标准的<code>net.Listen()</code> 函数然后把从<code>ln.Accept()</code> 收到的连接马上交给<code>ws.Upgrade()</code> 去处理。库也允许拷贝任何请求数据来满足将来应用的需求（举个例子，拷贝Cookie 来验证一个session）。</p>
+<p>下面是处理升级请求的性能测试：标准<code>net/http</code> 库的实现和使用零拷贝升级的<code>net.Listen()</code> ：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div></pre></td><td class="code"><pre><div class="line">BenchmarkUpgradeHTTP   <span class="number"> 5156</span> ns/op   <span class="number"> 8576</span> B/op   <span class="number"> 9</span> allocs/op</div><div class="line">BenchmarkUpgradeTCP    <span class="number"> 973</span> ns/op    <span class="number"> 0</span> B/op      <span class="number"> 0</span> allocs/op</div></pre></td></tr></table></figure>
+
+<p>使用ws 以及零拷贝升级为我们节省了24 GB的空间。这些空间原本被用做net/http 里处理请求的I/O缓存。</p>
+<h3 id="回顾">回顾</h3>
+<p>让我们来回顾一下之前提到过的优化：</p>
+<ul>
+<li>一个包含缓存的读goroutine会占用很多内存。方案： netpoll（epoll, kqueue）；重用缓存。</li>
+<li>一个包含缓存的写goroutine会占用很多内存。方案： 在需要的时候创建goroutine；重用缓存。</li>
+<li>存在大量连接请求的时候，netpoll不能很好工作。方案： 重用goroutines并且限制它们的数目。</li>
+<li>net/http 对升级到WebSocket请求的处理不是最高效的。方案： 在TCP连接上实现零拷贝升级。</li>
+</ul>
+<p>下面是服务端的大致实现代码：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">import</span> (</div><div class="line">    <span class="string">"net"</span></div><div class="line">    <span class="string">"github.com/gobwas/ws"</span></div><div class="line">)</div><div class="line"></div><div class="line">ln, _ := net.Listen(<span class="string">"tcp"</span>, <span class="string">":8080"</span>)</div><div class="line"></div><div class="line"><span class="keyword">for</span> {</div><div class="line">    <span class="comment">// Try to accept incoming connection inside free pool worker.</span></div><div class="line">    <span class="comment">// If there no free workers for 1ms, do not accept anything and try later.</span></div><div class="line">    <span class="comment">// This will help us to prevent many self-ddos or out of resource limit cases.</span></div><div class="line">    err := pool.ScheduleTimeout(time.Millisecond, <span class="keyword">func</span>() {</div><div class="line">        conn := ln.Accept()</div><div class="line">        _ = ws.Upgrade(conn)</div><div class="line"></div><div class="line">        <span class="comment">// Wrap WebSocket connection with our Channel struct.</span></div><div class="line">        <span class="comment">// This will help us to handle/send our app's packets.</span></div><div class="line">        ch := NewChannel(conn)</div><div class="line"></div><div class="line">        <span class="comment">// Wait for incoming bytes from connection.</span></div><div class="line">        poller.Start(conn, netpoll.EventRead, <span class="keyword">func</span>() {</div><div class="line">            <span class="comment">// Do not cross the resource limits.</span></div><div class="line">            pool.Schedule(<span class="keyword">func</span>() {</div><div class="line">                <span class="comment">// Read and handle incoming packet(s).</span></div><div class="line">                ch.Recevie()</div><div class="line">            })</div><div class="line">        })</div><div class="line">    })</div><div class="line">    <span class="keyword">if</span> err != <span class="constant">nil</span> {   </div><div class="line">        time.Sleep(time.Millisecond)</div><div class="line">    }</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<h2 id="结论">结论</h2>
+<blockquote>
+<p>在程序设计时，过早优化是万恶之源。Donald Knuth</p>
+</blockquote>
+<p>上面的优化是有意义的，但不是所有情况都适用。举个例子，如果空闲资源（内存，CPU）与在线连接数之间的比例很高的话，优化就没有太多意义。当然，知道什么地方可以优化以及如何优化总是有帮助的。</p>
+<p>谢谢你的关注！</p>
+<h2 id="引用">引用</h2>
+<ul>
+<li><a href="https://github.com/mailru/easygo" target="_blank" rel="external">https://github.com/mailru/easygo</a></li>
+<li><a href="https://github.com/gobwas/ws" target="_blank" rel="external">https://github.com/gobwas/ws</a></li>
+<li><a href="https://github.com/gobwas/ws-examples" target="_blank" rel="external">https://github.com/gobwas/ws-examples</a></li>
+<li><a href="https://github.com/gobwas/httphead" target="_blank" rel="external">https://github.com/gobwas/httphead</a></li>
+</ul>
+<p><hr><br>以下非译文中的内容，我也是看到优化的数字而感到疑惑：</p>
+<blockquote>
+<p>作者最后计算优化一共节省了 <code>48GB + 24GB</code>内存， 可以原先作者总共的内存占用为<code>24GB+12GB+12GB_24GB</code>,如果按照这个数计算，作者最后只需要零内存，这是不可能的，因为每个连接的协议栈会占用一部分内存， 每个goroutine的栈也会占用一部分内存，还有buffer需要一定量的内存。</p>
+</blockquote>
+<p>实际作者在评论中说， 又花钱每个连接平均占用 <strong>65KB</strong>的内存， 优化后只占<strong>10KB</strong>的内存，优化效果明显。</p>
+]]></content>
+    <summary type="html">
+    <![CDATA[<p>原文: <a href="https://medium.freecodecamp.org/million-websockets-and-go-cc58418460bb" target="_blank" rel="external">A Million WebSockets and Go</a><br>作者: Sergey Kamardin</p>
+<p>译文: <a href="http://xiecode.cn/post/cn_06_a_million_websockets_and_go/" target="_blank" rel="external">性能优化实战：百万级WebSockets和Go语言</a><br>译者: 曼托斯</p>
+]]>
+    
+    </summary>
+    
+      <category term="Go" scheme="http://colobu.com/categories/Go/"/>
+    
+  </entry>
   
   <entry>
     <title><![CDATA[[转][译]Go 终极指南：编写一个 Go 工具]]></title>
@@ -1371,107 +1532,6 @@ bar <span class="keyword">int</span>
     </summary>
     
       <category term="Go" scheme="http://colobu.com/categories/Go/"/>
-    
-  </entry>
-  
-  <entry>
-    <title><![CDATA[[转]设计一个容错的微服务架构]]></title>
-    <link href="http://colobu.com/2017/08/23/Designing-a-Microservices-Architecture-for-Failure/"/>
-    <id>http://colobu.com/2017/08/23/Designing-a-Microservices-Architecture-for-Failure/</id>
-    <published>2017-08-23T05:31:10.000Z</published>
-    <updated>2017-08-23T05:52:09.000Z</updated>
-    <content type="html"><![CDATA[<p>原文: <a href="https://blog.risingstack.com/designing-microservices-architecture-for-failure/" target="_blank" rel="external">Designing a Microservices Architecture for Failure</a><br>翻译: <a href="https://github.com/jasonGeng88/blog" target="_blank" rel="external">设计一个容错的微服务架构</a> by Jason Geng</p>
-<p>微服务架构使得可以通过明确定义的服务边界来隔离故障。但是像在每个分布式系统中一样，发生网络、硬件、应用级别的错误都是很常见的。由于服务依赖关系，任何组件可能暂时无法提供服务。为了尽量减少部分中断的影响，我们需要构建容错服务，来优雅地处理这些中断的响应结果。</p>
-<p>本文介绍了基于<a href="https://risingstack.com/" target="_blank" rel="external">RisingStack 的 Node.js 咨询和开发经验</a>构建和操作高可用性微服务系统的最常见技术和架构模式。</p>
-<p>如果你不熟悉本文中的模式，那并不一定意味着你做错了。建立可靠的系统总是会带来额外的成本。</p>
-<a id="more"></a>
-<h2 id="微服务架构的风险">微服务架构的风险</h2>
-<p>微服务架构将应用程序逻辑移动到服务，并使用网络层在它们之间进行通信。这种通过网络间通信代替单应用程序内调用的做法，会带来额外的延迟，以及需要协调多个物理和逻辑组件的系统复杂度。分布式系统的复杂性增加也将导致更高的网络故障率。</p>
-<blockquote>
-<p>microservices allow you to achieve graceful service degradation as components can be set up to fail separately.</p>
-</blockquote>
-<p>微服务体系结构的最大优势之一是，团队可以独立设计，开发和部署他们的服务。他们对服务的生命周期拥有完全的所有权。这也意味着团队无法控制他们依赖的服务，因为它更有可能由不同的团队管理。使用微服务架构，我们需要记住，提供者服务可能会临时不可用，由于其他人员发行的错误版本，配置以及其他更改等。</p>
-<h2 id="优雅的服务降级">优雅的服务降级</h2>
-<p>微服务架构的最大优点之一是您可以隔离故障，并在当组件单独故障时，进行优雅的服务降级。 例如，在中断期间，照片共享应用程序中的客户可能无法上传新图片，但仍可以浏览，编辑和共享其现有照片。</p>
-<p><img src="microservices-fail-separately-in-theory.png" alt="微服务容错隔离"></p>
-<p>在大多数情况下，由于分布式系统中的应用程序相互依赖，因此很难实现这种优雅的服务降级，您需要应用几种故障转移的逻辑（其中一些将在本文后面介绍），以为暂时的故障和中断做准备。</p>
-<p><img src="Microservices-depend-on-each-other.png" alt="服务间彼此依赖，再没有故障转移逻辑下，服务全部失败。"></p>
-<h2 id="变更管理">变更管理</h2>
-<p>Google的网站可靠性小组发现，<strong>大约70％的中断是由现有系统的变化引起的</strong>。当您更改服务中的某些内容时，您将部署新版本的代码或更改某些配置 - 这总有可能会造成故障，或者引入新的bug。</p>
-<p>在微服务架构中，服务依赖于彼此。这就是为什么你应该尽量减少故障并限制它的负面影响。要处理变更中的问题，您可以实施变更管理策略和<strong>自动回滚</strong>机制。</p>
-<p>例如，当您部署新代码或更改某些配置时，您应该先小范围的进行部分的替换，以渐进式的方式替换服务的全部实例。在这期间，需要监视它们，如果您发现它们对您的关键指标有负面影响，应立即进行服务回滚，这称为“金丝雀部署”。</p>
-<p><img src="microservices-change-management.png" alt="变更管理 - 回滚部署"></p>
-<p>另一个解决方案可能是您运行两个生产环境。您始终只能部署其中一个，并且在验证新版本是否符合预期之后才，将负载均衡器指向新的。这称为蓝绿或红黑部署。</p>
-<p><strong>回滚代码不是坏事</strong>。你不应该在生产中遗留错误的代码，然后考虑出了什么问题。如果必要，越早回滚你的代码越好。</p>
-<h2 id="健康检查与负载均衡">健康检查与负载均衡</h2>
-<p>实例由于出现故障、部署或自动缩放的情况，会进行持续启动、重新启动或停止操作。它可能导致它们暂时或永久不可用。为避免问题，您的负载均衡器应该从路由中<strong>跳过不健康的实例</strong>，因为它们当前无法为客户或子系统提供服务。</p>
-<p>应用实例健康状况可以通过外部观察来确定。您可以通过重复调用<strong>GET /health</strong>端点或通过自我报告来实现。现在主流的<strong>服务发现</strong>解决方案，会持续从实例中收集健康信息，并配置负载均衡器，将流量仅路由到健康的组件上。</p>
-<h2 id="自我修复">自我修复</h2>
-<p>自我修复可以帮助应用程序从错误中恢复过来。当应用程序可以<strong>采取必要步骤</strong>从故障状态恢复时，我们就可以说它是可以实现自我修复的。在大多数情况下，它由外部系统实现，该系统会监视实例运行状况，并在较长时间内处于故障状态时重新启动它们。自我修复在大多数情况下是非常有用的。但是在某些情况下，持续地重启应用程序可能会<strong>导致麻烦</strong>。 当您的应用程序由于超负荷或其数据库连接超时而无法给出健康的运行状况时，这种情况下的频繁的重启就可能就不太合适了。</p>
-<p>对于这种特殊的场景（如丢失的数据库连接），要实现满足它的高级自我修复的解决方案可能很棘手。在这种情况下，您需要为应用程序添加额外的逻辑来处理边缘情况，并让外部系统知道实例不需要立即重新启动。</p>
-<h2 id="故障转移缓存">故障转移缓存</h2>
-<p>由于网络问题和我们系统的变化，服务经常会失败。然而，由于自我修复和负载均衡的保障，它们中的大多数中断是临时的，我们应该找到一个解决方案，使我们的服务在这些故障时服务仍就可以工作。这就是<strong>故障转移缓存</strong> (failover caching)的作用，它可以帮助并为我们的应用程序在服务故障时提供必要的数据。</p>
-<p>故障转移缓存通常使用<strong>两个不同的过期日期</strong>; 较短的时间告诉您在正常情况下缓存可以使用的过期时间，而较长的时间可以在服务故障时缓存依旧可用的过期时间。</p>
-<p><img src="microservices-failover-caching.png" alt="故障转移缓存"></p>
-<p>请务必提及，只有当服务使用过时的数据比没有数据更好时，才能使用故障转移缓存。</p>
-<p>要设置缓存和故障转移缓存，可以在 HTTP 中使用标准响应头。</p>
-<p>例如，使用 <code>max-age</code> 属性可以指定资源被视为有效的最大时间。使用 <code>stale-if-error</code> 属性，您可以明确在出现故障的情况下，依旧可以从缓存中获取资源的最大时间。</p>
-<p>现代的 CDN 和负载均衡器都提供各种缓存和故障转移行为，但您也可以为拥有标准可靠性解决方案的公司创建一个共享库。</p>
-<h2 id="重试逻辑">重试逻辑</h2>
-<p>在某些情况下，我们无法缓存数据，或者我们想对其进行更改，但是我们的操作最终都失败了。对于此，我们可以重试我们的操作，因为我们可以预期资源将在一段时间后恢复，或者我们的负载均衡器将请求发送到了健康的实例上。</p>
-<p>您应该小心地为您的应用程序和客户端添加重试逻辑，因为大量的<strong>重试可能会使事情更糟</strong>，甚至阻止应用程序恢复，如当服务超载时，大量的重试只能使状况更糟。</p>
-<p>在分布式系统中，微服务系统重试可以触发多个其他请求或重试，并启动<strong>级联效应</strong>。为了最小化重试的影响，您应该限制它们的数量，并使用指数退避算法来持续增加重试之间的延迟，直到达到最大限制。</p>
-<p>当客户端（浏览器，其他微服务等）发起重试，并且客户端不知道在处理请求之前或之后操作失败时，您应该为你的应用程序做好<strong>幂等处理</strong>的准备。例如，当您重试购买操作时，您不应该再次向客户收取费用。为每个交易使用唯一的<strong>幂等值键</strong>可以帮助处理重试。</p>
-<h2 id="限流器和负载降级">限流器和负载降级</h2>
-<p>流量限制是在一段时间内定义特定客户或应用程序可以接收或处理多少个请求的技术。例如，通过流量限制，您可以过滤掉造成流量峰值的客户和服务，或者您可以确保您的应用程序在自动缩放无法满足时，依然不会超载。</p>
-<p>您还可以阻止较低优先级的流量，为关键事务提供足够的资源。</p>
-<p><img src="microservices-rate-limiter.png" alt="限流器可以阻止流量峰值产生"></p>
-<p>有一个不同类型的限流器，叫做并发请求限制器。当您有重要的端点，您不应该被调用超过指定的次数，而您仍然想要能提供服务时，这将是有用的。</p>
-<p>负载降级的一系列使用，可以确保总是有足够的资源来提供关键交易。它为高优先级请求保留一些资源，不允许低优先级的事务使用它们。负载降级开关是根据系统的整体状态做出决定，而不是基于单个用户的请求量大小。负载降级有助于您的系统恢复，因为当你有一个偶发事件时（可能是一个热点事件），您仍能保持核心功能的正常工作。</p>
-<p>要了解有关限流器和负载降级的更多信息，我建议查看这篇<a href="https://stripe.com/blog/rate-limiters" target="_blank" rel="external">Stripe的文章</a>。</p>
-<h2 id="快速失败原则与独立性">快速失败原则与独立性</h2>
-<p>在微服务架构中，我们想要做到让我们的服务具备快速失败与相互独立的能力。为了在服务级别上进行故障隔离，我们可以使用舱壁模式。你可以在本文的后面阅读更多有关舱壁的内容。</p>
-<p>我们也希望我们的组件能够快速失败，因为我们不希望对于有故障的服务，在请求超时后才断开。没有什么比挂起的请求和无响应的 UI 更令人失望。这不仅浪费资源，而且还会影响用户体验。我们的服务在调用链中是相互调用的，所以在这些延迟累加之前，我们应该特别注意防止挂起操作。</p>
-<p>你想到的第一个想法是对每个服务调用都设置明确的超时等级。这种方法的问题是，您不能知道真正合理的超时值是多少，因为网络故障和其他问题发生的某些情况只会影响一两次操作。在这种情况下，如果只有其中一些超时，您可能不想拒绝这些请求。</p>
-<p>我们可以说，在微服务种通过使用超时来达到快速失败的效果是一种反模式的，你应该避免使用它。取而代之，您可以应用断路器模式，依据操作的成功与失败统计数据决定。</p>
-<h2 id="舱壁模式">舱壁模式</h2>
-<p>工业中使用舱壁将船舶划分为几个部分，以便在船体破坏的情况下，可以将船舶各个部件密封起来。</p>
-<p>舱壁的概念在软件开发中可以被应用在隔离资源上。</p>
-<p>通过应用舱壁模式，我们可以保护有限的资源不被耗尽。例如，对于一个有连接数限制的数据库实例来说，如果我们有两种连接它的操作，我们采用可以采用两个连接池的方式进行连接，来代替仅采用一个共享连接池的方式。由于这种客户端与资源进行了隔离，超时或过度使用池的操作页不会使其他操作失败。</p>
-<p>泰坦尼克号沉没的主要原因之一是其舱壁设计失败，水可以通过上面的甲板倒在舱壁的顶部，导致整个船体淹没。</p>
-<p><img src="titanic-bulkhead-microservices.png" alt="泰坦尼克号舱壁设计（无效的设计）"></p>
-<h2 id="断路器">断路器</h2>
-<p>为了限制操作的持续时间，我们可以使用超时。超时可以防止挂起操作并保持系统响应。然而，在微服务中使用静态、精细的超时是一种反模式，因为我们处于高度动态的环境中，几乎不可能提出在每种情况下都能正常工作的正确的时间限制。</p>
-<p>替代这种静态超时的手段是，我们可以使用断路器来处理错误。断路器以现实世界的电子元件命名，因为它们的作用是相同的。您可以保护资源，并帮助他们使用断路器进行恢复。它们在分布式系统中非常有用，因为在分布式系统中，重复故障可能导致雪球效应并使整个系统瘫痪。</p>
-<p>当特定类型的错误在短时间内多次发生时，断路器会被断开。开路的断路器可以防止进一步的请求 - 就像我们平时所说的电路跳闸一样。断路器通常在一定时间后关闭，在这期间可以为底层服务提供足够的空间来恢复。</p>
-<p>请记住，并不是所有的错误都应该触发断路器。例如，您可能希望跳过客户端问题，例如具有4xx响应代码的请求，但不包括5xx服务器端故障。一些断路器也具有半开状态。在这种状态下，服务发送第一个请求以检查系统可用性，同时让其他请求失败。如果这个第一个请求成功，它将使断路器恢复到关闭状态并使流量流动。否则，它保持打开。</p>
-<p><img src="microservices-circuit-breakers.png" alt="断路器"></p>
-<h2 id="测试故障">测试故障</h2>
-<p>您应该不断测试您系统的常见问题，以确保您的服务可以抵抗各种故障。您应经常测试故障，让您的团队具备故障处理的能力。</p>
-<p>对于测试，您可以使用外部服务来标识实例组，并随机终止此组中的一个实例。这样，您可以准备单个实例故障，但您甚至可以关闭整个区域来模拟云提供商的故障。</p>
-<p>最流行的测试解决方案之一是 Netflix 的 <a href="https://github.com/Netflix/chaosmonkey" target="_blank" rel="external">ChaosMonkey 弹性工具</a>。</p>
-<h2 id="结尾">结尾</h2>
-<p>实施和运行可靠的服务并不容易。 您需要付出很多努力，同时公司也要有相应的财力投入。</p>
-<p>可靠性有很多层次和方面，因此找到最适合您团队的解决方案很重要。您应该使可靠性成为您的业务决策流程中的一个因素，并为其分配足够的预算和时间。</p>
-<h2 id="关键点">关键点</h2>
-<ul>
-<li>动态环境和分布式系统（如微服务）会导致更高的故障机率；</li>
-<li>服务应该做到故障隔离，到达优雅降级，来提升用户体验；</li>
-<li>70％的中断是由变化引起的，代码回滚不是一件坏事；</li>
-<li>做到服务快速失败与独立性。团队是无法控制他们所依赖的服务情况；</li>
-<li>缓存、舱壁、断路器和限流器等架构模式与技术有助于构建可靠的微服务架构。</li>
-</ul>
-]]></content>
-    <summary type="html">
-    <![CDATA[<p>原文: <a href="https://blog.risingstack.com/designing-microservices-architecture-for-failure/" target="_blank" rel="external">Designing a Microservices Architecture for Failure</a><br>翻译: <a href="https://github.com/jasonGeng88/blog" target="_blank" rel="external">设计一个容错的微服务架构</a> by Jason Geng</p>
-<p>微服务架构使得可以通过明确定义的服务边界来隔离故障。但是像在每个分布式系统中一样，发生网络、硬件、应用级别的错误都是很常见的。由于服务依赖关系，任何组件可能暂时无法提供服务。为了尽量减少部分中断的影响，我们需要构建容错服务，来优雅地处理这些中断的响应结果。</p>
-<p>本文介绍了基于<a href="https://risingstack.com/" target="_blank" rel="external">RisingStack 的 Node.js 咨询和开发经验</a>构建和操作高可用性微服务系统的最常见技术和架构模式。</p>
-<p>如果你不熟悉本文中的模式，那并不一定意味着你做错了。建立可靠的系统总是会带来额外的成本。</p>
-]]>
-    
-    </summary>
-    
-      <category term="架构" scheme="http://colobu.com/categories/%E6%9E%B6%E6%9E%84/"/>
     
   </entry>
   
