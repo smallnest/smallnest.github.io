@@ -4,7 +4,7 @@
   <subtitle><![CDATA[大道至简 Simplicity is the ultimate form of sophistication]]></subtitle>
   <link href="/atom.xml" rel="self"/>
   <link href="http://colobu.com/"/>
-  <updated>2018-01-09T09:44:44.976Z</updated>
+  <updated>2018-01-10T09:43:47.180Z</updated>
   <id>http://colobu.com/</id>
   
   <author>
@@ -13,6 +13,53 @@
   </author>
   
   <generator uri="http://zespia.tw/hexo/">Hexo</generator>
+  
+  <entry>
+    <title><![CDATA[使用二进制形式发布go package]]></title>
+    <link href="http://colobu.com/2018/01/10/use-binary-package-in-go/"/>
+    <id>http://colobu.com/2018/01/10/use-binary-package-in-go/</id>
+    <published>2018-01-10T08:25:08.000Z</published>
+    <updated>2018-01-10T09:43:14.709Z</updated>
+    <content type="html"><![CDATA[<p>我们在使用Go进行开发的时候， 经常会使用到第三方的库， 这时候我们一般都会通过<code>go get</code>到github.com、bitbucket或者自己私有库中去拉取第三库的源代码。 今天正好群里有网友问能不能将自己开发的库以二进制形式提供给用户，我就顺便整理了一下。</p>
+<p>以二进制方式提供库的动机可能是为了保护自己公司的知识产权，也有可能是从安全的角度考虑，避免一些关键信息的泄漏等等，这不是本文讨论的范围。</p>
+<a id="more"></a>
+<p>虽然以前的版本能够曲折的实现使用二进制的库，但是正式提供的方案是在Go 1.7中。 在 <a href="https://golang.org/doc/go1.7" target="_blank" rel="external">Go 1.7 Release Notes</a>提到：</p>
+<blockquote>
+<p>This release adds experimental, minimal support for building programs using binary-only packages, packages distributed in binary form without the corresponding source code. This feature is needed in some commercial settings but is not intended to be fully integrated into the rest of the toolchain. For example, tools that assume access to complete source code will not work with such packages, and there are no plans to support such packages in the “go get” command.</p>
+<p>在 <a href="https://golang.org/pkg/go/build/#hdr-Binary_Only_Packages" target="_blank" rel="external">Package build</a>文档中也有相关的介绍：</p>
+<p>It is possible to distribute packages in binary form without including the source code used for compiling the package. To do this, the package must be distributed with a source file not excluded by build constraints and containing a &quot;//go:binary-only-package&quot; comment. Like a build constraint, this comment must appear near the top of the file, preceded only by blank lines and other line comments and with a blank line following the comment, to separate it from the package documentation. Unlike build constraints, this comment is only recognized in non-test Go source files.</p>
+<p>The minimal source code for a binary-only package is therefore:</p>
+</blockquote>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line">&gt; <span class="comment">//go:binary-only-package</span></div><div class="line">&gt; </div><div class="line">&gt; <span class="keyword">package</span> mypkg</div><div class="line">&gt;</div></pre></td></tr></table></figure>
+
+<blockquote>
+<p>The source code may include additional Go code. That code is never compiled but will be processed by tools like godoc and might be useful as end-user documentation.</p>
+</blockquote>
+<p>你只需要提供一个编译好的库， 同时提供为这个package提供一个源文件。这个源文件不用包含任何代码逻辑，只需增加<code>//go:binary-only-package</code>指令即可(注意<code>//</code>和<code>go:...</code>之间不要加空格)。 这样用户在使用的时候，就可以直接使用你这个二进制的库了。</p>
+<p>当然，为了用户方便，比如一些工具和IDE的支持，你可以将<code>exported</code>的类型定义到这个文件中。并且， 只需提供一些&quot;虚假&quot;的实现即可，只是为了IDE工具知道这个package包含的<code>exported</code>类型而已。</p>
+<p>这个特性的实现是由Russ Cox在这两个提交中实现的： <a href="https://go-review.googlesource.com/c/go/+/22432" target="_blank" rel="external">CL#22432</a>、<a href="https://go-review.googlesource.com/c/go/+/22433" target="_blank" rel="external">CL#22433</a>, 他还提交了一个设计文档：<a href="https://github.com/golang/proposal/blob/master/design/2775-binary-only-packages.md" target="_blank" rel="external">Proposal: Binary-Only Package</a>。</p>
+<p>相关的讨论在: <a href="https://github.com/golang/go/issues/12186" target="_blank" rel="external">#12186</a>、<a href="https://github.com/golang/go/issues/2775" target="_blank" rel="external">#2775</a>。</p>
+<p>下面我们以一个实例看看如何使用的。</p>
+<p>下面是我们实现业务逻辑的一个package，提供了一些常量、变量、函数和struct类型，把它编译成<code>x.a</code>。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> x</div><div class="line"></div><div class="line"><span class="keyword">import</span> <span class="string">"fmt"</span></div><div class="line"></div><div class="line"><span class="keyword">const</span> PI =<span class="number"> 3.14</span></div><div class="line"></div><div class="line"><span class="keyword">var</span> (</div><div class="line">	X =<span class="number"> 100</span></div><div class="line">)</div><div class="line"></div><div class="line"><span class="keyword">func</span> init() {</div><div class="line">	fmt.Println(<span class="string">"x init"</span>)</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> Add(x, y <span class="typename">int</span>) <span class="typename">int</span> {</div><div class="line">	<span class="keyword">return</span> x + y</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">type</span> S <span class="keyword">struct</span> {</div><div class="line">	X, Y <span class="typename">int</span></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>这是我们公司的核心资产，靠这个库卖钱呢，所以我们不想把这个源代码公开出去。那么我们可以提供给用户编译好的<code>x.a</code>，并且提供一个<code>dummy</code>的实现：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div></pre></td><td class="code"><pre><div class="line"><span class="comment">//go:binary-only-package</span></div><div class="line"></div><div class="line"><span class="keyword">package</span> x</div><div class="line"></div><div class="line"><span class="keyword">const</span> PI =<span class="number"> 0.0</span></div><div class="line"></div><div class="line"><span class="keyword">var</span> (</div><div class="line">	X =<span class="number"> 0</span></div><div class="line">)</div><div class="line"></div><div class="line"><span class="keyword">func</span> Add(x, y <span class="typename">int</span>) <span class="typename">int</span> {</div><div class="line">	<span class="keyword">return</span><span class="number"> 0</span></div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">type</span> S <span class="keyword">struct</span> {</div><div class="line">	X, Y <span class="typename">int</span></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>用户拿到这个<code>x.a</code>后放在<code>$GOPATH/pkg</code>相应的package下，同时将这个go文件放在<code>$GOPATH/src</code>，这样用户就可以正常使用这个库了。</p>
+<p>当然，你最好将你的库打包成一个zip,这样用户unzip一下就可以方便的copy到<code>$GOPATH</code>中。</p>
+<p>用<code>golang binary-only packages</code>也能搜到一些相关的<a href="https://medium.com/@shijuvar/using-binary-only-packages-in-go-667bd7b123c8" target="_blank" rel="external">教程</a>，有人还写了一个样板例子：<a href=""></a></p>
+]]></content>
+    <summary type="html">
+    <![CDATA[<p>我们在使用Go进行开发的时候， 经常会使用到第三方的库， 这时候我们一般都会通过<code>go get</code>到github.com、bitbucket或者自己私有库中去拉取第三库的源代码。 今天正好群里有网友问能不能将自己开发的库以二进制形式提供给用户，我就顺便整理了一下。</p>
+<p>以二进制方式提供库的动机可能是为了保护自己公司的知识产权，也有可能是从安全的角度考虑，避免一些关键信息的泄漏等等，这不是本文讨论的范围。</p>
+]]>
+    
+    </summary>
+    
+      <category term="Go" scheme="http://colobu.com/categories/Go/"/>
+    
+  </entry>
   
   <entry>
     <title><![CDATA[[转]Xtrabackup全量备份/增量备份脚本]]></title>
@@ -1617,40 +1664,6 @@ bar <span class="keyword">int</span>
     </summary>
     
       <category term="算法" scheme="http://colobu.com/categories/%E7%AE%97%E6%B3%95/"/>
-    
-  </entry>
-  
-  <entry>
-    <title><![CDATA[使用 Go 和 Let's Encrypt 快速配置HTTPS加密]]></title>
-    <link href="http://colobu.com/2017/09/30/use-letsencrypt-in-go/"/>
-    <id>http://colobu.com/2017/09/30/use-letsencrypt-in-go/</id>
-    <published>2017-09-30T08:28:28.000Z</published>
-    <updated>2017-09-30T09:30:50.000Z</updated>
-    <content type="html"><![CDATA[<p><a href="https://www.google.com.sg/url?sa=t&amp;rct=j&amp;q=&amp;esrc=s&amp;source=web&amp;cd=1&amp;cad=rja&amp;uact=8&amp;ved=0ahUKEwjAguS9vszWAhXDo48KHZPNCMUQFggnMAA&amp;url=https%3A%2F%2Fletsencrypt.org%2F&amp;usg=AOvVaw3jJenSMDof06eZ9Vr2RLNL" target="_blank" rel="external">Let&#39;s Encrypt</a> 在2015年秋季推出了免费的数字证书认证计划，旨在消除当前手动创建和安装证书的复杂性，并推广加密的万维网服务，为安全网站提供<strong>免费</strong>的SSL/TLS证书。<br>Let&#39;s Encrypt 是由互联网安全研究小组（ISRG，一个公益组织）提供的服务。主要赞助商包括电子前哨基金会，Mozilla基金会，Akamai以及思科。2015年4月9日，ISRG与Linux基金会宣布合作。</p>
-<p>用以实现这一新的数字证书认证机构的协议被称为自动证书管理环境（<a href="https://github.com/ietf-wg-acme/acme/" target="_blank" rel="external">ACME</a>）。提案的一个版本已作为一个Internet草案发布。</p>
-<p>目前， 申请证书的域名只能是特定的域名， 不支持<a href="https://zh.wikipedia.org/wiki/通配符证书" target="_blank" rel="external">通配符证书</a>(*.example.com)，这对于一个拥有众多子域名的公司来说很不方便。但是今年已经说了，将于2018年1月<a href="https://letsencrypt.org/2017/07/06/wildcard-certificates-coming-jan-2018.html" target="_blank" rel="external">支持通配符证书</a>和ACME v2 API。</p>
-<a id="more"></a>
-<p>原先有一些支持Let&#39;s Encrypt的 Go 工具和库， 比如<a href="https://github.com/xenolf/lego" target="_blank" rel="external">lego</a>、<a href="https://github.com/hlandau/acme" target="_blank" rel="external">acme</a>、<a href="https://github.com/ericchiang/letsencrypt" target="_blank" rel="external">letsencrypt</a>、<a href="https://github.com/rsc/letsencrypt" target="_blank" rel="external">rsc/letsencrypt</a>, 但是我推荐使用官方的库：<a href="https://godoc.org/golang.org/x/crypto/acme/autocert" target="_blank" rel="external">x/crypto/acme/autocert</a>, 简单好用，并且官方维护。</p>
-<p>稍微复杂一点的使用姿势如下(其实已经很简单了)：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div></pre></td><td class="code"><pre><div class="line">m := autocert.Manager{</div><div class="line">    Cache:      autocert.DirCache(<span class="string">"secret-dir"</span>),</div><div class="line">    Prompt:     autocert.AcceptTOS,</div><div class="line">    HostPolicy: autocert.HostWhitelist(<span class="string">"example.org"</span>),</div><div class="line">}</div><div class="line">s := &http.Server{</div><div class="line">    Addr:      <span class="string">":https"</span>,</div><div class="line">    TLSConfig: &tls.Config{GetCertificate: m.GetCertificate},</div><div class="line">}</div><div class="line">s.ListenAndServeTLS(<span class="string">""</span>, <span class="string">""</span>)</div></pre></td></tr></table></figure>
-
-<p><code>autocert.Manager</code>提供了<code>GetCertificate</code>方法， 可以用来配置<code>TLSConfig</code>。</p>
-<p>更简单的方式是一行搞定：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div></pre></td><td class="code"><pre><div class="line">mux := http.NewServeMux()</div><div class="line">mux.HandleFunc(<span class="string">"/"</span>, <span class="keyword">func</span>(w http.ResponseWriter, r *http.Request) {</div><div class="line">    fmt.Fprintf(w, <span class="string">"Hello, TLS user! Your config: %+v"</span>, r.TLS)</div><div class="line">})</div><div class="line">log.Fatal(http.Serve(autocert.NewListener(<span class="string">"example.com"</span>), mux))</div></pre></td></tr></table></figure>
-
-<p><code>autocert.NewListener</code>提供了一个自动配置的listener，使用起来非常的方便。</p>
-<p>所以，如果你想做一些额外的配置，如果证书要缓存的位置，就用上面的方式， 如果想傻瓜式的使用，就用一行代码的方式。</p>
-<p>关于这个包的设计的一些讨论可以看: <a href="https://github.com/golang/go/issues/17053" target="_blank" rel="external">#17053</a>。</p>
-]]></content>
-    <summary type="html">
-    <![CDATA[<p><a href="https://www.google.com.sg/url?sa=t&amp;rct=j&amp;q=&amp;esrc=s&amp;source=web&amp;cd=1&amp;cad=rja&amp;uact=8&amp;ved=0ahUKEwjAguS9vszWAhXDo48KHZPNCMUQFggnMAA&amp;url=https%3A%2F%2Fletsencrypt.org%2F&amp;usg=AOvVaw3jJenSMDof06eZ9Vr2RLNL" target="_blank" rel="external">Let&#39;s Encrypt</a> 在2015年秋季推出了免费的数字证书认证计划，旨在消除当前手动创建和安装证书的复杂性，并推广加密的万维网服务，为安全网站提供<strong>免费</strong>的SSL/TLS证书。<br>Let&#39;s Encrypt 是由互联网安全研究小组（ISRG，一个公益组织）提供的服务。主要赞助商包括电子前哨基金会，Mozilla基金会，Akamai以及思科。2015年4月9日，ISRG与Linux基金会宣布合作。</p>
-<p>用以实现这一新的数字证书认证机构的协议被称为自动证书管理环境（<a href="https://github.com/ietf-wg-acme/acme/" target="_blank" rel="external">ACME</a>）。提案的一个版本已作为一个Internet草案发布。</p>
-<p>目前， 申请证书的域名只能是特定的域名， 不支持<a href="https://zh.wikipedia.org/wiki/通配符证书" target="_blank" rel="external">通配符证书</a>(*.example.com)，这对于一个拥有众多子域名的公司来说很不方便。但是今年已经说了，将于2018年1月<a href="https://letsencrypt.org/2017/07/06/wildcard-certificates-coming-jan-2018.html" target="_blank" rel="external">支持通配符证书</a>和ACME v2 API。</p>
-]]>
-    
-    </summary>
-    
-      <category term="Go" scheme="http://colobu.com/categories/Go/"/>
     
   </entry>
   
