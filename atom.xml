@@ -4,7 +4,7 @@
   <subtitle><![CDATA[大道至简 Simplicity is the ultimate form of sophistication]]></subtitle>
   <link href="/atom.xml" rel="self"/>
   <link href="http://colobu.com/"/>
-  <updated>2018-02-01T09:23:09.375Z</updated>
+  <updated>2018-02-05T05:59:24.719Z</updated>
   <id>http://colobu.com/</id>
   
   <author>
@@ -13,6 +13,142 @@
   </author>
   
   <generator uri="http://zespia.tw/hexo/">Hexo</generator>
+  
+  <entry>
+    <title><![CDATA[[转][译]只用200行Go代码写一个自己的区块链]]></title>
+    <link href="http://colobu.com/2018/02/05/code-your-own-blockchain-in-less-than-200-lines-of-go/"/>
+    <id>http://colobu.com/2018/02/05/code-your-own-blockchain-in-less-than-200-lines-of-go/</id>
+    <published>2018-02-05T05:23:12.000Z</published>
+    <updated>2018-02-05T05:58:27.288Z</updated>
+    <content type="html"><![CDATA[<p>这篇文章的原文为英文，出自 Coral Health公司: <a href="https://medium.com/@mycoralhealth/code-your-own-blockchain-in-less-than-200-lines-of-go-e296282bcffc" target="_blank" rel="external">Code your own blockchain in less than 200 lines of Go!</a>，</p>
+<p>本篇转载的译文来自魏佳翻译的: <a href="http://www.10tiao.com/html/175/201801/2653549361/1.html" target="_blank" rel="external">只用200行Go代码写一个自己的区块链！</a>,高可用架构的公众号， 开头部分我改为了原文的直接翻译。</p>
+<a id="more"></a>
+<p>这篇教程改编自<a href="https://medium.com/@lhartikk/a-blockchain-in-200-lines-of-code-963cc1cc0e54" target="_blank" rel="external">Javascript版本实现的区块链文章</a> (译文: <a href="https://mp.weixin.qq.com/s/Ghgaxt22Ob2p-Q7cuzKHNA" target="_blank" rel="external">200行代码就能写出区块链</a>)。我们使用Go语言实现了它，并且增加了一些额外的功能，比如可以在浏览器中查看区块链信息。如果对本教程有什么问题，欢迎加入 <a href="https://t.me/joinchat/FX6A7UThIZ1WOUNirDS_Ew" target="_blank" rel="external">Telegram chat</a>讨论。</p>
+<p>因为我们是一家从事医疗健康领域的科技公司，所以我们采用人类平静时的心跳数据（BPM心率）作为这篇文章中的示例数据。让我们先来统计一下你一分钟内的心跳数，然后记下来，这个数字可能会在接下来的内容中用到。</p>
+<p>几乎每个开发者都听说过区块链但是大部分人还是不清楚它是如何工作的。他们可能只是因为比特币才知道区块链，或许还知道一些智能合约的东东。这篇文章尝试帮助你使用Go编写你自己的简单的区块链。通过本教程，你可以编写和运行一个本地的区块链，并且可以在浏览器中查看它。</p>
+<p>通过本文，你将可以做到：</p>
+<ul>
+<li>创建自己的区块链</li>
+<li>理解 hash 函数是如何保持区块链的完整性</li>
+<li>如何创造并添加新的块</li>
+<li>多个节点如何竞争生成块</li>
+<li>通过浏览器来查看整个链</li>
+<li>所有其他关于区块链的基础知识</li>
+</ul>
+<p>但是，对于比如<strong>工作量证明算法（PoW）</strong> 以及 <strong>权益证明算法（PoS）</strong>这类的共识算法文章中将不会涉及。同时为了让你更清楚的查看区块链以及块的添加，我们将网络交互的过程简化了，关于 P2P 网络比如“全网广播”这个过程等内容将在下一篇文章中补上。</p>
+<h2 id="让我们开始吧！">让我们开始吧！</h2>
+<h3 id="设置">设置</h3>
+<p>我们假设你已经具备一点 Go 语言的开发经验。在安装和配置 Go 开发环境后之后，我们还要获取以下一些依赖：</p>
+<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">go get github.com/davecgh/go-spew/spew</div></pre></td></tr></table></figure>
+
+<p><code>spew</code> 可以帮助我们在 <code>console</code> 中直接查看 <code>struct</code> 和 <code>slice</code> 这两种数据结构。</p>
+<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">go get github.com/gorilla/mux</div></pre></td></tr></table></figure>
+
+<p><code>Gorilla</code> 的 mux 包非常流行， 我们用它来写 web handler。</p>
+<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">go get github.com/joho/godotenv</div></pre></td></tr></table></figure>
+
+<p>godotenv 可以帮助我们读取项目根目录中的 <code>.env</code> 配置文件，这样我们就不用将 http port 之类的配置硬编码进代码中了。比如像这样：</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line"><span class="attribute">ADDR</span>=<span class="string">8080</span></div></pre></td></tr></table></figure>
+
+<p>接下来，我们创建一个 <code>main.go</code> 文件。之后我们的大部分工作都围绕这个文件，让我开始编码吧！</p>
+<h3 id="导入依赖">导入依赖</h3>
+<p>我们将所有的依赖包以声明的方式导入进去：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> main</div><div class="line"></div><div class="line"><span class="keyword">import</span> (</div><div class="line">    <span class="string">"crypto/sha256"</span></div><div class="line">    <span class="string">"encoding/hex"</span></div><div class="line">    <span class="string">"encoding/json"</span></div><div class="line">    <span class="string">"io"</span></div><div class="line">    <span class="string">"log"</span></div><div class="line">    <span class="string">"net/http"</span></div><div class="line">    <span class="string">"os"</span></div><div class="line">    <span class="string">"time"</span></div><div class="line"></div><div class="line">    <span class="string">"github.com/davecgh/go-spew/spew"</span></div><div class="line">    <span class="string">"github.com/gorilla/mux"</span></div><div class="line">    <span class="string">"github.com/joho/godotenv"</span></div><div class="line">)</div></pre></td></tr></table></figure>
+
+<h3 id="数据模型">数据模型</h3>
+<p>接着我们来定义一个结构体，它代表组成区块链的每一个块的数据模型：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> Block <span class="keyword">struct</span> {</div><div class="line">    Index     <span class="typename">int</span></div><div class="line">    Timestamp <span class="typename">string</span></div><div class="line">    BPM       <span class="typename">int</span></div><div class="line">    Hash      <span class="typename">string</span></div><div class="line">    PrevHash  <span class="typename">string</span></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<ul>
+<li><code>Index</code> 是这个块在整个链中的位置</li>
+<li><code>Timestamp</code> 显而易见就是块生成时的时间戳</li>
+<li><code>Hash</code> 是这个块通过 SHA256 算法生成的散列值</li>
+<li><code>PrevHash</code> 代表前一个块的 SHA256 散列值</li>
+<li><code>BPM</code> 每分钟心跳数，也就是心率。还记得文章开头说到的吗？</li>
+</ul>
+<p>接着，我们再定义一个结构表示整个链，最简单的表示形式就是一个 <code>Block</code> 的 slice：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">var</span> Blockchain []Block</div></pre></td></tr></table></figure>
+
+<p>我们使用散列算法（SHA256）来确定和维护链中块和块正确的顺序，确保每一个块的 PrevHash 值等于前一个块中的 Hash 值，这样就以正确的块顺序构建出链：</p>
+<p><img src="1.png" alt=""></p>
+<h3 id="散列和生成块">散列和生成块</h3>
+<p>我们为什么需要散列？主要是两个原因：</p>
+<ul>
+<li>在节省空间的前提下去唯一标识数据。散列是用整个块的数据计算得出，在我们的例子中，将整个块的数据通过 <code>SHA256</code> 计算成一个定长不可伪造的字符串。</li>
+<li>维持链的完整性。通过存储前一个块的散列值，我们就能够确保每个块在链中的正确顺序。任何对数据的篡改都将改变散列值，同时也就破坏了链。以我们从事的医疗健康领域为例，比如有一个恶意的第三方为了调整“人寿险”的价格，而修改了一个或若干个块中的代表不健康的 BPM 值，那么整个链都变得不可信了。</li>
+</ul>
+<p>我们接着写一个函数，用来计算给定的数据的 SHA256 散列值：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> calculateHash(block Block) <span class="typename">string</span> {</div><div class="line">    record := <span class="typename">string</span>(block.Index) + block.Timestamp + <span class="typename">string</span>(block.BPM) + block.PrevHash</div><div class="line">    h := sha256.New()</div><div class="line">    h.Write([]<span class="typename">byte</span>(record))</div><div class="line">    hashed := h.Sum(<span class="constant">nil</span>)</div><div class="line">    <span class="keyword">return</span> hex.EncodeToString(hashed)</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>这个 <code>calculateHash</code> 函数接受一个块，通过块中的 Index，Timestamp，BPM，以及 PrevHash 值来计算出 SHA256 散列值。接下来我们就能便携一个生成块的函数：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> generateBlock(oldBlock Block, BPM <span class="typename">int</span>) (Block, error) {</div><div class="line">    <span class="keyword">var</span> newBlock Block</div><div class="line"></div><div class="line">    t := time.Now()</div><div class="line">    newBlock.Index = oldBlock.Index +<span class="number"> 1</span></div><div class="line">    newBlock.Timestamp = t.String()</div><div class="line">    newBlock.BPM = BPM</div><div class="line">    newBlock.PrevHash = oldBlock.Hash</div><div class="line">    newBlock.Hash = calculateHash(newBlock)</div><div class="line"></div><div class="line">    <span class="keyword">return</span> newBlock, <span class="constant">nil</span></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>其中，<code>Index</code> 是从给定的前一块的 <code>Index</code> 递增得出，时间戳是直接通过 <code>time.Now()</code> 函数来获得的，<code>Hash</code> 值通过前面的 <code>calculateHash</code> 函数计算得出，<code>PrevHash</code> 则是给定的前一个块的 <code>Hash</code> 值。</p>
+<h3 id="校验块">校验块</h3>
+<p>搞定了块的生成，接下来我们需要有函数帮我们判断一个块是否有被篡改。检查 Index 来看这个块是否正确得递增，检查 PrevHash 与前一个块的 Hash 是否一致，再来通过 calculateHash 检查当前块的 Hash 值是否正确。通过这几步我们就能写出一个校验函数：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> isBlockValid(newBlock, oldBlock Block) <span class="typename">bool</span> {</div><div class="line">    <span class="keyword">if</span> oldBlock.Index<span class="number">+1</span> != newBlock.Index {</div><div class="line">        <span class="keyword">return</span> <span class="constant">false</span></div><div class="line">    }</div><div class="line">    <span class="keyword">if</span> oldBlock.Hash != newBlock.PrevHash {</div><div class="line">        <span class="keyword">return</span> <span class="constant">false</span></div><div class="line">    }</div><div class="line">    <span class="keyword">if</span> calculateHash(newBlock) != newBlock.Hash {</div><div class="line">        <span class="keyword">return</span> <span class="constant">false</span></div><div class="line">    }</div><div class="line">    <span class="keyword">return</span> <span class="constant">true</span></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>除了校验块以外，我们还会遇到一个问题：两个节点都生成块并添加到各自的链上，那我们应该以谁为准？这里的细节我们留到下一篇文章，这里先让我们记住一个原则：始终选择最长的链。</p>
+<p><img src="2.png" alt=""></p>
+<p>通常来说，更长的链表示它的数据（状态）是更新的，所以我们需要一个函数</p>
+<p>能帮我们将本地的过期的链切换成最新的链：</p>
+<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div></pre></td><td class="code"><pre><div class="line">func replaceChain(newBlocks []Block) {</div><div class="line">    <span class="keyword">if</span> len(newBlocks) &gt; len(Blockchain) {</div><div class="line">        Blockchain = newBlocks</div><div class="line">    }</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>到这一步，我们基本就把所有重要的函数完成了。接下来，我们需要一个方便直观的方式来查看我们的链，包括数据及状态。通过浏览器查看 web 页面可能是最合适的方式！</p>
+<h3 id="Web_服务">Web 服务</h3>
+<p>我猜你一定对传统的 web 服务及开发非常熟悉，所以这部分你肯定一看就会。<br>借助 Gorilla/mux 包，我们先写一个函数来初始化我们的 web 服务：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> run() error {</div><div class="line">    mux := makeMuxRouter()</div><div class="line">    httpAddr := os.Getenv(<span class="string">"ADDR"</span>)</div><div class="line">    log.Println(<span class="string">"Listening on "</span>, os.Getenv(<span class="string">"ADDR"</span>))</div><div class="line">    s := &http.Server{</div><div class="line">        Addr:           <span class="string">":"</span> + httpAddr,</div><div class="line">        Handler:        mux,</div><div class="line">        ReadTimeout:   <span class="number"> 10</span> * time.Second,</div><div class="line">        WriteTimeout:  <span class="number"> 10</span> * time.Second,</div><div class="line">        MaxHeaderBytes:<span class="number"> 1</span> &lt;&lt;<span class="number"> 20</span>,</div><div class="line">    }</div><div class="line"></div><div class="line">    <span class="keyword">if</span> err := s.ListenAndServe(); err != <span class="constant">nil</span> {</div><div class="line">        <span class="keyword">return</span> err</div><div class="line">    }</div><div class="line"></div><div class="line">    <span class="keyword">return</span> <span class="constant">nil</span></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>其中的端口号是通过前面提到的 .env 来获得，再添加一些基本的配置参数，这个 web 服务就已经可以 listen and serve 了！<br>接下来我们再来定义不同 endpoint 以及对应的 handler。例如，对“/”的 GET 请求我们可以查看整个链，“/”的 POST 请求可以创建块。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> makeMuxRouter() http.Handler {</div><div class="line">    muxRouter := mux.NewRouter()</div><div class="line">    muxRouter.HandleFunc(<span class="string">"/"</span>, handleGetBlockchain).Methods(<span class="string">"GET"</span>)</div><div class="line">    muxRouter.HandleFunc(<span class="string">"/"</span>, handleWriteBlock).Methods(<span class="string">"POST"</span>)</div><div class="line">    <span class="keyword">return</span> muxRouter</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>GET 请求的 handler：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> handleGetBlockchain(w http.ResponseWriter, r *http.Request) {</div><div class="line">    bytes, err := json.MarshalIndent(Blockchain, <span class="string">""</span>, <span class="string">"  "</span>)</div><div class="line">    <span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">        http.Error(w, err.Error(), http.StatusInternalServerError)</div><div class="line">        <span class="keyword">return</span></div><div class="line">    }</div><div class="line">    io.WriteString(w, <span class="typename">string</span>(bytes))</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>为了简化，我们直接以 JSON 格式返回整个链，你可以在浏览器中访问 localhost:8080 或者 127.0.0.1:8080 来查看（这里的8080就是你在 .env 中定义的端口号 ADDR）。</p>
+<p>POST 请求的 handler 稍微有些复杂，我们先来定义一下 POST 请求的 payload：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> Message <span class="keyword">struct</span> {</div><div class="line">    BPM <span class="typename">int</span></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>再看看 handler 的实现：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> handleWriteBlock(w http.ResponseWriter, r *http.Request) {</div><div class="line">    <span class="keyword">var</span> m Message</div><div class="line"></div><div class="line">    decoder := json.NewDecoder(r.Body)</div><div class="line">    <span class="keyword">if</span> err := decoder.Decode(&m); err != <span class="constant">nil</span> {</div><div class="line">        respondWithJSON(w, r, http.StatusBadRequest, r.Body)</div><div class="line">        <span class="keyword">return</span></div><div class="line">    }</div><div class="line">    <span class="keyword">defer</span> r.Body.Close()</div><div class="line"></div><div class="line">    newBlock, err := generateBlock(Blockchain[<span class="built_in">len</span>(Blockchain<span class="number">)-1</span>], m.BPM)</div><div class="line">    <span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">        respondWithJSON(w, r, http.StatusInternalServerError, m)</div><div class="line">        <span class="keyword">return</span></div><div class="line">    }</div><div class="line">    <span class="keyword">if</span> isBlockValid(newBlock, Blockchain[<span class="built_in">len</span>(Blockchain<span class="number">)-1</span>]) {</div><div class="line">        newBlockchain := <span class="built_in">append</span>(Blockchain, newBlock)</div><div class="line">        replaceChain(newBlockchain)</div><div class="line">        spew.Dump(Blockchain)</div><div class="line">    }</div><div class="line"></div><div class="line">    respondWithJSON(w, r, http.StatusCreated, newBlock)</div><div class="line"></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>我们的 POST 请求体中可以使用上面定义的 payload，比如：</p>
+<figure class="highlight json"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">{"<span class="attribute">BPM</span>":<span class="value"><span class="number">75</span></span>}</div></pre></td></tr></table></figure>
+
+<p>还记得前面我们写的 generateBlock 这个函数吗？它接受一个“前一个块”参数，和一个 BPM 值。POST handler 接受请求后就能获得请求体中的 BPM 值，接着借助生成块的函数以及校验块的函数就能生成一个新的块了！</p>
+<p>除此之外，你也可以：</p>
+<p>使用spew.Dump 这个函数可以以非常美观和方便阅读的方式将 struct、slice 等数据打印在控制台里，方便我们调试。</p>
+<p>测试 POST 请求时，可以使用 POSTMAN 这个 chrome 插件，相比 curl它更直观和方便。</p>
+<p>POST 请求处理完之后，无论创建块成功与否，我们需要返回客户端一个响应：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> respondWithJSON(w http.ResponseWriter, r *http.Request, code <span class="typename">int</span>, payload <span class="keyword">interface</span>{}) {</div><div class="line">    response, err := json.MarshalIndent(payload, <span class="string">""</span>, <span class="string">"  "</span>)</div><div class="line">    <span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">        w.WriteHeader(http.StatusInternalServerError)</div><div class="line">        w.Write([]<span class="typename">byte</span>(<span class="string">"HTTP 500: Internal Server Error"</span>))</div><div class="line">        <span class="keyword">return</span></div><div class="line">    }</div><div class="line">    w.WriteHeader(code)</div><div class="line">    w.Write(response)</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<h3 id="快要大功告成了">快要大功告成了</h3>
+<p>接下来，我们把这些关于区块链的函数，web 服务的函数“组装”起来：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> main() {</div><div class="line">    err := godotenv.Load()</div><div class="line">    <span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">        log.Fatal(err)</div><div class="line">    }</div><div class="line"></div><div class="line">    <span class="keyword">go</span> <span class="keyword">func</span>() {</div><div class="line">        t := time.Now()</div><div class="line">        genesisBlock := Block<span class="number">{0</span>, t.String(),<span class="number"> 0</span>, <span class="string">""</span>, <span class="string">""</span>}</div><div class="line">        spew.Dump(genesisBlock)</div><div class="line">        Blockchain = <span class="built_in">append</span>(Blockchain, genesisBlock)</div><div class="line">    }()</div><div class="line">    log.Fatal(run())</div><div class="line"></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>这里的 <code>genesisBlock （创世块）</code>是 <code>main</code> 函数中最重要的部分，通过它来初始化区块链，毕竟第一个块的 <code>PrevHash</code> 是空的。</p>
+<h2 id="哦耶！完成了">哦耶！完成了</h2>
+<p>你们可以从这里获得完整的代码：<a href="https://github.com/mycoralhealth/blockchain-tutorial" target="_blank" rel="external">Github repo</a>。<br>让我们来启动它：</p>
+<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">go run main.go</div></pre></td></tr></table></figure>
+
+<p>在终端中，我们可以看到 web 服务器启动的日志信息，并且打印出了创世块的信息：<br><img src="3.png" alt=""></p>
+<p>接着我们打开浏览器，访问 localhost:8080 这个地址，我们可以看到页面中展示了当前整个区块链的信息（当然，目前只有一个创世块）：<br><img src="4.png" alt=""></p>
+<p>接着，我们再通过 POSTMAN 来发送一些 POST 请求：<br><img src="5.png" alt=""></p>
+<p>刷新刚才的页面，现在的链中多了一些块，正是我们刚才生成的，同时你们可以看到，块的顺序和散列值都正确。<br><img src="6.png" alt=""></p>
+<h3 id="下一步">下一步</h3>
+<p>刚刚我们完成了一个自己的区块链，虽然很简单（陋），但它具备块生成、散列计算、块校验等基本能力。接下来你就可以继续深入的学习区块链的其他重要知识，比如工作量证明、权益证明这样的共识算法，或者是智能合约、Dapp、侧链等等。</p>
+<p>目前这个实现中不包括任何 P2P 网络的内容，我们会在下一篇文章中补充这部分内容，当然，我们鼓励你在这个基础上自己实践一遍！</p>
+]]></content>
+    <summary type="html">
+    <![CDATA[<p>这篇文章的原文为英文，出自 Coral Health公司: <a href="https://medium.com/@mycoralhealth/code-your-own-blockchain-in-less-than-200-lines-of-go-e296282bcffc" target="_blank" rel="external">Code your own blockchain in less than 200 lines of Go!</a>，</p>
+<p>本篇转载的译文来自魏佳翻译的: <a href="http://www.10tiao.com/html/175/201801/2653549361/1.html" target="_blank" rel="external">只用200行Go代码写一个自己的区块链！</a>,高可用架构的公众号， 开头部分我改为了原文的直接翻译。</p>
+]]>
+    
+    </summary>
+    
+      <category term="Go" scheme="http://colobu.com/categories/Go/"/>
+    
+  </entry>
   
   <entry>
     <title><![CDATA[流行的rpc框架benchmark 2018新春版]]></title>
@@ -1682,71 +1818,6 @@ bar <span class="keyword">int</span>
     </summary>
     
       <category term="工具" scheme="http://colobu.com/categories/%E5%B7%A5%E5%85%B7/"/>
-    
-  </entry>
-  
-  <entry>
-    <title><![CDATA[[转]KV存储的对比]]></title>
-    <link href="http://colobu.com/2017/10/10/comparision-of-kv-datastore/"/>
-    <id>http://colobu.com/2017/10/10/comparision-of-kv-datastore/</id>
-    <published>2017-10-10T03:12:28.000Z</published>
-    <updated>2017-10-10T03:39:10.000Z</updated>
-    <content type="html"><![CDATA[<p>本文转自饿了么的高级架构师陈东明(cadem)发布于云栖社区的文章: <a href="https://yq.aliyun.com/articles/85634?spm=5176.8091938.0.0.Bck5cC" target="_blank" rel="external">KV存储的对比</a>。作者还整理了另外一篇文章: <a href="https://yq.aliyun.com/articles/85619?spm=5176.8091938.0.0.Bck5cC" target="_blank" rel="external">存储系统的分类</a>,列举了常见的一些kv存储模型和实现。</p>
-<p>最近对各种KV存储进行一个比较，从存储引擎到存储引擎的类型，到单机版的kvstore，再到分布式kvstore集群。</p>
-<a id="more"></a>
-<h2 id="存储引擎的类型">存储引擎的类型</h2>
-<table>
-<thead>
-<tr>
-<th>类型</th>
-<th>全称</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>btree</td>
-<td></td>
-</tr>
-<tr>
-<td>LSH</td>
-<td>Log-Structured Hash Table</td>
-</tr>
-<tr>
-<td>LSM</td>
-<td>Log-Structured Merge Tree</td>
-</tr>
-<tr>
-<td>FractalTree</td>
-<td>分型树</td>
-</tr>
-</tbody>
-</table>
-<h2 id="存储引擎">存储引擎</h2>
-<p><span id="thx">Welcome to Oschina Tools website</span>            <table><thead><tr><th>类型</th><th>名称</th><th>语言</th><th>备注</th><th>应用在___</th><th>dbengine排名</th><th>出品</th></tr></thead><tbody><tr><td>berkeleyDB</td><td>BTREE, HASH, QUEUE, RECNO</td><td>C,Java</td><td></td><td></td><td>No.9</td><td>oracle</td></tr><tr><td>Wiredtiger</td><td>btree, LSM</td><td>C</td><td></td><td>mongodb</td><td>No.24</td><td>WiredTiger/mongodb</td></tr><tr><td>Tokyo Cabinet /Kyoto Cabinet</td><td>b+tree,hash table</td><td></td><td></td><td>nmdb,Kyoto Tycoon</td><td>NO.27/No.36</td><td>FAL Labs</td></tr><tr><td>LMDB</td><td>btree</td><td>C</td><td></td><td>OpenLDAP</td><td></td><td>symas</td></tr><tr><td>BoltDB</td><td>btree</td><td>Go</td><td>LMDB的go版本</td><td></td><td></td><td></td></tr><tr><td>leveldb</td><td>LSM</td><td>c++</td><td></td><td></td><td>No.15</td><td>google</td></tr><tr><td>goleveldb</td><td>LSM</td><td>Go</td><td>leveldb的go版本</td><td></td><td></td><td>个人</td></tr><tr><td>levigo</td><td>LSM</td><td>Go</td><td>Go wrapper for LevelDB</td><td></td><td></td><td>个人</td></tr><tr><td>rocksdb</td><td>LSM</td><td>c++,java</td><td></td><td></td><td>No.18</td><td>facebook</td></tr><tr><td>gorocksdb</td><td>LSM</td><td>Go</td><td>Go wrapper for RocksDB</td><td></td><td></td><td>个人</td></tr><tr><td>mongo-rocks</td><td>LSM</td><td>C++</td><td></td><td>RocksDB Storage Engine Module for MongoDB</td><td></td><td>mongo partner</td></tr><tr><td>bitcast</td><td>LSH</td><td>C</td><td></td><td>beansdb,riak</td><td></td><td>basho</td></tr><tr><td>PerconaFT</td><td>FractalTree</td><td>C++</td><td>Mysql存储引擎之TokuDB</td><td>percona</td><td></td><td></td></tr></tbody></table></p>
-<h2 id="单机kvstore">单机kvstore</h2>
-<table><thead><tr><th>类型</th><th>名称</th><th>采用的存储引擎</th><th>语言</th><th>出品</th><th>主从复制</th><th>github star</th></tr></thead><tbody><tr><td>kv对</td><td>nmdb</td><td>qdbm, berkeley db, tokyo cabinet,tdb</td><td>C</td><td>个人Alberto Bertogli</td><td></td><td></td></tr><tr><td>kv对</td><td>memcachedb</td><td>Berkeley DB</td><td>C</td><td>新浪</td><td>yes</td><td></td></tr><tr><td>kv对</td><td>Kyoto Tycoon</td><td>Kyoto Cabinet</td><td>C/C++</td><td>FAL Labs</td><td></td><td></td></tr><tr><td>结构化kv(redis兼容）</td><td>ssdb</td><td>leveddb</td><td>C/C++</td><td>个人ideawu</td><td>yes</td><td>4k+</td></tr><tr><td>结构化kv(redis兼容）</td><td>ssdb-rocks</td><td>rocksdb</td><td>C/C++</td><td>个人ideawu</td><td></td><td>92</td></tr><tr><td>结构化kv(redis兼容）</td><td>ardb</td><td>LevelDB, RocksDB, LMDB, WiredTiger</td><td>C++</td><td>个人yinqiwen</td><td>yes</td><td>800+</td></tr><tr><td>结构化kv(redis兼容）</td><td>(reborndb)qdb</td><td>Rocksdb and LevelDB</td><td>Go</td><td>个人ngaut</td><td></td><td>200+</td></tr><tr><td>结构化kv(redis兼容）</td><td>Pika</td><td>Rocksdb</td><td>C</td><td>Qihoo360</td><td>yes</td><td>900+</td></tr><tr><td>结构化kv(redis兼容）</td><td>LedisDB</td><td>LevelDB, goleveldb, LMDB, RocksDB, BoltDB or Memory</td><td>Go</td><td>个人SiddonTang</td><td></td><td>2K+</td></tr></tbody></table>
-
-<h2 id="单机kvstore的分布式代理">单机kvstore的分布式代理</h2>
-<table><thead><tr><th>名称</th><th>语言</th><th>存储</th><th>出品</th><th>应用/githubstar</th><th>分片</th><th>弹性</th><th>备注</th></tr></thead><tbody><tr><td>Reborndb</td><td>Go</td><td>qdb</td><td>个人ngaut</td><td>200+</td><td>yes</td><td>yes</td><td></td></tr><tr><td>Netflix Dynomite</td><td>C</td><td>redis,memcached</td><td>Netflix</td><td>1.9K+</td><td></td><td></td><td>Dynamo</td></tr><tr><td>Codis</td><td>Go</td><td>codis-server(定制redis)</td><td>社区CodisLabs</td><td>5K+</td><td></td><td></td><td></td></tr><tr><td>Twenproxy</td><td>C</td><td>redis,memcached</td><td>twitter</td><td>6K+</td><td></td><td></td><td></td></tr></tbody></table>
-
-<h2 id="分布式KVstore">分布式KVstore</h2>
-<table><thead><tr><th>类型</th><th>名称</th><th>语言</th><th>出品</th><th>dbengine排名/githubstar</th><th>存储引擎</th><th>社区活跃</th><th>特性</th><th>备注</th></tr></thead><tbody><tr><td>kv型</td><td>riak</td><td>erlang</td><td>basho</td><td>No.3/2K+</td><td>bitcask</td><td></td><td></td><td>Dynamo</td></tr><tr><td>kv型</td><td>beansdb</td><td>C</td><td>douban</td><td>600+</td><td>bitcask模型</td><td>近2年没有更新，没有文档</td><td></td><td>Dynamo</td></tr><tr><td>kv型</td><td>project Voldmort</td><td>Java</td><td>LinkedIn</td><td>No.29/1.8K+</td><td>BDB-JE,MySQL,Read-Only</td><td></td><td></td><td></td></tr><tr><td>kv型</td><td>Scalris</td><td>erlang</td><td>Zuse Institute Berlin</td><td>No.35/88</td><td></td><td></td><td></td><td></td></tr><tr><td>kv型</td><td>aeospike</td><td></td><td>aespike</td><td>No.7</td><td></td><td></td><td></td><td></td></tr><tr><td>kv型</td><td>Tair</td><td>C/C++</td><td>alibaba</td><td>400+</td><td>自研的fdb</td><td>停止更新，没有文档</td><td></td><td></td></tr></tbody></table>
-
-<h2 id="补充">补充</h2>
-<p>原文中没有提到的，在这里添加上作为补充。</p>
-<ul>
-<li><a href="https://github.com/pingcap/tidb" target="_blank" rel="external">tidb</a>: 国产的分布式NewSQL产品，底层采用tikv, 支持MySQL协议， PingCap出品。</li>
-<li><a href="https://github.com/dgraph-io/badger" target="_blank" rel="external">badger</a>: 性能优异，特别为SSD优化，仅仅key存储在LSM tree中。</li>
-</ul>
-]]></content>
-    <summary type="html">
-    <![CDATA[<p>本文转自饿了么的高级架构师陈东明(cadem)发布于云栖社区的文章: <a href="https://yq.aliyun.com/articles/85634?spm=5176.8091938.0.0.Bck5cC" target="_blank" rel="external">KV存储的对比</a>。作者还整理了另外一篇文章: <a href="https://yq.aliyun.com/articles/85619?spm=5176.8091938.0.0.Bck5cC" target="_blank" rel="external">存储系统的分类</a>,列举了常见的一些kv存储模型和实现。</p>
-<p>最近对各种KV存储进行一个比较，从存储引擎到存储引擎的类型，到单机版的kvstore，再到分布式kvstore集群。</p>
-]]>
-    
-    </summary>
-    
-      <category term="数据库" scheme="http://colobu.com/categories/%E6%95%B0%E6%8D%AE%E5%BA%93/"/>
     
   </entry>
   
