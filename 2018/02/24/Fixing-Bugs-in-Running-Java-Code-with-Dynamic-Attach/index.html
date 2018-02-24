@@ -1,0 +1,538 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  
+  <title>[转][译]在 Java 中运用动态挂载实现 Bug 的热修复 | 鸟窝</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+  <meta name="description" content="原文: Fixing Bugs in Running Java Code with Dynamic Attach by Rafael Winterhalter
+开源中国组织翻译: 在 Java 中运用动态挂载实现 Bug 的热修复 by TedCruz、无若、LeoXu、Tocy等。
+大多数 JVM 具备 Java 的 HotSwap 特性，大部分开发者认为它仅仅是一个调试工具。利用这一特性,有可">
+<meta property="og:type" content="article">
+<meta property="og:title" content="[转][译]在 Java 中运用动态挂载实现 Bug 的热修复">
+<meta property="og:url" content="http://colobu.com/2018/02/24/Fixing-Bugs-in-Running-Java-Code-with-Dynamic-Attach/">
+<meta property="og:site_name" content="鸟窝">
+<meta property="og:description" content="原文: Fixing Bugs in Running Java Code with Dynamic Attach by Rafael Winterhalter
+开源中国组织翻译: 在 Java 中运用动态挂载实现 Bug 的热修复 by TedCruz、无若、LeoXu、Tocy等。
+大多数 JVM 具备 Java 的 HotSwap 特性，大部分开发者认为它仅仅是一个调试工具。利用这一特性,有可">
+<meta property="og:image" content="dynamic-attach.png">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="[转][译]在 Java 中运用动态挂载实现 Bug 的热修复">
+<meta name="twitter:description" content="原文: Fixing Bugs in Running Java Code with Dynamic Attach by Rafael Winterhalter
+开源中国组织翻译: 在 Java 中运用动态挂载实现 Bug 的热修复 by TedCruz、无若、LeoXu、Tocy等。
+大多数 JVM 具备 Java 的 HotSwap 特性，大部分开发者认为它仅仅是一个调试工具。利用这一特性,有可">
+
+  
+    <link rel="alternative" href="/atom.xml" title="鸟窝" type="application/atom+xml">
+  
+  
+    <link rel="icon" href="/favicon.png">
+  
+  <link rel="stylesheet" href="/css/style.css" type="text/css">
+
+  <link href="//cdn.staticfile.org/font-awesome/4.2.0/css/font-awesome.css" rel="stylesheet">
+  
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/fancybox/2.1.7/css/jquery.fancybox.min.css" media="screen" type="text/css">
+  
+  <link rel="stylesheet" href="//cdnjs.cloudflare.com/ajax/libs/animate.css/3.1.1/animate.min.css" media="screen" type="text/css">
+  <!--[if lt IE 9]><script src="//cdn.staticfile.org/html5shiv/3.7/html5shiv.min.js"></script><![endif]-->
+
+  <script type="text/javascript">
+	//visit my previous blog: http://old.colobu.com just like this http://colobu.com/?=123456
+    var blog_url = location.href.toString();
+	if (blog_url.indexOf("http://colobu.com/?p=") >= 0) {
+		blog_url = blog_url.replace("colobu.com", "old.colobu.com");
+		window.location.assign(blog_url);
+	} else if (blog_url.indexOf("http://smallnest.gitcafe.com") >= 0) {
+		blog_url = blog_url.replace("smallnest.gitcafe.com", "colobu.com");
+		window.location.assign(blog_url);
+	}  else if (blog_url.indexOf("http://smallnest.gitcafe.io") >= 0) {
+		blog_url = blog_url.replace("smallnest.gitcafe.io", "colobu.com");
+		window.location.assign(blog_url);
+	}
+</script>
+  <style type="text/css">
+    .news-essay
+    {
+      display: inline !important;
+    }
+    .hot-news
+    {
+      text-align: left !important;
+    }
+  </style>
+</head>
+
+<body>
+  <div id="container">
+    <div id="wrap">
+      <header id="header">
+  <div id="banner"></div>
+  <div id="header-outer" class="outer">
+    <div id="header-title" class="inner">
+      <h1 id="logo-wrap" class="animated bounceInLeft">
+        <a href="/" id="logo">鸟窝</a>
+      </h1>
+      
+        <h2 id="subtitle-wrap" class="animated bounceInLeft">
+          <a href="/" id="subtitle">大道至简 Simplicity is the ultimate form of sophistication</a>
+        </h2>
+      
+    </div>
+    <div id="header-inner" class="inner">
+      <nav id="main-nav">
+        <a id="main-nav-toggle" class="nav-icon"></a>
+        
+          <a class="main-nav-link" href="/"><i class="fa fa-home">&nbsp;</i>首页</a>
+        
+          <a class="main-nav-link" href="/archives"><i class="fa fa-folder-o">&nbsp;</i>归档</a>
+        
+          <a class="main-nav-link" href="https://github.com/smallnest"><i class="fa fa-github">&nbsp;</i>github</a>
+        
+          <a class="main-nav-link" href="/goasm"><i class="fa fa-language">&nbsp;</i>Go汇编示例</a>
+        
+          <a class="main-nav-link" href="/ScalaCollectionsCookbook"><i class="fa fa-book">&nbsp;</i>Scala集合技术手册</a>
+        
+          <a class="main-nav-link" href="/techreview"><i class="fa fa-newspaper-o">&nbsp;</i>技术快报</a>
+        
+          <a class="main-nav-link" href="/about"><i class="fa fa-lemon-o">&nbsp;</i>关于</a>
+        
+      </nav>
+      <nav id="sub-nav">
+        
+          <a id="nav-rss-link" class="nav-icon" href="/atom.xml" title="RSS Feed"></a>
+        
+        <a id="nav-search-btn" class="nav-icon" title="Search"></a>
+      </nav>
+      <div id="search-form-wrap">
+        <form action="http://www.baidu.com/baidu" method="get" accept-charset="utf-8" class="search-form">
+          <input type="search" name="word" maxlength="20" class="search-form-input" placeholder="Search">
+          <input type="submit" value="" class="search-form-submit">
+          <input name=tn type=hidden value="bds">
+          <input name=cl type=hidden value="3">
+          <input name=ct type=hidden value="2097152">
+          <input type="hidden" name="si" value="colobu.com">
+        </form>
+      </div>
+    </div>
+  </div>
+</header>
+      <div class="outer">
+        <section id="main"><article id="post-Fixing-Bugs-in-Running-Java-Code-with-Dynamic-Attach" class="article article-type-post" itemscope itemprop="blogPost">
+  <div class="article-meta">
+    <a href="/2018/02/24/Fixing-Bugs-in-Running-Java-Code-with-Dynamic-Attach/" class="article-date">
+  <time datetime="2018-02-24T11:00:24.000Z" itemprop="datePublished">2018年02月24日</time>
+</a>
+    
+  <div class="article-category">
+    <a class="article-category-link" href="/categories/Java/">Java</a>
+  </div>
+
+	
+  <div class="article-author"> by Rafael Winterhalter</div>
+
+  </div>
+  <div class="article-inner">
+    
+    
+      <header class="article-header">
+        
+  
+    <h1 class="article-title" itemprop="name">
+      [转][译]在 Java 中运用动态挂载实现 Bug 的热修复
+	  
+    </h1>
+  
+
+      </header>
+    
+    <div class="article-entry" itemprop="articleBody">
+	  
+	    <h1 id="expanderHead" style="cursor:pointer;">
+		目录 <span id="expanderSign">[−]</span>
+		</h1>
+	    <div id="article-entry-toc" data-role="collapsible" class="article-entry-toc">
+		  <ol class="toc"><li class="toc-item toc-level-2"><a class="toc-link" href="#Attach_API：使用动态附件来渗透另外一个_JVM"><span class="toc-text">Attach API：使用动态附件来渗透另外一个 JVM</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#Instrumentation_API：修改目标_VM_的程序"><span class="toc-text">Instrumentation API：修改目标 VM 的程序</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#使用_Byte_Buddy_来追踪内存泄漏"><span class="toc-text">使用 Byte Buddy 来追踪内存泄漏</span></a><ol class="toc-child"><li class="toc-item toc-level-3"><a class="toc-link" href="#字节码操作"><span class="toc-text">字节码操作</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#分析一个发生泄漏的应用程序"><span class="toc-text">分析一个发生泄漏的应用程序</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#使用模板进行操作"><span class="toc-text">使用模板进行操作</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#附加代理"><span class="toc-text">附加代理</span></a></li></ol></li><li class="toc-item toc-level-2"><a class="toc-link" href="#总结"><span class="toc-text">总结</span></a></li></ol>
+	    </div>
+	  
+	  
+      
+        <p>原文: <a href="https://www.sitepoint.com/fixing-bugs-in-running-java-code-with-dynamic-attach/" target="_blank" rel="external">Fixing Bugs in Running Java Code with Dynamic Attach</a> by Rafael Winterhalter</p>
+<p><a href="https://www.oschina.net" target="_blank" rel="external">开源中国</a>组织翻译: <a href="http://www.oschina.net/translate/fixing-bugs-in-running-java-code-with-dynamic-attach" target="_blank" rel="external">在 Java 中运用动态挂载实现 Bug 的热修复</a> by TedCruz、<br>无若、LeoXu、Tocy等。</p>
+<p>大多数 JVM 具备 Java 的 <a href="https://docs.oracle.com/javase/8/docs/technotes/guides/jpda/enhancements1.4.html#hotswap" target="_blank" rel="external">HotSwap</a> 特性，大部分开发者认为它仅仅是一个调试工具。利用这一特性,有可能在不重启 Java 进程条件下，改变 Java 方法的实现。典型的例子是使用 IDE 来编码。然而 HotSwap 可以在生产环境中实现这一功能。通过这种方式，不用停止运行程序，就可以扩展在线的应用程序，或者在运行的项目上修复小的错误。这篇文章中，我将演示动态绑定、应用运行期代码变化进行绑定、介绍一些工具 API 以及 <a href="http://bytebuddy.net/" target="_blank" rel="external">Byte Buddy 库</a>，这个库提供了一些 API 代码改变更方便。</p>
+<a id="more"></a>
+<p>假设有一个正在运行的应用程序，通过校验 HTTP 请求中的 <code>X-Priority</code> 头部，来执行服务器的特殊处理。该校验使用下面的工具类来实现:</p>
+<figure class="highlight java"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div></pre></td><td class="code"><pre><div class="line">class HeaderUtility {</div><div class="line"></div><div class="line">    <span class="keyword">static</span> <span class="keyword">boolean</span> isPriorityCall(HttpServletRequest request) {</div><div class="line">        <span class="keyword">return</span> request.getHeader(<span class="string">"X-Pirority"</span>) != <span class="keyword">null</span>;</div><div class="line">    }</div><div class="line"></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>你发现拼写错误了吗 (<code>Pirority</code>)？这样的错误很常见，尤其是在测试代码中常量值分解为静态字段重用。在不太理想的情况下，这个错误只会在产品被安装的时候才被发现，其中头通过另外一个应用生成并没有拼写错误。</p>
+<p>修复这样的错误并不难。在持续交付的时代，重新部署一个新的版本只需要点击一下按钮。但在其他情况下，变更可能就不是那么简单了，重新部署过程可能比较复杂，其中停机是不允许的，带着错误运行可能会比较好。但 HotSwap 给我们提供了另外一种选择：在不重启应用的前提下进行小幅改动。</p>
+<h2 id="Attach_API：使用动态附件来渗透另外一个_JVM">Attach API：使用动态附件来渗透另外一个 JVM</h2>
+<p>为了修改一个运行中的 Java 程序，我们首先需要一种可以同处在运行状态的 JVM 进行通信的方式。因为 Java 的虚拟机实现是一个受到管理的系统，因此拥有进行这些操作的标准 API。提问中涉及到的 API 被称作 attachment API，它是官方 Java 工具的一部分。使用这个由运行之中的 JVM 所暴露的 API，能让第二个 Java 进程来同其进行通信。</p>
+<p>事实上，我们已经用到了该 API: 它已经由诸如 <a href="https://github.com/visualvm" target="_blank" rel="external">VisualVM</a> 或者 <a href="http://www.oracle.com/technetwork/java/javaseproducts/mission-control/java-mission-control-1998576.html" target="_blank" rel="external">Java Mission Control</a> 这样的调试和模拟工具进行了应用。应用这些附件的 API 并没有同日常使用的标准 Java API 打包在一起，而是被打包到了一个特殊的文件之中，叫做 tools.jar，它只包含了一个虚拟机的 JDK 打包发布版本。更糟糕的是，这个 JAR 文件的位置并没有进行设置，它在 Windows、Linux，特别是在 Macintosh 上的 VM 都存在差别，不光文件的位置，连文件名也各异，有些发行版上就被叫做 classes.jar。最后，IBM 甚至决定对这个 JAR 中包含的一些类的名称进行修改，将所有 com.sun 类挪到 com.ibm 命名空间之中, 又添了一个乱子。在 Java 9 中，乱糟糟的状态才最终得以清理，tools.jar 被 <a href="http://download.java.net/java/jigsaw/docs/jdk/api/attach/spec/jdk.attach-summary.html" target="_blank" rel="external">Jigsaw 的模块 jdk.attach</a> 所替代。</p>
+<p><img src="dynamic-attach.png" alt=""></p>
+<p>在对 API 的 JAR (或者模块) 进行了定位之后，我们就该让其对附件进程可用。在 OpenJDK 上，被用来连接到另外一个 JVM 的类叫做 <code>VirtualMachine</code>，它向任何由位于同一台物理机器上的 JDK 或者是一个普通的 HtpSpot JVM 所运行的 VM 提供了一个入口点。在通过进程 id 附加到另外一台虚拟机上之后，我们就能够在目标 VM 指定的一个线程中运行一个 JAR 文件：</p>
+<figure class="highlight java"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div></pre></td><td class="code"><pre><div class="line"><span class="comment">// the following strings must be provided by us</span></div><div class="line">String processId = processId();</div><div class="line">String jarFileName = jarFileName();</div><div class="line">VirtualMachine virtualMachine = VirtualMachine.attach(processId);</div><div class="line"><span class="keyword">try</span> {</div><div class="line">    virtualMachine.loadAgent(jarFileName, <span class="string">"World!"</span>);</div><div class="line">} <span class="keyword">finally</span> {</div><div class="line">    virtualMachine.detach();</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>在收到一个 JAR 文件之后，目标虚拟机会查看该 JAR 的程序清单描述文件（manifest），并定位处在 <code>Premain-Class</code> 属性之下的类。这非常类似于 VM 执行一个<code>main</code>方法的方式。有了一个 Java 代理，VM 和指定的进程 id 就可以查找到一个名为 <code>agentmain</code> 的方法，该方法可以由指定线程中的远程进程来执行:</p>
+<figure class="highlight java"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">public</span> <span class="class"><span class="keyword">class</span> <span class="title">HelloWorldAgent</span> </span>{</div><div class="line"></div><div class="line">    <span class="keyword">public</span> <span class="keyword">static</span> <span class="keyword">void</span> <span class="title">agentmain</span>(String arg) {</div><div class="line">        System.out.println(<span class="string">"Hello, "</span> + arg);</div><div class="line">    }</div><div class="line"></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>使用该 API，只要我们知道一个 JVM 的进程 id，就可以来在其上运行代码，打印出一条 <code>Hello, World!</code> 消息。甚至有可能同并不熟 JDK 发行版一部分的 JVM 进行通信，只要附加的 VM 是一个用来访问 tools.jar 的 JDK 安装程序。</p>
+<h2 id="Instrumentation_API：修改目标_VM_的程序">Instrumentation API：修改目标 VM 的程序</h2>
+<p>到目前来看一切顺利。但是除了成功地同目标 VM 建立起了通信之外，我们还不能够修改目标 VM 上的代码以及 BUG。后续的修改，Java 代理可以定义第二参数来接收一个 <code>Instrumentation</code> 的实例 。稍后要实现的接口提供了向几个底层方法的访问途径，它们中的一个就能够对已经加载的代码进行修改。</p>
+<p>为了修正 &quot;X-Pirority&quot; 错字，我们首先来假设为 <code>HeaderUtility</code> 引入了一个修复类，叫做 <code>typo.fix</code>，就在我们下面所开发的 <code>BugFixAgent</code> 后面的代理的 JAR 文件中。此外，我们需要给予代理通过向 manifest 文件添加 <code>Can-Redefine-Classes: true</code> 来替换现有类的能力。有了现在这些东西，我们就可以使用 instrumentation 的 API 来对类进行重新定义，该 API 会接受一对已经加载的类以及用来执行类重定义的字节数组：</p>
+<figure class="highlight java"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">public</span> <span class="class"><span class="keyword">class</span> <span class="title">BugFixAgent</span> </span>{</div><div class="line"></div><div class="line">    <span class="keyword">public</span> <span class="keyword">static</span> <span class="keyword">void</span> <span class="title">agentmain</span>(String arg, Instrumentation inst)</div><div class="line">            <span class="keyword">throws</span> Exception {</div><div class="line">        <span class="comment">// only if header utility is on the class path; otherwise,</span></div><div class="line">        <span class="comment">// a class can be found within any class loader by iterating</span></div><div class="line">        <span class="comment">// over the return value of Instrumentation::getAllLoadedClasses</span></div><div class="line">        Class&lt;?&gt; headerUtility = Class.forName(<span class="string">"HeaderUtility"</span>);</div><div class="line"></div><div class="line">        <span class="comment">// copy the contents of typo.fix into a byte array</span></div><div class="line">        ByteArrayOutputStream output = <span class="keyword">new</span> ByteArrayOutputStream();</div><div class="line">        <span class="keyword">try</span> (InputStream input =</div><div class="line">                BugFixAgent.class.getResourceAsStream(<span class="string">"/typo.fix"</span>)) {</div><div class="line">            <span class="keyword">byte</span>[] buffer = <span class="keyword">new</span> <span class="keyword">byte</span>[<span class="number">1024</span>];</div><div class="line">            <span class="keyword">int</span> length;</div><div class="line">            <span class="keyword">while</span> ((length = input.read(buffer)) != -<span class="number">1</span>) {</div><div class="line">                output.write(buffer, <span class="number">0</span>, length);</div><div class="line">            }</div><div class="line">        }</div><div class="line"></div><div class="line">        <span class="comment">// Apply the redefinition</span></div><div class="line">        instrumentation.redefineClasses(</div><div class="line">                <span class="keyword">new</span> ClassDefinition(headerUtility, output.toByteArray()));</div><div class="line">    }</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>运行上述代码后，HeaderUtility 类会被重定义以对应其修补的版本。对 isPrivileged 的任何后续调用现在将读取正确的头信息。作为一个小的附加说明，JVM 可能会在应用类重定义时执行完全的垃圾回收，并且会对受影响的代码进行重新优化。 总之，这会导致应用程序性能的短时下降。然而，在大多数情况下，这是较之完全重启进程更好的方式。</p>
+<p>当应用代码更改时，要确保新类定义了与它替换的类完全相同的字段、方法和修饰符。 尝试修改任何此类属性的类重定义行为都会导致 <code>UnsupportedOperationException</code>。现在 HotSpot 团队正<a href="http://openjdk.java.net/jeps/159" target="_blank" rel="external">试图去掉这个限制</a>。此外，基于 OpenJDK 的<a href="https://java.net/projects/dcevm" target="_blank" rel="external">动态代码演变虚拟机</a>支持预览此功能。</p>
+<h2 id="使用_Byte_Buddy_来追踪内存泄漏">使用 Byte Buddy 来追踪内存泄漏</h2>
+<p>一个如上述示例的简单的 BUG 修复代理在你熟悉了 instrumentation 的 API 的时候是比较容易实现的。只要更加深入一点，也可以在运行代理的时候，无需手动创建附加的 class 文件，而是通过重写现有的 class 来应用更多通用的代码修改。</p>
+<h3 id="字节码操作">字节码操作</h3>
+<p>编译好的 Java 代码所呈现的是一系列字节码指令。从这个角度来看，一个 Java 方法无非就是一个字节数组，其每一个字节都是在表示一个向运行时发出的指令，或者是最近一个指令的参数。每个字节对应其意义的映射在 <a href="https://docs.oracle.com/javase/specs/jvms/se8/html/" target="_blank" rel="external">《Java 虚拟机规范》</a> 中进行了定义，例如字节 <code>0xB1</code> 就是在指示 VM 从一个带有 void 返回类型的方法返回。因此，对字节码进行增强就是对一个方法的字节数字进行扩展，将我们想要应用的表示额外的业务逻辑指令包含进去。</p>
+<p>当然，逐个字节的操作会特别麻烦，而且容易出错。为了避免手工的处理，许多的库都提供了更高级一点的 API，使用它们不需要我们直接同 Java 字节码打交道。这样的库其中就有一个叫做 <a href="https://github.com/raphw/byte-buddy" target="_blank" rel="external">Byte Buddy</a> (当然我就是该库的作者)。它的功能之一就是能够定义可以在方法原来的代码之前和之后被执行的模板方法。</p>
+<h3 id="分析一个发生泄漏的应用程序">分析一个发生泄漏的应用程序</h3>
+<p>这里的示例假定一个应用程序在生产环境运行了几周之后，被发现发生了泄漏资源的现象。像这样的 BUG 很难去跟踪，因为在一个可观察的测试环境中重现这样一个类似的问题状态比较困难。因此，（目前）要排除这样的问题除了重新启动崩溃的应用程序之外，我们还可以在当前线程中修改应用程序的代码来对泄漏进行跟踪。为了找出哪里才是应用程序泄漏句柄的位置，我们会对任何 <a href="https://docs.oracle.com/javase/8/docs/api/java/io/Closeable.html" target="_blank" rel="external">Closableobject</a> 的生命周期进行跟踪。使用一个 Java 代理，我们可以修改任何构造，或者关闭任意一个这样的对象。有了这个信息，我们就有希望确认哪个对象在哪种情况下会发生泄漏。</p>
+<h3 id="使用模板进行操作">使用模板进行操作</h3>
+<p>为了实现这一行为，我们首先要定义模板，模板里面包含了我们想要添加到任意一个 <code>Closeable</code> 的对象的构造器或者关闭方法调用中去的代码。为了了解发生泄漏的对象是在哪里被创建或者关闭的，我们就会想要在每一个这样的时间发生时将跟踪栈打印出来。针对这一逻辑的模板方法代码如下:</p>
+<figure class="highlight java"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div></pre></td><td class="code"><pre><div class="line">class ConstructionTemplate {</div><div class="line"></div><div class="line">    <span class="annotation">@Advice</span>.OnMethodExit</div><div class="line">    <span class="keyword">static</span> <span class="keyword">void</span> exit(<span class="annotation">@Advice</span>.This Object self) {</div><div class="line">        <span class="keyword">new</span> RuntimeException(<span class="string">"Created: "</span> + self).printStackTrace();</div><div class="line">    }</div><div class="line"></div><div class="line">}</div><div class="line"></div><div class="line">class CloseTemplate {</div><div class="line"></div><div class="line">    <span class="annotation">@Advice</span>.OnMethodEnter</div><div class="line">    <span class="keyword">static</span> <span class="keyword">void</span> enter(<span class="annotation">@Advice</span>.This Object self) {</div><div class="line">        <span class="keyword">new</span> RuntimeException(<span class="string">"Closed: "</span> + self).printStackTrace();</div><div class="line">    }</div><div class="line"></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>模板方法上加上了 <code>OnMethodExit</code> 和 <code>OnMethodEnter</code> 注解，以通知 Byte Buddy 我们会想要它在什么时候被调用。它们的任何参数都会被加上注解，以指定其在被重新定义的方法中所表示的值。当应用了该模板时，Byte Buddy 接着就会将任何针对一个参数的访问映射到对注解的值进行加载，就好像方法实例一般就是由<code>this</code>来表示的。</p>
+<p>为了将该修改应用到任何实现了 Closable 接口的类，Byte Buddy 提供了一种特定领域语言用以创建来匹配类型和方法的 Java 代理，并在其可应用时对上述模板进行应用：</p>
+<figure class="highlight java"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">public</span> <span class="class"><span class="keyword">class</span> <span class="title">TracingAgent</span> </span>{</div><div class="line"></div><div class="line">    <span class="keyword">public</span> <span class="keyword">static</span> <span class="keyword">void</span> <span class="title">agentmain</span>(String arg, Instrumentation inst) {</div><div class="line">        <span class="keyword">new</span> AgentBuilder.Default()</div><div class="line">                <span class="comment">// by default, JVM classes are not instrumented</span></div><div class="line">                .ignore(none())</div><div class="line">                .disableClassFormatChanges()</div><div class="line">                .with(AgentBuilder.RedefinitionStrategy.RETRANSFORMATION)</div><div class="line">                .type(isSubTypeOf(Closable.class))</div><div class="line">                .transform((builder, type, loader) -&gt; builder</div><div class="line">                        .visit(Advice</div><div class="line">                                .to(ConstructionTemplate.class)</div><div class="line">                                .on(isConstructor()))</div><div class="line">                        .visit(Advice</div><div class="line">                                .to(CloseTemplate.class)</div><div class="line">                                .on(named(<span class="string">"close"</span>).and(takesArguments(<span class="number">0</span>)))</div><div class="line">                        ))</div><div class="line">                .installOn(inst);</div><div class="line">    }</div><div class="line"></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>在默认情况下，Byte Buddy 不会对位于 <code>java.*</code> 命名空间中定义的类进行修改，它们可以通过设置一个无效的忽略匹配器来被修改。此外， Byte Buddy 需要在我们对重新转换进行应用的时候被告知不要去修改我们前面讨论过的 class 文件格式。只有这样做，Byte Buddy 才可以自动地侦测到任何实现了 <code>Closable</code> 接口的现有或者未来将会有的类型，并将上述的模板代码添加到其构造器和关闭方法。</p>
+<h3 id="附加代理">附加代理</h3>
+<p>Byte Buddy 还提供了在运行时附加一个代理的便利方法。为了应对 tools.jar 位置和虚拟机类型的差异, Byte Buddy 给附件添加了一个抽象层，在这一层可以自动检测到正确的设置。在将上述的代理打包到一个 JAR 文件中之后，就可以通过调用如下代码来附加到发生资源泄漏的进程：</p>
+<figure class="highlight java"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line">File jarFile = getAgent();</div><div class="line">String processId = getProcessId();</div><div class="line">ByteBuddyAgent.install(jarFile, processId);</div></pre></td></tr></table></figure>
+
+<p>当然，上述代理很快就会为手动处理创建太多的输出。为了提供更多的便利，在释放之前再来收集被创建的对象也许会更有用。通过创建一个 Java 代理，这样也可以同编写一个 Java 应用程序来实现此行为一样的简单。</p>
+<h2 id="总结">总结</h2>
+<p>在本文中，我们深入了解了 attach API，它使得将一个 Java 代理按顺序注入到任意一个运行中的 JVM 进程成为可能。该代理被表示为一个 JAR 文件，里面包含了一个类，类里面有一个远程进程可以在一个指定线程中执行的 agentmain 方法。该方法可以接收一个 Instrumentation 接口的实例作为参数，可以读已经加载的类进行重新定义。对代码的重定义，既可以通过用打了补丁的版本替换整个 class 文件来实现，也可以通过对现有类的字节码进行修改来实现，这样的操作可以比较简单的用诸如 Byte Buddy 这样的库来完成。</p>
+
+      
+    </div>
+    <footer class="article-footer">
+	
+<div class="bdsharebuttonbox"><a title="分享到新浪微博" class="bds_tsina" href="#" data-cmd="tsina"></a><a title="分享到微信" class="bds_weixin" href="#" data-cmd="weixin"></a><a title="分享到QQ空间" class="bds_qzone" href="#" data-cmd="qzone"></a><a title="分享到印象笔记" class="bds_evernotecn" href="#" data-cmd="evernotecn"></a><a title="分享到有道云笔记" class="bds_youdao" href="#" data-cmd="youdao"></a><a title="分享到百度云收藏" class="bds_bdysc" href="#" data-cmd="bdysc"></a><a class="bds_more" href="#" data-cmd="more"></a></div>
+<script>window._bd_share_config={"common":{"bdSnsKey":{},"bdText":"","bdMini":"2","bdMiniList":false,"bdPic":"","bdStyle":"0","bdSize":"24"},"share":{}};with(document)0[(getElementsByTagName('head')[0]||body).appendChild(createElement('script')).src='http://bdimg.share.baidu.com/static/api/js/share.js?v=89860593.js?cdnversion='+~(-new Date()/36e5)];</script>
+      
+
+	  
+
+      
+    </footer>
+  </div>
+  
+    
+<nav id="article-nav">
+  
+  
+    <a href="/2018/02/13/make-your-methods-as-services-in-10-seconds/" id="article-nav-older" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">Older</strong>
+      <div class="article-nav-title">10秒钟，让你的方法变为RPC服务</div>
+    </a>
+  
+</nav>
+
+  
+</article>
+
+
+<link rel="stylesheet" href="https://unpkg.com/gitalk/dist/gitalk.css">
+<script src="https://unpkg.com/gitalk/dist/gitalk.min.js"></script>
+<section id="comments">
+  <div id="gitalk-container"></div>  
+  <script type="text/javascript">
+    var gitalkOpts = {
+    id: '2018/02/24/Fixing-Bugs-in-Running-Java-Code-with',
+    owner: 'smallnest',
+    repo: 'gitalk',
+    title: '[转][译]在 Java 中运用动态挂载实现 Bug 的热修复',
+    body: 'http://colobu.com/2018/02/24/Fixing-Bugs-in-Running-Java-Code-with-Dynamic-Attach/',
+    clientID: 'bc02724130ed5b7ee275',
+    clientSecret: '68cb0bae2f93a8b88b09e0eb9b08c844b06a9047',
+    admin: ['smallnest'],
+    distractionFreeMode: false
+  };
+
+  const gitalk = new Gitalk(gitalkOpts)
+  gitalk.render('gitalk-container')
+	</script>
+  <noscript> 为正常使用评论功能请激活JavaScript</noscript>
+</section>  
+
+
+</section>
+        
+          <aside id="sidebar">
+  
+      <div class="widget-wrap">
+    <h3 class="widget-title">原创图书</h3>
+    <div class="widget">
+      <a href="/ScalaCollectionsCookbook/">
+        <img width="100%" src="/ScalaCollectionsCookbook/scala_collections_cookbook.jpg">
+        <img width="100%" src="/ScalaCollectionsCookbook/scala_collections_cookbook_tw.png">
+      </a>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">分类</h3>
+    <div class="widget">
+      <ul class="category-list"><li class="category-list-item"><a class="category-list-link" href="/categories/Android/">Android</a><span class="category-list-count">12</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/DOTNET/">DOTNET</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Docker/">Docker</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Go/">Go</a><span class="category-list-count">94</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Java/">Java</a><span class="category-list-count">60</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Linux/">Linux</a><span class="category-list-count">6</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Scala/">Scala</a><span class="category-list-count">18</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/前端开发/">前端开发</a><span class="category-list-count">18</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/大数据/">大数据</a><span class="category-list-count">59</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/工具/">工具</a><span class="category-list-count">24</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/数据库/">数据库</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/架构/">架构</a><span class="category-list-count">24</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/算法/">算法</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/管理/">管理</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/网络编程/">网络编程</a><span class="category-list-count">8</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/读书笔记/">读书笔记</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/运维/">运维</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/高并发编程/">高并发编程</a><span class="category-list-count">20</span></li></ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">标签云</h3>
+    <div class="widget tagcloud">
+      <a href="/tags/Android/" style="font-size: 16.67px;">Android</a><a href="/tags/ApacheBench/" style="font-size: 11.67px;">ApacheBench</a><a href="/tags/Bower/" style="font-size: 10.00px;">Bower</a><a href="/tags/C/" style="font-size: 10.00px;">C#</a><a href="/tags/CDN/" style="font-size: 10.00px;">CDN</a><a href="/tags/CQRS/" style="font-size: 10.00px;">CQRS</a><a href="/tags/CRC/" style="font-size: 10.00px;">CRC</a><a href="/tags/CSS/" style="font-size: 11.67px;">CSS</a><a href="/tags/CompletableFuture/" style="font-size: 10.00px;">CompletableFuture</a><a href="/tags/Comsat/" style="font-size: 10.00px;">Comsat</a><a href="/tags/Curator/" style="font-size: 20.00px;">Curator</a><a href="/tags/DSL/" style="font-size: 10.00px;">DSL</a><a href="/tags/Disruptor/" style="font-size: 10.00px;">Disruptor</a><a href="/tags/Docker/" style="font-size: 11.67px;">Docker</a><a href="/tags/Ember/" style="font-size: 11.67px;">Ember</a><a href="/tags/FastJson/" style="font-size: 10.00px;">FastJson</a><a href="/tags/Fiber/" style="font-size: 10.00px;">Fiber</a><a href="/tags/GAE/" style="font-size: 10.00px;">GAE</a><a href="/tags/GC/" style="font-size: 13.33px;">GC</a><a href="/tags/Gnuplot/" style="font-size: 10.00px;">Gnuplot</a><a href="/tags/Go/" style="font-size: 13.33px;">Go</a><a href="/tags/Gradle/" style="font-size: 10.00px;">Gradle</a><a href="/tags/Grunt/" style="font-size: 10.00px;">Grunt</a><a href="/tags/Gulp/" style="font-size: 10.00px;">Gulp</a><a href="/tags/Hadoop/" style="font-size: 10.00px;">Hadoop</a><a href="/tags/Hazelcast/" style="font-size: 10.00px;">Hazelcast</a><a href="/tags/Ignite/" style="font-size: 10.00px;">Ignite</a><a href="/tags/JVM/" style="font-size: 10.00px;">JVM</a><a href="/tags/Java/" style="font-size: 18.33px;">Java</a><a href="/tags/Kafka/" style="font-size: 20.00px;">Kafka</a><a href="/tags/Lambda/" style="font-size: 15.00px;">Lambda</a><a href="/tags/Linux/" style="font-size: 13.33px;">Linux</a><a href="/tags/LongAdder/" style="font-size: 10.00px;">LongAdder</a><a href="/tags/MathJax/" style="font-size: 10.00px;">MathJax</a><a href="/tags/Maven/" style="font-size: 11.67px;">Maven</a><a href="/tags/Memcached/" style="font-size: 10.00px;">Memcached</a><a href="/tags/Metrics/" style="font-size: 10.00px;">Metrics</a><a href="/tags/Mongo/" style="font-size: 13.33px;">Mongo</a><a href="/tags/Netty/" style="font-size: 16.67px;">Netty</a><a href="/tags/Nginx/" style="font-size: 10.00px;">Nginx</a>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">归档</h3>
+    <div class="widget">
+      <ul class="archive-list"><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/02/">February 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/01/">January 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/12/">December 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/11/">November 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/10/">October 2017</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/09/">September 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/08/">August 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/07/">July 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/06/">June 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/05/">May 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/04/">April 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/03/">March 2017</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/02/">February 2017</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/01/">January 2017</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/12/">December 2016</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/11/">November 2016</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/10/">October 2016</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/09/">September 2016</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/08/">August 2016</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/07/">July 2016</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/06/">June 2016</a><span class="archive-list-count">14</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/05/">May 2016</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/04/">April 2016</a><span class="archive-list-count">14</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/03/">March 2016</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/02/">February 2016</a><span class="archive-list-count">8</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/01/">January 2016</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/12/">December 2015</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/11/">November 2015</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/10/">October 2015</a><span class="archive-list-count">9</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/09/">September 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/08/">August 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/07/">July 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/06/">June 2015</a><span class="archive-list-count">8</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/05/">May 2015</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/04/">April 2015</a><span class="archive-list-count">15</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/03/">March 2015</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/02/">February 2015</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/01/">January 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/12/">December 2014</a><span class="archive-list-count">28</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/11/">November 2014</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/10/">October 2014</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/09/">September 2014</a><span class="archive-list-count">28</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/08/">August 2014</a><span class="archive-list-count">19</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/07/">July 2014</a><span class="archive-list-count">1</span></li></ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">近期文章</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+            <a href="/2018/02/24/Fixing-Bugs-in-Running-Java-Code-with-Dynamic-Attach/">[转][译]在 Java 中运用动态挂载实现 Bug 的热修复</a>
+          </li>
+        
+          <li>
+            <a href="/2018/02/13/make-your-methods-as-services-in-10-seconds/">10秒钟，让你的方法变为RPC服务</a>
+          </li>
+        
+          <li>
+            <a href="/2018/02/05/code-your-own-blockchain-in-less-than-200-lines-of-go/">[转][译]只用200行Go代码写一个自己的区块链</a>
+          </li>
+        
+          <li>
+            <a href="/2018/01/31/benchmark-2018-spring-of-popular-rpc-frameworks/">流行的rpc框架benchmark 2018新春版</a>
+          </li>
+        
+          <li>
+            <a href="/2018/01/10/use-binary-package-in-go/">使用二进制形式发布go package</a>
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">友情链接</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+			 
+            <a href="http://old.colobu.com" target="_blank">以前的博客</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://stackshare.io" target="_blank">技术栈</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://weekly.manong.io/issues/" target="_blank">码农周刊</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.tuicool.com/mags" target="_blank">编程狂人周刊</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.importnew.com/" target="_blank">importnew</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://ifeve.com/" target="_blank">并发编程网</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://github.com" target="_blank">github</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://stackoverflow.com/" target="_blank">stackoverflow</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.javacodegeeks.com/" target="_blank">javacodegeeks</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.infoq.com/" target="_blank">infoq</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.dzone.com/links/index.html" target="_blank">dzone</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://oj.leetcode.com/problems/" target="_blank">leetcode</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://tutorials.jenkov.com" target="_blank">jenkov</a>
+			
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+      
+
+  
+</aside>
+        
+      </div>
+      <footer id="footer">
+  
+  <div class="outer">
+    <div id="footer-info" class="inner">
+      &copy; 2018 smallnest<br>
+	  Powered by <a href="http://hexo.io/" target="_blank">Hexo</a>
+    </div>
+  </div>
+</footer>
+    </div>
+    <nav id="mobile-nav">
+  
+    <a href="/" class="mobile-nav-link">首页</a>
+  
+    <a href="/archives" class="mobile-nav-link">归档</a>
+  
+    <a href="https://github.com/smallnest" class="mobile-nav-link">github</a>
+  
+    <a href="/goasm" class="mobile-nav-link">Go汇编示例</a>
+  
+    <a href="/ScalaCollectionsCookbook" class="mobile-nav-link">Scala集合技术手册</a>
+  
+    <a href="/techreview" class="mobile-nav-link">技术快报</a>
+  
+    <a href="/about" class="mobile-nav-link">关于</a>
+  
+</nav>
+    
+<script src="//cdn.staticfile.org/jquery/1.11.1/jquery.min.js"></script>
+<script src="//cdn.bootcss.com/jquery.lazyload/1.9.1/jquery.lazyload.min.js"></script>
+
+<script src="//cdnjs.cloudflare.com/ajax/libs/fancybox/3.2.5/jquery.fancybox.min.js"></script>
+
+
+<script src="/js/script.js" type="text/javascript"></script>
+
+<!-- mathjax config similar to math.stackexchange -->
+<script type="text/x-mathjax-config">
+  MathJax.Hub.Config({
+    tex2jax: {
+      inlineMath: [ ['$','$'], ["\\(","\\)"] ],
+      processEscapes: true,
+      skipTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code']
+    }
+  });
+  MathJax.Hub.Queue(function() {
+      var all = MathJax.Hub.getAllJax(), i;
+      for(i=0; i < all.length; i += 1) {
+        all[i].SourceElement().parentNode.className += ' has-jax';
+      }
+  });
+</script>
+<script type="text/javascript" src="//cdn.bootcss.com/mathjax/2.6.0-beta.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML">
+</script>
+
+<div id="totop" style="position:fixed;bottom:150px;right:10px;cursor: pointer;z-index: 2000;">
+	<a title="返回顶部"><img src="/images/scrollup.png"/></a>
+</div>
+<script src="/js/totop.js" type="text/javascript"></script>
+
+
+
+<script type="text/javascript">
+  var _gaq = _gaq || [];
+  _gaq.push(['_setAccount', 'UA-142561-4']);
+  _gaq.push(['_trackPageview']);
+
+  (function() {
+    var ga = document.createElement('script'); ga.type = 'text/javascript'; ga.async = true;
+    ga.src = ('https:' == document.location.protocol ? 'https://ssl' : 'http://www') + '.google-analytics.com/ga.js';
+    var s = document.getElementsByTagName('script')[0]; s.parentNode.insertBefore(ga, s);
+  })();
+</script>
+
+
+<script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "//hm.baidu.com/hm.js?e085d87993250aab11f3e0c15f1c2785";
+  var s = document.getElementsByTagName("script")[0]; 
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+
+
+  </div>
+</body>
+</html>
