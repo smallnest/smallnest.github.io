@@ -4,7 +4,7 @@
   <subtitle><![CDATA[大道至简 Simplicity is the ultimate form of sophistication]]></subtitle>
   <link href="/atom.xml" rel="self"/>
   <link href="http://colobu.com/"/>
-  <updated>2018-02-24T11:22:32.970Z</updated>
+  <updated>2018-02-27T12:19:15.528Z</updated>
   <id>http://colobu.com/</id>
   
   <author>
@@ -13,6 +13,121 @@
   </author>
   
   <generator uri="http://zespia.tw/hexo/">Hexo</generator>
+  
+  <entry>
+    <title><![CDATA[go addressable]]></title>
+    <link href="http://colobu.com/2018/02/27/go-addressable/"/>
+    <id>http://colobu.com/2018/02/27/go-addressable/</id>
+    <published>2018-02-27T10:48:46.000Z</published>
+    <updated>2018-02-27T12:16:36.154Z</updated>
+    <content type="html"><![CDATA[<p>Go语言规范中规定了可寻址(addressable)对象的定义,</p>
+<blockquote>
+<p>For an operand x of type T, the address operation &amp;x generates a pointer of type *T to x. The operand must be addressable, that is, either a variable, pointer indirection, or slice indexing operation; or a field selector of an addressable struct operand; or an array indexing operation of an addressable array. As an exception to the addressability requirement, x may also be a (possibly parenthesized) composite literal. If the evaluation of x would cause a run-time panic, then the evaluation of &amp;x does too.</p>
+</blockquote>
+<p>对于一个对象<code>x</code>, 如果它的类型为<code>T</code>, 那么<code>&amp;x</code>则会产生一个类型为<code>*T</code>的指针，这个指针指向<code>x</code>, 这是这一段的第一句话，也是我们在开发过程中经常使用的一种获取对象指针的一种方式。 </p>
+<a id="more"></a>
+<p><img src="memory.jpg" alt=""></p>
+<h2 id="addressable">addressable</h2>
+<p>上面规范中的这段话规定， <code>x</code>必须是可寻址的， 也就是说，它只能是一下几种方式：</p>
+<ul>
+<li>一个变量: <code>&amp;x</code></li>
+<li>指针引用(pointer indirection): <code>&amp;*x</code></li>
+<li>slice索引操作(不管slice是否可寻址): <code>&amp;s[1]</code></li>
+<li>可寻址struct的字段: <code>&amp;point.X</code></li>
+<li>可寻址数组的索引操作: <code>&amp;a[0]</code></li>
+<li>composite literal类型: <code>&amp;struct{ X int }{1}</code></li>
+</ul>
+<p>下列情况<code>x</code>是不可以寻址的，你不能使用<code>&amp;x</code>取得指针：</p>
+<ul>
+<li>字符串中的字节:</li>
+<li>map对象中的元素</li>
+<li>接口对象的动态值(通过type assertions获得)</li>
+<li>常数</li>
+<li>literal值(非composite literal)</li>
+<li>package 级别的函数</li>
+<li>方法method (用作函数值)</li>
+<li>中间值(intermediate value):<ul>
+<li>函数调用</li>
+<li>显式类型转换</li>
+<li>各种类型的操作 （除了指针引用pointer dereference操作 <code>*x</code>):<ul>
+<li>channel receive operations</li>
+<li>sub-string operations</li>
+<li>sub-slice operations</li>
+<li>加减乘除等运算符</li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+<blockquote>
+<p>Tapir Games在他的文章<a href="http://www.tapirgames.com/blog/golang-unofficial-faq#unaddressable-values" target="_blank" rel="external">unaddressable-values</a>中做了很好的整理。</p>
+</blockquote>
+<p>有几个点需要解释下：</p>
+<ul>
+<li>常数为什么不可以寻址?： 如果可以寻址的话，我们可以通过指针修改常数的值，破坏了常数的定义。</li>
+<li>map的元素为什么不可以寻址？:两个原因，如果对象不存在，则返回零值，零值是不可变对象，所以不能寻址，如果对象存在，因为Go中map实现中元素的地址是变化的，这意味着寻址的结果是无意义的。</li>
+<li>为什么slice不管是否可寻址，它的元素读是可以寻址的？:因为slice底层实现了一个数组，它是可以寻址的。</li>
+<li>为什么字符串中的字符/字节又不能寻址呢：因为字符串是不可变的。</li>
+</ul>
+<p>规范中还有几处提到了 <code>addressable</code>:</p>
+<ul>
+<li>调用一个receiver为指针类型的方法时，使用一个addressable的值将自动获取这个值的指针</li>
+<li><code>++</code>、<code>--</code>语句的操作对象必须是addressable或者是map的index操作</li>
+<li>赋值语句<code>=</code>的左边对象必须是addressable,或者是map的index操作，或者是<code>_</code></li>
+<li>上条同样使用<code>for ... range</code>语句</li>
+</ul>
+<h2 id="reflect-Value的CanAddr方法和CanSet方法"><code>reflect.Value</code>的<code>CanAddr</code>方法和<code>CanSet</code>方法</h2>
+<p>在我们使用<code>reflect</code>执行一些底层的操作的时候， 比如编写序列化库、rpc框架开发、编解码、插件开发等业务的时候，经常会使用到<code>reflect.Value</code>的<code>CanSet</code>方法，用来动态的给对象赋值。 <code>CanSet</code>比<code>CanAddr</code>只加了一个限制，就是struct类型的<code>unexported</code>的字段不能<code>Set</code>，所以我们这节主要介绍<code>CanAddr</code>。</p>
+<p>并不是任意的<code>reflect.Value</code>的<code>CanAddr</code>方法都返回<code>true</code>,根据它的godoc,我们可以知道：</p>
+<blockquote>
+<p>CanAddr reports whether the value&#39;s address can be obtained with Addr. Such values are called addressable. A value is addressable if it is an element of a slice, an element of an addressable array, a field of an addressable struct, or the result of dereferencing a pointer. If CanAddr returns false, calling Addr will panic.</p>
+</blockquote>
+<p>也就是只有下面的类型<code>reflect.Value</code>的<code>CanAddr</code>才是<code>true</code>, 这样的值是<code>addressable</code>:</p>
+<ul>
+<li>slice的元素</li>
+<li>可寻址数组的元素</li>
+<li>可寻址struct的字段</li>
+<li>指针引用的结果</li>
+</ul>
+<p>与规范中规定的<code>addressable</code>, <code>reflect.Value</code>的<code>addressable</code>范围有所缩小， 比如对于栈上分配的变量， 随着方法的生命周期的结束， 栈上的对象也就被回收掉了，这个时候如果获取它们的地址，就会出现不一致的结果，甚至安全问题。</p>
+<blockquote>
+<p>对于栈和堆的对象分配以及逃逸分析，你可以看 William Kennedy  写的系列文章: <a href="https://studygolang.com/articles/12444" target="_blank" rel="external">Go 语言机制之逃逸分析</a></p>
+</blockquote>
+<p>所以如果你想通过<code>reflect.Value</code>对它的值进行更新，应该确保它的<code>CanSet</code>方法返回<code>true</code>,这样才能调用<code>SetXXX</code>进行设置。</p>
+<p>使用<code>reflect.Value</code>的时候有时会对<code>func Indirect(v Value) Value</code>和<code>func (v Value) Elem() Value</code>两个方法有些迷惑，有时候他们俩会返回同样的值，有时候又不会。</p>
+<p>总结一下：</p>
+<ol>
+<li>如果<code>reflect.Value</code>是一个指针， 那么<code>v.Elem()</code>等价于<code>reflect.Indirect(v)</code></li>
+<li>如果不是指针<br>2.1 如果是<code>interface</code>, 那么<code>reflect.Indirect(v)</code>返回同样的值，而<code>v.Elem()</code>返回接口的动态的值<br>2.2 如果是其它值, <code>v.Elem()</code>会panic,而<code>reflect.Indirect(v)</code>返回原值</li>
+</ol>
+<p>下面的代码列出一些<code>reflect.Value</code>是否可以addressable, 你需要注意数组和struct字段的情况，也就是<code>x7</code>、<code>x9</code>、<code>x14</code>、<code>x15</code>的正确的处理方式。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div><div class="line">35</div><div class="line">36</div><div class="line">37</div><div class="line">38</div><div class="line">39</div><div class="line">40</div><div class="line">41</div><div class="line">42</div><div class="line">43</div><div class="line">44</div><div class="line">45</div><div class="line">46</div><div class="line">47</div><div class="line">48</div><div class="line">49</div><div class="line">50</div><div class="line">51</div><div class="line">52</div><div class="line">53</div><div class="line">54</div><div class="line">55</div><div class="line">56</div><div class="line">57</div><div class="line">58</div><div class="line">59</div><div class="line">60</div><div class="line">61</div><div class="line">62</div><div class="line">63</div><div class="line">64</div><div class="line">65</div><div class="line">66</div><div class="line">67</div><div class="line">68</div><div class="line">69</div><div class="line">70</div><div class="line">71</div><div class="line">72</div><div class="line">73</div><div class="line">74</div><div class="line">75</div><div class="line">76</div><div class="line">77</div><div class="line">78</div><div class="line">79</div><div class="line">80</div><div class="line">81</div><div class="line">82</div><div class="line">83</div><div class="line">84</div><div class="line">85</div><div class="line">86</div><div class="line">87</div><div class="line">88</div><div class="line">89</div><div class="line">90</div><div class="line">91</div><div class="line">92</div><div class="line">93</div><div class="line">94</div><div class="line">95</div><div class="line">96</div><div class="line">97</div><div class="line">98</div><div class="line">99</div><div class="line">100</div><div class="line">101</div><div class="line">102</div><div class="line">103</div><div class="line">104</div><div class="line">105</div><div class="line">106</div><div class="line">107</div><div class="line">108</div><div class="line">109</div><div class="line">110</div><div class="line">111</div><div class="line">112</div><div class="line">113</div><div class="line">114</div><div class="line">115</div><div class="line">116</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> main</div><div class="line"></div><div class="line"><span class="keyword">import</span> (</div><div class="line">	<span class="string">"fmt"</span></div><div class="line">	<span class="string">"reflect"</span></div><div class="line">	<span class="string">"time"</span></div><div class="line">)</div><div class="line"></div><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	checkCanAddr()</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">type</span> S <span class="keyword">struct</span> {</div><div class="line">	X <span class="typename">int</span></div><div class="line">	Y <span class="typename">string</span></div><div class="line">	z <span class="typename">int</span></div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> M() <span class="typename">int</span> {</div><div class="line">	<span class="keyword">return</span><span class="number"> 100</span></div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">var</span> x0 =<span class="number"> 0</span></div><div class="line"></div><div class="line"><span class="keyword">func</span> checkCanAddr() {</div><div class="line">	<span class="comment">// 可寻址的情况</span></div><div class="line">	v := reflect.ValueOf(x0)</div><div class="line">	fmt.Printf(<span class="string">"x0: %v \tcan be addressable and set: %t, %t\n"</span>, x0, v.CanAddr(), v.CanSet()) <span class="comment">//false,false</span></div><div class="line"></div><div class="line">	<span class="keyword">var</span> x1 =<span class="number"> 1</span></div><div class="line">	v = reflect.Indirect(reflect.ValueOf(x1))</div><div class="line">	fmt.Printf(<span class="string">"x1: %v \tcan be addressable and set: %t, %t\n"</span>, x1, v.CanAddr(), v.CanSet()) <span class="comment">//false,false</span></div><div class="line"></div><div class="line">	<span class="keyword">var</span> x2 = &x1</div><div class="line">	v = reflect.Indirect(reflect.ValueOf(x2))</div><div class="line">	fmt.Printf(<span class="string">"x2: %v \tcan be addressable and set: %t, %t\n"</span>, x2, v.CanAddr(), v.CanSet()) <span class="comment">//true,true</span></div><div class="line"></div><div class="line">	<span class="keyword">var</span> x3 = time.Now()</div><div class="line">	v = reflect.Indirect(reflect.ValueOf(x3))</div><div class="line">	fmt.Printf(<span class="string">"x3: %v \tcan be addressable and set: %t, %t\n"</span>, x3, v.CanAddr(), v.CanSet()) <span class="comment">//false,false</span></div><div class="line"></div><div class="line">	<span class="keyword">var</span> x4 = &x3</div><div class="line">	v = reflect.Indirect(reflect.ValueOf(x4))</div><div class="line">	fmt.Printf(<span class="string">"x4: %v \tcan be addressable and set: %t, %t\n"</span>, x4, v.CanAddr(), v.CanSet()) <span class="comment">// true,true</span></div><div class="line"></div><div class="line">	<span class="keyword">var</span> x5 = []<span class="typename">int</span><span class="number">{1</span>,<span class="number"> 2</span>,<span class="number"> 3</span>}</div><div class="line">	v = reflect.ValueOf(x5)</div><div class="line">	fmt.Printf(<span class="string">"x5: %v \tcan be addressable and set: %t, %t\n"</span>, x5, v.CanAddr(), v.CanSet()) <span class="comment">// false,false</span></div><div class="line"></div><div class="line">	<span class="keyword">var</span> x6 = []<span class="typename">int</span><span class="number">{1</span>,<span class="number"> 2</span>,<span class="number"> 3</span>}</div><div class="line">	v = reflect.ValueOf(x6<span class="number">[0</span>])</div><div class="line">	fmt.Printf(<span class="string">"x6: %v \tcan be addressable and set: %t, %t\n"</span>, x6<span class="number">[0</span>], v.CanAddr(), v.CanSet()) <span class="comment">//false,false</span></div><div class="line"></div><div class="line">	<span class="keyword">var</span> x7 = []<span class="typename">int</span><span class="number">{1</span>,<span class="number"> 2</span>,<span class="number"> 3</span>}</div><div class="line">	v = reflect.ValueOf(x7).Index<span class="number">(0</span>)</div><div class="line">	fmt.Printf(<span class="string">"x7: %v \tcan be addressable and set: %t, %t\n"</span>, x7<span class="number">[0</span>], v.CanAddr(), v.CanSet()) <span class="comment">//true,true</span></div><div class="line"></div><div class="line">	v = reflect.ValueOf(&x7<span class="number">[1</span>])</div><div class="line">	fmt.Printf(<span class="string">"x7.1: %v \tcan be addressable and set: %t, %t\n"</span>, x7<span class="number">[1</span>], v.CanAddr(), v.CanSet()) <span class="comment">//true,true</span></div><div class="line"></div><div class="line">	<span class="keyword">var</span> x8 = <span class="number">[3</span>]<span class="typename">int</span><span class="number">{1</span>,<span class="number"> 2</span>,<span class="number"> 3</span>}</div><div class="line">	v = reflect.ValueOf(x8<span class="number">[0</span>])</div><div class="line">	fmt.Printf(<span class="string">"x8: %v \tcan be addressable and set: %t, %t\n"</span>, x8<span class="number">[0</span>], v.CanAddr(), v.CanSet()) <span class="comment">//false,false</span></div><div class="line"></div><div class="line">	<span class="comment">// https://groups.google.com/forum/#!topic/golang-nuts/RF9zsX82MWw</span></div><div class="line">	<span class="keyword">var</span> x9 = <span class="number">[3</span>]<span class="typename">int</span><span class="number">{1</span>,<span class="number"> 2</span>,<span class="number"> 3</span>}</div><div class="line">	v = reflect.Indirect(reflect.ValueOf(x9).Index<span class="number">(0</span>))</div><div class="line">	fmt.Printf(<span class="string">"x9: %v \tcan be addressable and set: %t, %t\n"</span>, x9<span class="number">[0</span>], v.CanAddr(), v.CanSet()) <span class="comment">//false,false</span></div><div class="line"></div><div class="line">	<span class="keyword">var</span> x10 = <span class="number">[3</span>]<span class="typename">int</span><span class="number">{1</span>,<span class="number"> 2</span>,<span class="number"> 3</span>}</div><div class="line">	v = reflect.Indirect(reflect.ValueOf(&x10)).Index<span class="number">(0</span>)</div><div class="line">	fmt.Printf(<span class="string">"x9: %v \tcan be addressable and set: %t, %t\n"</span>, x10<span class="number">[0</span>], v.CanAddr(), v.CanSet()) <span class="comment">//true,true</span></div><div class="line"></div><div class="line">	<span class="keyword">var</span> x11 = S{}</div><div class="line">	v = reflect.ValueOf(x11)</div><div class="line">	fmt.Printf(<span class="string">"x11: %v \tcan be addressable and set: %t, %t\n"</span>, x11, v.CanAddr(), v.CanSet()) <span class="comment">//false,false</span></div><div class="line"></div><div class="line">	<span class="keyword">var</span> x12 = S{}</div><div class="line">	v = reflect.Indirect(reflect.ValueOf(&x12))</div><div class="line">	fmt.Printf(<span class="string">"x12: %v \tcan be addressable and set: %t, %t\n"</span>, x12, v.CanAddr(), v.CanSet()) <span class="comment">//true,true</span></div><div class="line"></div><div class="line">	<span class="keyword">var</span> x13 = S{}</div><div class="line">	v = reflect.ValueOf(x13).FieldByName(<span class="string">"X"</span>)</div><div class="line">	fmt.Printf(<span class="string">"x13: %v \tcan be addressable and set: %t, %t\n"</span>, x13, v.CanAddr(), v.CanSet()) <span class="comment">//false,false</span></div><div class="line"></div><div class="line">	<span class="keyword">var</span> x14 = S{}</div><div class="line">	v = reflect.Indirect(reflect.ValueOf(&x14)).FieldByName(<span class="string">"X"</span>)</div><div class="line">	fmt.Printf(<span class="string">"x14: %v \tcan be addressable and set: %t, %t\n"</span>, x14, v.CanAddr(), v.CanSet()) <span class="comment">//true,true</span></div><div class="line"></div><div class="line">	<span class="keyword">var</span> x15 = S{}</div><div class="line">	v = reflect.Indirect(reflect.ValueOf(&x15)).FieldByName(<span class="string">"z"</span>)</div><div class="line">	fmt.Printf(<span class="string">"x15: %v \tcan be addressable and set: %t, %t\n"</span>, x15, v.CanAddr(), v.CanSet()) <span class="comment">//true,false</span></div><div class="line"></div><div class="line">	v = reflect.Indirect(reflect.ValueOf(&S{}))</div><div class="line">	fmt.Printf(<span class="string">"x15.1: %v \tcan be addressable and set: %t, %t\n"</span>, &S{}, v.CanAddr(), v.CanSet()) <span class="comment">//true,true</span></div><div class="line"></div><div class="line">	<span class="keyword">var</span> x16 = M</div><div class="line">	v = reflect.ValueOf(x16)</div><div class="line">	fmt.Printf(<span class="string">"x16: %p \tcan be addressable and set: %t, %t\n"</span>, x16, v.CanAddr(), v.CanSet()) <span class="comment">//false,false</span></div><div class="line"></div><div class="line">	<span class="keyword">var</span> x17 = M</div><div class="line">	v = reflect.Indirect(reflect.ValueOf(&x17))</div><div class="line">	fmt.Printf(<span class="string">"x17: %p \tcan be addressable and set: %t, %t\n"</span>, x17, v.CanAddr(), v.CanSet()) <span class="comment">//true,true</span></div><div class="line"></div><div class="line">	<span class="keyword">var</span> x18 <span class="keyword">interface</span>{} = &x11</div><div class="line">	v = reflect.ValueOf(x18)</div><div class="line">	fmt.Printf(<span class="string">"x18: %v \tcan be addressable and set: %t, %t\n"</span>, x18, v.CanAddr(), v.CanSet()) <span class="comment">//false,false</span></div><div class="line"></div><div class="line">	<span class="keyword">var</span> x19 <span class="keyword">interface</span>{} = &x11</div><div class="line">	v = reflect.ValueOf(x19).Elem()</div><div class="line">	fmt.Printf(<span class="string">"x19: %v \tcan be addressable and set: %t, %t\n"</span>, x19, v.CanAddr(), v.CanSet()) <span class="comment">//true,true</span></div><div class="line"></div><div class="line">	<span class="keyword">var</span> x20 = [...]<span class="typename">int</span><span class="number">{1</span>,<span class="number"> 2</span>,<span class="number"> 3</span>}</div><div class="line">	v = reflect.ValueOf([...]<span class="typename">int</span><span class="number">{1</span>,<span class="number"> 2</span>,<span class="number"> 3</span>})</div><div class="line">	fmt.Printf(<span class="string">"x20: %v \tcan be addressable and set: %t, %t\n"</span>, x20, v.CanAddr(), v.CanSet()) <span class="comment">//false,false</span></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<h2 id="参考资料">参考资料</h2>
+<ul>
+<li><a href="http://www.tapirgames.com/blog/golang-unofficial-faq#unaddressable-values" target="_blank" rel="external">http://www.tapirgames.com/blog/golang-unofficial-faq#unaddressable-values</a></li>
+<li><a href="https://blog.golang.org/laws-of-reflection" target="_blank" rel="external">https://blog.golang.org/laws-of-reflection</a></li>
+<li><a href="https://stackoverflow.com/questions/25384640/why-golang-reflect-makeslice-returns-un-addressable-value" target="_blank" rel="external">https://stackoverflow.com/questions/25384640/why-golang-reflect-makeslice-returns-un-addressable-value</a></li>
+<li><a href="http://grokbase.com/t/gg/golang-nuts/13bwpzedxh/go-nuts-golang-reflect-addressable-is-not-consistency" target="_blank" rel="external">http://grokbase.com/t/gg/golang-nuts/13bwpzedxh/go-nuts-golang-reflect-addressable-is-not-consistency</a></li>
+<li><a href="https://github.com/golang/go/issues/11865" target="_blank" rel="external">https://github.com/golang/go/issues/11865</a></li>
+<li><a href="https://stackoverflow.com/questions/20224478/dereferencing-a-map-index-in-golang" target="_blank" rel="external">https://stackoverflow.com/questions/20224478/dereferencing-a-map-index-in-golang</a></li>
+<li><a href="https://stackoverflow.com/questions/38168329/why-are-map-values-not-addressable" target="_blank" rel="external">https://stackoverflow.com/questions/38168329/why-are-map-values-not-addressable</a></li>
+<li><a href="https://stackoverflow.com/questions/40793289/go-struct-literals-why-is-this-one-addressable" target="_blank" rel="external">https://stackoverflow.com/questions/40793289/go-struct-literals-why-is-this-one-addressable</a></li>
+<li><a href="https://groups.google.com/forum/#!topic/golang-nuts/FnTCX9R_PbM" target="_blank" rel="external">https://groups.google.com/forum/#!topic/golang-nuts/FnTCX9R_PbM</a></li>
+<li><a href="https://stackoverflow.com/questions/24318389/golang-elem-vs-indirect-in-the-reflect-package" target="_blank" rel="external">https://stackoverflow.com/questions/24318389/golang-elem-vs-indirect-in-the-reflect-package</a></li>
+</ul>
+]]></content>
+    <summary type="html">
+    <![CDATA[<p>Go语言规范中规定了可寻址(addressable)对象的定义,</p>
+<blockquote>
+<p>For an operand x of type T, the address operation &amp;x generates a pointer of type *T to x. The operand must be addressable, that is, either a variable, pointer indirection, or slice indexing operation; or a field selector of an addressable struct operand; or an array indexing operation of an addressable array. As an exception to the addressability requirement, x may also be a (possibly parenthesized) composite literal. If the evaluation of x would cause a run-time panic, then the evaluation of &amp;x does too.</p>
+</blockquote>
+<p>对于一个对象<code>x</code>, 如果它的类型为<code>T</code>, 那么<code>&amp;x</code>则会产生一个类型为<code>*T</code>的指针，这个指针指向<code>x</code>, 这是这一段的第一句话，也是我们在开发过程中经常使用的一种获取对象指针的一种方式。 </p>
+]]>
+    
+    </summary>
+    
+  </entry>
   
   <entry>
     <title><![CDATA[[转][译]在 Java 中运用动态挂载实现 Bug 的热修复]]></title>
@@ -1808,49 +1923,6 @@ bar <span class="keyword">int</span>
       <category term="Kafka" scheme="http://colobu.com/tags/Kafka/"/>
     
       <category term="大数据" scheme="http://colobu.com/categories/%E5%A4%A7%E6%95%B0%E6%8D%AE/"/>
-    
-  </entry>
-  
-  <entry>
-    <title><![CDATA[GOMAXPROCS需要设置吗？]]></title>
-    <link href="http://colobu.com/2017/10/11/interesting-things-about-GOMAXPROCS/"/>
-    <id>http://colobu.com/2017/10/11/interesting-things-about-GOMAXPROCS/</id>
-    <published>2017-10-11T06:27:38.000Z</published>
-    <updated>2017-10-11T07:41:59.000Z</updated>
-    <content type="html"><![CDATA[<p>自 Go 1.5开始， Go的<code>GOMAXPROCS</code>默认值已经设置为 CPU的核数， 这允许我们的Go程序充分使用机器的每一个CPU,最大程度的提高我们程序的并发性能， 而且，在大部分情况下， 我们并不会去设置这个参数。因为默认值已经足够好了， 以至于fasthttp的作者valyala<a href="https://github.com/golang/go/issues/20303" target="_blank" rel="external">提议</a>禁止<code>runtime.GOMAXPROCS</code>设置这个数值, 对于所有的case, <code>GOMAXPROCS</code>默认值是否是最好的值呢？</p>
-<p><a href="https://github.com/dgraph-io/badger" target="_blank" rel="external">badger</a>的作者Manish Rai Jain就遇到了这样一个<a href="https://groups.google.com/forum/#!topic/golang-nuts/jPb_h3TvlKE/discussion" target="_blank" rel="external">问题</a>。</p>
-<a id="more"></a>
-<p>Manish Rai Jain 写了一段<a href="https://github.com/dgraph-io/badger-bench/blob/master/randread/main.go" target="_blank" rel="external">Go代码</a>, 用来测试Go的读写SSD的性能，看看是否能打到Linux的I/O测试工具<a href="https://linux.die.net/man/1/fio" target="_blank" rel="external">fio</a>的读写性能。 使用fio，可以在 AWS(Amazon i3.large instance with NVMe SSD)达到100K IOPS， 但是使用这个Go程序，怎么也无法接近这个IOPS。</p>
-<p>他尝试了三个case:</p>
-<ol>
-<li>单个goroutine随机读</li>
-<li>使用一定数量的goroutine随机读</li>
-<li>类似#2,但是使用一个channel</li>
-</ol>
-<p>明显#1, #3比不上#2的性能，但是#2怎么也达不到fio的吞吐率。如果大家都使用小于CPU的核数, Go和Fio的吞吐率接近，但是如果把goroutine设置为大于CPU的核数，Fio性能提升明显，直到达到最大的IOPS，但是Go程序却没有显著变化。</p>
-<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div></pre></td><td class="code"><pre><div class="line">$ fio --name=randread --ioengine=psync --iodepth=<span class="number">32</span> --rw=randread --bs=<span class="number">4</span>k --direct=<span class="number">0</span> --size=<span class="number">2</span>G --numjobs=<span class="number">16</span> --runtime=<span class="number">120</span> --group_reporting</div><div class="line">Gives around <span class="number">62</span>K, tested via sar <span class="operator">-d</span> <span class="number">1</span> -p, <span class="keyword">while</span></div><div class="line"></div><div class="line">$ go build . && GOMAXPROCS=<span class="number">16</span> ./randread --dir ~/diskfio --jobs <span class="number">16</span> --num <span class="number">2000000</span> --mode <span class="number">1</span></div><div class="line">Gives around <span class="number">44</span>K, via sar. Number of cores on my machine are <span class="number">4</span>.</div></pre></td></tr></table></figure>
-
-<p>通过将<code>GOMAXPROCS</code>设置更大的数(64/128, 数倍CPU核数), Go 程序可以取得几乎和Fio一样的吞吐率。</p>
-<p>在今年的Gophercon上，Manish Rai Jain碰到了Russ Cox，问到了这个问题：</p>
-<blockquote>
-<p>If File::Read blocks goroutines, which then spawn new OS threads, in a long running job, there should be plenty of OS threads created already, so the random read throughput should increase over time and stabilize to the maximum possible value. But, that&#39;s not what I see in my benchmarks.</p>
-</blockquote>
-<p>大意是如果文件读取倍 block， Go会产生新的OS Thread,因为有很多的OS Thread,所以随机读的吞吐率应该也会上升才对，但是实际却不是。</p>
-<p>Russ Cox解释说<code>GOMAXPROCS</code>就像一个多路复用器，所以<code>GOMAXPROCS</code>就会是一个瓶颈。</p>
-<blockquote>
-<p>The GOMAXPROCS in a way acts like a multiplexer. From docs, &quot;the GOMAXPROCS variable limits the number of operating system threads that can execute user-level Go code simultaneously.&quot; Which basically means, all reads must first be run only via GOMAXPROCS number of goroutines, before switching over to some OS thread (not really a switch, but conceptually speaking). This introduces a bottleneck for throughput.</p>
-</blockquote>
-<p>最后Manish Rai Jain在他的高性能的K/V数据库调大了这个<a href="https://github.com/dgraph-io/dgraph/commit/30237a1429debab73eff38fea2f724914ca38b77" target="_blank" rel="external">参数</a>。</p>
-<p>这是一个有趣的讨论，很明显默认的<code>GOMAXPROCS</code>在某些情况下也不是最好的值，特别是在Manish Rai Jain这种写block的情况下，设置<code>GOMAXPROCS</code>更大一些会提高I/O的吞吐率。</p>
-]]></content>
-    <summary type="html">
-    <![CDATA[<p>自 Go 1.5开始， Go的<code>GOMAXPROCS</code>默认值已经设置为 CPU的核数， 这允许我们的Go程序充分使用机器的每一个CPU,最大程度的提高我们程序的并发性能， 而且，在大部分情况下， 我们并不会去设置这个参数。因为默认值已经足够好了， 以至于fasthttp的作者valyala<a href="https://github.com/golang/go/issues/20303" target="_blank" rel="external">提议</a>禁止<code>runtime.GOMAXPROCS</code>设置这个数值, 对于所有的case, <code>GOMAXPROCS</code>默认值是否是最好的值呢？</p>
-<p><a href="https://github.com/dgraph-io/badger" target="_blank" rel="external">badger</a>的作者Manish Rai Jain就遇到了这样一个<a href="https://groups.google.com/forum/#!topic/golang-nuts/jPb_h3TvlKE/discussion" target="_blank" rel="external">问题</a>。</p>
-]]>
-    
-    </summary>
-    
-      <category term="Go" scheme="http://colobu.com/categories/Go/"/>
     
   </entry>
   
