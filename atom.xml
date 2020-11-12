@@ -4,7 +4,7 @@
   <subtitle><![CDATA[大道至简 Simplicity is the ultimate form of sophistication]]></subtitle>
   <link href="/atom.xml" rel="self"/>
   <link href="https://colobu.com/"/>
-  <updated>2020-11-11T16:46:07.141Z</updated>
+  <updated>2020-11-12T16:50:46.667Z</updated>
   <id>https://colobu.com/</id>
   
   <author>
@@ -13,6 +13,72 @@
   </author>
   
   <generator uri="http://zespia.tw/hexo/">Hexo</generator>
+  
+  <entry>
+    <title><![CDATA[分析Go程序的Off-CPU性能]]></title>
+    <link href="https://colobu.com/2020/11/12/analyze-On-CPU-in-go/"/>
+    <id>https://colobu.com/2020/11/12/analyze-On-CPU-in-go/</id>
+    <published>2020-11-12T15:58:31.000Z</published>
+    <updated>2020-11-12T16:50:33.062Z</updated>
+    <content type="html"><![CDATA[<p>性能问题可以分为两种类型：</p>
+<ul>
+<li><strong>On-CPU</strong>: 线程花费在CPU上的时间。</li>
+<li><strong>Off-CPU</strong>: 线程阻塞在I/O、锁、计时器、页交换等场景中的等待时间。</li>
+</ul>
+<p>Off-CPU性能分析砖窑用来测量和研究off-CPU时间，所以它不同于CPU profiling只检查线程在CPU上的运行时间，而是专门研究阻塞的线程状态，如下图所示：</p>
+<a id="more"></a>
+<p><img src="thread_states.png" alt="On-CPU和Off-CPU"></p>
+<p>线程既可以因为I/O或者锁的原因离开CPU，但也有一些与当前线程执行无关的原因，包括对CPU资源的高需求导致的非自愿上下文切换和中断。不管是什么原因，如果在工作负载请求期间发生这种情况，则会导致延迟。</p>
+<p>Go标准库提供了pprof工具，我们可以使用它方便的分析On-CPU的性能，但是对于Off-CPU性能分析却无能为力。Felix Geisendörfer提供了一个类似pprof的工具<a href="https://github.com/felixge/fgprof" target="_blank" rel="external">fgprof</a>，可以分析Go程序的Off-CPU性能，如果也配置了pprof,可以珠联璧合，一起为On-CPU和Off-CPU的性能提供分析</p>
+<p>内容主要翻译整理自fgprof的readme文档。</p>
+<h2 id="性能分析的问题">性能分析的问题</h2>
+<p>假如给你一个任务，要你优化下面的代码。这是一个简单的程序，在一个循环中调用三个函数。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	<span class="keyword">for</span> {</div><div class="line">		<span class="comment">// http调用函数，可能比较慢</span></div><div class="line">		slowNetworkRequest()</div><div class="line">		<span class="comment">// 很重的CPU计算</span></div><div class="line">		cpuIntensiveTask()</div><div class="line">		<span class="comment">// 未知的函数，不知道它执行的快慢</span></div><div class="line">		weirdFunction()</div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>一种方式就是包装一个函数，以便计算它们的时间消耗：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line">start := time.Start()</div><div class="line">slowNetworkRequest()</div><div class="line">fmt.Printf(<span class="string">"slowNetworkRequest: %s\n"</span>, time.Since(start))</div><div class="line"><span class="comment">// ...</span></div></pre></td></tr></table></figure>
+
+<p>但是这样做太糟糕了，你需要在每个函数前后都加上统计时间的代码。如果你使用<code>/debug/pprof/profile</code>进行分析的话, 可以修改代码：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">import</span> _ <span class="string">"net/http/pprof"</span></div><div class="line"></div><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	<span class="keyword">go</span> <span class="keyword">func</span>() {</div><div class="line">		log.Println(http.ListenAndServe(<span class="string">":6060"</span>, <span class="constant">nil</span>))</div><div class="line">	}()</div><div class="line"></div><div class="line">	<span class="comment">// &lt;code to profile&gt;</span></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>然后使用pprof进行分析<code>go tool pprof -http=:6061 http://localhost:6060/debug/pprof/profile?seconds=10</code>:</p>
+<p><img src="pprof_cpu.png" alt=""></p>
+<p>看起来是cpuIntensiveTask占比最高。但是...真的么？查看我们的日志，看看日志中打印出来的每个函数调用的耗时:</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div></pre></td><td class="code"><pre><div class="line">slowNetworkRequest: <span class="number">66.</span>815041ms</div><div class="line">cpuIntensiveTask: <span class="number">30.</span>000672ms</div><div class="line">weirdFunction: <span class="number">10.</span>64764ms</div><div class="line">slowNetworkRequest: <span class="number">67.</span>194516ms</div><div class="line">cpuIntensiveTask: <span class="number">30.</span>000912ms</div><div class="line">weirdFunction: <span class="number">10.</span>105371ms</div><div class="line">// <span class="keyword">...</span></div></pre></td></tr></table></figure>
+
+<p>实际上是slowNetworkRequest耗时最久，但是上面的火焰图却没反应出来，这个火焰图只显示了那个函数占用CPU的时间最多，也就是On-CPU的性能分析。</p>
+<p>再看看另外一个不常用的/debug/pprof/trace，它包含一个<code>synchronization blocking profile</code>,这东东是啥呢？》不管是啥，先生成图看看：</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line">curl -so pprof.<span class="keyword">trace</span> http:<span class="comment">//localhost:6060/debug/pprof/trace?seconds=10</span></div><div class="line">go tool <span class="keyword">trace</span> --pprof=sync pprof.<span class="keyword">trace</span> &gt; sync.pprof</div><div class="line">go tool pprof --http=:<span class="number">6061</span> sync.pprof</div></pre></td></tr></table></figure>
+
+<p>也不对，这张图显示时间主要花在了slowNetworkRequest()上。cpuIntensiveTask()也不见了，可怜的weirdFunction()也没出现。</p>
+<p><img src="pprof_trace.png" alt=""></p>
+<p>那么如何都显示I/O和CPU负载的情况呢，使用/debug/fgprof，你可以在http中配置一个handler:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">import</span>(</div><div class="line">	_ <span class="string">"net/http/pprof"</span></div><div class="line">	<span class="string">"github.com/felixge/fgprof"</span></div><div class="line">)</div><div class="line"></div><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	http.DefaultServeMux.Handle(<span class="string">"/debug/fgprof"</span>, fgprof.Handler())</div><div class="line">	<span class="keyword">go</span> <span class="keyword">func</span>() {</div><div class="line">		log.Println(http.ListenAndServe(<span class="string">":6060"</span>, <span class="constant">nil</span>))</div><div class="line">	}()</div><div class="line"></div><div class="line">	<span class="comment">// &lt;code to profile&gt;</span></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>然后执行<code>go tool pprof --http=:6061 http://localhost:6060/debug/fgprof?seconds=10</code>,最终这三个函数正常的显示了，而且正确显示花在它们上面的时间。</p>
+<p><img src="fgprof_pprof.png" alt=""></p>
+<p>你可以把它配置在你自己的web框架中，如果不支持Handler，可能还得需要你别包装一下。</p>
+<p>fgprof在后台启动一个goroutine,以99赫兹的频率读取runtime.GoroutineProfile进行分析。通常它不会对你的程序造成多大的影响，但是调用runtime.GoroutineProfile会导致stopTheWorld()，多少会对多goroutine程序有一些影响，拖慢程序。所以建议你在测试环境中多测测它的影响，之后在决定要不要部署到线上。</p>
+<h2 id="参考文档">参考文档</h2>
+<ol>
+<li><a href="http://www.brendangregg.com/offcpuanalysis.html" target="_blank" rel="external">http://www.brendangregg.com/offcpuanalysis.html</a></li>
+<li><a href="https://github.com/felixge/fgprof" target="_blank" rel="external">https://github.com/felixge/fgprof</a></li>
+</ol>
+]]></content>
+    <summary type="html">
+    <![CDATA[<p>性能问题可以分为两种类型：</p>
+<ul>
+<li><strong>On-CPU</strong>: 线程花费在CPU上的时间。</li>
+<li><strong>Off-CPU</strong>: 线程阻塞在I/O、锁、计时器、页交换等场景中的等待时间。</li>
+</ul>
+<p>Off-CPU性能分析砖窑用来测量和研究off-CPU时间，所以它不同于CPU profiling只检查线程在CPU上的运行时间，而是专门研究阻塞的线程状态，如下图所示：</p>
+]]>
+    
+    </summary>
+    
+      <category term="Go" scheme="https://colobu.com/categories/Go/"/>
+    
+  </entry>
   
   <entry>
     <title><![CDATA[[译]Go正则表达式示例]]></title>
@@ -2148,76 +2214,6 @@
     <summary type="html">
     <![CDATA[<p>自人类文明以来，人类交流的方式就在不断的变化，从最早的结绳记事、到烽火传消息，从飞鸽传书到驿站飞马，从电报电话到互联网传送，交流的速度越来越快，信息传输量越来越大。通过交流，人们编写程序的时候就可以实现远程方法调用，就像调用本地方法一样便捷，所以RPC技术也在发展，尤其近几年的微服务的大力推广，RPC技术应用的越来越广泛。</p>
 <p>本质上讲，鸿雁传书也是一种RPC调用，只不过速度比较慢，可靠性不是那么高，现在RPC远程方法调用一般直接使用TCP或者HTTP实现。 HTTP的服务暴露方式比较简单，可以采用RESTful的方式提供通用的API, 客户端的调用也比较简单。直接TCP上实现的RPC远程方法调用性能优良，可以用在高吞吐低延迟的场景上。</p>
-]]>
-    
-    </summary>
-    
-      <category term="Go" scheme="https://colobu.com/categories/Go/"/>
-    
-  </entry>
-  
-  <entry>
-    <title><![CDATA[有趣实验: hack go interface]]></title>
-    <link href="https://colobu.com/2020/01/19/hack-go-interface/"/>
-    <id>https://colobu.com/2020/01/19/hack-go-interface/</id>
-    <published>2020-01-19T11:05:39.000Z</published>
-    <updated>2020-11-11T14:22:12.100Z</updated>
-    <content type="html"><![CDATA[<p>Go interface代表一组方法的集合，凡是实现这组集合的对象都称之为实现了这个接口，具体的对象不必像其它编程语言比如Java那样必须显示的<code>Implement</code>某个或者某些接口，所以说Go的接口类型是鸭子类型(<code>Duck type</code>)。</p>
-<blockquote>
-<p>“当看到一只鸟走起来像鸭子、游泳起来像鸭子、叫起来也像鸭子，那么这只鸟就可以被称为鸭子。”</p>
-<ul>
-<li>鸭子测试</li>
-</ul>
-</blockquote>
-<p>当然， 对于一个Go基本入门的开发者来说，这些概念早就深入人心，那么Go是如何实现接口和具体类型的转换的呢？</p>
-<a id="more"></a>
-<p>比如下面的一段代码，定义了一个接口<code>Op</code>以及一个具体实现<code>Adder</code>。<code>Op</code>接口包含一个<code>Add</code>方法，而<code>Adder</code>具体实现了这个方法，因此我们称<code>Adder</code>实现了<code>Op</code>接口。</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> Op <span class="keyword">interface</span>{ Add(a, b <span class="typename">int32</span>) <span class="typename">int32</span> }</div><div class="line"></div><div class="line"><span class="keyword">type</span> Adder <span class="keyword">struct</span>{}</div><div class="line"></div><div class="line"><span class="comment">//go:noinline</span></div><div class="line"><span class="keyword">func</span> (adder Adder) Add(a, b <span class="typename">int32</span>) <span class="typename">int32</span> { <span class="keyword">return</span> a + b }</div></pre></td></tr></table></figure>
-
-<p>然后我们可以把<code>Adder</code>的实例可以赋值给<code>Op</code>类型的变量:</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	adder := Adder{}</div><div class="line">	<span class="keyword">var</span> op Op = adder</div><div class="line">	op.Add<span class="number">(10</span>,<span class="number"> 32</span>)</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>事实上，Go编译器在背后默默做了很多的工作，因为<code>op</code>的类型和<code>adder</code>的类型是不一样的，一个是<code>interface</code>一个是<code>struct</code>，它俩的数据布局都不是一样的，编译器在<strong>编译</strong>的时候做了转换。</p>
-<p>编译器会为用到的接口和具体实现类型建立独一的关联对象<code>go.itab.&quot;main&quot;.Adder,&quot;main&quot;.Op(SB)</code>。</p>
-<p><img src="iface.png" alt=""></p>
-<p>在编译接口的方法调用的时候会将具体的类型实例地址和方法填充到此类型中，通过操作这个类型调用实例的方法。</p>
-<p>现在网上已经有一些介绍Go 接口内幕的文章，目前我觉得介绍最深入最详细的是<a href="https://github.com/teh-cmc/go-internals/blob/master/chapter2_interfaces/README.md" target="_blank" rel="external">o-internals ch2 interfaces</a>, 也被翻译成了中文: <a href="https://github.com/go-internals-cn/go-internals/tree/master/chapter2_interfaces" target="_blank" rel="external">Go语言内幕第二章 接口</a>，我觉得如果你仔细阅读了这篇文章，应该能够清楚了了解Go接口的具体实现了。</p>
-<p>那么，进一步，我们可以通过hack的方法看看接口类型到底是个啥，纯粹是了解一下Go接口类型接口以及通过指针反解出方法来，当然这些hack方式并没有实践意义，纯粹为了好玩。</p>
-<p>通用的接口类型是<code>runtime.iface</code> （<code>runtime.eface</code>是特意为<code>interface{}</code>定义的，因为<code>interface{}</code>没有方法集，所以可以在<code>runtime.iface</code>简化），如果我们把它从<code>runtime</code>下摘出来，那么代码如下：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> iface <span class="keyword">struct</span> {</div><div class="line">	tab  *itab</div><div class="line">	data unsafe.Pointer</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">type</span> itab <span class="keyword">struct</span> {</div><div class="line">	inter *interfacetype</div><div class="line">	_type *_type</div><div class="line">	hash  <span class="typename">uint32</span> <span class="comment">// copy of _type.hash. Used for type switches.</span></div><div class="line">	_     <span class="number">[4</span>]<span class="typename">byte</span></div><div class="line">	fun   <span class="number">[1</span>]<span class="typename">uintptr</span> <span class="comment">// variable sized. fun[0]==0 means _type does not implement inter.</span></div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">type</span> interfacetype <span class="keyword">struct</span> {</div><div class="line">	typ     _type</div><div class="line">	pkgpath name</div><div class="line">	mhdr    []imethod</div><div class="line">}</div><div class="line">......</div></pre></td></tr></table></figure>
-
-<p>定义了好多类型，我们把这些类型压缩在一个struct中，那么可以得到下面的接口类型的定义:</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div><div class="line">35</div><div class="line">36</div><div class="line">37</div><div class="line">38</div><div class="line">39</div><div class="line">40</div><div class="line">41</div><div class="line">42</div><div class="line">43</div><div class="line">44</div><div class="line">45</div><div class="line">46</div><div class="line">47</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> iface2 <span class="keyword">struct</span> {</div><div class="line">	tab *<span class="keyword">struct</span> {</div><div class="line">		<span class="comment">// 接口类型的元数据</span></div><div class="line">		inter *<span class="keyword">struct</span> {</div><div class="line">			typ <span class="keyword">struct</span> {</div><div class="line">				size       <span class="typename">uintptr</span></div><div class="line">				ptrdata    <span class="typename">uintptr</span></div><div class="line">				hash       <span class="typename">uint32</span></div><div class="line">				tflag      <span class="typename">uint8</span></div><div class="line">				align      <span class="typename">uint8</span></div><div class="line">				fieldAlign <span class="typename">uint8</span></div><div class="line">				kind       <span class="typename">uint8</span></div><div class="line">				equal      <span class="keyword">func</span>(unsafe.Pointer, unsafe.Pointer) <span class="typename">bool</span></div><div class="line">				gcdata     *<span class="typename">byte</span></div><div class="line">				str        <span class="typename">int32</span></div><div class="line">				ptrToThis  <span class="typename">int32</span></div><div class="line">			}</div><div class="line">			pkgpath <span class="keyword">struct</span> {</div><div class="line">				bytes *<span class="typename">byte</span></div><div class="line">			}</div><div class="line">			mhdr []<span class="keyword">struct</span> {</div><div class="line">				name nameOff</div><div class="line">				ityp typeOff</div><div class="line">			}</div><div class="line">		}</div><div class="line">		<span class="comment">// 具体实例的类型的元数据</span></div><div class="line">		_type *<span class="keyword">struct</span> {</div><div class="line">			size       <span class="typename">uintptr</span></div><div class="line">			ptrdata    <span class="typename">uintptr</span></div><div class="line">			hash       <span class="typename">uint32</span></div><div class="line">			tflag      <span class="typename">uint8</span></div><div class="line">			align      <span class="typename">uint8</span></div><div class="line">			fieldAlign <span class="typename">uint8</span></div><div class="line">			kind       <span class="typename">uint8</span></div><div class="line">			equal      <span class="keyword">func</span>(unsafe.Pointer, unsafe.Pointer) <span class="typename">bool</span></div><div class="line">			gcdata     *<span class="typename">byte</span></div><div class="line">			str        <span class="typename">int32</span></div><div class="line">			ptrToThis  <span class="typename">int32</span></div><div class="line">		}</div><div class="line">		hash <span class="typename">uint32</span></div><div class="line">		_    <span class="number">[4</span>]<span class="typename">byte</span></div><div class="line">		<span class="comment">// 具体实例的方法</span></div><div class="line">		fun <span class="number">[1</span>]<span class="typename">uintptr</span></div><div class="line">	}</div><div class="line">	<span class="comment">// 具体实例的地址</span></div><div class="line">	data unsafe.Pointer</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p><code>tab</code>是接口的元数据(<code>inter</code>)、具体类型的元数据(<code>_type</code>)、接口的虚函数列表(<code>fun</code>)，具体类型的地址(<code>data</code>)等数据组成，这写类型Go并没有暴露出来，所以我们可以自己定义，并通过<code>unsafe</code>的方式把一个接口对象转换成我们定义的类型：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> addFun <span class="keyword">func</span>(*Adder, <span class="typename">int32</span>, <span class="typename">int32</span>) <span class="typename">int32</span></div><div class="line"></div><div class="line"><span class="keyword">func</span> testiface(adder *Adder, op Op) {</div><div class="line">    <span class="keyword">var</span> ifa = (*iface2)(unsafe.Pointer(&op))</div><div class="line">    fmt.Printf(<span class="string">"%+v\n"</span>, ifa)</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>得到了<code>ifa</code>对象你可以尝试输出它的一些字段看看，看看是否是期望的结果。</p>
-<p>注意到<code>ifa.tab.fun</code>是接口的虚函数列表，这里的🌰中使用<code>adder.Add</code>填充，本例中只有一个函数。那么我们可以想办法从<code>ifa.tab.fun</code>得到函数对象，并调用它。</p>
-<p><code>ifa.tab.fun[0]</code>得到这个函数的地址，使用<code>runtime.FuncForPC</code>可以得到它的名称和方法体。</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> testiface(adder *Adder, op Op) {</div><div class="line">	<span class="keyword">var</span> ifa = (*iface2)(unsafe.Pointer(&op))</div><div class="line">	f := runtime.FuncForPC(ifa.tab.fun<span class="number">[0</span>])</div><div class="line">	fmt.Printf(<span class="string">"adder.Add name: %s\n"</span>, f.Name())</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>可以看到可以正确的输出函数的名称。<br><img src="funcname.png" alt=""></p>
-<p>下一步我们构造出函数来，然后调用它。首先我们定义一个函数类型，方法也是一种函数，只不过方法的Receiver作为函数的第一个参数：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> addFun <span class="keyword">func</span>(*Adder, <span class="typename">int32</span>, <span class="typename">int32</span>) <span class="typename">int32</span></div></pre></td></tr></table></figure>
-
-<p>然后通过反射，基于方法体创建出一个函数出来，并赋值给一个变量。</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> Func <span class="keyword">struct</span> {</div><div class="line">	codePtr <span class="typename">uintptr</span></div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> createFuncForCodePtr(outFuncPtr <span class="keyword">interface</span>{}, entry <span class="typename">uintptr</span>) {</div><div class="line">	outFuncVal := reflect.ValueOf(outFuncPtr).Elem()</div><div class="line">	newFuncVal := reflect.MakeFunc(outFuncVal.Type(), <span class="constant">nil</span>)</div><div class="line">	funcValuePtr := reflect.ValueOf(newFuncVal).FieldByName(<span class="string">"ptr"</span>).Pointer()</div><div class="line">	funcPtr := (*Func)(unsafe.Pointer(funcValuePtr))</div><div class="line">	funcPtr.codePtr = entry</div><div class="line">	outFuncVal.Set(newFuncVal)</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>下一步就是调用这个生生造出来的函数了：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> addFun <span class="keyword">func</span>(*Adder, <span class="typename">int32</span>, <span class="typename">int32</span>) <span class="typename">int32</span></div><div class="line"></div><div class="line"><span class="keyword">func</span> testiface(adder *Adder, op Op) {</div><div class="line">	<span class="keyword">var</span> ifa = (*iface2)(unsafe.Pointer(&op))</div><div class="line">	f := runtime.FuncForPC(ifa.tab.fun<span class="number">[0</span>])</div><div class="line">	fmt.Printf(<span class="string">"adder.Add name: %s\n"</span>, f.Name())</div><div class="line"></div><div class="line">	<span class="keyword">var</span> fn addFun</div><div class="line">	createFuncForCodePtr(&fn, f.Entry())</div><div class="line"></div><div class="line">	v := fn(adder,<span class="number"> 10</span>,<span class="number"> 32</span>)</div><div class="line">	fmt.Printf(<span class="string">"calculated result: %d\n"</span>, v)</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">type</span> Func <span class="keyword">struct</span> {</div><div class="line">	codePtr <span class="typename">uintptr</span></div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> createFuncForCodePtr(outFuncPtr <span class="keyword">interface</span>{}, entry <span class="typename">uintptr</span>) {</div><div class="line">	outFuncVal := reflect.ValueOf(outFuncPtr).Elem()</div><div class="line">	newFuncVal := reflect.MakeFunc(outFuncVal.Type(), <span class="constant">nil</span>)</div><div class="line">	funcValuePtr := reflect.ValueOf(newFuncVal).FieldByName(<span class="string">"ptr"</span>).Pointer()</div><div class="line">	funcPtr := (*Func)(unsafe.Pointer(funcValuePtr))</div><div class="line">	funcPtr.codePtr = entry</div><div class="line">	outFuncVal.Set(newFuncVal)</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>虽然无聊的绕来绕去的演示了将接口对象转换成一个<code>interface struct</code>，并调用它的虚函数，但是通过这个演示，我们可以比较深刻的了解go接口的具体实现，以及go里面的一些小trick。</p>
-]]></content>
-    <summary type="html">
-    <![CDATA[<p>Go interface代表一组方法的集合，凡是实现这组集合的对象都称之为实现了这个接口，具体的对象不必像其它编程语言比如Java那样必须显示的<code>Implement</code>某个或者某些接口，所以说Go的接口类型是鸭子类型(<code>Duck type</code>)。</p>
-<blockquote>
-<p>“当看到一只鸟走起来像鸭子、游泳起来像鸭子、叫起来也像鸭子，那么这只鸟就可以被称为鸭子。”</p>
-<ul>
-<li>鸭子测试</li>
-</ul>
-</blockquote>
-<p>当然， 对于一个Go基本入门的开发者来说，这些概念早就深入人心，那么Go是如何实现接口和具体类型的转换的呢？</p>
 ]]>
     
     </summary>
