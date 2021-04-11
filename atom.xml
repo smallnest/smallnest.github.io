@@ -4,7 +4,7 @@
   <subtitle><![CDATA[大道至简 Simplicity is the ultimate form of sophistication]]></subtitle>
   <link href="/atom.xml" rel="self"/>
   <link href="https://colobu.com/"/>
-  <updated>2021-03-22T03:56:41.789Z</updated>
+  <updated>2021-04-11T10:20:46.941Z</updated>
   <id>https://colobu.com/</id>
   
   <author>
@@ -15,13 +15,78 @@
   <generator uri="http://zespia.tw/hexo/">Hexo</generator>
   
   <entry>
+    <title><![CDATA[rpcx支持websocket协议了!]]></title>
+    <link href="https://colobu.com/2021/04/11/support-websocket-in-rpcx/"/>
+    <id>https://colobu.com/2021/04/11/support-websocket-in-rpcx/</id>
+    <published>2021-04-11T10:19:21.000Z</published>
+    <updated>2021-04-11T10:20:29.277Z</updated>
+    <content type="html"><![CDATA[<a id="more"></a>
+<p>当前， rpcx支持tcp、kcp、quic、unix domain、http、jsonrpc 2.0等传输协议，并没有考虑websocket的支持，原因在于考虑到微服务更多的是企业内部服务之间的通讯，不太可能暴露给浏览器，企业内部大多采用tcp的方式传输，或者udp族(kcp、quic)方式的传输，但是还是有用户提出希望能支持websocket。</p>
+<p>我想websocket可能还是会有一些场景下使用，比如游戏开发，移动端核服务端的通讯等等，所以经过慎重考虑，我决定在 rpcx 1.6.2版本中增加对websocket的支持。</p>
+<a id="more"></a>
+<p>基于rpcx良好的架构设计，实现对websocket的支持并不难。</p>
+<p>本来，rpcx对kcp、quic的支持也不复杂，原因在于rpcx的通讯采用的<code>net.Conn</code>的这样一个通用的接口，<code>listent.Accept</code>方法接受客户端的请求后返回一个<code>net.Conn</code>对象，后续请求的解析、处理，写回都是在这个通用接口上操作的，所以非常容易支持新的传输协议。</p>
+<ul>
+<li>kcp: 基于<a href="https://pkg.go.dev/github.com/xtaci/kcp-go" target="_blank" rel="external">xtaci/kcp-go</a>库</li>
+<li>quic: 基于定制的<a href="https://github.com/smallnest/quick" target="_blank" rel="external">smallnest/quick</a>库，依赖<a href="https://github.com/lucas-clemente/quic-go" target="_blank" rel="external">uic-go</a>的实现。</li>
+</ul>
+<p>以前rpcx还支持其它的udp的扩展协议，比如</p>
+<ul>
+<li><a href="https://pkg.go.dev/github.com/anacrolix/utp" target="_blank" rel="external">uTP</a></li>
+<li><a href="https://github.com/u35s/rudp" target="_blank" rel="external">rudp</a></li>
+</ul>
+<p>因为这两个协议用的人很少，所以在rpcx 1.6中把这两个协议的支持去掉了。</p>
+<p>所以，对于websocket来说，找到一个可信赖的、合适的websocket库，可以很容易的实现基于websocket传输的微服务框架。</p>
+<p>目前Go生态圈常用的websocket库如下：</p>
+<ul>
+<li><a href="https://github.com/golang/net" target="_blank" rel="external">x/net/websocket</a></li>
+<li><a href="https://pkg.go.dev/github.com/gorilla/websocket" target="_blank" rel="external">gorilla/websocket</a>: 老牌的gorilla框架提供的websocket库</li>
+<li><a href="https://github.com/gobwas/ws" target="_blank" rel="external">gobwas/ws</a></li>
+<li><a href="https://github.com/nhooyr/websocket" target="_blank" rel="external">nhooyr/websocket</a></li>
+</ul>
+<p>虽然像<code>gobwas/ws</code>性能优良、<code>gorilla/websocket</code>功能齐全，但是考虑到API的便利性，我还是决定使用Go官方的<code>x/net/websocket</code>库，一来有官方背书，值得信赖，二来rpcx使用websocket功能比较简单，就是期望能获得一个<code>net.Conn</code>对象，<code>x/net/websocket</code>库正好能满足需求。</p>
+<h2 id="服务端">服务端</h2>
+<p>如果服务端采用websocket协议，那么network应该写成<code>ws</code>或者<code>wss</code>,而不是<code>tcp</code>或者<code>quic</code>。</p>
+<p>服务端会启动一个http server处理websocket请求。 默认的websocket path为 <code>share.DefaultRPCPath</code>,只要服务端核客户端保持一致即可。</p>
+<p><code>ServeWS</code>会传入一个<code>*websocket.Conn</code>参数，它实现了<code>net.Conn</code>接口，所以后续的处理使用通用的<code>s.serveConn(conn)</code>即可。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div></pre></td><td class="code"><pre><div class="line"></div><div class="line"><span class="keyword">func</span> (s *Server) Serve(network, address <span class="typename">string</span>) (err error) {</div><div class="line">	......</div><div class="line"></div><div class="line">	<span class="keyword">if</span> network == <span class="string">"ws"</span> || network == <span class="string">"wss"</span> {</div><div class="line">		s.serveByWS(ln, <span class="string">""</span>)</div><div class="line">		<span class="keyword">return</span> <span class="constant">nil</span></div><div class="line">	}</div><div class="line"></div><div class="line">	......</div><div class="line">}</div><div class="line"></div><div class="line"></div><div class="line"><span class="keyword">func</span> (s *Server) serveByWS(ln net.Listener, rpcPath <span class="typename">string</span>) {</div><div class="line">	s.ln = ln</div><div class="line"></div><div class="line">	<span class="keyword">if</span> rpcPath == <span class="string">""</span> {</div><div class="line">		rpcPath = share.DefaultRPCPath</div><div class="line">	}</div><div class="line">	mux := http.NewServeMux()</div><div class="line">	mux.Handle(rpcPath, websocket.Handler(s.ServeWS))</div><div class="line">	srv := &http.Server{Handler: mux}</div><div class="line"></div><div class="line">	srv.Serve(ln)</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> (s *Server) ServeWS(conn *websocket.Conn) {</div><div class="line">	s.mu.Lock()</div><div class="line">	s.activeConn[conn] = <span class="keyword">struct</span>{}{}</div><div class="line">	s.mu.Unlock()</div><div class="line"></div><div class="line">	s.serveConn(conn)</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>服务端的改造就如此简单，接下来看看如何部署一个服务端的websocket服务:</p>
+<figure class="highlight go"><figcaption><span>server.go</span></figcaption><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	flag.Parse()</div><div class="line"></div><div class="line">	s := server.NewServer()</div><div class="line">	s.RegisterName(<span class="string">"Arith"</span>, <span class="built_in">new</span>(Arith), <span class="string">""</span>)</div><div class="line">	err := s.Serve(<span class="string">"ws"</span>, *addr)</div><div class="line">	<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">		<span class="built_in">panic</span>(err)</div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<h2 id="客户端">客户端</h2>
+<p>客户端最重要的是要实现一个websocket协议的建连，如果实现了这个方法，客户端的改造基本就完成了。这个方法的实现如下:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div><div class="line">35</div><div class="line">36</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> newDirectWSConn(c *Client, network, address <span class="typename">string</span>) (net.Conn, error) {</div><div class="line">	<span class="keyword">if</span> c == <span class="constant">nil</span> {</div><div class="line">		<span class="keyword">return</span> <span class="constant">nil</span>, errors.New(<span class="string">"empty client"</span>)</div><div class="line">	}</div><div class="line">	path := c.option.RPCPath</div><div class="line">	<span class="keyword">if</span> path == <span class="string">""</span> {</div><div class="line">		path = share.DefaultRPCPath</div><div class="line">	}</div><div class="line"></div><div class="line">	<span class="keyword">var</span> conn net.Conn</div><div class="line">	<span class="keyword">var</span> err error</div><div class="line"></div><div class="line">	<span class="comment">// url := "ws://localhost:12345/ws"</span></div><div class="line"></div><div class="line">	<span class="keyword">var</span> url, origin <span class="typename">string</span></div><div class="line">	<span class="keyword">if</span> network == <span class="string">"ws"</span> {</div><div class="line">		url = fmt.Sprintf(<span class="string">"ws://%s%s"</span>, address, path)</div><div class="line">		origin = fmt.Sprintf(<span class="string">"http://%s"</span>, address)</div><div class="line">	} <span class="keyword">else</span> {</div><div class="line">		url = fmt.Sprintf(<span class="string">"wss://%s%s"</span>, address, path)</div><div class="line">		origin = fmt.Sprintf(<span class="string">"https://%s"</span>, address)</div><div class="line">	}</div><div class="line"></div><div class="line">	<span class="keyword">if</span> c.option.TLSConfig != <span class="constant">nil</span> {</div><div class="line">		config, err := websocket.NewConfig(url, origin)</div><div class="line">		<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">			<span class="keyword">return</span> <span class="constant">nil</span>, err</div><div class="line">		}</div><div class="line">		config.TlsConfig = c.option.TLSConfig</div><div class="line">		conn, err = websocket.DialConfig(config)</div><div class="line">	} <span class="keyword">else</span> {</div><div class="line">		conn, err = websocket.Dial(url, <span class="string">""</span>, origin)</div><div class="line">	}</div><div class="line"></div><div class="line">	<span class="keyword">return</span> conn, err</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>在建立连接的时候为<code>ws</code>和<code>wss</code>协议调用这个方法即可:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> (c *Client) Connect(network, address <span class="typename">string</span>) error {</div><div class="line">	<span class="keyword">var</span> conn net.Conn</div><div class="line">	<span class="keyword">var</span> err error</div><div class="line"></div><div class="line">	<span class="keyword">switch</span> network {</div><div class="line">	<span class="keyword">case</span> <span class="string">"http"</span>:</div><div class="line">		conn, err = newDirectHTTPConn(c, network, address)</div><div class="line">	<span class="keyword">case</span> <span class="string">"ws"</span>, <span class="string">"wss"</span>:</div><div class="line">		conn, err = newDirectWSConn(c, network, address)</div><div class="line">	<span class="keyword">case</span> <span class="string">"kcp"</span>:</div><div class="line">		conn, err = newDirectKCPConn(c, network, address)</div><div class="line">    .......</div></pre></td></tr></table></figure>
+
+<p>客户端改造完成后，我们写一个客户端调用改车把刚才启动的websocket服务:</p>
+<figure class="highlight go"><figcaption><span>client.fo</span></figcaption><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	flag.Parse()</div><div class="line"></div><div class="line">	d, _ := client.NewPeer2PeerDiscovery(<span class="string">"ws@"</span>+*addr, <span class="string">""</span>)</div><div class="line">	opt := client.DefaultOption</div><div class="line">	opt.SerializeType = protocol.JSON</div><div class="line"></div><div class="line">	xclient := client.NewXClient(<span class="string">"Arith"</span>, client.Failtry, client.RandomSelect, d, opt)</div><div class="line">	<span class="keyword">defer</span> xclient.Close()</div><div class="line"></div><div class="line">	args := example.Args{</div><div class="line">		A:<span class="number"> 10</span>,</div><div class="line">		B:<span class="number"> 20</span>,</div><div class="line">	}</div><div class="line"></div><div class="line">	reply := &example.Reply{}</div><div class="line">	err := xclient.Call(context.Background(), <span class="string">"Mul"</span>, args, reply)</div><div class="line">	<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">		log.Fatalf(<span class="string">"failed to call: %v"</span>, err)</div><div class="line">	}</div><div class="line"></div><div class="line">	log.Printf(<span class="string">"%d * %d = %d"</span>, args.A, args.B, reply.C)</div><div class="line"></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>所以你看到，对于一个新的传输协议来说，如果它的连接能够遵循<code>net.Conn</code>接口，rpcx支持它还是很容易的。</p>
+<p>完整的使用websocket传输协议的例子: <a href="https://github.com/rpcxio/rpcx-examples/tree/master/websocket" target="_blank" rel="external">websocket example</a>。</p>
+]]></content>
+    <summary type="html">
+    <![CDATA[<!--more-->
+<p>当前， rpcx支持tcp、kcp、quic、unix domain、http、jsonrpc 2.0等传输协议，并没有考虑websocket的支持，原因在于考虑到微服务更多的是企业内部服务之间的通讯，不太可能暴露给浏览器，企业内部大多采用tcp的方式传输，或者udp族(kcp、quic)方式的传输，但是还是有用户提出希望能支持websocket。</p>
+<p>我想websocket可能还是会有一些场景下使用，比如游戏开发，移动端核服务端的通讯等等，所以经过慎重考虑，我决定在 rpcx 1.6.2版本中增加对websocket的支持。</p>
+]]>
+    
+    </summary>
+    
+      <category term="Go" scheme="https://colobu.com/categories/Go/"/>
+    
+  </entry>
+  
+  <entry>
     <title><![CDATA[Go 泛型尝鲜]]></title>
     <link href="https://colobu.com/2021/03/22/try-go-generic/"/>
     <id>https://colobu.com/2021/03/22/try-go-generic/</id>
     <published>2021-03-22T03:30:16.000Z</published>
-    <updated>2021-03-22T03:56:15.719Z</updated>
+    <updated>2021-04-11T10:18:36.074Z</updated>
     <content type="html"><![CDATA[<p>我在二月份的文章<a href="https://colobu.com/2021/02/20/merge-dev-typeparams-to-master-during-Go-1-17/" target="_blank" rel="external">利好！极大可能在go 1.17中就能尝试泛型</a>提到，虽然Go泛型会在Go 1.18中正式发布，但是因为各种原因，代码已经开始在master分支中实现，所以极大可能你会在今年9月份发布的Go 1.17中就能尝试使用Go泛型。</p>
-<p>那么，现在，可以去掉&quot;可能&quot;这两个字了。在Go 1.17可以确定的说你能够尝试Go泛型编程了，尽管建议你还是在Go 1.18以及以后的版本才正式在产品中使用翻译。</p>
+<p>那么，现在，可以去掉&quot;可能&quot;这两个字了。在Go 1.17可以确定的说你能够尝试Go泛型编程了，尽管建议你还是在Go 1.18以及以后的版本才正式在产品中使用泛型。</p>
 <a id="more"></a>
 <p>即使是现在，你也可以通过自己编译master分支的方式，开始领略Go泛型的风采。</p>
 <h2 id="安装">安装</h2>
@@ -44,7 +109,7 @@
 ]]></content>
     <summary type="html">
     <![CDATA[<p>我在二月份的文章<a href="https://colobu.com/2021/02/20/merge-dev-typeparams-to-master-during-Go-1-17/" target="_blank" rel="external">利好！极大可能在go 1.17中就能尝试泛型</a>提到，虽然Go泛型会在Go 1.18中正式发布，但是因为各种原因，代码已经开始在master分支中实现，所以极大可能你会在今年9月份发布的Go 1.17中就能尝试使用Go泛型。</p>
-<p>那么，现在，可以去掉&quot;可能&quot;这两个字了。在Go 1.17可以确定的说你能够尝试Go泛型编程了，尽管建议你还是在Go 1.18以及以后的版本才正式在产品中使用翻译。</p>
+<p>那么，现在，可以去掉&quot;可能&quot;这两个字了。在Go 1.17可以确定的说你能够尝试Go泛型编程了，尽管建议你还是在Go 1.18以及以后的版本才正式在产品中使用泛型。</p>
 ]]>
     
     </summary>
@@ -1473,98 +1538,6 @@
     </summary>
     
       <category term="数据库" scheme="https://colobu.com/categories/%E6%95%B0%E6%8D%AE%E5%BA%93/"/>
-    
-  </entry>
-  
-  <entry>
-    <title><![CDATA[Etcd使用go module的灾难]]></title>
-    <link href="https://colobu.com/2020/04/09/accidents-of-etcd-and-go-module/"/>
-    <id>https://colobu.com/2020/04/09/accidents-of-etcd-and-go-module/</id>
-    <published>2020-04-09T07:08:50.000Z</published>
-    <updated>2020-11-11T14:22:11.609Z</updated>
-    <content type="html"><![CDATA[<p>最近几个月，或者最近一年，使用etcd做开发的朋友，如果你开启了go module的功能的话，难道没有出现翻车的现象吗？或者， 你<code>go get -u .</code>更新一下项目依赖试试看。</p>
-<a id="more"></a>
-<p>因为我使用visual studio code的方式是打开整个<code>GOPATH</code>文件夹，而<a href="https://github.com/golang/tools/blob/master/gopls/README.md" target="_blank" rel="external">gopls</a>对于整个GOPATH并不友好，非常的慢，所以我设置了全局变量<code>GO111MODULE=off</code>，还是采用传统的老的库依赖方式开发。</p>
-<p>但是我并不排斥使用go module，并且觉得它对解决库依赖的冲突至关重要，所以我一般在项目中也会时不时的开启go module,更新一下go.mod。但是目前看来go module的推广起来问题还是重重，主要包括下面几个原因:</p>
-<ol>
-<li>go module本身的bug</li>
-<li>使用go module的项目使用方式有问题</li>
-<li>一些库没有采用go module</li>
-</ol>
-<p>由于go module的一些bug,以及开源项目使用go module的错误姿势，go module模式下导致使用一些代码库困难重重。我们以etcd为例，看看目前使用etcd的翻车现场。</p>
-<h2 id="翻车例子">翻车例子</h2>
-<p>假如看了很多go module的励志文章，信心满满，准备使用etcd开发一些分布式的应用，就面临着一些库的抉择问题。很显然，相对于zookeeper在java生态圈的地位，在Go生态圈我们自然会选择etcd去做开发。</p>
-<p>那么现在第一步，我们创建一个文件夹，生成go module文件:</p>
-<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line">➜  workspace mkdir abc && <span class="built_in">cd</span> abc</div><div class="line">➜  abc go mod init  example.com/m</div><div class="line">go: creating new go.mod: module example.com/m</div></pre></td></tr></table></figure>
-
-<p>加入<code>etcd</code>库:</p>
-<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div></pre></td><td class="code"><pre><div class="line">➜  abc go get -u -v go.etcd.io/etcd</div><div class="line">go: go.etcd.io/etcd upgrade =&gt; v3.<span class="number">3.20</span>+incompatible</div><div class="line">go: finding module <span class="keyword">for</span> package github.com/coreos/etcd/etcdmain</div><div class="line">go: found github.com/coreos/etcd/etcdmain <span class="keyword">in</span> github.com/coreos/etcd v3.<span class="number">3.20</span>+incompatible</div><div class="line">go: finding module <span class="keyword">for</span> package sigs.k8s.io/yaml</div><div class="line">go: finding module <span class="keyword">for</span> package google.golang.org/grpc/codes</div><div class="line">go: finding module <span class="keyword">for</span> package github.com/coreos/pkg/capnslog</div><div class="line">go: finding module <span class="keyword">for</span> package google.golang.org/grpc/metadata</div><div class="line">......</div><div class="line">go: found github.com/golang/groupcache/lru <span class="keyword">in</span> github.com/golang/groupcache v0.<span class="number">0.0</span>-<span class="number">20200121045136</span>-<span class="number">8</span>c9f03a8e57e</div><div class="line">go: go.etcd.io/etcd imports</div><div class="line">	github.com/coreos/etcd/etcdmain imports</div><div class="line">	github.com/coreos/etcd/etcdserver imports</div><div class="line">	github.com/coreos/etcd/mvcc/backend imports</div><div class="line">	github.com/coreos/bbolt: github.com/coreos/bbolt@v1.<span class="number">3.4</span>: parsing go.mod:</div><div class="line">	module declares its path as: go.etcd.io/bbolt</div><div class="line">	        but was required as: github.com/coreos/bbolt</div></pre></td></tr></table></figure>
-
-<p><strong>翻车了</strong>。看起来coreos维护的bbolt库声明它的module名称是<code>go.etcd.io/bbolt</code>，结果在使用它的时候使用的package path是<code>github.com/coreos/bbolt</code>，包名不一致啊(<a href="https://github.com/etcd-io/etcd/issues/11720" target="_blank" rel="external">etcd#11720</a>, <a href="https://github.com/etcd-io/etcd/issues/11739" target="_blank" rel="external">etcd#11739</a>、<a href="https://github.com/etcd-io/etcd/issues/11749" target="_blank" rel="external">etcd#11749</a>)。</p>
-<p>显然是etcd使用的是错误的bbolt的路径。冷静下来，考虑解决办法。幸好，go module提供replace的方法，我们可以使用下面的方法替换:</p>
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">replace github.<span class="keyword">com</span>/coreos/bbolt =&gt; <span class="keyword">go</span>.etcd.io/bbolt v1.<span class="number">3.4</span></div></pre></td></tr></table></figure>
-
-<p>现在我们再执行<code>go get -u -v go.etcd.io/etcd</code>,貌似bbolt的问题没有了，但是新问题又来了：</p>
-<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div></pre></td><td class="code"><pre><div class="line">go: go.etcd.io/etcd upgrade =&gt; v3.<span class="number">3.20</span>+incompatible</div><div class="line">go: finding module <span class="keyword">for</span> package github.com/coreos/etcd/etcdmain</div><div class="line">go: found github.com/coreos/etcd/etcdmain <span class="keyword">in</span> github.com/coreos/etcd v3.<span class="number">3.20</span>+incompatible</div><div class="line">go: finding module <span class="keyword">for</span> package github.com/coreos/go-systemd/util</div><div class="line">......</div><div class="line">google.golang.org/grpc/resolver/dns</div><div class="line">github.com/coreos/etcd/clientv3/balancer/resolver/endpoint</div><div class="line">google.golang.org/grpc/balancer/base</div><div class="line"><span class="comment"># github.com/coreos/etcd/clientv3/balancer/resolver/endpoint</span></div><div class="line">../../go/pkg/mod/github.com/coreos/etcd@v3.<span class="number">3.20</span>+incompatible/clientv3/balancer/resolver/endpoint/endpoint.go:<span class="number">114</span>:<span class="number">78</span>: undefined: resolver.BuildOption</div><div class="line">../../go/pkg/mod/github.com/coreos/etcd@v3.<span class="number">3.20</span>+incompatible/clientv3/balancer/resolver/endpoint/endpoint.go:<span class="number">182</span>:<span class="number">31</span>: undefined: resolver.ResolveNowOption</div><div class="line">......</div><div class="line">github.com/coreos/etcd/pkg/logutil</div><div class="line"><span class="comment"># github.com/coreos/etcd/clientv3/balancer/picker</span></div><div class="line">../../go/pkg/mod/github.com/coreos/etcd@v3.<span class="number">3.20</span>+incompatible/clientv3/balancer/picker/err.go:<span class="number">37</span>:<span class="number">44</span>: undefined: balancer.PickOptions</div><div class="line">../../go/pkg/mod/github.com/coreos/etcd@v3.<span class="number">3.20</span>+incompatible/clientv3/balancer/picker/roundrobin_balanced.go:<span class="number">55</span>:<span class="number">54</span>: undefined: balancer.PickOptions</div><div class="line">github.com/grpc-ecosystem/grpc-gateway/runtime</div><div class="line">.....</div></pre></td></tr></table></figure>
-
-<p>惊不惊喜，意不意外。跨过了一座山，趟过了一条河，又遇到了一座山。我精神有点恍惚了，作为一个知名的使用量巨大的开源项目，默认<code>go get</code>不应该轻轻松松搞定的吗,即使有bug,这明显的问题应该早就修复了啊。搜一下issue,你会看到<a href="https://github.com/etcd-io/etcd/issues/11563" target="_blank" rel="external">etcd#11563</a>、<a href="https://github.com/etcd-io/etcd/issues/11650" target="_blank" rel="external">etcd#11650</a>、<a href="https://github.com/etcd-io/etcd/issues/11707" target="_blank" rel="external">etcd#11707</a></p>
-<p>Etcd的代码和新版本的grpc(<code>v1.27.0</code>)冲突,再次施展替换大法，让项目使用老的grpc:</p>
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line">replace (</div><div class="line">	google.golang<span class="preprocessor">.org</span>/grpc =&gt; google.golang<span class="preprocessor">.org</span>/grpc v1<span class="number">.26</span><span class="number">.0</span></div><div class="line">)</div></pre></td></tr></table></figure>
-
-<p>重新<code>go get -u -v go.etcd.io/etcd</code>,怀着十二分的忐忑，观察下载结果，一顿刷屏之后，终于成功了，泪流满面，面无血色，色即是空，空即是色。</p>
-<p>到此告一段落。因为我们没有使用其它的库，要是依赖其它的库，而其它库也在使用某个版本的etcd,或者它没有使用go module,问题不敢想...,不过还好我们的例子还没有使用其它库，目前是依赖了一个etcd。</p>
-<p>现在你肯定会有一个疑问，这个问题已经有很多issue,难道etcd没有修改吗？</p>
-<p>检查我们的go.mod文件，发现一堆的<code>indirect</code>引用的库，居然还有两个<code>etcd</code>:</p>
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div></pre></td><td class="code"><pre><div class="line"><span class="code">......</span></div><div class="line">github.com/coreos/etcd v3.3.20+incompatible // indirect</div><div class="line">go.etcd.io/etcd v3.3.20+incompatible // indirect</div><div class="line">......</div><div class="line">google.golang.org/grpc v1.28.1 // indirect</div><div class="line">......</div></pre></td></tr></table></figure>
-
-<p>命名引入了<code>go.etcd.io/etcd</code>,咋还附赠了一个<code>github.com/coreos/etcd</code>?而且这俩的代码不是都一样的吗？</p>
-<p><code>go.etcd.io/etcd</code>之所以显示为<code>indirect</code>是因为我们的代码中还没有引用这个package。 在当前文件夹下创建<code>abc.go</code>文件:</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> m</div><div class="line"></div><div class="line"><span class="keyword">import</span> _ <span class="string">"go.etcd.io/etcd"</span></div></pre></td></tr></table></figure>
-
-<p>然后<code>go mod tidy</code>就可以看到<code>go.etcd.io/etcd</code>的<code>indirect</code>标记没了。</p>
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div></pre></td><td class="code"><pre><div class="line"><span class="code">......</span></div><div class="line">github.com/coreos/etcd v3.3.20+incompatible // indirect</div><div class="line">go.etcd.io/etcd v3.3.20+incompatible // indirect</div><div class="line">......</div><div class="line">google.golang.org/grpc v1.28.1 // indirect</div><div class="line">......</div></pre></td></tr></table></figure>
-
-<p>但是我想默默地问一句，为什么<code>github.com/coreos/etcd</code>还存在？它被标记为<code>indirect</code>,肯定是某个库引用它了。是谁？</p>
-<p><code>go mod why github.com/coreos/etcd</code>是没有用的:</p>
-<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line">➜  abc go mod why github.com/coreos/etcd</div><div class="line"><span class="comment"># github.com/coreos/etcd</span></div><div class="line">(main module does not need package github.com/coreos/etcd)</div></pre></td></tr></table></figure>
-
-<p>要使用<code>go mod graph</code>找一下，执行这个命名筛选一下：</p>
-<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line">➜  abc go mod graph|grep github.com/coreos/etcd</div><div class="line">example.com/m github.com/coreos/etcd@v3.<span class="number">3.20</span>+incompatible</div><div class="line">github.com/spf13/viper@v1.<span class="number">4.0</span> github.com/coreos/etcd@v3.<span class="number">3.10</span>+incompatible</div></pre></td></tr></table></figure>
-
-<p>原来是<a href="mailto:`github.com/spf13/viper@v1.4.0" target="_blank" rel="external">`github.com/spf13/viper@v1.4.0</a><code>搞的鬼，</code>github.com/coreos/etcd/etcdmain<code>使用了</code><a href="mailto:github.com/spf13/cobra@v0.0.7" target="_blank" rel="external">github.com/spf13/cobra@v0.0.7</a><code>库,</code>cobra<code>又使用</code>viper<code>的1.4.0版本，而</code><a href="mailto:viper@v1.4.0" target="_blank" rel="external">viper@v1.4.0</a><code>又使用了</code><a href="mailto:etcd@v3.3.10" target="_blank" rel="external">etcd@v3.3.10</a><code>。真优秀，绕了一圈又绕回来了，循环依赖啊。但是已经面目全非，原先人家是小甜甜(</code>go.etcd.io/etcd<code>),现在却成了牛夫人(</code>github.com/coreos/etcd`)。</p>
-<p>暂且不管它们了，好歹至少我们的项目已经没啥冲突了，可以继续开发了。但是我心中还有隐隐有一个声音在呼唤，刨根问底，永不放弃。责任感和历史使命促使我们再问一句： <strong>目前etcd的最高版本是多少了？</strong></p>
-<p>其实很好查，到github上查看项目的tags:</p>
-<p><img src="etcd-tags.png" alt=""></p>
-<p>可以看到目前etcd项目的最高版本已经到了<code>3.4.7</code>,可我们为什么默认拉下来的版本还是历史久远的<code>v3.3.20+incompatible</code>。为什么？</p>
-<p>首先，这个<code>incompatible</code>是啥子意思？依照这个<a href="https://stackoverflow.com/questions/57355929/what-incompatible-in-go-mod-mean-will-it-make-harm" target="_blank" rel="external">解释</a>,在特定的场景下会加上<code>incompatible</code>标签。</p>
-<p>既然etcd都已经到了<code>3.4.7</code>了，我们使用这个最新的版本:</p>
-<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line">➜  abc go get -u -v go.etcd.io/etcd@<span class="number">3.4</span>.<span class="number">7</span></div><div class="line">get <span class="string">"go.etcd.io/etcd"</span>: found meta tag get.metaImport{Prefix:<span class="string">"go.etcd.io/etcd"</span>, VCS:<span class="string">"git"</span>, RepoRoot:<span class="string">"https://github.com/etcd-io/etcd"</span>} at //go.etcd.io/etcd?go-get=<span class="number">1</span></div><div class="line">go get go.etcd.io/etcd@<span class="number">3.4</span>.<span class="number">7</span>: go.etcd.io/etcd@<span class="number">3.4</span>.<span class="number">7</span>: invalid version: unknown revision <span class="number">3.4</span>.<span class="number">7</span></div></pre></td></tr></table></figure>
-
-<p>What? 明明官方网站了已经有<code>3.4.7</code>版本了，咋获取不到？</p>
-<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">GO111MODULE=on go list -m -json -versions go.etcd.io/etcd@latest</div></pre></td></tr></table></figure>
-
-<p>显示最新的版本是<code>v3.3.20+incompatible</code>:</p>
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div></pre></td><td class="code"><pre><div class="line">......</div><div class="line">		<span class="string">"v3.3.18+incompatible"</span>,</div><div class="line">		<span class="string">"v3.3.19+incompatible"</span>,</div><div class="line">		<span class="string">"v3.3.20+incompatible"</span></div><div class="line">	],</div><div class="line">	<span class="string">"Time"</span>: <span class="string">"2020-04-01T17:49:03Z"</span></div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>如果禁用<code>GOPROXY</code>,最新版本是<code>v2.3.8+incompatible</code>:</p>
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div></pre></td><td class="code"><pre><div class="line">		<span class="string">"v2.3.6+incompatible"</span>,</div><div class="line">		<span class="string">"v2.3.7+incompatible"</span>,</div><div class="line">		<span class="string">"v2.3.8+incompatible"</span></div><div class="line">	],</div><div class="line">	<span class="string">"Time"</span>: <span class="string">"2017-02-16T03:25:01Z"</span></div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>pkg.go.dev也没有显示最新的版本：<br><img src="godev.png" alt=""></p>
-<p>不管怎样，貌似都没有<code>3.4.7</code>版本。实在没招了，etcd的issue中有相关的讨论:<a href="https://github.com/etcd-io/etcd/issues/11154" target="_blank" rel="external">etcd#11154</a>,怨声载道，甚至有群众说还好目前大家可以拿新型肺炎病毒搪塞作者不关心这个bug。我看这个bug从去年9月份就开始了，目前没有还没有处理。目前考虑到的处理方法有两个：</p>
-<ol>
-<li>删除etcd库中的go.mod: 直接有效，但是和go官方极力推广go module相背驰</li>
-<li>定义模版为<code>go.etcd.io/etcd/v3</code>。但是这是令人讨厌的事情，go module定义了<code>v0</code>、<code>v1</code>和<code>v2</code> module,将module定义整的非常的复杂，也强迫库的开发者非要在go.mod定义版本信息。 或许，etcd的作者通过这种方式，来抵制go的这种设计方式。</li>
-</ol>
-<p>据说，这个问题会在  etcd v3.5.0版本中解决，大家拭目以待吧， 毕竟， 你们已经都等了几个月了，不在乎再多等些日子。</p>
-<p>折腾了一下午，伤痕累累，累觉不爱。</p>
-]]></content>
-    <summary type="html">
-    <![CDATA[<p>最近几个月，或者最近一年，使用etcd做开发的朋友，如果你开启了go module的功能的话，难道没有出现翻车的现象吗？或者， 你<code>go get -u .</code>更新一下项目依赖试试看。</p>
-]]>
-    
-    </summary>
-    
-      <category term="Go" scheme="https://colobu.com/categories/Go/"/>
     
   </entry>
   
