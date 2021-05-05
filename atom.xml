@@ -4,7 +4,7 @@
   <subtitle><![CDATA[大道至简 Simplicity is the ultimate form of sophistication]]></subtitle>
   <link href="/atom.xml" rel="self"/>
   <link href="https://colobu.com/"/>
-  <updated>2021-05-05T06:38:08.370Z</updated>
+  <updated>2021-05-05T12:51:27.677Z</updated>
   <id>https://colobu.com/</id>
   
   <author>
@@ -13,6 +13,82 @@
   </author>
   
   <generator uri="http://zespia.tw/hexo/">Hexo</generator>
+  
+  <entry>
+    <title><![CDATA[Go sync.Once的三重门]]></title>
+    <link href="https://colobu.com/2021/05/05/triple-gates-of-sync-Once/"/>
+    <id>https://colobu.com/2021/05/05/triple-gates-of-sync-Once/</id>
+    <published>2021-05-05T06:44:53.000Z</published>
+    <updated>2021-05-05T12:51:06.336Z</updated>
+    <content type="html"><![CDATA[<p>我在极客时间开设的专栏<a href="https://time.geekbang.org/column/intro/100061801" target="_blank" rel="external">Go 并发编程实战课</a>中，详细介绍了<code>sync.Once</code>并发原语的实现，对于使用这个原语来说，内容已经足够了，但是还是有些同学愿意深入挖掘更深层的设计，并且提出了一些疑问，所以我再专门写一篇文章, 作为这么专栏的补充吧。</p>
+<a id="more"></a>
+<p><img src="antelope-canyon.jpg" alt=""></p>
+<blockquote>
+<p><strong>声明</strong>: 未经作者同意本站文章不允许转载或者洗稿再发表，技术干饭人请挺直脊梁!</p>
+</blockquote>
+<h2 id="一、为什么不能直接使用一个flag+原子操作简单实现？">一、为什么不能直接使用一个flag+原子操作简单实现？</h2>
+<p>虽然文章中我介绍了为什么不能简单的使用一个flag+atomic实现，但是还是有一些同学询问，我就再解答一下。事实上不光国内的一些读者有这个疑问,国外也有一些读者问这个问题，以至于Russ Cox后来在sync.Once的源代码中专门加了一段注释，说明为什么flag+atomic简单实现有问题。</p>
+<blockquote>
+<p>Note: Here is an incorrect implementation of Do:</p>
+<p>   if atomic.CompareAndSwapUint32(&amp;o.done, 0, 1) {<br>     f()<br>   }</p>
+<p>Do guarantees that when it returns, f has finished.<br>This implementation would not implement that guarantee:<br>given two simultaneous calls, the winner of the cas would<br>call f, and the second would return immediately, without<br>waiting for the first&#39;s call to f to complete.<br>This is why the slow path falls back to a mutex, and why<br>the atomic.StoreUint32 must be delayed until after f returns.</p>
+</blockquote>
+<p>如果你看了这段注释还不理解，那么没关系，我们详细说道说道。</p>
+<p>首先，我们看看flag+atomic的简单实现是什么样子的：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> wrong</div><div class="line"></div><div class="line"><span class="keyword">import</span> <span class="string">"sync/atomic"</span></div><div class="line"></div><div class="line"><span class="keyword">type</span> Once <span class="keyword">struct</span> {</div><div class="line">	done <span class="typename">uint32</span></div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> (o *Once) Do(f <span class="keyword">func</span>()) {</div><div class="line">	<span class="keyword">if</span> !atomic.CompareAndSwapUint32(&o.done,<span class="number"> 0</span>,<span class="number"> 1</span>) {</div><div class="line">		<span class="keyword">return</span></div><div class="line">	}</div><div class="line">	f()</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>关键在于并发的goroutine在调用<code>Do</code>方法时，当<code>Do</code>方法返回时，我们期望的是初始化函数<code>f</code>要执行完毕，但是这个实现第一个goroutine在使用f初始化时，后续并发的goroutine会立即返回，尽管f还没有执行完。</p>
+<p>这带来的一个问题就是：后续的goroutine在使用这些未初始化的资源的时候，会出现意想不到的问题，比如panic,或者资源未初始化，这不是我们期望的。</p>
+<p>所以不能这么简单的实现。</p>
+<p>所以在使用<code>sync.Once</code>初始化一次资源的时候，请规规矩矩的使用标准库的<code>sync.Once</code>就好了，不要再想着做什么优化。 </p>
+<p>如果你只是设置一个标志，而没有初始化的资源的操作，也就是你只需要done字段，不需要初始化方法f的话，你倒是可以这样使用。</p>
+<h2 id="二、为什么使用Mutex？">二、为什么使用Mutex？</h2>
+<p>最终，标准库的<code>sync.Once</code>实现方式如下，也是比较简单的:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> Once <span class="keyword">struct</span> {</div><div class="line">	done <span class="typename">uint32</span></div><div class="line">	m    Mutex</div><div class="line">}</div><div class="line"><span class="keyword">func</span> (o *Once) Do(f <span class="keyword">func</span>()) {</div><div class="line">	<span class="keyword">if</span> atomic.LoadUint32(&o.done) ==<span class="number"> 0</span> {</div><div class="line">		o.doSlow(f)</div><div class="line">	}</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> (o *Once) doSlow(f <span class="keyword">func</span>()) {</div><div class="line">	o.m.Lock()</div><div class="line">	<span class="keyword">defer</span> o.m.Unlock()</div><div class="line">	<span class="keyword">if</span> o.done ==<span class="number"> 0</span> {</div><div class="line">		<span class="keyword">defer</span> atomic.StoreUint32(&o.done,<span class="number"> 1</span>)</div><div class="line">		f()</div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>有的同学不太理解为什么要使用Mutex。</p>
+<p>使用Mutex并不会影响这个数据结构的性能。因为Mutex的逻辑(也就是doSlow方法)只会在初始化时并发的情况下发生，一旦初始化完成，后续的goroutine在调用<code>Do</code>方法时并不会请求锁。</p>
+<p>所以，使用Mutex主要处理并发初始化的问题。</p>
+<p>假设Once对象的Do方法还没有被初次调用。这个时候有goroutine <code>g2</code>和goroutine <code>g3</code>同时调用Do方法。碰巧，<code>g2</code>和<code>g3</code>可能原子读取done变量会等于0,所以这两个goroutine可能都会同时进入doSlow方法(可能在同一个CPU上，也可能在不同的cpu上)。</p>
+<p>这个时候我们就需要Mutex限制只允许一个goroutine并发执行，也就是将并行变成了串行。假设<code>g2</code>运气好先执行，那么它就会进行初始化，并且执行完毕后把o.done设置为1,再释放锁。</p>
+<p>锁释放后，<code>g3</code>开始执行，这个时候还还会执行<code>double checking</code>,再一次检查done字段。这一步是必须的，因为不双检查的话，它又会执行f一次。这里正确地使用了双检查，发现done已经被设置成了1,所以不需要初始化了，就直接返回。</p>
+<p>如果一个goroutine在双检查的时候如果发现done=0,说明还没有goroutine执行过初始化，这种重担压在了自己的身上，就像<code>g2</code>一样，它就会执行初始化函数f。</p>
+<p>所以，这里使用了Mutex,保护并发的初始化。</p>
+<p>到了这一步基本上很少有同学有疑问了，但是好学爱钻研的网友还是提出了非常有趣的问题。</p>
+<h2 id="三、为什么乱序执行没影响？">三、为什么乱序执行没影响？</h2>
+<p>我们知道，现代的CPU都是支持乱序执行的。那么最后两行<code>defer atomic.StoreUint32(&amp;o.done, 1)</code>和<code>f()</code>如果乱序了怎么办，那不也是还是没有初始化完毕就把<code>done</code>设置为1了吗？</p>
+<p>而且有些人，包括Russ Cox review这段代码的时候也提出，<code>defer atomic.StoreUint32(&amp;o.done, 1)</code> (源代码和此有所不同)能不能改成<code>o.done=1</code>。</p>
+<p>Go的标准库的代码质量是非常高的，而且都经过大神的仔细review,所以这样设计肯定是有它的用处的。</p>
+<p>首先，第15行的<code>defer atomic.StoreUint32(&amp;o.done, 1)</code>可以确保执行万第16行的f才将done设置为1。</p>
+<p>虽然Go内存模型并没有定义atomic的happen before关系，也没有定义像C++的atomic的六种memory ordering模型。有一个悠久的仍然open的issue讨论atomic的内存模型的问题(<a href="https://github.com/golang/go/issues/5045" target="_blank" rel="external">issue#5045</a>),但是目前对atomic的内存模型保持模糊的定义。不同的CPU架构可能很难形成一个统一的定义。</p>
+<p>对于x86架构，<a href="https://stackoverflow.com/questions/55787091/does-golang-atomic-load-have-a-acquire-semantics" target="_blank" rel="external">stackoverflow</a>有一段描述 atomic的Load和Store的原子性和会不会重排：</p>
+<blockquote>
+<p>On strongly ordered architectures like x86/amd64, acquire load and release store are just regular loads and stores. To make them atomic you need to ensure the memory is aligned to the operand size (automatic in Go), and that the compiler doesn&#39;t re-order them in incompatible ways, or optimize them away (e.g. reuse a value in a register instead of reading it from memory.)</p>
+</blockquote>
+<p>但是对于arm等架构，需要使用内存屏障(Memory barrier)技术保证memory ordering。</p>
+<p>Ian Lance Taylor曾经在论坛中说:</p>
+<blockquote>
+<p>In C++ memory model terms I believe that the sync/atomic Load<br>operations are memory_order_acquire, and I believe that the<br>sync/atomic Store operations are memory_order_release. It&#39;s possible<br>that if we ever document it we will go for stronger memory ordering,<br>but I believe that these operations must at least carry those guarantees.</p>
+<p>I&#39;m somewhat less certain of the memory order guarantees of the Swap,<br>CompareAndSwap, and Add functions. I guess that Swap and<br>CompareAndSwap are probably at least memory_order_acq_rel, but Add may<br>be memory_order_relaxed.</p>
+</blockquote>
+<p>Russ Cox曾经回答过问题,他把go的atomic 操作定位sequential consistency的，这是一个更严格的memory ordering。它们之前的读写保证再Load/Store,不会重排在Load/Store之后， 它们之后的读写操作也不会重排在Load/Store之前，所以建立了一个内存屏障(Memory barrier)。</p>
+<blockquote>
+<p>rsc<br>2019年7月16日上午9:12:01</p>
+<p>Although there&#39;s been no official resolution to the issue, I think the actual path forward is what I posted a while back: &quot;Go&#39;s atomics guarantee sequential consistency among the atomic variables (behave like C/C++&#39;s seqconst atomics), and that you shouldn&#39;t mix atomic and non-atomic accesses for a given memory word.&quot;</p>
+</blockquote>
+<p>至少目前，我们可以按照他们的解答进行理解。</p>
+<p>这样的话，Go可以保证第15行<code>defer atomic.StoreUint32(&amp;o.done, 1)</code>肯定会在第16行<code>f()</code>之后执行，这样就不会出现未初始化完成就将done设置为1的问题。</p>
+<p>另一个问题，第14行为什么不使用atomic?</p>
+<p>因为Mutex的happend before关系， <code>g2</code>设置o.done=1之后才释放锁，这个时候<code>g3</code>才获取到锁，所以当<code>g3</code>获取到锁之后，o.done肯定就已经是1了，所以这个时候访问o.done肯定得到1的结果，不会在<code>g2</code>设置o.done=1 <code>g3</code>看不到o.done=1这个write。</p>
+<p>第6行没有Mutex等的保护，所以通过atomic可以保证在o.done设置为1之后能看到这个设置的结果，避免总是落入到doSlow逻辑中。</p>
+]]></content>
+    <summary type="html">
+    <![CDATA[<p>我在极客时间开设的专栏<a href="https://time.geekbang.org/column/intro/100061801" target="_blank" rel="external">Go 并发编程实战课</a>中，详细介绍了<code>sync.Once</code>并发原语的实现，对于使用这个原语来说，内容已经足够了，但是还是有些同学愿意深入挖掘更深层的设计，并且提出了一些疑问，所以我再专门写一篇文章, 作为这么专栏的补充吧。</p>
+]]>
+    
+    </summary>
+    
+  </entry>
   
   <entry>
     <title><![CDATA[轻轻松松打印网页并生成pdf文档]]></title>
@@ -1305,104 +1381,6 @@
     </summary>
     
       <category term="Go" scheme="https://colobu.com/categories/Go/"/>
-    
-  </entry>
-  
-  <entry>
-    <title><![CDATA[[译]配置 sql.DB 获得更好的性能(2020年更新版)]]></title>
-    <link href="https://colobu.com/2020/05/18/configuring-sql-DB-for-better-performance-2020/"/>
-    <id>https://colobu.com/2020/05/18/configuring-sql-DB-for-better-performance-2020/</id>
-    <published>2020-05-18T14:24:40.000Z</published>
-    <updated>2020-11-11T14:22:11.741Z</updated>
-    <content type="html"><![CDATA[<p><a href="https://www.alexedwards.net/blog/configuring-sqldb" target="_blank" rel="external">原文</a>在2020年4月9号做了更新，所以重新翻译了原文。</p>
-<p>网上有很多教程介绍<code>sql.DB</code>, 以及如何使用它来执行SQL数据库查询和语句, 但是大部分都没有介绍<code>SetMaxOpenConns（）</code>、<code>SetMaxIdleConns（）</code>和<code>SetConnmaxLifetime（）</code>方法。事实上你可以使用这些方法来配置<code>sql.DB</code>的行为并改善其性能。</p>
-<p>在这篇文章中，我想准确地解释这些设置的作用，并演示它们可能产生的（正面和负面）影响。</p>
-<a id="more"></a>
-<h2 id="打开和空闲连接">打开和空闲连接</h2>
-<p>首先说一点背景知识。</p>
-<p>sql.db对象是包含多个<strong>in-use</strong>和<strong>idle</strong>数据库连接的连接池。当使用连接执行数据库任务（如执行SQL语句或查询数据）时，该连接被标记为<strong>in-use</strong>(打开)。任务完成后，连接将变为<strong>idle</strong>(空闲)。</p>
-<p>当您指示<code>sql.db</code>执行数据库任务时，它将首先检查池中是否有空闲连接可用。如果有可用的连接，Go将重用现有连接，并在任务期间将其标记为<code>in-use</code>。如果在需要连接时池中没有空闲连接的话，go将创建一个新的连接。</p>
-<h2 id="SetMaxOpenConns_方法">SetMaxOpenConns 方法</h2>
-<p>默认情况下，可以同时打开的连接数没有限制(<code>in-use</code> + <code>idle</code>)。但您可以通过<code>SetMaxOpenConns()</code>方法实现自己的限制，如下所示：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div></pre></td><td class="code"><pre><div class="line"><span class="comment">// 初始化一个新的连接池</span></div><div class="line">db, err := sql.Open(<span class="string">"postgres"</span>, <span class="string">"postgres://user:pass@localhost/db"</span>)</div><div class="line"><span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">    log.Fatal(err)</div><div class="line">}</div><div class="line"></div><div class="line"><span class="comment">// 设置最大的并发打开连接数为5（in-use + idle）。</span></div><div class="line"><span class="comment">// 设置这个数小于等于0则表示没有限制，也就是默认设置。</span></div><div class="line">db.SetMaxOpenConns<span class="number">(5</span>)</div></pre></td></tr></table></figure>
-
-<p>在此示例代码中，池中最多有5个并发打开的连接。如果5个连接都已经标记为<code>in-use</code>被使用，并且应用程序需要另一个连接的话，那么应用程序将被迫等待，直到5个打开的连接其中的一个被释放并变为<code>idle</code>。</p>
-<p>为了说明更改<strong>MaxOpenConns</strong>的影响，我运行了一个基准测试，将最大开放连接设置为1、2、5、10和无限制。基准测试在PostgreSQL数据库上执行并行的insert语句，您可以在这个<a href="https://gist.github.com/alexedwards/5d1db82e6358b5b6efcb038ca888ab07" target="_blank" rel="external">gist</a>中找到代码。结果如下：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div></pre></td><td class="code"><pre><div class="line">BenchmarkMaxOpenConns1<span class="number">-8</span>                <span class="number"> 500</span>      <span class="number"> 3129633</span> ns/op        <span class="number"> 478</span> B/op        <span class="number"> 10</span> allocs/op</div><div class="line">BenchmarkMaxOpenConns2<span class="number">-8</span>               <span class="number"> 1000</span>      <span class="number"> 2181641</span> ns/op        <span class="number"> 470</span> B/op        <span class="number"> 10</span> allocs/op</div><div class="line">BenchmarkMaxOpenConns5<span class="number">-8</span>               <span class="number"> 2000</span>       <span class="number"> 859654</span> ns/op        <span class="number"> 493</span> B/op        <span class="number"> 10</span> allocs/op</div><div class="line">BenchmarkMaxOpenConns10<span class="number">-8</span>              <span class="number"> 2000</span>       <span class="number"> 545394</span> ns/op        <span class="number"> 510</span> B/op        <span class="number"> 10</span> allocs/op</div><div class="line">BenchmarkMaxOpenConnsUnlimited<span class="number">-8</span>       <span class="number"> 2000</span>       <span class="number"> 531030</span> ns/op        <span class="number"> 479</span> B/op         <span class="number"> 9</span> allocs/op</div><div class="line">PASS</div></pre></td></tr></table></figure>
-
-<blockquote>
-<p>准确地说，此基准的目的不是模拟应用程序的“真实”行为。它只是帮助说明<code>SQL.DB</code>在幕后的行为，以及更改<strong>MaxOpenConns</strong>对该行为的影响。</p>
-</blockquote>
-<p>对于这个基准，我们可以看到允许的开放连接越多，在数据库上执行<strong>插入</strong>操作所花费的时间就越少（3129633 ns/op，其中1个<code>in-use</code>连接，而无限连接为531030 ns/op，大约快6倍）。这是因为允许打开的连接越多，越多的数据库查询就能并发的执行。</p>
-<h2 id="SetMaxIdleConns">SetMaxIdleConns</h2>
-<p>默认情况下，<code>sql.DB</code>允许在连接池中最多保留<strong>2</strong>个<code>idle</code>连接。您可以通过<code>SetMaxIdleConns()</code>方法进行更改，如下所示：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div></pre></td><td class="code"><pre><div class="line"><span class="comment">// 初始化连接池</span></div><div class="line">db, err := sql.Open(<span class="string">"postgres"</span>, <span class="string">"postgres://user:pass@localhost/db"</span>)</div><div class="line"><span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">    log.Fatal(err)</div><div class="line">}</div><div class="line"></div><div class="line"><span class="comment">// 设置最大的空闲连接数为5。</span></div><div class="line"><span class="comment">// 设置小于等于0的数意味着不保留空闲连接。</span></div><div class="line">db.SetMaxIdleConns<span class="number">(5</span>)</div></pre></td></tr></table></figure>
-
-<p>理论上，在池中允许更多的空闲连接将提高性能，因为这样可以减少从头开始建立新连接的可能性，从而有助于节省资源。</p>
-<p>让我们来看看相同的基准，最大空闲连接设置为无、1、2、5和10（并且开放连接的数量是无限的）：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div></pre></td><td class="code"><pre><div class="line">BenchmarkMaxIdleConnsNone<span class="number">-8</span>         <span class="number"> 300</span>      <span class="number"> 4567245</span> ns/op      <span class="number"> 58174</span> B/op       <span class="number"> 625</span> allocs/op</div><div class="line">BenchmarkMaxIdleConns1<span class="number">-8</span>           <span class="number"> 2000</span>       <span class="number"> 568765</span> ns/op       <span class="number"> 2596</span> B/op        <span class="number"> 32</span> allocs/op</div><div class="line">BenchmarkMaxIdleConns2<span class="number">-8</span>           <span class="number"> 2000</span>       <span class="number"> 529359</span> ns/op        <span class="number"> 596</span> B/op        <span class="number"> 11</span> allocs/op</div><div class="line">BenchmarkMaxIdleConns5<span class="number">-8</span>           <span class="number"> 2000</span>       <span class="number"> 506207</span> ns/op        <span class="number"> 451</span> B/op         <span class="number"> 9</span> allocs/op</div><div class="line">BenchmarkMaxIdleConns10<span class="number">-8</span>          <span class="number"> 2000</span>       <span class="number"> 501639</span> ns/op        <span class="number"> 450</span> B/op         <span class="number"> 9</span> allocs/op</div><div class="line">PASS</div></pre></td></tr></table></figure>
-
-<p>当<code>MaxIdleConns</code>设置为none时，必须为每个插入操作创建新的连接，从基准中我们可以看到平均运行时间和内存分配相对较高。</p>
-<p>只允许保留和重用一个空闲连接，在我们这个特定的基准测试中有很大的不同——它将平均运行时间减少了8倍左右，并将内存分配减少了20倍左右。继续增加空闲连接池的大小会使性能更好，尽管这些改进不那么明显。</p>
-<p>那么我们应该维护一个大的空闲连接池吗？答案是它取决于应用程序。</p>
-<p>重要的是要认识到保持空闲连接的存活是要付出代价的——它会占用内存，否则这些内存可以同时用于应用程序和数据库。</p>
-<p>也有一种可能，如果一个连接空闲太久，那么它也可能会变得不可用。例如，MySQL的<a href="https://dev.mysql.com/doc/refman/5.7/en/server-system-variables.html#sysvar_wait_timeout" target="_blank" rel="external">wait_timeout</a>设置将自动关闭8小时内未使用的任何连接（默认情况下）。</p>
-<p>当发生这种情况时，<code>sql.DB</code>会优雅地处理它。在放弃之前，将自动重试两次坏连接，之后Go将从池中删除坏连接并创建新连接。因此，将<code>MaxIdleConns</code>设置得太高实际上可能会导致连接变得不可用，并且使用的资源比使用较小的空闲连接池（使用的连接更少，使用频率更高）的情况下要多。所以只有你很可能马上再次使用这些连接，你才会保持这些连接空闲。</p>
-<p>最后要指出的一点是，<code>MaxIdleConns</code>应该始终小于或等于<code>MaxOpenConns</code>。Go会检查并在必要时自动减少<code>MaxIdleConns</code> StackOverflow上的一个解释很好地描述了原因：</p>
-<blockquote>
-<p>设置比<code>MaxOpenConns</code>更多的空闲连接数是没有意义的，因为你最多也就能拿到所有打开的连接，剩余的空闲连接依然保持的空闲。这就像一座四车道的桥，但是只允许三辆车同时通过。</p>
-</blockquote>
-<h2 id="SetConnMaxLifetime_方法">SetConnMaxLifetime 方法</h2>
-<p>现在让我们来看一下<code>SetConnMaxLifetime（）</code>方法，它设置了连接可重用的最大时间长度。如果您的SQL数据库也实现了最大的连接生存期，或者（例如）您希望在负载均衡器后面方便地切换数据库，那么这将非常有用。</p>
-<p>您可以这样使用它：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div></pre></td><td class="code"><pre><div class="line"><span class="comment">// 初始化连接池</span></div><div class="line">db, err := sql.Open(<span class="string">"postgres"</span>, <span class="string">"postgres://user:pass@localhost/db"</span>)</div><div class="line"><span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">    log.Fatal(err)</div><div class="line">}</div><div class="line"></div><div class="line"><span class="comment">// 设置连接的最大生命周期为一小时。</span></div><div class="line"><span class="comment">// 设置为0的话意味着没有最大生命周期，连接总是可重用(默认行为)。</span></div><div class="line">db.SetConnMaxLifetime(time.Hour)</div></pre></td></tr></table></figure>
-
-<p>在这个例子中，我们的所有连接将在第一次创建后1小时“过期”，并且在它们过期后无法重用。但是注意：</p>
-<ul>
-<li>这并不能保证连接将在池中存在完整的一小时；很可能由于某种原因连接将变得不可用，并且在此之前自动关闭。</li>
-<li>一个连接在创建后仍可以使用一个多小时，只是说一个小时后不能再被重用了。</li>
-<li>这不是空闲超时。连接将在第一次创建后1小时后过期，而不是1小时后变成空闲。</li>
-<li>每秒自动运行一次清理操作以便从池中删除“过期”连接。</li>
-</ul>
-<p>理论上，<strong>ConnMaxLifetime</strong>越短，从零开始创建连接的频率就越高。</p>
-<p>为了说明这一点，我运行了基准测试，将<strong>ConnMaxLifetime</strong>设置为100ms、200ms、500ms、1000ms和unlimited（永远重复使用），默认设置为unlimited open connections和2个idle connections。这些时间段显然比您在大多数应用程序中使用的要短得多，但它们有助于很好地说明连接库的行为。</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div></pre></td><td class="code"><pre><div class="line">BenchmarkConnMaxLifetime100<span class="number">-8</span>              <span class="number"> 2000</span>       <span class="number"> 637902</span> ns/op       <span class="number"> 2770</span> B/op        <span class="number"> 34</span> allocs/op</div><div class="line">BenchmarkConnMaxLifetime200<span class="number">-8</span>              <span class="number"> 2000</span>       <span class="number"> 576053</span> ns/op       <span class="number"> 1612</span> B/op        <span class="number"> 21</span> allocs/op</div><div class="line">BenchmarkConnMaxLifetime500<span class="number">-8</span>              <span class="number"> 2000</span>       <span class="number"> 558297</span> ns/op        <span class="number"> 913</span> B/op        <span class="number"> 14</span> allocs/op</div><div class="line">BenchmarkConnMaxLifetime1000<span class="number">-8</span>             <span class="number"> 2000</span>       <span class="number"> 543601</span> ns/op        <span class="number"> 740</span> B/op        <span class="number"> 12</span> allocs/op</div><div class="line">BenchmarkConnMaxLifetimeUnlimited<span class="number">-8</span>        <span class="number"> 3000</span>       <span class="number"> 532789</span> ns/op        <span class="number"> 412</span> B/op         <span class="number"> 9</span> allocs/op</div><div class="line">PASS</div></pre></td></tr></table></figure>
-
-<p>在这些特定的基准测试中，我们可以看到100毫秒的内存分配要比unlimited的内存分配多三倍，而且每个插入的操作的平均运行时间也稍长一些。</p>
-<p>加入你在代码中设置了<code>ConnMaxLifetime</code>, 必须要记住连接过期的频率(过期后再重新创建)。例如你有100个连接，设置<code>ConnMaxLifetime</code>为1分钟，然后你的应用程序可能每秒会kill和重建1.67个连接。你肯定不想这么频繁，因为这会影响性能，而不是提升性能。</p>
-<h2 id="超出连接限制">超出连接限制</h2>
-<p>最后，如果不提及超过了数据库连接数的硬限制的话，那么本文就不算一个完整的教程了。</p>
-<p>如图所示，我将更改<strong>postgresql.conf</strong>文件，因此只允许总共5个连接（默认值为100）…</p>
-<figure class="highlight ini"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line"><span class="setting">max_connections = <span class="value"><span class="number">5</span></span></span></div></pre></td></tr></table></figure>
-
-<p>使用 unlimited open connections 的配置进行基准测试：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div></pre></td><td class="code"><pre><div class="line">BenchmarkMaxOpenConnsUnlimited<span class="number">-8</span>    --- FAIL: BenchmarkMaxOpenConnsUnlimited<span class="number">-8</span></div><div class="line">    main_test.<span class="keyword">go</span><span class="number">:14</span>: pq: sorry, too many clients already</div><div class="line">    main_test.<span class="keyword">go</span><span class="number">:14</span>: pq: sorry, too many clients already</div><div class="line">    main_test.<span class="keyword">go</span><span class="number">:14</span>: pq: sorry, too many clients already</div><div class="line">FAIL</div></pre></td></tr></table></figure>
-
-<p>一旦达到5个连接的硬限制，我的数据库驱动程序（PQ）立即返回一条<code>sorry, too many clients already</code>错误信息，而不是完成插入操作。</p>
-<p>为了避免这个错误，我们需要将<code>sql.DB</code>中open的(<code>in-use</code>和<code>idle</code>)连接的最大总数设置为5以下。像这样：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div></pre></td><td class="code"><pre><div class="line"><span class="comment">// 初始化连接池</span></div><div class="line">db, err := sql.Open(<span class="string">"postgres"</span>, <span class="string">"postgres://user:pass@localhost/db"</span>)</div><div class="line"><span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">    log.Fatal(err)</div><div class="line">}</div><div class="line"></div><div class="line"><span class="comment">//设置in-use和idle的总连接数为3</span></div><div class="line">db.SetMaxOpenConns<span class="number">(3</span>)</div></pre></td></tr></table></figure>
-
-<p>现在，由<code>sql.DB</code>创建的连接数最多只能有3个，基准测试运行时应该没有错误。</p>
-<p>但是这样也会给我们带来一个很大的警示：当达到open连接限制时，所有的连接都处于<code>in-use</code>状态，应用程序需要执行的任何新数据库任务都将被强制等待，直到连接变为<code>idle</code>。比如在web应用程序中，用户的http请求会hang住，等待数据库任务完成，期间可能因为超时而失败。</p>
-<p>为了兼容这一点，你可以传递一个<code>context.Context</code>参数，执行数据库的方法是采用<code>ExecContext()</code>，可以参考<a href="https://gist.github.com/alexedwards/5d1db82e6358b5b6efcb038ca888ab07#file-main_test-go-L12-L15" target="_blank" rel="external">例子</a>。</p>
-<h2 id="总结">总结</h2>
-<ol>
-<li>根据经验，你应该显式的设置<code>MaxOpenConns</code>值。这个值应该远远低于数据库或者基础设施对连接数的任何硬限制。</li>
-<li>通常，更大的<code>MaxOpenConns</code>和<code>MaxIdleConns</code>可能会带来更好的性能。但是回报正在减少。你需要知道，一个大的连接池(一些连接根本就美誉重用却被重新创建)可能会减少性能。</li>
-<li>为了降低第二点的风险，你可能需要设置一个相对短的<code>ConnMaxLifetime</code>，但是太对会导致连接被kill并被创建</li>
-<li><code>MaxIdleConns</code>应该小于等于<code>MaxOpenConns</code></li>
-</ol>
-<p>对于一个小的web应用程序，我使用下面的配置作为基础，然后根据实际吞吐量级别的负载测试结果进行优化。</p>
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line"><span class="pseudo">db</span>.SetMaxOpenConns(<span class="number">25</span>)</div><div class="line"><span class="pseudo">db</span>.SetMaxIdleConns(<span class="number">25</span>)</div><div class="line"><span class="pseudo">db</span>.SetConnMaxLifetime(<span class="number">5</span>*time.Minute)</div></pre></td></tr></table></figure>
-
-]]></content>
-    <summary type="html">
-    <![CDATA[<p><a href="https://www.alexedwards.net/blog/configuring-sqldb" target="_blank" rel="external">原文</a>在2020年4月9号做了更新，所以重新翻译了原文。</p>
-<p>网上有很多教程介绍<code>sql.DB</code>, 以及如何使用它来执行SQL数据库查询和语句, 但是大部分都没有介绍<code>SetMaxOpenConns（）</code>、<code>SetMaxIdleConns（）</code>和<code>SetConnmaxLifetime（）</code>方法。事实上你可以使用这些方法来配置<code>sql.DB</code>的行为并改善其性能。</p>
-<p>在这篇文章中，我想准确地解释这些设置的作用，并演示它们可能产生的（正面和负面）影响。</p>
-]]>
-    
-    </summary>
     
   </entry>
   
