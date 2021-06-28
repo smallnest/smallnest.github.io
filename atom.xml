@@ -4,7 +4,7 @@
   <subtitle><![CDATA[大道至简 Simplicity is the ultimate form of sophistication]]></subtitle>
   <link href="/atom.xml" rel="self"/>
   <link href="https://colobu.com/"/>
-  <updated>2021-06-28T01:40:52.544Z</updated>
+  <updated>2021-06-28T04:53:25.866Z</updated>
   <id>https://colobu.com/</id>
   
   <author>
@@ -13,6 +13,65 @@
   </author>
   
   <generator uri="http://zespia.tw/hexo/">Hexo</generator>
+  
+  <entry>
+    <title><![CDATA[深入Go Module之讨厌的v2]]></title>
+    <link href="https://colobu.com/2021/06/28/dive-into-go-module-2/"/>
+    <id>https://colobu.com/2021/06/28/dive-into-go-module-2/</id>
+    <published>2021-06-28T03:56:05.000Z</published>
+    <updated>2021-06-28T04:51:23.730Z</updated>
+    <content type="html"><![CDATA[<p>Go module不但遵循<a href="https://semver.org/lang/zh-CN/" target="_blank" rel="external">语义化版本规范 2.0.0</a>,而且还更进一步，对语义化版本中的major还还赋予了更深的意义。</p>
+<a id="more"></a>
+<p><img src="semver2.png" alt=""></p>
+<ul>
+<li>v0.X.X: 对于主版本号(major)是0的情况，隐含你当前的API还处于不稳定的状态，新的小版本可能不向下兼容</li>
+<li>v1.X.X: 当前的API处于稳定状态，minor的增加只意味着新的feature的增加，API还是向下兼容的</li>
+<li>v2.X.X: major的增加意味着API已经不向下兼容了</li>
+</ul>
+<blockquote>
+<p><strong>问题</strong>： 你知道在go module中，哪些版本号隐含当前API是不稳定的？</p>
+</blockquote>
+<p>但是go module与众不同鹤立鸡群卓然不群的是，一旦你的major大于等于2, 你的module path必须加上v2后缀(如果tag是v3.X.X,那就是v3后缀，以此类推)。</p>
+<p>而且，包引用路径也要加上v2，比如 <code>go.etcd.io/etcd/client/v3</code>。</p>
+<p>这是一个怪异的写法，相当于在正常的易于理解的module path上加了一个狗屁膏药，以提示这个引入的库是哪个版本的？</p>
+<p>为什么要加上这个v2、v2后缀的，肯定有一定的考虑。</p>
+<p>最主要的，Go的开发者(这里指Russ Cox)在<a href="https://research.swtch.com/vgo-import" target="_blank" rel="external">import compatibility rule</a>指出:</p>
+<blockquote>
+<p>If an old package and a new package have the same import path,<br>the new package must be backwards compatible with the old package.</p>
+</blockquote>
+<p>也就是相同module path应该保证新的版本向下兼容。</p>
+<p><img src="deps.png" alt=""></p>
+<p>这种想法是好的。比如你在你的项目中可以使用同一个库的多个版本， v1版本处理以前遗留的逻辑，v2版本处理新的逻辑，v3版本试验未来的版本，同一套库的不同版本可以共存，并不会出现版本冲突的地方。</p>
+<p>而且程序员看到这些module path,也很清楚的知道版本不兼容了，谁是更新的版本。</p>
+<p>但是这种方式也是很有争议的，在实践中中也带来了很多问题，我在开发rpcx深受其害，又比如etcd,你可以看它的v3.4.X的版本，就是因为没有加上v3的后缀，导致go命令下载或者导入(get)这些package的时候根本就下载不了。</p>
+<h2 id="vX后缀污染了package_path">vX后缀污染了package path</h2>
+<p>本来正常的package path一般是仓库路径+package name,或者go module下 module path + package的方式，可是一旦版本大于等于2,就不得不加上一个后缀v2,v3等，将package path的含义改变了。</p>
+<p>当然忍一忍我们还能接受，大不了闭着眼睛用呗，最痛苦的很多Go的初学者并不了解这种设置，不知道导入新的库的版本要加v2后缀，一脸茫然。</p>
+<h2 id="v0,_v1和v2数据类型不兼容">v0, v1和v2数据类型不兼容</h2>
+<p>在module path中增加了v2,v3等后缀后，也就以为着这些package都是不同的package，虽然它们中大部分的数据类型并没有做改变，还是向下兼容的，也不能直接赋值，还是需要强转一下。</p>
+<p>比如你的项目依赖<code>Auth 1.0.0</code>, 也依赖<code>Auth 2.0.0</code>,那么即使<code>A.Config</code>在两个版本中没做任何改变，你也不能把<code>Auth.Config</code>赋值给<code>Auth/v2.Config</code>,而是需要在代码中加上强转的逻辑，两两互转。一旦发布了v3,那就得三三互转，很长的一个switch分支处理这种情况，如果发布v4，那么逻辑更复杂了。</p>
+<h2 id="给第三方库的开发者带来了很大的负担">给第三方库的开发者带来了很大的负担</h2>
+<p>虽然你觉得我也就发布v2,v3,v4等几个版本，版本路线很清晰，管理起来也不复杂，没什么大不了的。</p>
+<p>但是，如果你的库是一个非常流行的库，很多开发者基于你的库开发了第三方的库的话，就非常痛苦了。</p>
+<p>这意味着一旦你发布了一个新的版本，这些第三方的开发者就必须及时的更新他们的库，基于你的新的版本发布他们新的v2，v3版本。这就像病毒一样，初步扩展开来。给广大的开发者带来的很大的负担。</p>
+<p>当然，见仁见智，这些情况可能你不会遇到，或者也不会给你带来困扰，所以它不是一个问题。而我，在开发rpcx，或者解答一些网友的问题的时候，深深被v2伤害到了,小小的心灵无法承受v2之重。</p>
+<p>一些开源项目，为了避免版本号跳到v2,采用了其它的一些办法，比如protobuf-go, 正在做新的版本的重构，改动非常大，不和以前的版本兼容了，可以以前的版本都v1.X.X了，那怎么办呢？换module path名称。</p>
+<ul>
+<li>github.com/golang/protobuf: 支持先前的protobuf go,目前最高版本v1.5.2</li>
+<li>google.golang.org/protobuf: 新版本的module path,目前最高版本v1.27.0，初始版本v1.20.0</li>
+</ul>
+<p>对于我开发的rpcx项目，因为在go module出来之前版本号已经发布到了v6.X.X。 我想回到从前，貌似回不去了。所以我采用了一个极端的做法，把tag重建，所有的版本号都定义在v1.X.X内。还好影响的用户比较少，所以也没有用户抱怨。</p>
+<p>我这种做法比较极端，没造成用户抱怨的原因是我一直坚持go module和GOPATH并存的方式。发版的时候采用go module发版，master开发分支上采用GOPATH方式，绝大部分用户都使用master分支，或者自己fork了一个新的版本，所以造成的影响很小。</p>
+]]></content>
+    <summary type="html">
+    <![CDATA[<p>Go module不但遵循<a href="https://semver.org/lang/zh-CN/" target="_blank" rel="external">语义化版本规范 2.0.0</a>,而且还更进一步，对语义化版本中的major还还赋予了更深的意义。</p>
+]]>
+    
+    </summary>
+    
+      <category term="Go" scheme="https://colobu.com/categories/Go/"/>
+    
+  </entry>
   
   <entry>
     <title><![CDATA[深入Go Module之go.mod文件解析]]></title>
@@ -1347,57 +1406,6 @@
 <p>诚然，通过一个排外锁可以实现队列的并发访问。一般实现队列的时候通过指针，而且只在队头队尾操作，所以这种排外锁保护的临界区并没有很复杂的执行逻辑，临界区的处理很快，所以一般情况下通过排外锁实现队列的效率已经很高了。但是在一些情况下，通过实现 lock-free 算法，我们可以进一步提升并发队列的性能。</p>
 <p>本文介绍 lock-free queue 算法的一些背景知识，并实现了三种并发队列，并提供了性能测试的结果。</p>
 <p>代码库可以在github上找到: <a href="https://github.com/smallnest/queue" target="_blank" rel="external">smallnest/queue</a>。</p>
-]]>
-    
-    </summary>
-    
-      <category term="Go" scheme="https://colobu.com/categories/Go/"/>
-    
-  </entry>
-  
-  <entry>
-    <title><![CDATA[用Go撸一个二叉搜索树]]></title>
-    <link href="https://colobu.com/2020/07/15/implement-bst-in-Go/"/>
-    <id>https://colobu.com/2020/07/15/implement-bst-in-Go/</id>
-    <published>2020-07-14T17:41:28.000Z</published>
-    <updated>2021-06-03T10:01:23.594Z</updated>
-    <content type="html"><![CDATA[<p>前几天Redis的作者antirez说他朋友面试的时候考到排序问题，然后他说要是他也会考实现一个二叉搜索树，我说在中国某公司，据说面试直接就撸一个红黑树。不是说你技术渣，试问在座的各位有几个现在直接裸写出红黑树？</p>
-<p>红黑树太过偏门，但是常用的二叉搜索树你能写出来吗？快排呢？堆排序呢？</p>
-<a id="more"></a>
-<h2 id="什么是二叉搜索树">什么是二叉搜索树</h2>
-<p>二叉搜索树(binary search tree,<a href="https://en.wikipedia.org/wiki/Binary_search_tree" target="_blank" rel="external">BST</a>)也叫排序的二叉树，根节点比左边子树的所有节点都大，比右边子树上的所有节点都小，如下图就是一个二叉搜索树:</p>
-<p><img src="bst.png" alt=""></p>
-<p>要实现一个二叉搜索树， 我们需要实现节点的插入和删除，要实现节点的查找(搜索)，要实现前序遍历、中序遍历和后序遍历，要实现最大节点和最小节点的查找。<br>下面就让我们实现这个二叉搜索树。</p>
-<h2 id="定义基本数据结构">定义基本数据结构</h2>
-<p>常规地，我们定义节点的类型，每个节点包含它的值以及左右节点。因为目前Go泛型还没有发布，所以这里我们实现一个元素为int类型的具体的二叉搜索树，等泛型实现后可以改成抽象的二叉搜索树。</p>
-<p>树只要包含根节点可以了。</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div></pre></td><td class="code"><pre><div class="line"><span class="comment">// Node 定义节点.</span></div><div class="line"><span class="keyword">type</span> Node <span class="keyword">struct</span> {</div><div class="line">	value <span class="typename">int</span>   <span class="comment">// 因为目前Go的泛型还没有发布，所以我们这里以一个int具体类型为例</span></div><div class="line">	left  *Node <span class="comment">// 左子节点</span></div><div class="line">	right *Node <span class="comment">// 右子节点</span></div><div class="line">}</div><div class="line"><span class="comment">// BST 是一个节点的值为int类型的二叉搜索树.</span></div><div class="line"><span class="keyword">type</span> BST <span class="keyword">struct</span> {</div><div class="line">	root *Node</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>数据结构有了，接下来就是实现各个方法。</p>
-<h2 id="插入和删除">插入和删除</h2>
-<p>既然是一棵树，就需要增加节点用来构造树，大部分情况下也需要删除节点。</p>
-<p>增加节点的时候，需要判断应该往左边子树上添加，还是往右边子树上添加。天然地，既然二叉搜索树是一个有序的，那么我们就可以进行比较，然后递归的实现。</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div></pre></td><td class="code"><pre><div class="line"><span class="comment">// Insert 插入一个元素.</span></div><div class="line"><span class="keyword">func</span> (bst *BST) Insert(value <span class="typename">int</span>) {</div><div class="line">	newNode := &Node;{value, <span class="constant">nil</span>, <span class="constant">nil</span>}</div><div class="line">	<span class="comment">// 如果二叉树为空，那么这个节点就当作跟节点</span></div><div class="line">	<span class="keyword">if</span> bst.root == <span class="constant">nil</span> {</div><div class="line">		bst.root = newNode</div><div class="line">	} <span class="keyword">else</span> {</div><div class="line">		insertNode(bst.root, newNode)</div><div class="line">	}</div><div class="line">}</div><div class="line"><span class="comment">// 从根节点依次比较</span></div><div class="line"><span class="keyword">func</span> insertNode(root, newNode *Node) {</div><div class="line">	<span class="keyword">if</span> newNode.value &lt; root.value { <span class="comment">// 应该放到根节点的左边</span></div><div class="line">		<span class="keyword">if</span> root.left == <span class="constant">nil</span> {</div><div class="line">			root.left = newNode</div><div class="line">		} <span class="keyword">else</span> {</div><div class="line">			insertNode(root.left, newNode)</div><div class="line">		}</div><div class="line">	} <span class="keyword">else</span> <span class="keyword">if</span> newNode.value &gt; root.value { <span class="comment">// 应该放到根节点的右边</span></div><div class="line">		<span class="keyword">if</span> root.right == <span class="constant">nil</span> {</div><div class="line">			root.right = newNode</div><div class="line">		} <span class="keyword">else</span> {</div><div class="line">			insertNode(root.right, newNode)</div><div class="line">		}</div><div class="line">	}</div><div class="line">	<span class="comment">// 否则等于根节点</span></div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>删除有些麻烦，如果是删除叶节点就比较容易，删除即可。但是如果不是删除叶节点，那么就需要将子节点提升。</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div><div class="line">35</div><div class="line">36</div><div class="line">37</div><div class="line">38</div><div class="line">39</div><div class="line">40</div><div class="line">41</div><div class="line">42</div><div class="line">43</div><div class="line">44</div><div class="line">45</div><div class="line">46</div><div class="line">47</div><div class="line">48</div></pre></td><td class="code"><pre><div class="line"><span class="comment">// Remove 删除一个元素.</span></div><div class="line"><span class="keyword">func</span> (bst *BST) Remove(value <span class="typename">int</span>) <span class="typename">bool</span> {</div><div class="line">	_, existed := remove(bst.root, value)</div><div class="line">	<span class="keyword">return</span> existed</div><div class="line">}</div><div class="line"><span class="comment">// 用来递归移除节点的辅助方法.</span></div><div class="line"><span class="comment">// 返回替换root的新节点，以及元素是否存在</span></div><div class="line"><span class="keyword">func</span> remove(root *Node, value <span class="typename">int</span>) (*Node, <span class="typename">bool</span>) {</div><div class="line">	<span class="keyword">if</span> root == <span class="constant">nil</span> {</div><div class="line">		<span class="keyword">return</span> <span class="constant">nil</span>, <span class="constant">false</span></div><div class="line">	}</div><div class="line">	<span class="keyword">var</span> existed <span class="typename">bool</span></div><div class="line">	<span class="comment">// 从左边找</span></div><div class="line">	<span class="keyword">if</span> value &lt; root.value {</div><div class="line">		root.left, existed = remove(root.left, value)</div><div class="line">		<span class="keyword">return</span> root, existed</div><div class="line">	}</div><div class="line">	<span class="comment">// 从右边找</span></div><div class="line">	<span class="keyword">if</span> value &gt; root.value {</div><div class="line">		root.right, existed = remove(root.right, value)</div><div class="line">		<span class="keyword">return</span> root, existed</div><div class="line">	}</div><div class="line">	<span class="comment">// 如果此节点正是要移除的节点,那么返回此节点，同时返回之前可能需要调整.</span></div><div class="line">	existed = <span class="constant">true</span></div><div class="line">	<span class="comment">// 如果此节点没有孩子，直接返回即可</span></div><div class="line">	<span class="keyword">if</span> root.left == <span class="constant">nil</span> && root.right == <span class="constant">nil</span> {</div><div class="line">		root = <span class="constant">nil</span></div><div class="line">		<span class="keyword">return</span> root, existed</div><div class="line">	}</div><div class="line">	<span class="comment">// 如果左子节点为空, 提升右子节点</span></div><div class="line">	<span class="keyword">if</span> root.left == <span class="constant">nil</span> {</div><div class="line">		root = root.right</div><div class="line">		<span class="keyword">return</span> root, existed</div><div class="line">	}</div><div class="line">	<span class="comment">// 如果右子节点为空, 提升左子节点</span></div><div class="line">	<span class="keyword">if</span> root.right == <span class="constant">nil</span> {</div><div class="line">		root = root.left</div><div class="line">		<span class="keyword">return</span> root, existed</div><div class="line">	}</div><div class="line">	<span class="comment">// 如果左右节点都存在,那么从右边节点找到一个最小的节点提升，这个节点肯定比左子树所有节点都大.</span></div><div class="line">	<span class="comment">// 也可以从左子树节点中找一个最大的提升，道理一样.</span></div><div class="line">	smallestInRight, _ := min(root.right)</div><div class="line">	<span class="comment">// 提升</span></div><div class="line">	root.value = smallestInRight</div><div class="line">	<span class="comment">// 从右边子树中移除此节点</span></div><div class="line">	root.right, _ = remove(root.right, smallestInRight)</div><div class="line">	<span class="keyword">return</span> root, existed</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<h2 id="搜索">搜索</h2>
-<p>检查一个节点是否存在比较简单，因为二叉搜索树是有序的。</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div></pre></td><td class="code"><pre><div class="line"><span class="comment">// Search 搜索元素(检查元素是否存在)</span></div><div class="line"><span class="keyword">func</span> (bst *BST) Search(value <span class="typename">int</span>) <span class="typename">bool</span> {</div><div class="line">	<span class="keyword">return</span> search(bst.root, value)</div><div class="line">}</div><div class="line"><span class="keyword">func</span> search(n *Node, value <span class="typename">int</span>) <span class="typename">bool</span> {</div><div class="line">	<span class="keyword">if</span> n == <span class="constant">nil</span> {</div><div class="line">		<span class="keyword">return</span> <span class="constant">false</span></div><div class="line">	}</div><div class="line">	<span class="keyword">if</span> value &lt; n.value {</div><div class="line">		<span class="keyword">return</span> search(n.left, value)</div><div class="line">	}</div><div class="line">	<span class="keyword">if</span> value &gt; n.value {</div><div class="line">		<span class="keyword">return</span> search(n.right, value)</div><div class="line">	}</div><div class="line">	<span class="keyword">return</span> <span class="constant">true</span></div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>同时，我们还可以实现查找一个二叉搜索树的最大最小值。</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div></pre></td><td class="code"><pre><div class="line"><span class="comment">// Min 二叉搜索树中的最小值</span></div><div class="line"><span class="keyword">func</span> (bst *BST) Min() (<span class="typename">int</span>, <span class="typename">bool</span>) {</div><div class="line">	<span class="keyword">return</span> min(bst.root)</div><div class="line">}</div><div class="line"><span class="keyword">func</span> min(node *Node) (<span class="typename">int</span>, <span class="typename">bool</span>) {</div><div class="line">	<span class="keyword">if</span> node == <span class="constant">nil</span> {</div><div class="line">		<span class="keyword">return</span><span class="number"> 0</span>, <span class="constant">false</span></div><div class="line">	}</div><div class="line">	n := node</div><div class="line">	<span class="comment">// 从左边找</span></div><div class="line">	<span class="keyword">for</span> {</div><div class="line">		<span class="keyword">if</span> n.left == <span class="constant">nil</span> {</div><div class="line">			<span class="keyword">return</span> n.value, <span class="constant">true</span></div><div class="line">		}</div><div class="line">		n = n.left</div><div class="line">	}</div><div class="line">}</div><div class="line"><span class="comment">// Max 二叉搜索树中的最大值</span></div><div class="line"><span class="keyword">func</span> (bst *BST) Max() (<span class="typename">int</span>, <span class="typename">bool</span>) {</div><div class="line">	<span class="keyword">return</span> max(bst.root)</div><div class="line">}</div><div class="line"><span class="keyword">func</span> max(node *Node) (<span class="typename">int</span>, <span class="typename">bool</span>) {</div><div class="line">	<span class="keyword">if</span> node == <span class="constant">nil</span> {</div><div class="line">		<span class="keyword">return</span><span class="number"> 0</span>, <span class="constant">false</span></div><div class="line">	}</div><div class="line">	n := node</div><div class="line">	<span class="comment">// 从右边找</span></div><div class="line">	<span class="keyword">for</span> {</div><div class="line">		<span class="keyword">if</span> n.right == <span class="constant">nil</span> {</div><div class="line">			<span class="keyword">return</span> n.value, <span class="constant">true</span></div><div class="line">		}</div><div class="line">		n = n.right</div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<h2 id="遍历">遍历</h2>
-<p>可以实现先序遍历、中序遍历和后序遍历，先中后指的是根节点相对子节点的处理顺序。</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div></pre></td><td class="code"><pre><div class="line"><span class="comment">// PreOrderTraverse 前序遍历</span></div><div class="line"><span class="keyword">func</span> (bst *BST) PreOrderTraverse(f <span class="keyword">func</span>(<span class="typename">int</span>)) {</div><div class="line">	preOrderTraverse(bst.root, f)</div><div class="line">}</div><div class="line"><span class="keyword">func</span> preOrderTraverse(n *Node, f <span class="keyword">func</span>(<span class="typename">int</span>)) {</div><div class="line">	<span class="keyword">if</span> n != <span class="constant">nil</span> {</div><div class="line">		f(n.value) <span class="comment">// 前</span></div><div class="line">		preOrderTraverse(n.left, f)</div><div class="line">		preOrderTraverse(n.right, f)</div><div class="line">	}</div><div class="line">}</div><div class="line"><span class="comment">// PostOrderTraverse 后序遍历</span></div><div class="line"><span class="keyword">func</span> (bst *BST) PostOrderTraverse(f <span class="keyword">func</span>(<span class="typename">int</span>)) {</div><div class="line">	postOrderTraverse(bst.root, f)</div><div class="line">}</div><div class="line"><span class="keyword">func</span> postOrderTraverse(n *Node, f <span class="keyword">func</span>(<span class="typename">int</span>)) {</div><div class="line">	<span class="keyword">if</span> n != <span class="constant">nil</span> {</div><div class="line">		postOrderTraverse(n.left, f)</div><div class="line">		postOrderTraverse(n.right, f)</div><div class="line">		f(n.value) <span class="comment">// 后</span></div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>是不是你还可以通过广度搜索按照层级进行遍历？</p>
-]]></content>
-    <summary type="html">
-    <![CDATA[<p>前几天Redis的作者antirez说他朋友面试的时候考到排序问题，然后他说要是他也会考实现一个二叉搜索树，我说在中国某公司，据说面试直接就撸一个红黑树。不是说你技术渣，试问在座的各位有几个现在直接裸写出红黑树？</p>
-<p>红黑树太过偏门，但是常用的二叉搜索树你能写出来吗？快排呢？堆排序呢？</p>
 ]]>
     
     </summary>
