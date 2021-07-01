@@ -182,7 +182,7 @@
       <p>Russ Cox关于内存模型的系列文章之一。这是第一篇 <a href="https://research.swtch.com/hwmm" target="_blank" rel="external">Hardware Memory Models</a></p>
 <a id="more"></a>
 <h2 id="简介:_童话之终局">简介: 童话之终局</h2>
-<p>很久以前，当每个人都写单线程程序的时候，让程序运行得更快最有效的方法之一是坐下来袖手旁观。下一代硬件和编译器的优化结果可以让程序像以前一样运行，只是速度会更快。在这个童话般的年代，有一个测试优化是否有效的简单测试方法:如果程序员不能区分合法程序的未优化执行结果和优化执行的结果之间的区别(除了速度的区别)，那么这个优化就是有效的。也就是说，有效的优化不会改变有效程序的行为。</p>
+<p>很久以前，当每个人都写单线程程序的时候，让程序运行得更快最有效的方法之一是坐下来袖手旁观。下一代硬件和编译器的优化结果可以让程序像以前一样运行，只是速度会更快。在这个童话般的年代，有一个判断优化是否有效的简单测试方法:如果程序员不能区分合法程序的未优化执行结果和优化执行的结果之间的区别(除了速度的区别)，那么这个优化就是有效的。也就是说，有效的优化不会改变有效程序的行为。</p>
 <p>几年前， 某个悲伤的日子，硬件工程师发现让单个处理器越来越快的魔法失效了。不过，他们发现了一个新的魔法，可以让他们创造出拥有越来越多处理器的计算机，操作系统使用线程抽象模型向程序员展示了这种硬件并行能力。这种新的魔法——多处理器以操作系统线程的形式提供并行能力——对硬件工程师来说效果更好，但它给编程语言设计者、编译器作者和程序员带来了严重的问题。</p>
 <p>许多在单线程程序中不可见(因此有效)的硬件和编译器优化会在多线程程序中产生明显的结果变化。如果有效的优化没有改变有效程序的行为，那么这些优化应该被认为是无效的。或者现有程序必须被声明为无效的。到底是哪一个，怎么判断？</p>
 <p>这里有一个类似C语言的简单示例程序。在这个程序和我们将要考虑的所有程序中，所有变量最初都设置为零。</p>
@@ -232,7 +232,6 @@
 <figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div></pre></td><td class="code"><pre><div class="line">Litmus Test: Write Queue (also called Store Buffer)</div><div class="line">Can this program see <span class="variable">r1 =</span> <span class="number">0</span>, <span class="variable">r2 =</span> <span class="number">0</span>?</div><div class="line"></div><div class="line">// Thread <span class="number">1</span>           // Thread <span class="number">2</span></div><div class="line"><span class="variable">x =</span> <span class="number">1</span>                 <span class="variable">y =</span> <span class="number">1</span></div><div class="line"><span class="variable">r1 =</span> y                <span class="variable">r2 =</span> x</div><div class="line">On sequentially consistent hardware: no.</div><div class="line">On x86 (<span class="constant">or</span> other TSO): yes!</div></pre></td></tr></table></figure>
 
 <p>在任何顺序一致的执行中，<code>x = 1</code>或<code>y = 1</code>必须首先发生，然后另一个线程中的读取必须能够观察到它(此赋值事件)，因此<code>r1 = 0，r2 = 0</code>是不可能的。但是在一个TSO系统中，线程1和线程2可能会将它们的写操作排队，然后在任何一个写操作进入内存之前从内存中读取，这样两个读操作都会看到零。</p>
-<p>This example may seem artificial, but using two synchronization variables does happen in well-known synchronization algorithms, such as Dekker&#39;s algorithm or Peterson&#39;s algorithm, as well as ad hoc schemes. They break if one thread isn’t seeing all the writes from another.</p>
 <p>这个例子看起来可能是人为制造的，但是使用两个同步变量确实发生在众所周知的同步算法中，例如<a href="https://en.wikipedia.org/wiki/Dekker%27s_algorithm" target="_blank" rel="external">德克尔算法</a>或<a href="https://en.wikipedia.org/wiki/Dekker%27s_algorithm" target="_blank" rel="external">彼得森算法</a>，以及特定的方案。如果一个线程没有看到另一个线程的所有写操作，线程就可能会中断。</p>
 <p>为了修复同步算法，我们需要依赖于更强的内存排序，非顺序一致的硬件提供了称为内存屏障(或栅栏)的显式指令，可用于控制排序。我们可以添加一个内存屏障，以确保每个线程在开始读取之前都会刷新其先前对内存的写入:</p>
 <figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line"><span class="comment">// Thread 1           // Thread 2</span></div><div class="line">x =<span class="number"> 1</span>                 y =<span class="number"> 1</span></div><div class="line">barrier               barrier</div><div class="line">r1 = y                r2 = x</div></pre></td></tr></table></figure>
@@ -244,7 +243,6 @@
 <p>如果线程3看到x先于y变化，那么线程4能看到y先于x变化吗？对于x86和其他TSO机器，答案是否定的:对主内存的所有存储(写入)都有一个总顺序，所有处理器都认同这个顺序，只是每个处理器在到达主内存之前都先知道自己的写入而已。</p>
 <h2 id="x86-TSO_之路">x86-TSO 之路</h2>
 <p>x86-TSO模型看起来相当整洁，但是这条道路充满了路障和错误的弯道。在20世纪90年代，第一批x86多处理器可用的手册几乎没有提到硬件提供的内存模型。</p>
-<p>As one example of the problems, Plan 9 was one of the first true multiprocessor operating systems (without a global kernel lock) to run on the x86. During the port to the multiprocessor Pentium Pro, in 1997, the developers stumbled over unexpected behavior that boiled down to the write queue litmus test. A subtle piece of synchronization code assumed that r1 = 0, r2 = 0 was impossible, and yet it was happening. Worse, the Intel manuals were vague about the memory model details.</p>
 <p>作为问题困扰的一个例子，Plan 9 是第一个在x86上运行的真正多处理器操作系统(没有全局内核锁)。1997年，在移植到多处理器 奔腾Pro的过程中，开发人员被写队列litmus test的不期望的行为所困扰。一小段同步代码假设<code>r1 = 0，r2 = 0</code>是不可能的，但它确实发生了。更糟糕的是，英特尔手册对内存模型的细节模糊不清。</p>
 <p>针对邮件列表中提出的“使用锁最好保守一点，不要相信硬件设计师会做我们期望的事情”的建议，Plan 9的一名开发人员很好地<a href="https://web.archive.org/web/20091124045026/http://9fans.net/archive/1997/04/76" target="_blank" rel="external">解释了这个问题</a>:</p>
 <blockquote>
@@ -271,7 +269,6 @@
 <p>现在让我们来看看一个更宽松的内存模型，在ARM和POWER处理器上找到的那个。在实现层面上，这两个系统在许多方面有所不同，但保证内存一致性的模型大致相似，比x86-TSO甚至x86-TLO+CC稍弱。</p>
 <p>ARM和POWER系统的概念模型是，每个处理器从其自己的完整内存副本中读取和向其写入，每个写入独立地传播到其他处理器，随着写入的传播，允许重新排序。<br><img src="mem-weak.png" alt=""></p>
 <p>这里没有总存储顺序。虽然没有描述，但是每个处理器都被允许推迟读取(<code>read</code>)，直到它等到它需要结果:读取(<code>read</code>)可以被延迟到稍后的写入(<code>write</code>)之后。在这个宽松的(<code>relaxed</code>)模型中，我们迄今为止所看到的每一个litmus test的答案都是“yes，这真的可能发生。”</p>
-<p>For the original message passing litmus test, the reordering of writes by a single processor means that Thread 1&#39;s writes may not be observed by other threads in the same order:</p>
 <p>对于通过litmus test的原始消息，单个处理器对写入的重新排序意味着线程1的写入可能不会被其他线程以相同的顺序观察到:</p>
 <figure class="highlight c"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div></pre></td><td class="code"><pre><div class="line">Litmus Test: Message Passing</div><div class="line">Can <span class="keyword">this</span> program see r1 = <span class="number">1</span>, r2 = <span class="number">0</span>?</div><div class="line"></div><div class="line"><span class="comment">// Thread 1           // Thread 2</span></div><div class="line">x = <span class="number">1</span>                 r1 = y</div><div class="line">y = <span class="number">1</span>                 r2 = x</div><div class="line">On sequentially consistent hardware: no.</div><div class="line">On x86 (or other TSO): no.</div><div class="line">On ARM/POWER: yes!</div></pre></td></tr></table></figure>
 
