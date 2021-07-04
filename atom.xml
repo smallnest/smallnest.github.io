@@ -4,7 +4,7 @@
   <subtitle><![CDATA[大道至简 Simplicity is the ultimate form of sophistication]]></subtitle>
   <link href="/atom.xml" rel="self"/>
   <link href="https://colobu.com/"/>
-  <updated>2021-07-01T06:44:17.507Z</updated>
+  <updated>2021-07-04T08:46:19.278Z</updated>
   <id>https://colobu.com/</id>
   
   <author>
@@ -13,6 +13,84 @@
   </author>
   
   <generator uri="http://zespia.tw/hexo/">Hexo</generator>
+  
+  <entry>
+    <title><![CDATA[深入Go Module之未说的秘密]]></title>
+    <link href="https://colobu.com/2021/07/04/dive-into-go-module-3/"/>
+    <id>https://colobu.com/2021/07/04/dive-into-go-module-3/</id>
+    <published>2021-07-04T07:22:37.000Z</published>
+    <updated>2021-07-04T08:45:44.051Z</updated>
+    <content type="html"><![CDATA[<p>正常情况下，我们的go.mod依赖库的版本都是符合<a href="https://semver.org/lang/zh-CN/" target="_blank" rel="external">语义化版本 2.0.0</a>的版本格式，或者<a href="https://golang.org/ref/mod#non-module-compat#glos-pseudo-version" target="_blank" rel="external">伪版本格式</a>。在前面的文章我没有特别提到一点的事，Go使用服务端提交的日期和commit id生成的伪版本号是符合语义化版本号2.0.0的，因为语义化版本号中规定pre-release以连接号<strong>-</strong>加一连串以逗号分隔的标识符组成，标识符以字母数字和连接号组成，所以你看到<code>-yyyyMMddhhmmss-comitid</code>包含两个连接号，这是正常的。</p>
+<p>go要求依赖库要么不包含go.mod,要么依赖库中的go.mod定义的依赖库版本必须以语义化版本 2.0.0格式(或伪版本号)标志(其实更严格，除了<code>+incompatible</code>不能加meta字段)，因为这样我们你能够明确标识某个依赖库确切的版本，这样的版本号被称之为<a href="https://golang.org/ref/mod#glos-canonical-version" target="_blank" rel="external">canonical version</a>。</p>
+<p>其实main module还可以定义non-canonical version，通过go get或者go mod tidy更新go.mod的时候，命令会尝试更新go.mod,尝试把non-canonical version转变为canonical version版本。</p>
+<p>但是，到底有哪些non-canonical version呢？我还没看到官方文章介绍，本文尝试整理这些non-canonical version。</p>
+<a id="more"></a>
+<h3 id="只定义major或者major-minor">只定义major或者major.minor</h3>
+<p>你可以不指定minor.patch或者patch,而是让go命令尝试去寻找最大的minor和patch,所以你可以在go.mod只定义vmajor或者vmajor.minor:</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line">github.<span class="keyword">com</span>/panicthis/B v1.<span class="number">2</span></div><div class="line">github.<span class="keyword">com</span>/panicthis/C v1</div><div class="line">github.<span class="keyword">com</span>/panicthis/G/v2 v2</div></pre></td></tr></table></figure>
+
+<p>运行<code>go mod tidy</code>它们会被转换成</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line">github.<span class="keyword">com</span>/panicthis/B v1.<span class="number">2.1</span></div><div class="line">github.<span class="keyword">com</span>/panicthis/C v1.<span class="number">4.0</span></div><div class="line">github.<span class="keyword">com</span>/panicthis/G/v2 v2.<span class="number">0.0</span></div></pre></td></tr></table></figure>
+
+<p><code>go get</code>命令也一样，你也可以直接指定major，忽略minor和patch, 比如</p>
+<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line">go get github.com/panicthis/B@v1.<span class="number">2</span></div><div class="line">go get github.com/panicthis/C@v1</div><div class="line">go get github.com/panicthis/G/v2@v2</div></pre></td></tr></table></figure>
+
+<h3 id="latest,_upgrade_和_patch">latest, upgrade 和 patch</h3>
+<p>有三个单词有特别的语义</p>
+<ul>
+<li>latest: 选择最高的release版本，如果没有release版本，则选择最高的pre-release版本，如果根本就没有打过tag,则选择最高的伪版本号的版本(默认分支的最后的提交版本)</li>
+<li>upgrade: 类似latest,但是如果有比release更高的版本(比如pre-release),会选择更高的版本</li>
+<li>patch: major和minor和当前的版本相同，只把patch升级到最高。当然如果没有当前的版本，则无从比较，则patch退化成latest语义</li>
+</ul>
+<p>比如下面的格式:</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line">github.<span class="keyword">com</span>/panicthis/D latest</div><div class="line">github.<span class="keyword">com</span>/panicthis/E upgrade</div><div class="line">github.<span class="keyword">com</span>/panicthis/F patch</div></pre></td></tr></table></figure>
+
+<p>使用go get命令也一样</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">go</span> <span class="built_in">get</span> github.<span class="keyword">com</span>/panicthis/D@latest</div><div class="line"><span class="keyword">go</span> <span class="built_in">get</span> github.<span class="keyword">com</span>/panicthis/E@upgrade</div><div class="line"><span class="keyword">go</span> <span class="built_in">get</span> github.<span class="keyword">com</span>/panicthis/F@patch //因为没有本地版本，所以此命令在<span class="keyword">go</span> <span class="number">1.16</span>下可能出错</div><div class="line"><span class="keyword">go</span> <span class="built_in">get</span> -<span class="keyword">u</span>=patch github.<span class="keyword">com</span>/panicthis/F@v1.<span class="number">1.0</span></div></pre></td></tr></table></figure>
+
+<h3 id="指定特定的commit_id">指定特定的commit id</h3>
+<p>因为有时候proxy有缓存时间或者更新周期，如果你提交了一个新的commit,或者新打了一个tag,通过 <code>latest</code>不一定能拉取到最新的提交，这个时候你可以通过指定commit id的方式拉取。或者你就想测试某个特定的版本。</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">github.<span class="keyword">com</span>/panicthis/H <span class="number">4</span>f7657a</div></pre></td></tr></table></figure>
+
+<p>或者</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">go</span> <span class="built_in">get</span> github.<span class="keyword">com</span>/panicthis/H@<span class="number">4</span>f7657a</div></pre></td></tr></table></figure>
+
+<p>甚至，你可以使用<code>HEAD</code>，作为你最新的commit id:</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">github.<span class="keyword">com</span>/panicthis/H HEAD</div></pre></td></tr></table></figure>
+
+<p>或者</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">go</span> <span class="built_in">get</span> github.<span class="keyword">com</span>/panicthis/H@HEAD</div></pre></td></tr></table></figure>
+
+<h3 id="特定的分支">特定的分支</h3>
+<p>你还可以拉取特定的分支</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div></pre></td><td class="code"><pre><div class="line">github.<span class="keyword">com</span>/panicthis/J master</div><div class="line">github.<span class="keyword">com</span>/panicthis/K feat-<span class="number">123</span></div></pre></td></tr></table></figure>
+
+<p>或者</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">go</span> <span class="built_in">get</span> github.<span class="keyword">com</span>/panicthis/J@master</div><div class="line"><span class="keyword">go</span> <span class="built_in">get</span> github.<span class="keyword">com</span>/panicthis/K@feat-<span class="number">123</span></div></pre></td></tr></table></figure>
+
+<h3 id="比较符">比较符</h3>
+<p>更有甚者，你可以使用<code>&gt;</code>、<code>&gt;=</code>、<code>&lt;</code>、<code>&lt;=</code>比较符，选取某个符合条件的最大的版本。</p>
+<p>比如:</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line">github.<span class="keyword">com</span>/stretchr/testify &gt;v1.<span class="number">7.0</span></div><div class="line">github.<span class="keyword">com</span>/panicthis/F &gt;=v1.<span class="number">1.0</span></div><div class="line">github.<span class="keyword">com</span>/panicthis/F &lt;v1.<span class="number">1.0</span></div><div class="line">github.<span class="keyword">com</span>/panicthis/F &lt;=v1.<span class="number">1.0</span></div></pre></td></tr></table></figure>
+
+<p>运行go mod tidy它会转换成canonical version。</p>
+<p>或者(注意命令行中需要使用转义符)：</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">go</span> <span class="built_in">get</span> github.<span class="keyword">com</span>/stretchr/testify@\&gt;v1.<span class="number">7.0</span></div><div class="line"><span class="keyword">go</span> <span class="built_in">get</span> -<span class="keyword">u</span>=patch github.<span class="keyword">com</span>/panicthis/F@\&gt;=v1.<span class="number">1.0</span></div><div class="line"><span class="keyword">go</span> <span class="built_in">get</span> -<span class="keyword">u</span>=patch github.<span class="keyword">com</span>/panicthis/F@\&lt;v1.<span class="number">1.0</span></div><div class="line"><span class="keyword">go</span> <span class="built_in">get</span> -<span class="keyword">u</span>=patch github.<span class="keyword">com</span>/panicthis/F@\&lt;=v1.<span class="number">1.0</span></div></pre></td></tr></table></figure>
+
+<p>虽然我们可以在go.mod中使用non-canonical version，但是在提交和发布的时候，我们需要使用go mod tidy把它们转换成canonical version,让依赖库的版本对应一个确定的版本，否则<code>master</code>、<code>HEAD</code>在不同的人使用的时候可能会对应不同的版本。</p>
+]]></content>
+    <summary type="html">
+    <![CDATA[<p>正常情况下，我们的go.mod依赖库的版本都是符合<a href="https://semver.org/lang/zh-CN/" target="_blank" rel="external">语义化版本 2.0.0</a>的版本格式，或者<a href="https://golang.org/ref/mod#non-module-compat#glos-pseudo-version" target="_blank" rel="external">伪版本格式</a>。在前面的文章我没有特别提到一点的事，Go使用服务端提交的日期和commit id生成的伪版本号是符合语义化版本号2.0.0的，因为语义化版本号中规定pre-release以连接号<strong>-</strong>加一连串以逗号分隔的标识符组成，标识符以字母数字和连接号组成，所以你看到<code>-yyyyMMddhhmmss-comitid</code>包含两个连接号，这是正常的。</p>
+<p>go要求依赖库要么不包含go.mod,要么依赖库中的go.mod定义的依赖库版本必须以语义化版本 2.0.0格式(或伪版本号)标志(其实更严格，除了<code>+incompatible</code>不能加meta字段)，因为这样我们你能够明确标识某个依赖库确切的版本，这样的版本号被称之为<a href="https://golang.org/ref/mod#glos-canonical-version" target="_blank" rel="external">canonical version</a>。</p>
+<p>其实main module还可以定义non-canonical version，通过go get或者go mod tidy更新go.mod的时候，命令会尝试更新go.mod,尝试把non-canonical version转变为canonical version版本。</p>
+<p>但是，到底有哪些non-canonical version呢？我还没看到官方文章介绍，本文尝试整理这些non-canonical version。</p>
+]]>
+    
+    </summary>
+    
+      <category term="Go" scheme="https://colobu.com/categories/Go/"/>
+    
+  </entry>
   
   <entry>
     <title><![CDATA[[译]硬件内存模型]]></title>
@@ -1445,66 +1523,6 @@
       <category term="Go" scheme="https://colobu.com/tags/Go/"/>
     
       <category term="Regexp" scheme="https://colobu.com/tags/Regexp/"/>
-    
-      <category term="Go" scheme="https://colobu.com/categories/Go/"/>
-    
-  </entry>
-  
-  <entry>
-    <title><![CDATA[Go Race Detector报假警?]]></title>
-    <link href="https://colobu.com/2020/09/07/go-race-detector-false-positive/"/>
-    <id>https://colobu.com/2020/09/07/go-race-detector-false-positive/</id>
-    <published>2020-09-07T03:27:46.000Z</published>
-    <updated>2020-11-11T14:22:11.930Z</updated>
-    <content type="html"><![CDATA[<p>最近写了一篇使用Go实现高效lock-free队列的<a href="使用 Go 实现 lock-free 的队列">文章</a>,主要是根据Maged M. Michael 和 Michael L. Scott 的论文中提到的两个算法，其中一个算法是利用两个lock实现分别控制head、tail实现的队列，算法都超级简单，所以使用Go实现起来也是非常的容易。</p>
-<p>最近一位网友提了一个<a href="https://github.com/smallnest/queue/issues/1" target="_blank" rel="external">issue</a>,发现使用go race detector很容易就报data race错误。上述论文已经发表了24年了，可以说久经学术界和工程界同仁的考验，但是这位网友也提供了可以重现的测试显示有data race问题，这是怎么回事呢？</p>
-<a id="more"></a>
-<p><img src="queue.png" alt=""></p>
-<p>Maged M. Michael 和 Michael L. Scott的two-lock queue算法的伪代码如下：<br><img src="two-lock-queue.png" alt=""></p>
-<p>它使用两把独立的锁，一把为head指针提供并发控制，一把为tail指针提供并发控制。head指针指向一个空的辅助节点，<code>head-&gt;next</code>才是队列的第一个数据。如果队列为空，出队操作返回NULL。</p>
-<p>根据伪代码使用go语言也很容易实现:<br><img src="go-queue.png" alt=""></p>
-<p>网友的测试代码如下:</p>
-<figure class="highlight go"><figcaption><span>main.go</span></figcaption><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> main</div><div class="line"></div><div class="line"><span class="keyword">import</span> (</div><div class="line">	<span class="string">"sync"</span></div><div class="line">	<span class="string">"github.com/smallnest/queue"</span></div><div class="line">)</div><div class="line"></div><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	q := queue.NewCQueue()</div><div class="line">	<span class="keyword">var</span> wg sync.WaitGroup</div><div class="line">	wg.Add<span class="number">(2</span>)</div><div class="line">	<span class="keyword">go</span> <span class="keyword">func</span>() {</div><div class="line">		<span class="keyword">defer</span> wg.Done()</div><div class="line">		<span class="keyword">for</span> i :=<span class="number"> 0</span>; i &lt;<span class="number"> 100000</span>; i++ {</div><div class="line">			q.Enqueue<span class="number">(1</span>)</div><div class="line">		}</div><div class="line">	}()</div><div class="line">	<span class="keyword">go</span> <span class="keyword">func</span>() {</div><div class="line">		<span class="keyword">defer</span> wg.Done()</div><div class="line">		<span class="keyword">for</span> i :=<span class="number"> 0</span>; i &lt;<span class="number"> 100000</span>; i++ {</div><div class="line">			_ = q.Dequeue()</div><div class="line">		}</div><div class="line">	}()</div><div class="line">	wg.Wait()</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>然后运行<code>go run -race main.go</code>。</p>
-<p>我们知道，go race detector经常用来探测代码中对同一个变量的并发访问问题，也就是<code>data race</code>的情况。它非常的优秀，是我们检测并发问题的一个利器。它是在内存访问的插入指令，运行时对监控对内存的读写，一旦发现有不同的goroutine读写的时候，就会打印出警告信息(当然都是读访问就不会报警了)。所以它必须是在运行时才有可能被检测到，所以在编译的时候，或者代码没有被运行到，或者代码运行的时候碰巧没有并发访问的话，它也检测不了。</p>
-<p>它是基于<a href="https://github.com/google/sanitizers/wiki/ThreadSanitizerAlgorithm" target="_blank" rel="external">Thread Sanitizer Algorithm</a>算法实现的。Google内部使用它探测出很多项目比如Chromium的很多的并发错误，也帮助探测出Go标准库中几十个并发的错误。</p>
-<p>我们可以写一个简单的程序，看看加了<code>race</code>之后编译的代码有什么改动:</p>
-<figure class="highlight go"><figcaption><span>race.go</span></figcaption><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> main</div><div class="line"></div><div class="line"><span class="keyword">var</span> a =<span class="number"> 1</span></div><div class="line"></div><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	<span class="keyword">go</span> <span class="keyword">func</span>() {</div><div class="line">		a =<span class="number"> 2</span></div><div class="line">	}()</div><div class="line"></div><div class="line">	<span class="keyword">go</span> <span class="keyword">func</span>() {</div><div class="line">		b := a</div><div class="line">		_ = b</div><div class="line">	}()</div><div class="line"></div><div class="line">	<span class="keyword">select</span> {}</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>运行<code>go tool compile -race -N -l -S race.go</code>就生成汇编代码了:</p>
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div></pre></td><td class="code"><pre><div class="line">......</div><div class="line">	<span class="number">0x002b</span> <span class="number">00043</span> (race.go:<span class="number">6</span>)	<span class="keyword">CALL</span>	runtime.racefuncenter(SB)</div><div class="line">	<span class="number">0x0030</span> <span class="number">00048</span> (race.go:<span class="number">7</span>)	LEAQ	<span class="string">""</span><span class="string">.a</span>(SB), <span class="number">AX</span></div><div class="line">	<span class="number">0x0037</span> <span class="number">00055</span> (race.go:<span class="number">7</span>)	<span class="keyword">MOVQ</span>	<span class="number">AX</span>, (<span class="literal">SP</span>)</div><div class="line">	<span class="number">0x003b</span> <span class="number">00059</span> (race.go:<span class="number">7</span>)	<span class="keyword">NOP</span></div><div class="line">	<span class="number">0x0040</span> <span class="number">00064</span> (race.go:<span class="number">7</span>)	<span class="keyword">CALL</span>	runtime.racewrite(SB)</div><div class="line">	<span class="number">0x0045</span> <span class="number">00069</span> (race.go:<span class="number">7</span>)	<span class="keyword">MOVQ</span>	<span class="number">$2</span>, <span class="string">""</span><span class="string">.a</span>(SB)</div><div class="line">	<span class="number">0x0050</span> <span class="number">00080</span> (race.go:<span class="number">8</span>)	<span class="keyword">CALL</span>	runtime.racefuncexit(SB)</div><div class="line">......</div><div class="line">	<span class="number">0x002b</span> <span class="number">00043</span> (race.go:<span class="number">10</span>)	<span class="keyword">CALL</span>	runtime.racefuncenter(SB)</div><div class="line">	<span class="number">0x0030</span> <span class="number">00048</span> (race.go:<span class="number">11</span>)	LEAQ	<span class="string">""</span><span class="string">.a</span>(SB), <span class="number">AX</span></div><div class="line">	<span class="number">0x0037</span> <span class="number">00055</span> (race.go:<span class="number">11</span>)	<span class="keyword">MOVQ</span>	<span class="number">AX</span>, (<span class="literal">SP</span>)</div><div class="line">	<span class="number">0x003b</span> <span class="number">00059</span> (race.go:<span class="number">11</span>)	<span class="keyword">NOP</span></div><div class="line">	<span class="number">0x0040</span> <span class="number">00064</span> (race.go:<span class="number">11</span>)	<span class="keyword">CALL</span>	runtime.raceread(SB)</div><div class="line">	<span class="number">0x0045</span> <span class="number">00069</span> (race.go:<span class="number">11</span>)	<span class="keyword">MOVQ</span>	<span class="string">""</span><span class="string">.a</span>(SB), <span class="number">AX</span></div><div class="line">	<span class="number">0x004c</span> <span class="number">00076</span> (race.go:<span class="number">11</span>)	<span class="keyword">MOVQ</span>	<span class="number">AX</span>, <span class="string">""</span><span class="string">.b</span>+<span class="number">8</span>(<span class="literal">SP</span>)</div><div class="line">	<span class="number">0x0051</span> <span class="number">00081</span> (race.go:<span class="number">13</span>)	<span class="keyword">CALL</span>	runtime.racefuncexit(SB)</div></pre></td></tr></table></figure>
-
-<p>可以看到编译的代码增加了很多<code>runtime.racexxxxxx</code>的调用，用来检测有没有并发读写的问题。(所以增加了race检测代码不要部署在线上，仅仅测试使用)。</p>
-<p>显然go race detector不会欺骗我们，它实实在在发现了代码中同时有对一个内存地址进行读写的情况，那么是论文中的算法错了吗？<strong>也不是</strong>。</p>
-<p>一句话，<strong>go race detector</strong>发现的race问题并不影响队列的逻辑和实现。虽然Go的issue和一些文章中指出只要<code>go race detector</code>测试出问题就是bug,但是也不尽然，万事都不是觉得的，只能说这些建议在绝大部分的场景下都是正确的。</p>
-<p>比如计数器，无果没有锁的保护，可能在并发的情况下数值是不准确的，但是如果我们不需要一个精确的计数器，那么<code>data race</code>就可以忽略。</p>
-<p>针对论文中介绍的two-lock queue,它的辅助header节点的设计，读写各自的并发控制，以及队列的特点决定了我们可以忽略这个<code>data race</code>报警。</p>
-<p>算法中<code>enqueue()</code>仅仅维护tail指针、<code>dequeue()</code>仅仅维护head指针，他们可以使用独立的lock来控制。</p>
-<p><code>head</code>节点是一个辅助节点(<code>dummy node</code>)，队列初始化的时候<code>head</code>指针和<code>tail</code>指针都指向它。当增加第一个元素的时候，<code>enqueue()</code>写入到它的<code>next</code>节点，而<code>dequeue()</code>尝试读取<code>head-&gt;next</code>节点。</p>
-<p>如果<code>head.next</code>为空，那么我们就认为这个队列就是空的，至少在判断的这一刻队列就是空的，返回nil。</p>
-<p>注意<code>enqueue()</code>是预先创建和初始化好新节点，才把它设置到<code>tail-&gt;next</code>,读写指针都是原子的，所以<code>dequeue()</code>要么看到了这个新的节点，要么没看到这个新的节点，它绝不会看到初始化一半的节点，所以并发的情况有以下两种情况:</p>
-<ol>
-<li><code>enqueue()</code>在<code>tail-&gt;next</code>位置上写入了新节点，<code>dequeue()</code>在<code>head-&gt;next</code>位置上碰巧看到了这个新节点，把它返回了</li>
-<li><code>dequeue()</code>先读取了<code>head-&gt;next</code>然后<code>enqueue()</code>在<code>tail-&gt;next</code>同样的位置写入了新节点，这个时候<code>dequeue()</code>返回队列为空。这是合理的，因为出队操作是在新节点加入之前运行的。</li>
-</ol>
-<p>虽然在这两种情况下会有<code>data race</code>的问题，但是不影响算法的正确性，也不影响队列的逻辑，所以这个<code>data race</code>报警是可以忽略的。</p>
-<h2 id="参考文档">参考文档</h2>
-<ol>
-<li><a href="https://www.cs.rochester.edu/u/scott/papers/1996_PODC_queues.pdf" target="_blank" rel="external">https://www.cs.rochester.edu/u/scott/papers/1996_PODC_queues.pdf</a></li>
-<li><a href="https://www.cs.rochester.edu/research/synchronization/pseudocode/queues.html" target="_blank" rel="external">https://www.cs.rochester.edu/research/synchronization/pseudocode/queues.html</a></li>
-<li><a href="https://stackoverflow.com/questions/37369031/two-lock-concurrent-queue-algorithm-issue" target="_blank" rel="external">https://stackoverflow.com/questions/37369031/two-lock-concurrent-queue-algorithm-issue</a></li>
-<li><a href="https://blog.golang.org/race-detector" target="_blank" rel="external">https://blog.golang.org/race-detector</a></li>
-<li><a href="https://github.com/google/sanitizers/wiki/ThreadSanitizerAlgorithm" target="_blank" rel="external">https://github.com/google/sanitizers/wiki/ThreadSanitizerAlgorithm</a></li>
-<li><a href="https://github.com/golang/go/issues/13096" target="_blank" rel="external">https://github.com/golang/go/issues/13096</a></li>
-</ol>
-]]></content>
-    <summary type="html">
-    <![CDATA[<p>最近写了一篇使用Go实现高效lock-free队列的<a href="使用 Go 实现 lock-free 的队列">文章</a>,主要是根据Maged M. Michael 和 Michael L. Scott 的论文中提到的两个算法，其中一个算法是利用两个lock实现分别控制head、tail实现的队列，算法都超级简单，所以使用Go实现起来也是非常的容易。</p>
-<p>最近一位网友提了一个<a href="https://github.com/smallnest/queue/issues/1" target="_blank" rel="external">issue</a>,发现使用go race detector很容易就报data race错误。上述论文已经发表了24年了，可以说久经学术界和工程界同仁的考验，但是这位网友也提供了可以重现的测试显示有data race问题，这是怎么回事呢？</p>
-]]>
-    
-    </summary>
     
       <category term="Go" scheme="https://colobu.com/categories/Go/"/>
     
