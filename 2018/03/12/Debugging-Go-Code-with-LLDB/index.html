@@ -1,0 +1,723 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset="utf-8">
+  
+  <title>[译]使用 LLDB 调试 Go 程序</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+  <meta name="description" content="我一般调试Go程序都是通过log日志，性能调试的话通过 pprof 、trace、flamegraph等，主要是Go没有一个很好的集成的debugger,前两年虽然关注了delve，但是在IDE中集成比较粗糙，调试也很慢，所以基本不使用debugger进行调试， 最近看到滴滴的工程师分享的使用debugger在调试Go程序，我觉得有必要在尝试一下这方面的技术了。
+本文翻译自 Debugging G">
+<meta property="og:type" content="article">
+<meta property="og:title" content="[译]使用 LLDB 调试 Go 程序">
+<meta property="og:url" content="https://colobu.com/2018/03/12/Debugging-Go-Code-with-LLDB/">
+<meta property="og:site_name" content="鸟窝">
+<meta property="og:description" content="我一般调试Go程序都是通过log日志，性能调试的话通过 pprof 、trace、flamegraph等，主要是Go没有一个很好的集成的debugger,前两年虽然关注了delve，但是在IDE中集成比较粗糙，调试也很慢，所以基本不使用debugger进行调试， 最近看到滴滴的工程师分享的使用debugger在调试Go程序，我觉得有必要在尝试一下这方面的技术了。
+本文翻译自 Debugging G">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="[译]使用 LLDB 调试 Go 程序">
+<meta name="twitter:description" content="我一般调试Go程序都是通过log日志，性能调试的话通过 pprof 、trace、flamegraph等，主要是Go没有一个很好的集成的debugger,前两年虽然关注了delve，但是在IDE中集成比较粗糙，调试也很慢，所以基本不使用debugger进行调试， 最近看到滴滴的工程师分享的使用debugger在调试Go程序，我觉得有必要在尝试一下这方面的技术了。
+本文翻译自 Debugging G">
+
+  
+  <link rel="alternative" href="/atom.xml" title="鸟窝" type="application/atom+xml">
+  
+  
+  <link rel="icon" href="/favicon.png">
+  
+  <link rel="stylesheet" href="/css/style.css" type="text/css">
+
+  <link href="//cdn.staticfile.org/font-awesome/4.2.0/css/font-awesome.css" rel="stylesheet">
+  
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/fancybox/2.1.7/css/jquery.fancybox.min.css"
+    media="screen" type="text/css">
+  
+  <link rel="stylesheet" href="//cdnjs.cloudflare.com/ajax/libs/animate.css/3.1.1/animate.min.css" media="screen"
+    type="text/css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/tonsky/FiraCode@1.207/distr/fira_code.css">
+</head>
+<body>
+  <div id="container">
+    <div id="wrap">
+      <header id="header">
+  <div id="banner"></div>
+  <div id="header-outer" class="outer">
+    <div id="header-title" class="inner">
+      <h1 id="logo-wrap" class="animated bounceInLeft">
+        <a href="/" id="logo">鸟窝</a>
+      </h1>
+      
+        <h2 id="subtitle-wrap" class="animated bounceInLeft">
+          <a href="/" id="subtitle">大道至简 Simplicity is the ultimate form of sophistication</a>
+        </h2>
+      
+    </div>
+    <div id="header-inner" class="inner">
+      <nav id="main-nav">
+        <a id="main-nav-toggle" class="nav-icon"></a>
+        
+          
+            <a class="main-nav-link" href="/"><i class="fa fa-home">&nbsp;</i>首页</a>
+          
+          
+          
+            <a class="main-nav-link" href="/archives"><i class="fa fa-folder-o">&nbsp;</i>归档</a>
+          
+          
+          
+            <a class="main-nav-link" href="https://github.com/smallnest"><i class="fa fa-github">&nbsp;</i>github</a>
+          
+          
+          
+            <div class="dropdown main-nav-link"><a class="main-nav-link" href="#"><i class="fa fa-bars">&nbsp;</i>网站群</a>
+              <div class="dropdown-content">
+          
+            
+              <a href="/goasm"><i class="fa fa-language"></i>&nbsp;Go汇编示例</a>
+            
+                
+          
+            
+              <a href="https://gowebexamples.com"><i class="fa fa-external-link"></i>&nbsp;Go Web开发示例</a>
+            
+                
+          
+            
+              <a href="http://go-database-sql.org"><i class="fa fa-external-link"></i>&nbsp;Go 数据库开发教程</a>
+            
+                
+          
+            
+              <hr>
+            
+                
+          
+            
+              <a href="http://rpcx.io"><i class="fa undefined"></i>&nbsp;RPCX官网</a>
+            
+                
+          
+            
+              <a href="http://cn.doc.rpcx.io"><i class="fa undefined"></i>&nbsp;RPC开发指南</a>
+            
+                
+          
+          </div>
+        </div>
+          
+          
+          
+            <a class="main-nav-link" href="/ScalaCollectionsCookbook"><i class="fa fa-book">&nbsp;</i>Scala集合技术手册</a>
+          
+          
+          
+            <a class="main-nav-link" href="/about"><i class="fa fa-lemon-o">&nbsp;</i>关于</a>
+          
+          
+
+
+      </nav>
+      <nav id="sub-nav">
+        
+          <a id="nav-rss-link" class="nav-icon" href="/atom.xml" title="RSS Feed"></a>
+        
+        <a id="nav-search-btn" class="nav-icon" title="Search"></a>
+      </nav>
+      <div id="search-form-wrap">
+        <form action="http://www.baidu.com/baidu" method="get" accept-charset="utf-8" class="search-form">
+          <input type="search" name="word" maxlength="20" class="search-form-input" placeholder="Search">
+          <input type="submit" value="" class="search-form-submit">
+          <input name=tn type=hidden value="bds">
+          <input name=cl type=hidden value="3">
+          <input name=ct type=hidden value="2097152">
+          <input type="hidden" name="si" value="colobu.com">
+        </form>
+      </div>
+    </div>
+  </div>
+</header>
+      <div class="outer">
+        <section id="main"><script>function show_answer(btn, x) { if (btn.value === "显示答案") { btn.value = "隐藏答案" } else { btn.value = "显示答案" } var as = document.getElementById(x); if (as.style.display === "none") { as.style.display = "block" } else { as.style.display = "none" } }</script>
+
+<article id="post-Debugging-Go-Code-with-LLDB" class="article article-type-post" itemscope
+  itemprop="blogPost">
+  <div class="article-meta">
+    <a href="/2018/03/12/Debugging-Go-Code-with-LLDB/" class="article-date">
+  <time datetime="2018-03-12T04:09:38.000Z" itemprop="datePublished">2018年03月12日</time>
+</a>
+    
+  <div class="article-category">
+    <a class="article-category-link" href="/categories/Go/">Go</a>
+  </div>
+
+    
+  <div class="article-author"> by smallnest</div>
+
+  </div>
+  <div class="article-inner">
+    
+    
+    <header class="article-header">
+      
+  
+    <h1 class="article-title" itemprop="name">
+      [译]使用 LLDB 调试 Go 程序
+	  
+    </h1>
+  
+
+    </header>
+    
+    <div class="article-entry" itemprop="articleBody">
+      
+      
+      
+      <p>我一般调试Go程序都是通过log日志，性能调试的话通过 pprof 、trace、flamegraph等，主要是Go没有一个很好的集成的debugger,前两年虽然关注了delve，但是在IDE中集成比较粗糙，调试也很慢，所以基本不使用debugger进行调试， 最近看到滴滴的工程师分享的使用debugger在调试Go程序，我觉得有必要在尝试一下这方面的技术了。</p>
+<p>本文翻译自 <a href="http://ribrdb.github.io/lldb/" target="_blank" rel="external">Debugging Go Code with LLDB</a>, 更好的调试Go程序的工具是<a href="https://github.com/derekparker/delve" target="_blank" rel="external">delve</a>, 因为它是专门为Go开发， 使用起来也很简单，并且还可以远程调试。delve的命令还可参考： <a href="https://github.com/derekparker/delve/tree/master/Documentation/cli" target="_blank" rel="external">dlv cli</a>，但是流行的通用的基础的debugger也是常用的手段之一。我在译文后面也列出了几篇其它关于go debug的相关文章，有兴趣的话也可以扩展阅读一下。</p>
+<a id="more"></a>
+<blockquote>
+<p>本文主要介绍应用于glang compiler 工具链的技术， 除了本文的介绍外，你还可以参考 <a href="http://lldb.llvm.org/tutorial.html" target="_blank" rel="external">LLDB 手册</a></p>
+</blockquote>
+<h2 id="介绍">介绍</h2>
+<p>在 Linux、Mac OS X, FreeBSD 或者 NetBSD环境中，当你使用 gc工具链编译和链接Go程序的时候， 编译出的二进制文件会携带<a href="http://dwarfstd.org/Dwarf3Std.php" target="_blank" rel="external">DWARFv3</a>调试信息。 LLDB调试器( &gt; 3.7)可以使用这个信息调试进程或者core dump文件。</p>
+<blockquote>
+<p>使用<code>-w</code>可以告诉链接器忽略这个调试信息， 比如<code>go build -ldflags &quot;-w&quot; prog.go</code>。</p>
+</blockquote>
+<p>gc编译器产生的代码可能会包含内联的优化，这不方便调试器调试，为了禁止内联， 你可以使用<code>-gcflags &quot;-N -l&quot;</code>参数。</p>
+<h3 id="安装lldb">安装lldb</h3>
+<p>MacOS下如果你安装了XCode,应该已经安装了LLDB， LLDB是XCode默认的调试器。</p>
+<p>Linux/MacOS/Windows下的安装方法可以参考： <a href="https://github.com/vadimcn/vscode-lldb/wiki/Installing-LLDB" target="_blank" rel="external">Installing-LLDB</a>。</p>
+<h3 id="通用操作">通用操作</h3>
+<ul>
+<li>显示文件和行号，设置断点以及反编译:</li>
+</ul>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div></pre></td><td class="code"><pre><div class="line">(lldb) l</div><div class="line">(lldb) l <span class="built_in">line</span></div><div class="line">(lldb) l <span class="built_in">file</span>.go:<span class="built_in">line</span></div><div class="line">(lldb) b <span class="built_in">line</span></div><div class="line">(lldb) b <span class="built_in">file</span>.go:<span class="built_in">line</span></div><div class="line">(lldb) disas</div></pre></td></tr></table></figure>
+
+<ul>
+<li>显示 backtrace 和 unwind stack frame:</li>
+</ul>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div></pre></td><td class="code"><pre><div class="line">(lldb) <span class="keyword">bt</span></div><div class="line">(lldb) frame n</div></pre></td></tr></table></figure>
+
+<ul>
+<li>Show the name, type and location on the stack frame of local variables, arguments and return values:</li>
+</ul>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line">(lldb) frame <span class="built_in">variable</span></div><div class="line">(lldb) p varname</div><div class="line">(lldb) expr -T <span class="comment">-- varname</span></div></pre></td></tr></table></figure>
+
+<h2 id="Go扩展">Go扩展</h2>
+<h3 id="表达式解析">表达式解析</h3>
+<p>LLDB支持Go表达式:</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line">(lldb) p x</div><div class="line">(lldb) <span class="type">expr</span> *(*<span class="type">int32</span>)(t)</div><div class="line">(lldb) help <span class="type">expr</span></div></pre></td></tr></table></figure>
+
+<h3 id="Interface">Interface</h3>
+<p>默认LLDB显示接口的动态类型。通常它是一个指针， 比如<code>func foo(a interface{}) { ... }</code>, 如果你调用<code>callfoo(1.0)</code>, lldb会把<code>a</code>看作<code>*float64inside</code>，你也可以禁止为一个表达式禁止这种处理，或者在全局禁用：</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div></pre></td><td class="code"><pre><div class="line">(lldb) expr -<span class="keyword">d</span> <span class="keyword">no</span>-dynamic-<span class="built_in">values</span> -- <span class="keyword">a</span></div><div class="line">(lldb) settings <span class="keyword">set</span> target.prefer-dynamic-<span class="built_in">values</span> <span class="keyword">no</span>-dynamic-<span class="built_in">values</span></div></pre></td></tr></table></figure>
+
+<h3 id="Data_Formatter">Data Formatter</h3>
+<p>LLDB包含 go string 和 slice的格式化输出器，查看<a href="http://lldb.llvm.org/varformats.html" target="_blank" rel="external">LLDB docs</a>文档学习定制格式化输出。如果你想扩展内建的格式化方式，可以参考<a href="https://github.com/ribrdb/lldb/blob/gogogo/source/Plugins/LanguageRuntime/Go/GoLanguageRuntime.cpp" target="_blank" rel="external">GoLanguageRuntime.cpp</a>。</p>
+<p>Channel和map被看作引用类型，lldb把它们作为指针类型， 就像C++的类型<code>hash&lt;int,string&gt;*</code>。Dereferencing会显示类型内部的表示。</p>
+<h3 id="Goroutine">Goroutine</h3>
+<p>LLDB 把 Goroutine 看作 thread。</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line">(lldb) <span class="keyword">thread</span> <span class="built_in">list</span></div><div class="line">(lldb) bt <span class="literal">all</span></div><div class="line">(lldb) <span class="keyword">thread</span> <span class="keyword">select</span> <span class="number">2</span></div></pre></td></tr></table></figure>
+
+<h3 id="已知问题">已知问题</h3>
+<ul>
+<li>如果编译时开启优化，调试信息可能是错误的。请确保开启参数 <code>-gcflags &quot;-N -l&quot;</code></li>
+<li>不能改变变量的值，或者调用goh函数</li>
+<li>需要更好的支持 chan 和 map 类型</li>
+<li>调试信息不包含输入的package, 所以你在表达式中需要package的全路径。当package中包含 non-identifier 字符的时候你需要用引号包含它: <code>x.(*foo/bar.BarType)</code> 或者 <code>(*“v.io/x/foo”.FooType)(x)</code></li>
+<li>调试信息不包含作用域，所以变量在它们初始化之前是可见的。 如果有同名的本地变量，比如shadowed 变量， 你不知道哪个是哪个</li>
+<li>调试信息仅仅描述了变量在内存中的位置,所以你可能看到寄存器中的变量的stale数据</li>
+<li>不能打印函数类型</li>
+</ul>
+<h2 id="教程">教程</h2>
+<p>在这个例子中我们可以检查标准库正则表达式。为了构建二进制文件， 进入<code>$GOROOT/src/regexp</code>然后运行<code>run go test -gcflags &quot;-N -l&quot; -c</code>,这会产生可执行文件 <code>regexp.test</code>。</p>
+<h3 id="启动">启动</h3>
+<p>启动 lldb, 调试 regexp.test:</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line">$ lldb regexp.test</div><div class="line">(lldb) target <span class="operator"><span class="keyword">create</span> <span class="string">"regexp.test"</span></span></div><div class="line"><span class="keyword">Current</span> executable <span class="keyword">set</span> <span class="keyword">to</span> <span class="string">'regexp.test'</span> (x86_64).</div><div class="line">(lldb)</div></pre></td></tr></table></figure>
+
+<h3 id="设置断点">设置断点</h3>
+<p>在TestFind 函数上设置断点:</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">(lldb) b <span class="built_in">regexp</span>.TestFind</div></pre></td></tr></table></figure>
+
+<p>有时候 go编译器会使用全路径为函数名添加前缀，如果你不能使用上面简单的名称，你可以使用正则表达式设置断点：</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div></pre></td><td class="code"><pre><div class="line">(lldb) break <span class="operator"><span class="keyword">set</span> -r <span class="keyword">regexp</span>.TestFind$</span></div><div class="line">Breakpoint <span class="number">5</span>: <span class="keyword">where</span> = <span class="keyword">regexp</span>.test<span class="string">`_/code/go/src/regexp.TestFind + 37 at find_test.go:149, address = 0x00000000000863a5</span></div></pre></td></tr></table></figure>
+
+<p>运行程序:</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div></pre></td><td class="code"><pre><div class="line">(lldb) run <span class="subst">--</span>test<span class="built_in">.</span>run<span class="subst">=</span>TestFind</div><div class="line">Process <span class="number">8496</span> launched: <span class="string">'/code/go/src/regexp/regexp.test'</span> (x86_64)</div><div class="line">Process <span class="number">8496</span> stopped</div><div class="line"><span class="subst">*</span> <span class="keyword">thread</span> <span class="variable">#9</span>: tid <span class="subst">=</span> <span class="number">0x0017</span>, <span class="number">0x00000000000863a5</span> regexp<span class="built_in">.</span>test<span class="string">`_/code/go/src/regexp.TestFind(t=0x000000020834a000) + 37 at find_test.go:149, stop reason = breakpoint 2.1 3.1 5.1</span></div><div class="line">    frame #0: 0x00000000000863a5 regexp.test`_/code/go/src/regexp<span class="built_in">.</span>TestFind(t<span class="subst">=</span><span class="number">0x000000020834a000</span>) <span class="subst">+</span> <span class="number">37</span> at find_test<span class="built_in">.</span>go:<span class="number">149</span></div><div class="line">   <span class="number">146</span>         <span class="comment">// First the simple cases.</span></div><div class="line">   <span class="number">147</span></div><div class="line">   <span class="number">148</span>         func TestFind(t <span class="subst">*</span>testing<span class="built_in">.</span>T) {</div><div class="line"><span class="subst">-&gt; </span><span class="number">149</span>                 for _, test <span class="subst">:=</span> range findTests {</div><div class="line">   <span class="number">150</span>                         re <span class="subst">:=</span> MustCompile(test<span class="built_in">.</span>pat)</div><div class="line">   <span class="number">151</span>                         <span class="keyword">if</span> re<span class="built_in">.</span><span class="built_in">String</span>() <span class="subst">!=</span> test<span class="built_in">.</span>pat {</div><div class="line">   <span class="number">152</span>                                 t<span class="built_in">.</span>Errorf(<span class="string">"String() = `%s`; should be `%s`"</span>, re<span class="built_in">.</span><span class="built_in">String</span>(), test<span class="built_in">.</span>pat)</div></pre></td></tr></table></figure>
+
+<p>程序会运行到设置的断点上，查看运行的goroutine以及它们在做什么：</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div></pre></td><td class="code"><pre><div class="line">(lldb) thread list</div><div class="line">Process 8496 stopped</div><div class="line">  thread #1: tid = 0x12201, 0x000000000003c0ab regexp.test`runtime.mach_semaphore_wait + 11 at sys_darwin_amd64.s:412</div><div class="line">  thread #2: tid = 0x122fa, 0x000000000003bf7c regexp.test`runtime.usleep + 44 at sys_darwin_amd64.s:290</div><div class="line">  thread #4: tid = 0x0001, 0x0000000000015865 regexp.test`runtime.gopark(unlockf=0x00000000000315a0, <span class="operator"><span class="keyword">lock</span>=<span class="number">0x00000002083220b8</span>, reason=<span class="string">"chan receive"</span>) + <span class="number">261</span> <span class="keyword">at</span> proc.<span class="keyword">go</span>:<span class="number">131</span></span></div><div class="line">  thread #<span class="number">5</span>: tid = <span class="number">0x0002</span>, <span class="number">0x0000000000015865</span> <span class="keyword">regexp</span>.test<span class="string">`runtime.gopark(unlockf=0x00000000000315a0, lock=0x00000000002990d0, reason="force gc (idle)") + 261 at proc.go:131</span></div><div class="line">  thread #6: tid = 0x0003, 0x0000000000015754 regexp.test`runtime.Gosched + <span class="number">20</span> <span class="keyword">at</span> proc.<span class="keyword">go</span>:<span class="number">114</span></div><div class="line">  thread #<span class="number">7</span>: tid = <span class="number">0x0004</span>, <span class="number">0x0000000000015865</span> <span class="keyword">regexp</span>.test<span class="string">`runtime.gopark(unlockf=0x00000000000315a0, lock=0x00000000002a07d8, reason="finalizer wait") + 261 at proc.go:131</span></div><div class="line">* thread #9: tid = 0x0017, 0x00000000000863a5 regexp.test`_/code/<span class="keyword">go</span>/src/<span class="keyword">regexp</span>.TestFind(t=<span class="number">0x000000020834a000</span>) + <span class="number">37</span> <span class="keyword">at</span> find_test.<span class="keyword">go</span>:<span class="number">149</span>, <span class="keyword">stop</span> reason = breakpoint <span class="number">2.1</span> <span class="number">3.1</span> <span class="number">5.1</span></div></pre></td></tr></table></figure>
+
+<p>用<code>*</code>标出的那个goroutine是当前的goroutine。</p>
+<h3 id="查看代码">查看代码</h3>
+<p>使用<code>l</code>或者<code>list</code>查看代码， <code>#</code>重复最后的命令：</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div></pre></td><td class="code"><pre><div class="line">(lldb) <span class="keyword">l</span></div><div class="line">(lldb) # Hit enter <span class="keyword">to</span> <span class="built_in">repeat</span> <span class="keyword">last</span> <span class="keyword">command</span>. Here, <span class="keyword">list</span> the <span class="keyword">next</span> few lines</div></pre></td></tr></table></figure>
+
+<h3 id="命名">命名</h3>
+<p>变量和函数名必须使用它们所隶属的package的全名， 比如<code>Compile</code>函数的名称是<code>regexp.Compile</code>。</p>
+<p>方法必须使用receiver类型的全程， 比如<code>*Regexp</code>类型的<code>String</code>方法是<code>regexp.(*Regexp).String</code>。</p>
+<p>被closure引用的变量会有<code>&amp;</code>前缀。</p>
+<h3 id="查看堆栈">查看堆栈</h3>
+<p>查看程序暂停的位置处的堆栈：</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div></pre></td><td class="code"><pre><div class="line">(lldb) bt</div><div class="line">* thread #9: tid = 0x0017, 0x00000000000863a5 regexp.test`_/code/go/src/regexp.TestFind(t=0x000000020834a000) + 37 at find_test.go:149, <span class="operator"><span class="keyword">stop</span> reason = breakpoint <span class="number">2.1</span> <span class="number">3.1</span> <span class="number">5.1</span></span></div><div class="line">  * frame #<span class="number">0</span>: <span class="number">0x00000000000863a5</span> <span class="keyword">regexp</span>.test<span class="string">`_/code/go/src/regexp.TestFind(t=0x000000020834a000) + 37 at find_test.go:149</span></div><div class="line">    frame #1: 0x0000000000056e3f regexp.test`testing.tRunner(t=<span class="number">0x000000000003b671</span>, test=<span class="number">0x000000020834a000</span>) + <span class="number">191</span> <span class="keyword">at</span> testing.<span class="keyword">go</span>:<span class="number">447</span></div><div class="line">    frame #<span class="number">2</span>: <span class="number">0x00000000002995a0</span> <span class="keyword">regexp</span>.test<span class="string">`/code/go/src/regexp.statictmp_3759 + 96</span></div><div class="line">    frame #3: 0x000000000003b671 regexp.test`runtime.goexit + <span class="number">1</span> <span class="keyword">at</span> asm_amd64.s:<span class="number">2232</span></div><div class="line">The stack frame shows we’re currently executing the <span class="keyword">regexp</span>.TestFind <span class="keyword">function</span>, <span class="keyword">as</span> expected.</div></pre></td></tr></table></figure>
+
+<p>命令<code>frame variable</code>会列出这个函数所有的本地变量以及它们的值。但是使用它有点危险，因为它会尝试打印出未初始化的变量。未初始化的slice可能会导致lldb打印出巨大的数组。</p>
+<p>函数参数:</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div></pre></td><td class="code"><pre><div class="line"><span class="xml"><span class="tag"><span class="php"><span class="function"><span class="params">(lldb)</span> <span class="title">frame</span> <span class="title">var</span> -<span class="title">l</span></span></span></span></span></div><div class="line"><span class="params">(*testing.T)</span> <span class="title">t</span> = 0<span class="title">x000000020834a000</span></div></pre></td></tr></table></figure>
+
+<p>打印这个参数的时候，你会注意到它是一个指向<code>Regexp</code>的指针。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div><div class="line">35</div><div class="line">36</div><div class="line">37</div><div class="line">38</div><div class="line">39</div><div class="line">40</div><div class="line">41</div><div class="line">42</div><div class="line">43</div><div class="line">44</div><div class="line">45</div><div class="line">46</div><div class="line">47</div><div class="line">48</div><div class="line">49</div><div class="line">50</div></pre></td><td class="code"><pre><div class="line">(lldb) p re</div><div class="line">(*_/code/<span class="keyword">go</span>/src/regexp.Regexp) <span class="number">$3</span> =<span class="number"> 0</span>x000000020834a090</div><div class="line">(lldb) p t</div><div class="line">(*testing.T) <span class="number">$4</span> =<span class="number"> 0</span>x000000020834a000</div><div class="line">(lldb) p *t</div><div class="line">(testing.T) <span class="number">$5</span> = {</div><div class="line">  testing.common = {</div><div class="line">    mu = {</div><div class="line">      w = (state =<span class="number"> 0</span>, sema =<span class="number"> 0</span>)</div><div class="line">      writerSem =<span class="number"> 0</span></div><div class="line">      readerSem =<span class="number"> 0</span></div><div class="line">      readerCount =<span class="number"> 0</span></div><div class="line">      readerWait =<span class="number"> 0</span></div><div class="line">    }</div><div class="line">    output = (<span class="built_in">len</span><span class="number"> 0</span>, <span class="built_in">cap</span><span class="number"> 0</span>) {}</div><div class="line">    failed = <span class="constant">false</span></div><div class="line">    skipped = <span class="constant">false</span></div><div class="line">    finished = <span class="constant">false</span></div><div class="line">    start = {</div><div class="line">      sec =<span class="number"> 63579066045</span></div><div class="line">      nsec =<span class="number"> 777400918</span></div><div class="line">      loc =<span class="number"> 0</span>x00000000002995a0</div><div class="line">    }</div><div class="line">    duration =<span class="number"> 0</span></div><div class="line">    self =<span class="number"> 0</span>x000000020834a000</div><div class="line">    signal =<span class="number"> 0</span>x0000000208322060</div><div class="line">  }</div><div class="line">  name = <span class="string">"TestFind"</span></div><div class="line">  startParallel =<span class="number"> 0</span>x0000000208322240</div><div class="line">}</div><div class="line">(lldb) p *t.startParallel</div><div class="line">(hchan&lt;<span class="typename">bool</span>&gt;) <span class="number">$3</span> = {</div><div class="line">  qcount =<span class="number"> 0</span></div><div class="line">  dataqsiz =<span class="number"> 0</span></div><div class="line">  buf =<span class="number"> 0</span>x0000000208322240</div><div class="line">  elemsize =<span class="number"> 1</span></div><div class="line">  closed =<span class="number"> 0</span></div><div class="line">  elemtype =<span class="number"> 0</span>x000000000014eda0</div><div class="line">  sendx =<span class="number"> 0</span></div><div class="line">  recvx =<span class="number"> 0</span></div><div class="line">  recvq = {</div><div class="line">    first =<span class="number"> 0</span>x0000000000000000</div><div class="line">    last =<span class="number"> 0</span>x0000000000000000</div><div class="line">  }</div><div class="line">  sendq = {</div><div class="line">    first =<span class="number"> 0</span>x0000000000000000</div><div class="line">    last =<span class="number"> 0</span>x0000000000000000</div><div class="line">  }</div><div class="line">  lock = (key =<span class="number"> 0</span>x0000000000000000)</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p><code>hchan&lt;bool&gt;</code>是这个channel的在运行时的内部数据结构。</p>
+<p>步进:</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div><div class="line">35</div><div class="line">36</div><div class="line">37</div><div class="line">38</div><div class="line">39</div><div class="line">40</div><div class="line">41</div><div class="line">42</div><div class="line">43</div><div class="line">44</div><div class="line">45</div><div class="line">46</div><div class="line">47</div><div class="line">48</div><div class="line">49</div><div class="line">50</div><div class="line">51</div><div class="line">52</div><div class="line">53</div><div class="line">54</div><div class="line">55</div><div class="line">56</div><div class="line">57</div><div class="line">58</div><div class="line">59</div><div class="line">60</div><div class="line">61</div></pre></td><td class="code"><pre><div class="line">(lldb) n <span class="comment"># execute next line</span></div><div class="line">(lldb) <span class="comment"># enter is repeat</span></div><div class="line">(lldb) <span class="comment"># enter is repeat</span></div><div class="line">Process <span class="number">17917</span> stopped</div><div class="line">* thread <span class="comment">#8: tid = 0x0017, 0x000000000008648f regexp.test`_/code/go/src/regexp.TestFind(t=0x000000020834a000) + 271 at find_test.go:151, stop reason = step over</span></div><div class="line">    frame <span class="comment">#0: 0x000000000008648f regexp.test`_/code/go/src/regexp.TestFind(t=0x000000020834a000) + 271 at find_test.go:151</span></div><div class="line">   <span class="number">148</span>         func TestFind(t *testing.T) {</div><div class="line">   <span class="number">149</span>                 for _, test := range findTests {</div><div class="line">   <span class="number">150</span>                         re := MustCompile(test.pat)</div><div class="line">-&gt; <span class="number">151</span>                         <span class="keyword">if</span> re.String() != test.pat {</div><div class="line">   <span class="number">152</span>                                 t.Errorf(<span class="string">"String() = `%s`; should be `%s`"</span>, re.String(), test.pat)</div><div class="line">   <span class="number">153</span>                         }</div><div class="line">   <span class="number">154</span>                         result := re.Find([]byte(test.text))</div><div class="line">(lldb) p test.pat</div><div class="line">(string) $<span class="number">4</span> = <span class="string">""</span></div><div class="line">(lldb) p re</div><div class="line">(*_/code/go/src/regexp.Regexp) $<span class="number">5</span> = <span class="number">0</span>x0000000208354320</div><div class="line">(lldb) p *re</div><div class="line">(_/code/go/src/regexp.Regexp) $<span class="number">6</span> = {</div><div class="line">  <span class="variable">expr =</span> <span class="string">""</span></div><div class="line">  <span class="variable">prog =</span> <span class="number">0</span>x0000000208ac6090</div><div class="line">  <span class="variable">onepass =</span> <span class="number">0</span>x0000000000000000</div><div class="line">  <span class="variable">prefix =</span> <span class="string">""</span></div><div class="line">  <span class="variable">prefixBytes =</span> (len <span class="number">0</span>, cap <span class="number">0</span>) {}</div><div class="line">  <span class="variable">prefixComplete =</span> <span class="constant">true</span></div><div class="line">  <span class="variable">prefixRune =</span> <span class="number">0</span></div><div class="line">  <span class="variable">prefixEnd =</span> <span class="number">0</span></div><div class="line">  <span class="variable">cond =</span> <span class="number">0</span></div><div class="line">  <span class="variable">numSubexp =</span> <span class="number">0</span></div><div class="line">  <span class="variable">subexpNames =</span> (len <span class="number">1</span>, cap <span class="number">1</span>) {</div><div class="line">    [<span class="number">0</span>] = <span class="string">""</span></div><div class="line">  }</div><div class="line">  <span class="variable">longest =</span> <span class="constant">false</span></div><div class="line">  <span class="variable">mu =</span> (<span class="variable">state =</span> <span class="number">0</span>, <span class="variable">sema =</span> <span class="number">0</span>)</div><div class="line">  <span class="variable">machine =</span> (len <span class="number">0</span>, cap <span class="number">0</span>) {}</div><div class="line">}</div><div class="line">(lldb) p *re.prog</div><div class="line">(regexp/syntax.Prog) $<span class="number">7</span> = {</div><div class="line">  <span class="variable">Inst =</span> (len <span class="number">3</span>, cap <span class="number">4</span>) {</div><div class="line">    [<span class="number">0</span>] = {</div><div class="line">      <span class="variable">Op =</span> <span class="number">5</span></div><div class="line">      <span class="variable">Out =</span> <span class="number">0</span></div><div class="line">      <span class="variable">Arg =</span> <span class="number">0</span></div><div class="line">      <span class="variable">Rune =</span> (len <span class="number">0</span>, cap <span class="number">0</span>) {}</div><div class="line">    }</div><div class="line">    [<span class="number">1</span>] = {</div><div class="line">      <span class="variable">Op =</span> <span class="number">6</span></div><div class="line">      <span class="variable">Out =</span> <span class="number">2</span></div><div class="line">      <span class="variable">Arg =</span> <span class="number">0</span></div><div class="line">      <span class="variable">Rune =</span> (len <span class="number">0</span>, cap <span class="number">0</span>) {}</div><div class="line">    }</div><div class="line">    [<span class="number">2</span>] = {</div><div class="line">      <span class="variable">Op =</span> <span class="number">4</span></div><div class="line">      <span class="variable">Out =</span> <span class="number">0</span></div><div class="line">      <span class="variable">Arg =</span> <span class="number">0</span></div><div class="line">      <span class="variable">Rune =</span> (len <span class="number">0</span>, cap <span class="number">0</span>) {}</div><div class="line">    }</div><div class="line">  }</div><div class="line">  <span class="variable">Start =</span> <span class="number">1</span></div><div class="line">  <span class="variable">NumCap =</span> <span class="number">2</span></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>我们还可以通过<code>s</code>命令 <code>Step Into</code>:</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div></pre></td><td class="code"><pre><div class="line">(lldb) s</div><div class="line">Process <span class="number">17917</span> stopped</div><div class="line"><span class="subst">*</span> <span class="keyword">thread</span> <span class="variable">#8</span>: tid <span class="subst">=</span> <span class="number">0x0017</span>, <span class="number">0x0000000000067332</span> regexp<span class="built_in">.</span>test<span class="string">`_/code/go/src/regexp.(re=0x0000000208354320, ~r0="").String + 18 at regexp.go:104, stop reason = step in</span></div><div class="line">    frame #0: 0x0000000000067332 regexp.test`_/code/go/src/regexp<span class="built_in">.</span>(re<span class="subst">=</span><span class="number">0x0000000208354320</span>, ~r0<span class="subst">=</span><span class="string">""</span>)<span class="built_in">.</span><span class="built_in">String</span> <span class="subst">+</span> <span class="number">18</span> at regexp<span class="built_in">.</span>go:<span class="number">104</span></div><div class="line">   <span class="number">101</span></div><div class="line">   <span class="number">102</span>         <span class="comment">// String returns the source text used to compile the regular expression.</span></div><div class="line">   <span class="number">103</span>         func (re <span class="subst">*</span>Regexp) <span class="built_in">String</span>() <span class="built_in">string</span> {</div><div class="line"><span class="subst">-&gt; </span><span class="number">104</span>                 <span class="keyword">return</span> re<span class="built_in">.</span>expr</div><div class="line">   <span class="number">105</span>         }</div><div class="line">   <span class="number">106</span></div><div class="line">   <span class="number">107</span>         <span class="comment">// Compile parses a regular expression and returns, if successful,</span></div></pre></td></tr></table></figure>
+
+<p>查看堆栈信息，看看目前我们停在哪儿：</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div></pre></td><td class="code"><pre><div class="line">(lldb) bt</div><div class="line">* thread #<span class="number">8</span>: tid = <span class="number">0x0017</span>, <span class="number">0x0000000000067332</span> <span class="built_in">regexp</span>.test`_/code/go/src/<span class="built_in">regexp</span>.(re=<span class="number">0x0000000208354320</span>, ~r0=<span class="string">""</span>).<span class="built_in">String</span> + <span class="number">18</span> at <span class="built_in">regexp</span>.go:<span class="number">104</span>, <span class="keyword">stop</span> reason = <span class="keyword">step</span> <span class="keyword">in</span></div><div class="line">  * frame #<span class="number">0</span>: <span class="number">0x0000000000067332</span> <span class="built_in">regexp</span>.test`_/code/go/src/<span class="built_in">regexp</span>.(re=<span class="number">0x0000000208354320</span>, ~r0=<span class="string">""</span>).<span class="built_in">String</span> + <span class="number">18</span> at <span class="built_in">regexp</span>.go:<span class="number">104</span></div><div class="line">    frame #<span class="number">1</span>: <span class="number">0x00000000000864a0</span> <span class="built_in">regexp</span>.test`_/code/go/src/<span class="built_in">regexp</span>.TestFind(t=<span class="number">0x000000020834a000</span>) + <span class="number">288</span> at find_test.go:<span class="number">151</span></div><div class="line">    frame #<span class="number">2</span>: <span class="number">0x0000000000056e3f</span> <span class="built_in">regexp</span>.test`testing.tRunner(t=<span class="number">0x000000000003b671</span>, test=<span class="number">0x000000020834a000</span>) + <span class="number">191</span> at testing.go:<span class="number">447</span></div><div class="line">    frame #<span class="number">3</span>: <span class="number">0x00000000002995a0</span> <span class="built_in">regexp</span>.test`/code/go/src/<span class="built_in">regexp</span>.statictmp_3759 + <span class="number">96</span></div><div class="line">    frame #<span class="number">4</span>: <span class="number">0x000000000003b671</span> <span class="built_in">regexp</span>.test`runtime.goexit + <span class="number">1</span> at asm_amd64.s:<span class="number">2232</span></div></pre></td></tr></table></figure>
+
+<h2 id="其它调试参考文章">其它调试参考文章</h2>
+<ol>
+<li><a href="https://github.com/Microsoft/vscode-go/wiki/Debugging-Go-code-using-VS-Code" target="_blank" rel="external">Debugging Go code using VS Code</a></li>
+<li><a href="https://golang.org/doc/gdb" target="_blank" rel="external">Debugging Go Code with GDB</a></li>
+<li><a href="https://lincolnloop.com/blog/debugging-go-code/" target="_blank" rel="external">Debugging Go Code</a></li>
+<li><a href="https://blog.gopheracademy.com/advent-2015/debugging-with-delve/" target="_blank" rel="external">Debugging Go programs with Delve</a></li>
+<li><a href="https://www.youtube.com/watch?v=iPBUaDcehJo" target="_blank" rel="external">debug by Goland</a></li>
+<li><a href="https://blog.codeship.com/using-gdb-debugger-with-go/" target="_blank" rel="external">Using the gdb debugger with Go</a></li>
+<li><a href="https://gocn.io/article/657" target="_blank" rel="external">用 debugger 学习 golang</a></li>
+</ol>
+
+      
+    </div>
+    <footer class="article-footer">
+      
+
+      
+      <!-- <link rel="stylesheet" href="https://unpkg.com/gitalk/dist/gitalk.css">
+      <script src="https://unpkg.com/gitalk/dist/gitalk.min.js"></script> -->
+      <section id="comments">
+        <script src="https://utteranc.es/client.js"
+                repo="smallnest/gitalk"
+                issue-term="title"
+                theme="github-light"
+                crossorigin="anonymous"
+                async>
+        </script>
+        <!-- <div id="gitalk-container"></div>
+        <script type="text/javascript">
+          var gitalkOpts = {
+            id: '2018/03/12/Debugging-Go-Code-with-LLDB/',
+            owner: 'smallnest',
+            repo: 'gitalk',
+            title: '[译]使用 LLDB 调试 Go 程序',
+            body: 'https://colobu.com/2018/03/12/Debugging-Go-Code-with-LLDB/',
+            clientID: 'bc02724130ed5b7ee275',
+            clientSecret: '68cb0bae2f93a8b88b09e0eb9b08c844b06a9047',
+            admin: ['smallnest'],
+            distractionFreeMode: false
+          };
+
+          const gitalk = new Gitalk(gitalkOpts)
+          gitalk.render('gitalk-container')
+        </script> -->
+        <noscript> 为正常使用评论功能请激活JavaScript</noscript>
+      </section>
+
+      
+
+    </footer>
+  </div>
+  
+  
+<nav id="article-nav">
+  
+    <a href="/2018/03/12/20-Examples-of-Using-Java’s-CompletableFuture/" id="article-nav-newer" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">Newer</strong>
+      <div class="article-nav-title">
+        
+          [译]20个使用 Java CompletableFuture的例子
+        
+      </div>
+    </a>
+  
+  
+    <a href="/2018/03/08/two-issues-in-go-development/" id="article-nav-older" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">Older</strong>
+      <div class="article-nav-title">Go网络开发中的两个技术点</div>
+    </a>
+  
+</nav>
+
+  
+</article></section>
+        
+          <aside id="sidebar">
+  
+      <div class="widget-wrap">
+    <h3 class="widget-title">原创图书</h3>
+    <div class="widget">
+      <a href="/ScalaCollectionsCookbook/">
+        <img width="100%" src="/ScalaCollectionsCookbook/scala_collections_cookbook.jpg">
+        <img width="100%" src="/ScalaCollectionsCookbook/scala_collections_cookbook_tw.png">
+      </a>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">分类</h3>
+    <div class="widget">
+      <ul class="category-list"><li class="category-list-item"><a class="category-list-link" href="/categories/Android/">Android</a><span class="category-list-count">12</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/C/">C++</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/DOTNET/">DOTNET</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Docker/">Docker</a><span class="category-list-count">5</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Go/">Go</a><span class="category-list-count">175</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Java/">Java</a><span class="category-list-count">64</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Linux/">Linux</a><span class="category-list-count">7</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Rust/">Rust</a><span class="category-list-count">12</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Scala/">Scala</a><span class="category-list-count">18</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/分享/">分享</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/前端开发/">前端开发</a><span class="category-list-count">18</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/区块链/">区块链</a><span class="category-list-count">8</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/大数据/">大数据</a><span class="category-list-count">60</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/工具/">工具</a><span class="category-list-count">28</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/数据库/">数据库</a><span class="category-list-count">3</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/架构/">架构</a><span class="category-list-count">26</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/算法/">算法</a><span class="category-list-count">4</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/管理/">管理</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/网络编程/">网络编程</a><span class="category-list-count">13</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/读书笔记/">读书笔记</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/运维/">运维</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/高并发编程/">高并发编程</a><span class="category-list-count">20</span></li></ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">标签云</h3>
+    <div class="widget tagcloud">
+      <a href="/tags/Android/" style="font-size: 15.71px;">Android</a><a href="/tags/ApacheBench/" style="font-size: 11.43px;">ApacheBench</a><a href="/tags/Bower/" style="font-size: 10.00px;">Bower</a><a href="/tags/C/" style="font-size: 10.00px;">C#</a><a href="/tags/CDN/" style="font-size: 10.00px;">CDN</a><a href="/tags/CQRS/" style="font-size: 10.00px;">CQRS</a><a href="/tags/CRC/" style="font-size: 10.00px;">CRC</a><a href="/tags/CSS/" style="font-size: 11.43px;">CSS</a><a href="/tags/CompletableFuture/" style="font-size: 10.00px;">CompletableFuture</a><a href="/tags/Comsat/" style="font-size: 10.00px;">Comsat</a><a href="/tags/Curator/" style="font-size: 18.57px;">Curator</a><a href="/tags/DSL/" style="font-size: 10.00px;">DSL</a><a href="/tags/Disruptor/" style="font-size: 10.00px;">Disruptor</a><a href="/tags/Docker/" style="font-size: 11.43px;">Docker</a><a href="/tags/Ember/" style="font-size: 11.43px;">Ember</a><a href="/tags/FastJson/" style="font-size: 10.00px;">FastJson</a><a href="/tags/Fiber/" style="font-size: 10.00px;">Fiber</a><a href="/tags/GAE/" style="font-size: 10.00px;">GAE</a><a href="/tags/GC/" style="font-size: 12.86px;">GC</a><a href="/tags/Gnuplot/" style="font-size: 10.00px;">Gnuplot</a><a href="/tags/Go/" style="font-size: 14.29px;">Go</a><a href="/tags/Gradle/" style="font-size: 10.00px;">Gradle</a><a href="/tags/Grunt/" style="font-size: 10.00px;">Grunt</a><a href="/tags/Gulp/" style="font-size: 10.00px;">Gulp</a><a href="/tags/Hadoop/" style="font-size: 10.00px;">Hadoop</a><a href="/tags/Hazelcast/" style="font-size: 10.00px;">Hazelcast</a><a href="/tags/IPFS/" style="font-size: 10.00px;">IPFS</a><a href="/tags/Ignite/" style="font-size: 10.00px;">Ignite</a><a href="/tags/JVM/" style="font-size: 10.00px;">JVM</a><a href="/tags/Java/" style="font-size: 17.14px;">Java</a><a href="/tags/Kafka/" style="font-size: 20.00px;">Kafka</a><a href="/tags/Lambda/" style="font-size: 14.29px;">Lambda</a><a href="/tags/Linux/" style="font-size: 12.86px;">Linux</a><a href="/tags/LongAdder/" style="font-size: 10.00px;">LongAdder</a><a href="/tags/MathJax/" style="font-size: 10.00px;">MathJax</a><a href="/tags/Maven/" style="font-size: 11.43px;">Maven</a><a href="/tags/Memcached/" style="font-size: 10.00px;">Memcached</a><a href="/tags/Metrics/" style="font-size: 10.00px;">Metrics</a><a href="/tags/Mongo/" style="font-size: 12.86px;">Mongo</a><a href="/tags/Netty/" style="font-size: 15.71px;">Netty</a>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">归档</h3>
+    <div class="widget">
+      <ul class="archive-list"><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/10/">October 2021</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/08/">August 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/07/">July 2021</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/06/">June 2021</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/05/">May 2021</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/04/">April 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/03/">March 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/02/">February 2021</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/01/">January 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/12/">December 2020</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/11/">November 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/09/">September 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/08/">August 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/07/">July 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/06/">June 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/05/">May 2020</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/04/">April 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/03/">March 2020</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/02/">February 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/01/">January 2020</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/12/">December 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/11/">November 2019</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/10/">October 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/09/">September 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/08/">August 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/07/">July 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/06/">June 2019</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/05/">May 2019</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/04/">April 2019</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/03/">March 2019</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/02/">February 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/01/">January 2019</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/12/">December 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/11/">November 2018</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/10/">October 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/09/">September 2018</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/08/">August 2018</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/07/">July 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/06/">June 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/05/">May 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/04/">April 2018</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/03/">March 2018</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/02/">February 2018</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/01/">January 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/12/">December 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/11/">November 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/10/">October 2017</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/09/">September 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/08/">August 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/07/">July 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/06/">June 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/05/">May 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/04/">April 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/03/">March 2017</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/02/">February 2017</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/01/">January 2017</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/12/">December 2016</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/11/">November 2016</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/10/">October 2016</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/09/">September 2016</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/08/">August 2016</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/07/">July 2016</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/06/">June 2016</a><span class="archive-list-count">14</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/05/">May 2016</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/04/">April 2016</a><span class="archive-list-count">14</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/03/">March 2016</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/02/">February 2016</a><span class="archive-list-count">8</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/01/">January 2016</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/12/">December 2015</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/11/">November 2015</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/10/">October 2015</a><span class="archive-list-count">9</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/09/">September 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/08/">August 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/07/">July 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/06/">June 2015</a><span class="archive-list-count">8</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/05/">May 2015</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/04/">April 2015</a><span class="archive-list-count">15</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/03/">March 2015</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/02/">February 2015</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/01/">January 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/12/">December 2014</a><span class="archive-list-count">28</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/11/">November 2014</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/10/">October 2014</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/09/">September 2014</a><span class="archive-list-count">28</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/08/">August 2014</a><span class="archive-list-count">19</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/07/">July 2014</a><span class="archive-list-count">1</span></li></ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">近期文章</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+            <a href="/2021/10/06/replace-implementations-in-go-std-libs-at-runtime/">强制更改Go标准库的实现</a>
+          </li>
+        
+          <li>
+            <a href="/2021/08/30/how-is-go-generic-implemented/">Go泛型是怎么实现的?</a>
+          </li>
+        
+          <li>
+            <a href="/2021/08/01/benchmark-of-rpc-frameworks/">2021年Go生态圈rpc框架benchmark</a>
+          </li>
+        
+          <li>
+            <a href="/2021/07/13/Updating-the-Go-Memory-Model/">[译]更新Go内存模型</a>
+          </li>
+        
+          <li>
+            <a href="/2021/07/11/Programming-Language-Memory-Models/">[译]编程语言内存模型</a>
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">友情链接</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+			 
+            <a href="http://stackshare.io" target="_blank">技术栈</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://toutiao.io/" target="_blank">开发者头条</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://weekly.manong.io/issues/" target="_blank">码农周刊</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.tuicool.com/mags" target="_blank">编程狂人周刊</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.importnew.com/" target="_blank">importnew</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://ifeve.com/" target="_blank">并发编程网</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://github.com" target="_blank">github</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://stackoverflow.com/" target="_blank">stackoverflow</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.javacodegeeks.com/" target="_blank">javacodegeeks</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.infoq.com/" target="_blank">infoq</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.dzone.com/links/index.html" target="_blank">dzone</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://oj.leetcode.com/problems/" target="_blank">leetcode</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://tutorials.jenkov.com" target="_blank">jenkov</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://howtodoinjava.com" target="_blank">HowToDoInJava</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://java-design-patterns.com/patterns/" target="_blank">java design patterns</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://medium.com/netflix-techblog" target="_blank">Netflix技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://www.techiedelight.com" target="_blank">Techie Delight</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://engineering.linkedin.com/blog" target="_blank">Linkedin技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://blogs.dropbox.com/tech/" target="_blank">Dropbox技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://code.fb.com" target="_blank">Facebook技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://jm.taobao.org" target="_blank">淘宝中间件团队</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://tech.meituan.com" target="_blank">美团技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://blogs.360.cn" target="_blank">360技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://xiaomi-info.github.io" target="_blank">小米信息部技术团队</a>
+			
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+      
+
+  
+</aside>
+        
+      </div>
+      <footer id="footer">
+  
+  <div class="outer">
+    <div id="footer-info" class="inner">
+      &copy; 2021 smallnest<br>
+	  Powered by <a href="http://hexo.io/" target="_blank">Hexo</a>
+    </div>
+  </div>
+</footer>
+    </div>
+    <nav id="mobile-nav">
+  
+    
+      <a href="/" class="mobile-nav-link"><i class="fa fa-home">&nbsp;</i>首页</a>
+    
+  
+    
+      <a href="/archives" class="mobile-nav-link"><i class="fa fa-folder-o">&nbsp;</i>归档</a>
+    
+  
+    
+      <a href="https://github.com/smallnest" class="mobile-nav-link"><i class="fa fa-github">&nbsp;</i>github</a>
+    
+  
+    
+      <a class="mobile-nav-link" href="#"><i class="fa fa-bars">&nbsp;</i>网站群</a>
+    
+      
+            <a class="mobile-nav-link" href="/goasm">&nbsp;&nbsp;<i class="fa fa-language">&nbsp;</i>Go汇编示例</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="https://gowebexamples.com">&nbsp;&nbsp;<i class="fa fa-external-link">&nbsp;</i>Go Web开发示例</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://go-database-sql.org">&nbsp;&nbsp;<i class="fa fa-external-link">&nbsp;</i>Go 数据库开发教程</a>
+          
+          
+    
+      
+            
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://rpcx.io">&nbsp;&nbsp;<i class="fa undefined">&nbsp;</i>RPCX官网</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://cn.doc.rpcx.io">&nbsp;&nbsp;<i class="fa undefined">&nbsp;</i>RPC开发指南</a>
+          
+          
+    
+    
+  
+    
+      <a href="/ScalaCollectionsCookbook" class="mobile-nav-link"><i class="fa fa-book">&nbsp;</i>Scala集合技术手册</a>
+    
+  
+    
+      <a href="/about" class="mobile-nav-link"><i class="fa fa-lemon-o">&nbsp;</i>关于</a>
+    
+  
+</nav>
+    
+<script src="//cdn.staticfile.org/jquery/1.11.1/jquery.min.js"></script>
+<script src="//cdn.bootcss.com/jquery.lazyload/1.9.1/jquery.lazyload.min.js"></script>
+
+<script src="//cdnjs.cloudflare.com/ajax/libs/fancybox/3.2.5/jquery.fancybox.min.js"></script>
+
+
+<script src="/js/script.js" type="text/javascript"></script>
+
+<!-- mathjax config similar to math.stackexchange -->
+<script type="text/x-mathjax-config">
+  MathJax.Hub.Config({
+    tex2jax: {
+      inlineMath: [ ['$','$'], ["\\(","\\)"] ],
+      processEscapes: true,
+      skipTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code']
+    }
+  });
+  MathJax.Hub.Queue(function() {
+      var all = MathJax.Hub.getAllJax(), i;
+      for(i=0; i < all.length; i += 1) {
+        all[i].SourceElement().parentNode.className += ' has-jax';
+      }
+  });
+</script>
+<script type="text/javascript" src="//cdn.bootcss.com/mathjax/2.6.0-beta.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML">
+</script>
+
+<div id="totop" style="position:fixed;bottom:150px;right:10px;cursor: pointer;z-index: 2000;">
+	<a title="返回顶部"><img src="/images/scrollup.png"/></a>
+</div>
+<script src="/js/totop.js" type="text/javascript"></script>
+
+
+
+
+<script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "//hm.baidu.com/hm.js?e085d87993250aab11f3e0c15f1c2785";
+  var s = document.getElementsByTagName("script")[0]; 
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+
+
+  </div>
+</body>
+</html>

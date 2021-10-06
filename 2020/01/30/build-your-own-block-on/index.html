@@ -1,0 +1,694 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset="utf-8">
+  
+  <title>[译]构建你自己的block_on</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+  <meta name="description" content="原文: Build your own block_on()。
+如果你想搞清楚 future crate中的block_on是如何工作的，那么今天就让我们写一个自己的block_on函数。
+这篇博文的灵感来自两个crate: wakeful和extreme。 wakeful设计了一种从函数中创建Waker的简单方法，而extreme则是block_on()的及其简洁的实现。
+我们的实现目标将与ext">
+<meta property="og:type" content="article">
+<meta property="og:title" content="[译]构建你自己的block_on">
+<meta property="og:url" content="https://colobu.com/2020/01/30/build-your-own-block-on/">
+<meta property="og:site_name" content="鸟窝">
+<meta property="og:description" content="原文: Build your own block_on()。
+如果你想搞清楚 future crate中的block_on是如何工作的，那么今天就让我们写一个自己的block_on函数。
+这篇博文的灵感来自两个crate: wakeful和extreme。 wakeful设计了一种从函数中创建Waker的简单方法，而extreme则是block_on()的及其简洁的实现。
+我们的实现目标将与ext">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="[译]构建你自己的block_on">
+<meta name="twitter:description" content="原文: Build your own block_on()。
+如果你想搞清楚 future crate中的block_on是如何工作的，那么今天就让我们写一个自己的block_on函数。
+这篇博文的灵感来自两个crate: wakeful和extreme。 wakeful设计了一种从函数中创建Waker的简单方法，而extreme则是block_on()的及其简洁的实现。
+我们的实现目标将与ext">
+
+  
+  <link rel="alternative" href="/atom.xml" title="鸟窝" type="application/atom+xml">
+  
+  
+  <link rel="icon" href="/favicon.png">
+  
+  <link rel="stylesheet" href="/css/style.css" type="text/css">
+
+  <link href="//cdn.staticfile.org/font-awesome/4.2.0/css/font-awesome.css" rel="stylesheet">
+  
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/fancybox/2.1.7/css/jquery.fancybox.min.css"
+    media="screen" type="text/css">
+  
+  <link rel="stylesheet" href="//cdnjs.cloudflare.com/ajax/libs/animate.css/3.1.1/animate.min.css" media="screen"
+    type="text/css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/tonsky/FiraCode@1.207/distr/fira_code.css">
+</head>
+<body>
+  <div id="container">
+    <div id="wrap">
+      <header id="header">
+  <div id="banner"></div>
+  <div id="header-outer" class="outer">
+    <div id="header-title" class="inner">
+      <h1 id="logo-wrap" class="animated bounceInLeft">
+        <a href="/" id="logo">鸟窝</a>
+      </h1>
+      
+        <h2 id="subtitle-wrap" class="animated bounceInLeft">
+          <a href="/" id="subtitle">大道至简 Simplicity is the ultimate form of sophistication</a>
+        </h2>
+      
+    </div>
+    <div id="header-inner" class="inner">
+      <nav id="main-nav">
+        <a id="main-nav-toggle" class="nav-icon"></a>
+        
+          
+            <a class="main-nav-link" href="/"><i class="fa fa-home">&nbsp;</i>首页</a>
+          
+          
+          
+            <a class="main-nav-link" href="/archives"><i class="fa fa-folder-o">&nbsp;</i>归档</a>
+          
+          
+          
+            <a class="main-nav-link" href="https://github.com/smallnest"><i class="fa fa-github">&nbsp;</i>github</a>
+          
+          
+          
+            <div class="dropdown main-nav-link"><a class="main-nav-link" href="#"><i class="fa fa-bars">&nbsp;</i>网站群</a>
+              <div class="dropdown-content">
+          
+            
+              <a href="/goasm"><i class="fa fa-language"></i>&nbsp;Go汇编示例</a>
+            
+                
+          
+            
+              <a href="https://gowebexamples.com"><i class="fa fa-external-link"></i>&nbsp;Go Web开发示例</a>
+            
+                
+          
+            
+              <a href="http://go-database-sql.org"><i class="fa fa-external-link"></i>&nbsp;Go 数据库开发教程</a>
+            
+                
+          
+            
+              <hr>
+            
+                
+          
+            
+              <a href="http://rpcx.io"><i class="fa undefined"></i>&nbsp;RPCX官网</a>
+            
+                
+          
+            
+              <a href="http://cn.doc.rpcx.io"><i class="fa undefined"></i>&nbsp;RPC开发指南</a>
+            
+                
+          
+          </div>
+        </div>
+          
+          
+          
+            <a class="main-nav-link" href="/ScalaCollectionsCookbook"><i class="fa fa-book">&nbsp;</i>Scala集合技术手册</a>
+          
+          
+          
+            <a class="main-nav-link" href="/about"><i class="fa fa-lemon-o">&nbsp;</i>关于</a>
+          
+          
+
+
+      </nav>
+      <nav id="sub-nav">
+        
+          <a id="nav-rss-link" class="nav-icon" href="/atom.xml" title="RSS Feed"></a>
+        
+        <a id="nav-search-btn" class="nav-icon" title="Search"></a>
+      </nav>
+      <div id="search-form-wrap">
+        <form action="http://www.baidu.com/baidu" method="get" accept-charset="utf-8" class="search-form">
+          <input type="search" name="word" maxlength="20" class="search-form-input" placeholder="Search">
+          <input type="submit" value="" class="search-form-submit">
+          <input name=tn type=hidden value="bds">
+          <input name=cl type=hidden value="3">
+          <input name=ct type=hidden value="2097152">
+          <input type="hidden" name="si" value="colobu.com">
+        </form>
+      </div>
+    </div>
+  </div>
+</header>
+      <div class="outer">
+        <section id="main"><script>function show_answer(btn, x) { if (btn.value === "显示答案") { btn.value = "隐藏答案" } else { btn.value = "显示答案" } var as = document.getElementById(x); if (as.style.display === "none") { as.style.display = "block" } else { as.style.display = "none" } }</script>
+
+<article id="post-build-your-own-block-on" class="article article-type-post" itemscope
+  itemprop="blogPost">
+  <div class="article-meta">
+    <a href="/2020/01/30/build-your-own-block-on/" class="article-date">
+  <time datetime="2020-01-30T03:06:11.000Z" itemprop="datePublished">2020年01月30日</time>
+</a>
+    
+  <div class="article-category">
+    <a class="article-category-link" href="/categories/Rust/">Rust</a>
+  </div>
+
+    
+  <div class="article-author"> by Stjepan Glavina</div>
+
+  </div>
+  <div class="article-inner">
+    
+    
+    <header class="article-header">
+      
+  
+    <h1 class="article-title" itemprop="name">
+      [译]构建你自己的block_on
+	  
+    </h1>
+  
+
+    </header>
+    
+    <div class="article-entry" itemprop="articleBody">
+      
+      
+      
+      <p>原文: <a href="https://stjepang.github.io/2020/01/25/build-your-own-block-on.html" target="_blank" rel="external">Build your own block_on()</a>。</p>
+<p>如果你想搞清楚 future crate中的<code>block_on</code>是如何工作的，那么今天就让我们写一个自己的<code>block_on</code>函数。</p>
+<p>这篇博文的灵感来自两个crate: <a href="https://docs.rs/wakeful" target="_blank" rel="external">wakeful</a>和<a href="https://github.com/spacejam/extreme" target="_blank" rel="external">extreme</a>。 <code>wakeful</code>设计了一种从函数中创建<code>Waker</code>的简单方法，而<code>extreme</code>则是<code>block_on()</code>的及其简洁的实现。</p>
+<p>我们的实现目标将与<code>extreme</code>略有不同。与其追求零依赖和最少的代码行数，不如追求一个安全高效但仍然非常简单的实现。</p>
+<p>我们将使用的依赖项是<a href="https://docs.rs/pin-utils" target="_blank" rel="external">pin-utils</a>, <a href="https://docs.rs/crossbeam" target="_blank" rel="external">crossbeam</a>, 和 <a href="https://docs.rs/async-task" target="_blank" rel="external">async-task</a>。<br><a id="more"></a></p>
+<h2 id="函数签名">函数签名</h2>
+<p><code>block_on</code>的签名如下。使用<code>future</code>作为参数，在当前线程中运行它(如果future是pending状态则阻塞)，然后返回它的输出：</p>
+<figure class="highlight rust"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line"><span class="function"><span class="keyword">fn</span> <span class="title">block_on</span></span>&lt;F: Future&gt;(future: F) -&gt; F::Output {</div><div class="line">    todo!()</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>现在让我们实现<code>todo!()</code>部分。</p>
+<h2 id="初次尝试">初次尝试</h2>
+<p>注意<a href="https://doc.rust-lang.org/nightly/std/future/trait.Future.html" target="_blank" rel="external">Future</a>的<a href="https://doc.rust-lang.org/nightly/std/future/trait.Future.html#tymethod.poll" target="_blank" rel="external">poll</a>方法的第一个参数是<code>pinned future</code>，所以首先我们需要pin住这个future。有一个简单方法可以安全的实现，就是使用<a href="https://doc.rust-lang.org/nightly/std/future/trait.Future.html" target="_blank" rel="external">Box::pin()</a>。我们最好pin这个future在栈上，而不是堆上。</p>
+<p>不幸的是，pin future到栈上的唯一的安全办法就是使用<code>pin-utils</code> crate: <code>pin_utils::pin_mut!(future);</code>。</p>
+<p><a href="https://docs.rs/pin-utils/0.1.0-alpha.4/pin_utils/macro.pin_mut.html" target="_blank" rel="external">pin_mut</a>宏把<code>future</code>从类型<code>F</code>的变量转换成<code>Pin&lt;&amp;mut F&gt;</code>的变量。</p>
+<p>下一步我们需要实现当这个future被唤醒后的处理逻辑。在我们的场景下，唤醒应该简单的解锁运行这个future的线程。</p>
+<p>构造一个<code>Waker</code>很麻烦 - 只需看看<code>extreme</code>的实现就知道了。 <code>extreme</code>是手工构建<code>Waker</code>的最简单的实现， 还包括那么多的 raw pointer，那么多的非安全代码... 现在先让我们跳过这一部分，留个空格以后填。</p>
+<figure class="highlight rust"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">let</span> waker = todo!();</div></pre></td></tr></table></figure>
+
+<p>最后，让我们从<code>Waker</code>中创建一个task context， 在一个循环中轮询这个future。如果它已经完成，则返回输出结果，如果它是<code>pending</code>状态，则则色当前线程：</p>
+<figure class="highlight rust"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">let</span> cx = &<span class="keyword">mut</span> Context::from_waker(&waker);</div><div class="line"><span class="keyword">loop</span> {</div><div class="line">    <span class="keyword">match</span> future.as_mut().poll(cx) {</div><div class="line">        Poll::Ready(output) =&gt; <span class="keyword">return</span> output,</div><div class="line">        Poll::Pending =&gt; thread::park(),</div><div class="line">    }</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>如果你对<code>Context</code>感到困惑，那么只需理解它就是一个<code>Waker</code>的包装器 - 直此而已。当设计Rust中的<code>async/await</code>的时候，我们并不确定除了<code>Waker</code>之外是否传递给<code>poll</code>其它东西是否有用，因为我们设计了这个包装器，可以传递更多的信息。</p>
+<p>不管怎样...我们快完成任务了。让我们回到Waker的构建，开始完成填空<code>todo!()</code>。</p>
+<p>如果你仔细想想，<code>Waker</code>真的是一个仔细优化的奇幻的<code>Arc&lt;dyn Fn() + Send + Sync&gt;</code>版本，<a href="https://doc.rust-lang.org/nightly/std/task/struct.Waker.html#method.wake" target="_blank" rel="external">wake()</a>调用这个函数。换言之，<code>Waker</code>是一个回调，当future继续执行的时候就会被调用。</p>
+<p>既然<code>Waker</code>很难去构建, <a href="https://github.com/sagebind" target="_blank" rel="external">sagebind</a>提出了<a href="https://docs.rs/wakeful/0.1.1/wakeful/fn.waker_fn.html" target="_blank" rel="external">waker_fn()</a>, 一个直接的把任意函数转换成<code>Waker</code>的方式。我借用<code>waker_fn()</code>，把它放在我的crate <code>async-task</code>中。</p>
+<p>在我们的<code>block_on</code>实现中，回调只需解锁运行当前future的线程:</p>
+<figure class="highlight rust"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">let</span> thread = thread::current();</div><div class="line"><span class="keyword">let</span> waker = async_task::waker_fn(move || thread.unpark());</div></pre></td></tr></table></figure>
+
+<p>太简单了，比摆弄<a href="https://doc.rust-lang.org/nightly/std/task/struct.RawWaker.html" target="_blank" rel="external">RawWaker</a> 和 <a href="https://doc.rust-lang.org/nightly/std/task/struct.RawWakerVTable.html" target="_blank" rel="external">RawWakerVTable</a>好太多了。</p>
+<p>内部实现上，<code>waker_fn()</code>创建一个<code>Arc&lt;impl Fn() + Send + Sync&gt;</code>,通过非安全代码把它转换成<code>Waker</code>，就像我们在<code>extreme</code>中看到的那样。</p>
+<p>现在让我们列出<code>block_on</code>的完整实现:</p>
+<figure class="highlight rust"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div></pre></td><td class="code"><pre><div class="line"><span class="function"><span class="keyword">fn</span> <span class="title">block_on</span></span>&lt;F: Future&gt;(future: F) -&gt; F::Output {</div><div class="line">    pin_utils::pin_mut!(future);</div><div class="line"></div><div class="line">    <span class="keyword">let</span> thread = thread::current();</div><div class="line">    <span class="keyword">let</span> waker = async_task::waker_fn(move || thread.unpark());</div><div class="line"></div><div class="line">    <span class="keyword">let</span> cx = &<span class="keyword">mut</span> Context::from_waker(&waker);</div><div class="line">    <span class="keyword">loop</span> {</div><div class="line">        <span class="keyword">match</span> future.as_mut().poll(cx) {</div><div class="line">            Poll::Ready(output) =&gt; <span class="keyword">return</span> output,</div><div class="line">            Poll::Pending =&gt; thread::park(),</div><div class="line">        }</div><div class="line">    }</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>如果你想运行代码，你可以下载代码<a href="https://github.com/stjepang/byo-block-on/blob/master/examples/v1.rs" target="_blank" rel="external">v1.rs</a></p>
+<h2 id="parking的问题">parking的问题</h2>
+<p>但是，先别忙着庆祝，这里有个问题。如果future中的用户代码使用到了<code>park/unpark</code> API，它可能“偷走”回调中的unpark通知，查看这个<a href="https://github.com/rust-lang/futures-rs/pull/2010" target="_blank" rel="external">issue</a>以了解更详细的情况。</p>
+<p>一个可能的解决方案就是使用不同于<code>std::thread</code>的park/unpark api。这种方案下future内部的代码不会干扰唤醒机能。</p>
+<p><code>crossbeam</code>有一个类似的park/unpark机制，而且它可以让我们创建任意多个<a href="https://docs.rs/crossbeam/0.7.3/crossbeam/sync/struct.Parker.html" target="_blank" rel="external">packer</a>,而不是每个线程一个。让我们在<code>block_on</code>每次调用的时候都创建一个:</p>
+<figure class="highlight rust"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div></pre></td><td class="code"><pre><div class="line"><span class="function"><span class="keyword">fn</span> <span class="title">block_on</span></span>&lt;F: Future&gt;(future: F) -&gt; F::Output {</div><div class="line">    pin_utils::pin_mut!(future);</div><div class="line"></div><div class="line">    <span class="keyword">let</span> parker = Parker::new();</div><div class="line">    <span class="keyword">let</span> unparker = parker.unparker().clone();</div><div class="line">    <span class="keyword">let</span> waker = async_task::waker_fn(move || unparker.unpark());</div><div class="line"></div><div class="line">    <span class="keyword">let</span> cx = &<span class="keyword">mut</span> Context::from_waker(&waker);</div><div class="line">    <span class="keyword">loop</span> {</div><div class="line">        <span class="keyword">match</span> future.as_mut().poll(cx) {</div><div class="line">            Poll::Ready(output) =&gt; <span class="keyword">return</span> output,</div><div class="line">            Poll::Pending =&gt; parker.park(),</div><div class="line">        }</div><div class="line">    }</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>好啦，问题解决。</p>
+<p>如果你想运行代码，可以执行文件<a href="https://github.com/stjepang/byo-block-on/blob/master/examples/v2.rs" target="_blank" rel="external">v2.rs</a>。</p>
+<h2 id="通过cache优化">通过cache优化</h2>
+<p>创建<code>Waker</code>和<code>Parker</code>并不是没有代价，创建对象都是有花费的，太不幸了，如何提升？</p>
+<p>既然每次调用<code>block_on</code>都需要创建<code>Waker</code>和<code>Parker</code>,为什么我们不在thread-local storage中缓存它们呢？这样调用<code>block_on()</code>时线程可以重用相同的对象:</p>
+<figure class="highlight rust"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div></pre></td><td class="code"><pre><div class="line"><span class="function"><span class="keyword">fn</span> <span class="title">block_on</span></span>&lt;F: Future&gt;(future: F) -&gt; F::Output {</div><div class="line">    pin_utils::pin_mut!(future);</div><div class="line"></div><div class="line">    thread_local! {</div><div class="line">        <span class="keyword">static</span> CACHE: (Parker, Waker) = {</div><div class="line">            <span class="keyword">let</span> parker = Parker::new();</div><div class="line">            <span class="keyword">let</span> unparker = parker.unparker().clone();</div><div class="line">            <span class="keyword">let</span> waker = async_task::waker_fn(move || unparker.unpark());</div><div class="line">            (parker, waker)</div><div class="line">        };</div><div class="line">    }</div><div class="line"></div><div class="line">    CACHE.with(|(parker, waker)| {</div><div class="line">        <span class="keyword">let</span> cx = &<span class="keyword">mut</span> Context::from_waker(&waker);</div><div class="line">        <span class="keyword">loop</span> {</div><div class="line">            <span class="keyword">match</span> future.as_mut().poll(cx) {</div><div class="line">                Poll::Ready(output) =&gt; <span class="keyword">return</span> output,</div><div class="line">                Poll::Pending =&gt; parker.park(),</div><div class="line">            }</div><div class="line">        }</div><div class="line">    })</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>如果future可以很快执行，那么这个小小的改变可以使<code>block_on</code>显著地提高性能。</p>
+<p>看<a href="https://github.com/stjepang/byo-block-on/blob/master/examples/v3.rs" target="_blank" rel="external">v3.rs</a>代码。</p>
+<h2 id="递归怎么办？">递归怎么办？</h2>
+<p>我们完成了么？ 嗯...还差最后一项。</p>
+<p>如果在<code>block_on</code>中的future的代码中再递归调用<code>block_on</code>会怎样？我们可以允许递归调用或者禁止递归。</p>
+<p>如果我们允许递归，我们需要确保<code>block_on</code>的递归调用不会共享相同的<code>Parker</code>和<code>Waker</code>,否则没有办法区分哪个<code>block_on</code>需要唤醒。</p>
+<p><code>futures</code> crate的<code>block_on</code>在递归调用的时候会panic。我对允许还是禁止递归调用没有强烈的倾向性 - 它们都有理。 但是既然我们在模仿<code>futures</code>版本，就让我们禁止吧。</p>
+<p>为了探测递归调用，我们需要引入另一个thread-local变量，指示我们是否已经在<code>block_on</code>中还是不在，如果一个mutable borrow已经active则panic:</p>
+<figure class="highlight rust"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div></pre></td><td class="code"><pre><div class="line"><span class="function"><span class="keyword">fn</span> <span class="title">block_on</span></span>&lt;F: Future&gt;(future: F) -&gt; F::Output {</div><div class="line">    pin_utils::pin_mut!(future);</div><div class="line"></div><div class="line">    thread_local! {</div><div class="line">        <span class="keyword">static</span> CACHE: RefCell&lt;(Parker, Waker)&gt; = {</div><div class="line">            <span class="keyword">let</span> parker = Parker::new();</div><div class="line">            <span class="keyword">let</span> unparker = parker.unparker().clone();</div><div class="line">            <span class="keyword">let</span> waker = async_task::waker_fn(move || unparker.unpark());</div><div class="line">            RefCell::new((parker, waker))</div><div class="line">        };</div><div class="line">    }</div><div class="line"></div><div class="line">    CACHE.with(|cache| {</div><div class="line">        <span class="keyword">let</span> (parker, waker) = &<span class="keyword">mut</span> *cache.try_borrow_mut().ok()</div><div class="line">            .expect(<span class="string">"recursive `block_on`"</span>);</div><div class="line"></div><div class="line">        <span class="keyword">let</span> cx = &<span class="keyword">mut</span> Context::from_waker(&waker);</div><div class="line">        <span class="keyword">loop</span> {</div><div class="line">            <span class="keyword">match</span> future.as_mut().poll(cx) {</div><div class="line">                Poll::Ready(output) =&gt; <span class="keyword">return</span> output,</div><div class="line">                Poll::Pending =&gt; parker.park(),</div><div class="line">            }</div><div class="line">        }</div><div class="line">    })</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>现在，我保证，我们的<code>block_on()</code>已经实现好了。最终版本的<code>block_on()</code>是正确的，健壮的，并且效率也高。</p>
+<p>看代码<a href="https://github.com/stjepang/byo-block-on/blob/master/examples/v4.rs" target="_blank" rel="external">v4.rs</a>。</p>
+<h2 id="benchmark">benchmark</h2>
+<p>效率高不高拉出来溜溜。让我们和<code>futures</code>中实现做比较。</p>
+<p>首先让我们写一个辅助future类型，它会yield多次然后完成:</p>
+<figure class="highlight rust"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">struct</span> Yields(<span class="keyword">u32</span>);</div><div class="line"></div><div class="line"><span class="keyword">impl</span> Future <span class="keyword">for</span> Yields {</div><div class="line">    <span class="keyword">type</span> <span class="title">Output</span> = ();</div><div class="line"></div><div class="line">    <span class="function"><span class="keyword">fn</span> <span class="title">poll</span></span>(<span class="keyword">mut</span> <span class="keyword">self</span>: Pin&lt;&<span class="keyword">mut</span> Self&gt;, cx: &<span class="keyword">mut</span> Context&lt;'_&gt;) -&gt; Poll&lt;()&gt; {</div><div class="line">        <span class="keyword">if</span> <span class="keyword">self</span>.<span class="number">0</span> == <span class="number">0</span> {</div><div class="line">            Poll::Ready(())</div><div class="line">        } <span class="keyword">else</span> {</div><div class="line">            <span class="keyword">self</span>.<span class="number">0</span> -= <span class="number">1</span>;</div><div class="line">            cx.waker().wake_by_ref();</div><div class="line">            Poll::Pending</div><div class="line">        }</div><div class="line">    }</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>例如yield 10次:</p>
+<figure class="highlight rust"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line"><span class="preprocessor">#[bench]</span></div><div class="line"><span class="function"><span class="keyword">fn</span> <span class="title">custom_block_on_10_yields</span></span>(b: &<span class="keyword">mut</span> Bencher) {</div><div class="line">    b.iter(|| block_on(Yields(<span class="number">10</span>)));</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>让我们测试三次，分别yield 0次、10次、50次，分别使用我们自己实现的<code>block_on</code>和<code>futures</code>中的<code>block_on</code>。你可以在<a href="https://github.com/stjepang/byo-block-on/blob/master/benches/yield.rs" target="_blank" rel="external">yield.rs</a>找到全部代码。</p>
+<p>以下是我机器上的运行结果：</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line">test custom_block_on_0_yields   <span class="keyword">...</span> bench:           <span class="number">3</span> ns/iter (+/- <span class="number">0</span>)</div><div class="line">test custom_block_on_10_yields  <span class="keyword">...</span> bench:         <span class="number">130</span> ns/iter (+/- <span class="number">12</span>)</div><div class="line">test custom_block_on_50_yields  <span class="keyword">...</span> bench:         <span class="number">638</span> ns/iter (+/- <span class="number">20</span>)</div></pre></td></tr></table></figure>
+
+
+
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line">test futures_block_on_0_yields  <span class="keyword">...</span> bench:          <span class="number">10</span> ns/iter (+/- <span class="number">0</span>)</div><div class="line">test futures_block_on_10_yields <span class="keyword">...</span> bench:         <span class="number">236</span> ns/iter (+/- <span class="number">10</span>)</div><div class="line">test futures_block_on_50_yields <span class="keyword">...</span> bench:       <span class="number">1</span>,<span class="number">139</span> ns/iter (+/- <span class="number">30</span>)</div></pre></td></tr></table></figure>
+
+<p>结果显示我们的实现在这个场景下2到3倍的快。</p>
+<p>还不错。</p>
+<h2 id="结论">结论</h2>
+<p>Rust异步编程可能让人害怕，因为它包含太多机器相关的东西：<code>Future</code> trait、pinning、Context类型、Waker以及它们的朋友<code>RawWaker</code>和<code>RawWakerVTable</code>、async和await、非安全的代码、raw pointer等等。</p>
+<p>但问题是，很多丑陋的东西并不重要 - 它们只是无聊的样板，你可以使用<code>pin-utils</code>, <code>async-task</code>和<code>crossbeam</code>等。</p>
+<p>事实上，这次我们成功地使用几十行代码就构建了一个健壮高效的<code>block_on()</code>,无需理解大多数样板文件。在另一篇博文中，我们将构建一个真正的executor。</p>
+
+      
+    </div>
+    <footer class="article-footer">
+      
+
+      
+      <!-- <link rel="stylesheet" href="https://unpkg.com/gitalk/dist/gitalk.css">
+      <script src="https://unpkg.com/gitalk/dist/gitalk.min.js"></script> -->
+      <section id="comments">
+        <script src="https://utteranc.es/client.js"
+                repo="smallnest/gitalk"
+                issue-term="title"
+                theme="github-light"
+                crossorigin="anonymous"
+                async>
+        </script>
+        <!-- <div id="gitalk-container"></div>
+        <script type="text/javascript">
+          var gitalkOpts = {
+            id: '2020/01/30/build-your-own-block-on/',
+            owner: 'smallnest',
+            repo: 'gitalk',
+            title: '[译]构建你自己的block_on',
+            body: 'https://colobu.com/2020/01/30/build-your-own-block-on/',
+            clientID: 'bc02724130ed5b7ee275',
+            clientSecret: '68cb0bae2f93a8b88b09e0eb9b08c844b06a9047',
+            admin: ['smallnest'],
+            distractionFreeMode: false
+          };
+
+          const gitalk = new Gitalk(gitalkOpts)
+          gitalk.render('gitalk-container')
+        </script> -->
+        <noscript> 为正常使用评论功能请激活JavaScript</noscript>
+      </section>
+
+      
+
+    </footer>
+  </div>
+  
+  
+<nav id="article-nav">
+  
+    <a href="/2020/02/07/The-Zen-of-Go/" id="article-nav-newer" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">Newer</strong>
+      <div class="article-nav-title">
+        
+          [译]Go之禅
+        
+      </div>
+    </a>
+  
+  
+    <a href="/2020/01/28/blocking-inside-async-code/" id="article-nav-older" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">Older</strong>
+      <div class="article-nav-title">[译]异步代码中的阻塞操作</div>
+    </a>
+  
+</nav>
+
+  
+</article></section>
+        
+          <aside id="sidebar">
+  
+      <div class="widget-wrap">
+    <h3 class="widget-title">原创图书</h3>
+    <div class="widget">
+      <a href="/ScalaCollectionsCookbook/">
+        <img width="100%" src="/ScalaCollectionsCookbook/scala_collections_cookbook.jpg">
+        <img width="100%" src="/ScalaCollectionsCookbook/scala_collections_cookbook_tw.png">
+      </a>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">分类</h3>
+    <div class="widget">
+      <ul class="category-list"><li class="category-list-item"><a class="category-list-link" href="/categories/Android/">Android</a><span class="category-list-count">12</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/C/">C++</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/DOTNET/">DOTNET</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Docker/">Docker</a><span class="category-list-count">5</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Go/">Go</a><span class="category-list-count">175</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Java/">Java</a><span class="category-list-count">64</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Linux/">Linux</a><span class="category-list-count">7</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Rust/">Rust</a><span class="category-list-count">12</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Scala/">Scala</a><span class="category-list-count">18</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/分享/">分享</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/前端开发/">前端开发</a><span class="category-list-count">18</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/区块链/">区块链</a><span class="category-list-count">8</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/大数据/">大数据</a><span class="category-list-count">60</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/工具/">工具</a><span class="category-list-count">28</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/数据库/">数据库</a><span class="category-list-count">3</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/架构/">架构</a><span class="category-list-count">26</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/算法/">算法</a><span class="category-list-count">4</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/管理/">管理</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/网络编程/">网络编程</a><span class="category-list-count">13</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/读书笔记/">读书笔记</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/运维/">运维</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/高并发编程/">高并发编程</a><span class="category-list-count">20</span></li></ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">标签云</h3>
+    <div class="widget tagcloud">
+      <a href="/tags/Android/" style="font-size: 15.71px;">Android</a><a href="/tags/ApacheBench/" style="font-size: 11.43px;">ApacheBench</a><a href="/tags/Bower/" style="font-size: 10.00px;">Bower</a><a href="/tags/C/" style="font-size: 10.00px;">C#</a><a href="/tags/CDN/" style="font-size: 10.00px;">CDN</a><a href="/tags/CQRS/" style="font-size: 10.00px;">CQRS</a><a href="/tags/CRC/" style="font-size: 10.00px;">CRC</a><a href="/tags/CSS/" style="font-size: 11.43px;">CSS</a><a href="/tags/CompletableFuture/" style="font-size: 10.00px;">CompletableFuture</a><a href="/tags/Comsat/" style="font-size: 10.00px;">Comsat</a><a href="/tags/Curator/" style="font-size: 18.57px;">Curator</a><a href="/tags/DSL/" style="font-size: 10.00px;">DSL</a><a href="/tags/Disruptor/" style="font-size: 10.00px;">Disruptor</a><a href="/tags/Docker/" style="font-size: 11.43px;">Docker</a><a href="/tags/Ember/" style="font-size: 11.43px;">Ember</a><a href="/tags/FastJson/" style="font-size: 10.00px;">FastJson</a><a href="/tags/Fiber/" style="font-size: 10.00px;">Fiber</a><a href="/tags/GAE/" style="font-size: 10.00px;">GAE</a><a href="/tags/GC/" style="font-size: 12.86px;">GC</a><a href="/tags/Gnuplot/" style="font-size: 10.00px;">Gnuplot</a><a href="/tags/Go/" style="font-size: 14.29px;">Go</a><a href="/tags/Gradle/" style="font-size: 10.00px;">Gradle</a><a href="/tags/Grunt/" style="font-size: 10.00px;">Grunt</a><a href="/tags/Gulp/" style="font-size: 10.00px;">Gulp</a><a href="/tags/Hadoop/" style="font-size: 10.00px;">Hadoop</a><a href="/tags/Hazelcast/" style="font-size: 10.00px;">Hazelcast</a><a href="/tags/IPFS/" style="font-size: 10.00px;">IPFS</a><a href="/tags/Ignite/" style="font-size: 10.00px;">Ignite</a><a href="/tags/JVM/" style="font-size: 10.00px;">JVM</a><a href="/tags/Java/" style="font-size: 17.14px;">Java</a><a href="/tags/Kafka/" style="font-size: 20.00px;">Kafka</a><a href="/tags/Lambda/" style="font-size: 14.29px;">Lambda</a><a href="/tags/Linux/" style="font-size: 12.86px;">Linux</a><a href="/tags/LongAdder/" style="font-size: 10.00px;">LongAdder</a><a href="/tags/MathJax/" style="font-size: 10.00px;">MathJax</a><a href="/tags/Maven/" style="font-size: 11.43px;">Maven</a><a href="/tags/Memcached/" style="font-size: 10.00px;">Memcached</a><a href="/tags/Metrics/" style="font-size: 10.00px;">Metrics</a><a href="/tags/Mongo/" style="font-size: 12.86px;">Mongo</a><a href="/tags/Netty/" style="font-size: 15.71px;">Netty</a>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">归档</h3>
+    <div class="widget">
+      <ul class="archive-list"><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/10/">October 2021</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/08/">August 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/07/">July 2021</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/06/">June 2021</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/05/">May 2021</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/04/">April 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/03/">March 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/02/">February 2021</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/01/">January 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/12/">December 2020</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/11/">November 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/09/">September 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/08/">August 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/07/">July 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/06/">June 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/05/">May 2020</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/04/">April 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/03/">March 2020</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/02/">February 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/01/">January 2020</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/12/">December 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/11/">November 2019</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/10/">October 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/09/">September 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/08/">August 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/07/">July 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/06/">June 2019</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/05/">May 2019</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/04/">April 2019</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/03/">March 2019</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/02/">February 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/01/">January 2019</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/12/">December 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/11/">November 2018</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/10/">October 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/09/">September 2018</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/08/">August 2018</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/07/">July 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/06/">June 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/05/">May 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/04/">April 2018</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/03/">March 2018</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/02/">February 2018</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/01/">January 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/12/">December 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/11/">November 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/10/">October 2017</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/09/">September 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/08/">August 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/07/">July 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/06/">June 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/05/">May 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/04/">April 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/03/">March 2017</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/02/">February 2017</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/01/">January 2017</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/12/">December 2016</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/11/">November 2016</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/10/">October 2016</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/09/">September 2016</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/08/">August 2016</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/07/">July 2016</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/06/">June 2016</a><span class="archive-list-count">14</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/05/">May 2016</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/04/">April 2016</a><span class="archive-list-count">14</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/03/">March 2016</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/02/">February 2016</a><span class="archive-list-count">8</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/01/">January 2016</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/12/">December 2015</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/11/">November 2015</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/10/">October 2015</a><span class="archive-list-count">9</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/09/">September 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/08/">August 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/07/">July 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/06/">June 2015</a><span class="archive-list-count">8</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/05/">May 2015</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/04/">April 2015</a><span class="archive-list-count">15</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/03/">March 2015</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/02/">February 2015</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/01/">January 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/12/">December 2014</a><span class="archive-list-count">28</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/11/">November 2014</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/10/">October 2014</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/09/">September 2014</a><span class="archive-list-count">28</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/08/">August 2014</a><span class="archive-list-count">19</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/07/">July 2014</a><span class="archive-list-count">1</span></li></ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">近期文章</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+            <a href="/2021/10/06/replace-implementations-in-go-std-libs-at-runtime/">强制更改Go标准库的实现</a>
+          </li>
+        
+          <li>
+            <a href="/2021/08/30/how-is-go-generic-implemented/">Go泛型是怎么实现的?</a>
+          </li>
+        
+          <li>
+            <a href="/2021/08/01/benchmark-of-rpc-frameworks/">2021年Go生态圈rpc框架benchmark</a>
+          </li>
+        
+          <li>
+            <a href="/2021/07/13/Updating-the-Go-Memory-Model/">[译]更新Go内存模型</a>
+          </li>
+        
+          <li>
+            <a href="/2021/07/11/Programming-Language-Memory-Models/">[译]编程语言内存模型</a>
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">友情链接</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+			 
+            <a href="http://stackshare.io" target="_blank">技术栈</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://toutiao.io/" target="_blank">开发者头条</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://weekly.manong.io/issues/" target="_blank">码农周刊</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.tuicool.com/mags" target="_blank">编程狂人周刊</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.importnew.com/" target="_blank">importnew</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://ifeve.com/" target="_blank">并发编程网</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://github.com" target="_blank">github</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://stackoverflow.com/" target="_blank">stackoverflow</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.javacodegeeks.com/" target="_blank">javacodegeeks</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.infoq.com/" target="_blank">infoq</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.dzone.com/links/index.html" target="_blank">dzone</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://oj.leetcode.com/problems/" target="_blank">leetcode</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://tutorials.jenkov.com" target="_blank">jenkov</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://howtodoinjava.com" target="_blank">HowToDoInJava</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://java-design-patterns.com/patterns/" target="_blank">java design patterns</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://medium.com/netflix-techblog" target="_blank">Netflix技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://www.techiedelight.com" target="_blank">Techie Delight</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://engineering.linkedin.com/blog" target="_blank">Linkedin技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://blogs.dropbox.com/tech/" target="_blank">Dropbox技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://code.fb.com" target="_blank">Facebook技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://jm.taobao.org" target="_blank">淘宝中间件团队</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://tech.meituan.com" target="_blank">美团技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://blogs.360.cn" target="_blank">360技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://xiaomi-info.github.io" target="_blank">小米信息部技术团队</a>
+			
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+      
+
+  
+</aside>
+        
+      </div>
+      <footer id="footer">
+  
+  <div class="outer">
+    <div id="footer-info" class="inner">
+      &copy; 2021 smallnest<br>
+	  Powered by <a href="http://hexo.io/" target="_blank">Hexo</a>
+    </div>
+  </div>
+</footer>
+    </div>
+    <nav id="mobile-nav">
+  
+    
+      <a href="/" class="mobile-nav-link"><i class="fa fa-home">&nbsp;</i>首页</a>
+    
+  
+    
+      <a href="/archives" class="mobile-nav-link"><i class="fa fa-folder-o">&nbsp;</i>归档</a>
+    
+  
+    
+      <a href="https://github.com/smallnest" class="mobile-nav-link"><i class="fa fa-github">&nbsp;</i>github</a>
+    
+  
+    
+      <a class="mobile-nav-link" href="#"><i class="fa fa-bars">&nbsp;</i>网站群</a>
+    
+      
+            <a class="mobile-nav-link" href="/goasm">&nbsp;&nbsp;<i class="fa fa-language">&nbsp;</i>Go汇编示例</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="https://gowebexamples.com">&nbsp;&nbsp;<i class="fa fa-external-link">&nbsp;</i>Go Web开发示例</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://go-database-sql.org">&nbsp;&nbsp;<i class="fa fa-external-link">&nbsp;</i>Go 数据库开发教程</a>
+          
+          
+    
+      
+            
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://rpcx.io">&nbsp;&nbsp;<i class="fa undefined">&nbsp;</i>RPCX官网</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://cn.doc.rpcx.io">&nbsp;&nbsp;<i class="fa undefined">&nbsp;</i>RPC开发指南</a>
+          
+          
+    
+    
+  
+    
+      <a href="/ScalaCollectionsCookbook" class="mobile-nav-link"><i class="fa fa-book">&nbsp;</i>Scala集合技术手册</a>
+    
+  
+    
+      <a href="/about" class="mobile-nav-link"><i class="fa fa-lemon-o">&nbsp;</i>关于</a>
+    
+  
+</nav>
+    
+<script src="//cdn.staticfile.org/jquery/1.11.1/jquery.min.js"></script>
+<script src="//cdn.bootcss.com/jquery.lazyload/1.9.1/jquery.lazyload.min.js"></script>
+
+<script src="//cdnjs.cloudflare.com/ajax/libs/fancybox/3.2.5/jquery.fancybox.min.js"></script>
+
+
+<script src="/js/script.js" type="text/javascript"></script>
+
+<!-- mathjax config similar to math.stackexchange -->
+<script type="text/x-mathjax-config">
+  MathJax.Hub.Config({
+    tex2jax: {
+      inlineMath: [ ['$','$'], ["\\(","\\)"] ],
+      processEscapes: true,
+      skipTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code']
+    }
+  });
+  MathJax.Hub.Queue(function() {
+      var all = MathJax.Hub.getAllJax(), i;
+      for(i=0; i < all.length; i += 1) {
+        all[i].SourceElement().parentNode.className += ' has-jax';
+      }
+  });
+</script>
+<script type="text/javascript" src="//cdn.bootcss.com/mathjax/2.6.0-beta.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML">
+</script>
+
+<div id="totop" style="position:fixed;bottom:150px;right:10px;cursor: pointer;z-index: 2000;">
+	<a title="返回顶部"><img src="/images/scrollup.png"/></a>
+</div>
+<script src="/js/totop.js" type="text/javascript"></script>
+
+
+
+
+<script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "//hm.baidu.com/hm.js?e085d87993250aab11f3e0c15f1c2785";
+  var s = document.getElementsByTagName("script")[0]; 
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+
+
+  </div>
+</body>
+</html>

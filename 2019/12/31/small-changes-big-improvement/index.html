@@ -1,0 +1,652 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset="utf-8">
+  
+  <title>小改动，大提升</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+  <meta name="description" content="2019年的收尾之作。
+Carlo Alberto Ferraris提交了一个对math/rand库中的lockedSource优化的pr(CL#191538),核心代码其实只有一行，却带来了相对的巨大的性能提升，让我们一起老看看这次的修改，学习一下代码的优化技巧，提高我们Go语言的底层优化经验。">
+<meta property="og:type" content="article">
+<meta property="og:title" content="小改动，大提升">
+<meta property="og:url" content="https://colobu.com/2019/12/31/small-changes-big-improvement/">
+<meta property="og:site_name" content="鸟窝">
+<meta property="og:description" content="2019年的收尾之作。
+Carlo Alberto Ferraris提交了一个对math/rand库中的lockedSource优化的pr(CL#191538),核心代码其实只有一行，却带来了相对的巨大的性能提升，让我们一起老看看这次的修改，学习一下代码的优化技巧，提高我们Go语言的底层优化经验。">
+<meta property="og:image" content="cl191538.png">
+<meta property="og:image" content="diff.png">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="小改动，大提升">
+<meta name="twitter:description" content="2019年的收尾之作。
+Carlo Alberto Ferraris提交了一个对math/rand库中的lockedSource优化的pr(CL#191538),核心代码其实只有一行，却带来了相对的巨大的性能提升，让我们一起老看看这次的修改，学习一下代码的优化技巧，提高我们Go语言的底层优化经验。">
+
+  
+  <link rel="alternative" href="/atom.xml" title="鸟窝" type="application/atom+xml">
+  
+  
+  <link rel="icon" href="/favicon.png">
+  
+  <link rel="stylesheet" href="/css/style.css" type="text/css">
+
+  <link href="//cdn.staticfile.org/font-awesome/4.2.0/css/font-awesome.css" rel="stylesheet">
+  
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/fancybox/2.1.7/css/jquery.fancybox.min.css"
+    media="screen" type="text/css">
+  
+  <link rel="stylesheet" href="//cdnjs.cloudflare.com/ajax/libs/animate.css/3.1.1/animate.min.css" media="screen"
+    type="text/css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/tonsky/FiraCode@1.207/distr/fira_code.css">
+</head>
+<body>
+  <div id="container">
+    <div id="wrap">
+      <header id="header">
+  <div id="banner"></div>
+  <div id="header-outer" class="outer">
+    <div id="header-title" class="inner">
+      <h1 id="logo-wrap" class="animated bounceInLeft">
+        <a href="/" id="logo">鸟窝</a>
+      </h1>
+      
+        <h2 id="subtitle-wrap" class="animated bounceInLeft">
+          <a href="/" id="subtitle">大道至简 Simplicity is the ultimate form of sophistication</a>
+        </h2>
+      
+    </div>
+    <div id="header-inner" class="inner">
+      <nav id="main-nav">
+        <a id="main-nav-toggle" class="nav-icon"></a>
+        
+          
+            <a class="main-nav-link" href="/"><i class="fa fa-home">&nbsp;</i>首页</a>
+          
+          
+          
+            <a class="main-nav-link" href="/archives"><i class="fa fa-folder-o">&nbsp;</i>归档</a>
+          
+          
+          
+            <a class="main-nav-link" href="https://github.com/smallnest"><i class="fa fa-github">&nbsp;</i>github</a>
+          
+          
+          
+            <div class="dropdown main-nav-link"><a class="main-nav-link" href="#"><i class="fa fa-bars">&nbsp;</i>网站群</a>
+              <div class="dropdown-content">
+          
+            
+              <a href="/goasm"><i class="fa fa-language"></i>&nbsp;Go汇编示例</a>
+            
+                
+          
+            
+              <a href="https://gowebexamples.com"><i class="fa fa-external-link"></i>&nbsp;Go Web开发示例</a>
+            
+                
+          
+            
+              <a href="http://go-database-sql.org"><i class="fa fa-external-link"></i>&nbsp;Go 数据库开发教程</a>
+            
+                
+          
+            
+              <hr>
+            
+                
+          
+            
+              <a href="http://rpcx.io"><i class="fa undefined"></i>&nbsp;RPCX官网</a>
+            
+                
+          
+            
+              <a href="http://cn.doc.rpcx.io"><i class="fa undefined"></i>&nbsp;RPC开发指南</a>
+            
+                
+          
+          </div>
+        </div>
+          
+          
+          
+            <a class="main-nav-link" href="/ScalaCollectionsCookbook"><i class="fa fa-book">&nbsp;</i>Scala集合技术手册</a>
+          
+          
+          
+            <a class="main-nav-link" href="/about"><i class="fa fa-lemon-o">&nbsp;</i>关于</a>
+          
+          
+
+
+      </nav>
+      <nav id="sub-nav">
+        
+          <a id="nav-rss-link" class="nav-icon" href="/atom.xml" title="RSS Feed"></a>
+        
+        <a id="nav-search-btn" class="nav-icon" title="Search"></a>
+      </nav>
+      <div id="search-form-wrap">
+        <form action="http://www.baidu.com/baidu" method="get" accept-charset="utf-8" class="search-form">
+          <input type="search" name="word" maxlength="20" class="search-form-input" placeholder="Search">
+          <input type="submit" value="" class="search-form-submit">
+          <input name=tn type=hidden value="bds">
+          <input name=cl type=hidden value="3">
+          <input name=ct type=hidden value="2097152">
+          <input type="hidden" name="si" value="colobu.com">
+        </form>
+      </div>
+    </div>
+  </div>
+</header>
+      <div class="outer">
+        <section id="main"><script>function show_answer(btn, x) { if (btn.value === "显示答案") { btn.value = "隐藏答案" } else { btn.value = "显示答案" } var as = document.getElementById(x); if (as.style.display === "none") { as.style.display = "block" } else { as.style.display = "none" } }</script>
+
+<article id="post-small-changes-big-improvement" class="article article-type-post" itemscope
+  itemprop="blogPost">
+  <div class="article-meta">
+    <a href="/2019/12/31/small-changes-big-improvement/" class="article-date">
+  <time datetime="2019-12-31T09:03:45.000Z" itemprop="datePublished">2019年12月31日</time>
+</a>
+    
+  <div class="article-category">
+    <a class="article-category-link" href="/categories/Go/">Go</a>
+  </div>
+
+    
+  <div class="article-author"> by smallnest</div>
+
+  </div>
+  <div class="article-inner">
+    
+    
+    <header class="article-header">
+      
+  
+    <h1 class="article-title" itemprop="name">
+      小改动，大提升
+	  
+	  <p class="article-subtitle">Go标准库的一次优化</p>
+	  
+    </h1>
+  
+
+    </header>
+    
+    <div class="article-entry" itemprop="articleBody">
+      
+      
+      
+      <p>2019年的收尾之作。</p>
+<p>Carlo Alberto Ferraris提交了一个对<code>math/rand</code>库中的<code>lockedSource</code>优化的pr(<a href="https://go-review.googlesource.com/c/go/+/191538/" target="_blank" rel="external">CL#191538</a>),核心代码其实只有一行，却带来了相对的巨大的性能提升，让我们一起老看看这次的修改，学习一下代码的优化技巧，提高我们Go语言的底层优化经验。</p>
+<a id="more"></a>
+<div class="bilibili"><br><iframe src="//player.bilibili.com/player.html?aid=81590586&cid=139613829&page=1" scrolling="no" border="0" frameborder="no" framespacing="0" allowfullscreen="true"> </iframe><br></div>
+
+
+<p><img src="cl191538.png" alt=""></p>
+<p>Carlo通过<code>避免接口调用</code>、<code>允许内联</code>、<code>保持在同一个cacheline</code>三种方式提升<code>rngSource</code>的性能：</p>
+<p><img src="diff.png" alt=""></p>
+<p>可以看到，他把<code>lockedSource</code> struct中的<code>src</code>字段从接口类型<code>Source64</code>改变了具体的struct指针<code>*rngSource</code>，这样<code>*rngSource</code>的方法<code>Int64</code>、<code>Uint64</code>都可以内联到调用者的代码中。</p>
+<p>实际测试中第三个<code>保持在同一个cacheline</code>优化并没有起作用，反而采用指针类型性能更好一点点。我实际测试发现也发现这个优化也没有特别明显的优化效果，所以下面的测试中并没有这个优化手段。</p>
+<p>下面我们通过一个例子🌰来比较采用这个方法前后的代码的性能，主要观察接口去掉后的性能提升和内联后的性能提升。</p>
+<p>首先定义一个干果<code>DryFruit</code>的接口,它有一些通用的方法，比如名称、价格以及增加数量的方法(Increase), 因为只是做个演示，你不必深究这些方法的意义：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div></pre></td><td class="code"><pre><div class="line"><span class="comment">// DryFruit 干果接口.</span></div><div class="line"><span class="keyword">type</span> DryFruit <span class="keyword">interface</span> {</div><div class="line">	Name() <span class="typename">string</span></div><div class="line">	Price() <span class="typename">uint64</span></div><div class="line">	Family() <span class="typename">string</span></div><div class="line">	Distribution() <span class="typename">string</span></div><div class="line">	Increase()</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>下面我们定义一个栗子🌰对象，它实现了干果接口：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div></pre></td><td class="code"><pre><div class="line"><span class="comment">// Chestnut 栗子.</span></div><div class="line"><span class="keyword">type</span> Chestnut <span class="keyword">struct</span> {</div><div class="line">	name  <span class="typename">string</span></div><div class="line">	count <span class="typename">uint64</span></div><div class="line">}</div><div class="line"></div><div class="line"><span class="comment">// Name 名称.</span></div><div class="line"><span class="keyword">func</span> (c Chestnut) Name() <span class="typename">string</span> {</div><div class="line">	<span class="keyword">return</span> c.name</div><div class="line">}</div><div class="line"></div><div class="line"><span class="comment">// Price 价格.</span></div><div class="line"><span class="keyword">func</span> (c Chestnut) Price() <span class="typename">uint64</span> {</div><div class="line">	<span class="keyword">return</span><span class="number"> 10</span></div><div class="line">}</div><div class="line"></div><div class="line"><span class="comment">// Family Family name.</span></div><div class="line"><span class="keyword">func</span> (c Chestnut) Family() <span class="typename">string</span> {</div><div class="line">	<span class="keyword">return</span> <span class="string">"Fagaceae"</span></div><div class="line">}</div><div class="line"></div><div class="line"><span class="comment">// Distribution 分布.</span></div><div class="line"><span class="keyword">func</span> (c Chestnut) Distribution() <span class="typename">string</span> {</div><div class="line">	<span class="keyword">return</span> <span class="string">"East Asia"</span></div><div class="line">}</div><div class="line"></div><div class="line"><span class="comment">// Increase 数量加一</span></div><div class="line"><span class="keyword">func</span> (c *Chestnut) Increase() {</div><div class="line">	c.count++</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>接口和具体的实现都定义好了，我们需要定义一个使用它们的对象： 礼物<code>Gift</code>。</p>
+<p>未优化的礼物定义如下, 定义了一个<code>OriginGift</code>对象，它包含一个排外锁，还包含一个干果接口字段:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div></pre></td><td class="code"><pre><div class="line"><span class="comment">// OriginGift 未优化之前的礼物对象.</span></div><div class="line"><span class="keyword">type</span> OriginGift <span class="keyword">struct</span> {</div><div class="line">	mu       sync.Mutex</div><div class="line">	dryFruit DryFruit</div><div class="line">}</div><div class="line"></div><div class="line"><span class="comment">// Access 访问接口对象.</span></div><div class="line"><span class="keyword">func</span> (g *OriginGift) Access() {</div><div class="line">	g.dryFruit.Name()</div><div class="line">	g.dryFruit.Price()</div><div class="line">	g.dryFruit.Family()</div><div class="line">	g.dryFruit.Distribution()</div><div class="line">	g.dryFruit.Increase()</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>而我们的优化的Gift struct直接把接口对象替换成具体的栗子struct:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div></pre></td><td class="code"><pre><div class="line"><span class="comment">// ImprovedGift 优化后的礼物对象.</span></div><div class="line"><span class="keyword">type</span> ImprovedGift <span class="keyword">struct</span> {</div><div class="line">	mu       sync.Mutex</div><div class="line">	dryFruit *Chestnut</div><div class="line">}</div><div class="line"></div><div class="line"><span class="comment">// Access 访问具体的字段对象.</span></div><div class="line"><span class="keyword">func</span> (g *ImprovedGift) Access() {</div><div class="line">	g.dryFruit.Name()</div><div class="line">	g.dryFruit.Price()</div><div class="line">	g.dryFruit.Family()</div><div class="line">	g.dryFruit.Distribution()</div><div class="line">	g.dryFruit.Increase()</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>Benchmark测试代码如下：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div><div class="line">35</div><div class="line">36</div><div class="line">37</div><div class="line">38</div><div class="line">39</div><div class="line">40</div><div class="line">41</div><div class="line">42</div><div class="line">43</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> BenchmarkOriginGift(b *testing.B) {</div><div class="line">	<span class="keyword">var</span> nut = &OriginGift{</div><div class="line">		dryFruit: &Chestnut{name: <span class="string">"栗子"</span>},</div><div class="line">	}</div><div class="line">	<span class="keyword">for</span> i :=<span class="number"> 0</span>; i &lt; b.N; i++ {</div><div class="line">		nut.Access()</div><div class="line">	}</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> BenchmarkImprovedGift(b *testing.B) {</div><div class="line">	<span class="keyword">var</span> nut = &ImprovedGift{</div><div class="line">		dryFruit: &Chestnut{name: <span class="string">"栗子"</span>},</div><div class="line">	}</div><div class="line">	<span class="keyword">for</span> i :=<span class="number"> 0</span>; i &lt; b.N; i++ {</div><div class="line">		nut.Access()</div><div class="line">	}</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> BenchmarkOriginGiftParallel(b *testing.B) {</div><div class="line">	<span class="keyword">var</span> nut = &OriginGift{</div><div class="line">		dryFruit: &Chestnut{name: <span class="string">"栗子"</span>},</div><div class="line">	}</div><div class="line">	b.RunParallel(<span class="keyword">func</span>(pb *testing.PB) {</div><div class="line">		<span class="keyword">for</span> pb.Next() {</div><div class="line">			nut.mu.Lock()</div><div class="line">			nut.Access()</div><div class="line">			nut.mu.Unlock()</div><div class="line">		}</div><div class="line">	})</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> BenchmarkImprovedGiftParallel(b *testing.B) {</div><div class="line">	<span class="keyword">var</span> nut = &ImprovedGift{</div><div class="line">		dryFruit: &Chestnut{name: <span class="string">"栗子"</span>},</div><div class="line">	}</div><div class="line">	b.RunParallel(<span class="keyword">func</span>(pb *testing.PB) {</div><div class="line">		<span class="keyword">for</span> pb.Next() {</div><div class="line">			nut.mu.Lock()</div><div class="line">			nut.Access()</div><div class="line">			nut.mu.Unlock()</div><div class="line">		}</div><div class="line">	})</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>同时测试无并发的benchmark, 然后测试并发访问时的性能。</p>
+<p>第一次测试我们采用禁止内联的方式， 运行<code>go test -gcflags &quot;-N -l&quot; -bench .</code>:</p>
+<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div></pre></td><td class="code"><pre><div class="line">goos: darwin</div><div class="line">goarch: amd64</div><div class="line">pkg: github.com/smallnest/study/perf_interface</div><div class="line">BenchmarkOriginGift-<span class="number">4</span>             	<span class="number">34669898</span>	        <span class="number">31.0</span> ns/op</div><div class="line">BenchmarkImprovedGift-<span class="number">4</span>           	<span class="number">58661895</span>	        <span class="number">17.9</span> ns/op</div><div class="line">BenchmarkOriginGiftParallel-<span class="number">4</span>     	 <span class="number">7292043</span>	       <span class="number">171</span> ns/op</div><div class="line">BenchmarkImprovedGiftParallel-<span class="number">4</span>   	 <span class="number">8718816</span>	       <span class="number">143</span> ns/op</div></pre></td></tr></table></figure>
+
+<p>可以看到将接口替换成具体的struct优化还是很明显的，非并发访问的情况下耗时几乎降到了一半，并发访问也有可观的性嫩提升。</p>
+<p>第二次我们启用内联，看看和上面不启用内联的情况比较。</p>
+<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div></pre></td><td class="code"><pre><div class="line">goarch: amd64</div><div class="line">pkg: github.com/smallnest/study/perf_interface</div><div class="line">BenchmarkOriginGift-<span class="number">4</span>             	<span class="number">95278143</span>	        <span class="number">12.6</span> ns/op</div><div class="line">BenchmarkImprovedGift-<span class="number">4</span>           	<span class="number">549471100</span>	         <span class="number">2.16</span> ns/op</div><div class="line">BenchmarkOriginGiftParallel-<span class="number">4</span>     	<span class="number">11631438</span>	       <span class="number">115</span> ns/op</div><div class="line">BenchmarkImprovedGiftParallel-<span class="number">4</span>   	<span class="number">13815229</span>	        <span class="number">86.3</span> ns/op</div></pre></td></tr></table></figure>
+
+<p>启用内联后，可以看到性能都有所提升，而去掉接口的方式性能优化更明显，直接降到了<code>2.16 ns/op</code>。</p>
+<p>通过这两个benchmark的比较，你应该能深刻理解到这两种优化手段(去接口、内联)带来的巨大收益吧。</p>
+<blockquote>
+<p>你可以通过 <code>go test --gcflags &quot;-m -m&quot;  -bench .</code> 了解内联的具体细节。</p>
+</blockquote>
+
+      
+    </div>
+    <footer class="article-footer">
+      
+
+      
+      <!-- <link rel="stylesheet" href="https://unpkg.com/gitalk/dist/gitalk.css">
+      <script src="https://unpkg.com/gitalk/dist/gitalk.min.js"></script> -->
+      <section id="comments">
+        <script src="https://utteranc.es/client.js"
+                repo="smallnest/gitalk"
+                issue-term="title"
+                theme="github-light"
+                crossorigin="anonymous"
+                async>
+        </script>
+        <!-- <div id="gitalk-container"></div>
+        <script type="text/javascript">
+          var gitalkOpts = {
+            id: '2019/12/31/small-changes-big-improvement/',
+            owner: 'smallnest',
+            repo: 'gitalk',
+            title: '小改动，大提升',
+            body: 'https://colobu.com/2019/12/31/small-changes-big-improvement/',
+            clientID: 'bc02724130ed5b7ee275',
+            clientSecret: '68cb0bae2f93a8b88b09e0eb9b08c844b06a9047',
+            admin: ['smallnest'],
+            distractionFreeMode: false
+          };
+
+          const gitalk = new Gitalk(gitalkOpts)
+          gitalk.render('gitalk-container')
+        </script> -->
+        <noscript> 为正常使用评论功能请激活JavaScript</noscript>
+      </section>
+
+      
+
+    </footer>
+  </div>
+  
+  
+<nav id="article-nav">
+  
+    <a href="/2020/01/07/Top-Go-Links-of-2019/" id="article-nav-newer" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">Newer</strong>
+      <div class="article-nav-title">
+        
+          [译]2019年 Go 读者点击最多的十篇文章
+        
+      </div>
+    </a>
+  
+  
+    <a href="/2019/12/28/go-tcp-exceptions/" id="article-nav-older" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">Older</strong>
+      <div class="article-nav-title">谁拔了我的网线？</div>
+    </a>
+  
+</nav>
+
+  
+</article></section>
+        
+          <aside id="sidebar">
+  
+      <div class="widget-wrap">
+    <h3 class="widget-title">原创图书</h3>
+    <div class="widget">
+      <a href="/ScalaCollectionsCookbook/">
+        <img width="100%" src="/ScalaCollectionsCookbook/scala_collections_cookbook.jpg">
+        <img width="100%" src="/ScalaCollectionsCookbook/scala_collections_cookbook_tw.png">
+      </a>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">分类</h3>
+    <div class="widget">
+      <ul class="category-list"><li class="category-list-item"><a class="category-list-link" href="/categories/Android/">Android</a><span class="category-list-count">12</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/C/">C++</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/DOTNET/">DOTNET</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Docker/">Docker</a><span class="category-list-count">5</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Go/">Go</a><span class="category-list-count">175</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Java/">Java</a><span class="category-list-count">64</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Linux/">Linux</a><span class="category-list-count">7</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Rust/">Rust</a><span class="category-list-count">12</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Scala/">Scala</a><span class="category-list-count">18</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/分享/">分享</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/前端开发/">前端开发</a><span class="category-list-count">18</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/区块链/">区块链</a><span class="category-list-count">8</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/大数据/">大数据</a><span class="category-list-count">60</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/工具/">工具</a><span class="category-list-count">28</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/数据库/">数据库</a><span class="category-list-count">3</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/架构/">架构</a><span class="category-list-count">26</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/算法/">算法</a><span class="category-list-count">4</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/管理/">管理</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/网络编程/">网络编程</a><span class="category-list-count">13</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/读书笔记/">读书笔记</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/运维/">运维</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/高并发编程/">高并发编程</a><span class="category-list-count">20</span></li></ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">标签云</h3>
+    <div class="widget tagcloud">
+      <a href="/tags/Android/" style="font-size: 15.71px;">Android</a><a href="/tags/ApacheBench/" style="font-size: 11.43px;">ApacheBench</a><a href="/tags/Bower/" style="font-size: 10.00px;">Bower</a><a href="/tags/C/" style="font-size: 10.00px;">C#</a><a href="/tags/CDN/" style="font-size: 10.00px;">CDN</a><a href="/tags/CQRS/" style="font-size: 10.00px;">CQRS</a><a href="/tags/CRC/" style="font-size: 10.00px;">CRC</a><a href="/tags/CSS/" style="font-size: 11.43px;">CSS</a><a href="/tags/CompletableFuture/" style="font-size: 10.00px;">CompletableFuture</a><a href="/tags/Comsat/" style="font-size: 10.00px;">Comsat</a><a href="/tags/Curator/" style="font-size: 18.57px;">Curator</a><a href="/tags/DSL/" style="font-size: 10.00px;">DSL</a><a href="/tags/Disruptor/" style="font-size: 10.00px;">Disruptor</a><a href="/tags/Docker/" style="font-size: 11.43px;">Docker</a><a href="/tags/Ember/" style="font-size: 11.43px;">Ember</a><a href="/tags/FastJson/" style="font-size: 10.00px;">FastJson</a><a href="/tags/Fiber/" style="font-size: 10.00px;">Fiber</a><a href="/tags/GAE/" style="font-size: 10.00px;">GAE</a><a href="/tags/GC/" style="font-size: 12.86px;">GC</a><a href="/tags/Gnuplot/" style="font-size: 10.00px;">Gnuplot</a><a href="/tags/Go/" style="font-size: 14.29px;">Go</a><a href="/tags/Gradle/" style="font-size: 10.00px;">Gradle</a><a href="/tags/Grunt/" style="font-size: 10.00px;">Grunt</a><a href="/tags/Gulp/" style="font-size: 10.00px;">Gulp</a><a href="/tags/Hadoop/" style="font-size: 10.00px;">Hadoop</a><a href="/tags/Hazelcast/" style="font-size: 10.00px;">Hazelcast</a><a href="/tags/IPFS/" style="font-size: 10.00px;">IPFS</a><a href="/tags/Ignite/" style="font-size: 10.00px;">Ignite</a><a href="/tags/JVM/" style="font-size: 10.00px;">JVM</a><a href="/tags/Java/" style="font-size: 17.14px;">Java</a><a href="/tags/Kafka/" style="font-size: 20.00px;">Kafka</a><a href="/tags/Lambda/" style="font-size: 14.29px;">Lambda</a><a href="/tags/Linux/" style="font-size: 12.86px;">Linux</a><a href="/tags/LongAdder/" style="font-size: 10.00px;">LongAdder</a><a href="/tags/MathJax/" style="font-size: 10.00px;">MathJax</a><a href="/tags/Maven/" style="font-size: 11.43px;">Maven</a><a href="/tags/Memcached/" style="font-size: 10.00px;">Memcached</a><a href="/tags/Metrics/" style="font-size: 10.00px;">Metrics</a><a href="/tags/Mongo/" style="font-size: 12.86px;">Mongo</a><a href="/tags/Netty/" style="font-size: 15.71px;">Netty</a>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">归档</h3>
+    <div class="widget">
+      <ul class="archive-list"><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/10/">October 2021</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/08/">August 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/07/">July 2021</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/06/">June 2021</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/05/">May 2021</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/04/">April 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/03/">March 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/02/">February 2021</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/01/">January 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/12/">December 2020</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/11/">November 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/09/">September 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/08/">August 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/07/">July 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/06/">June 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/05/">May 2020</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/04/">April 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/03/">March 2020</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/02/">February 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/01/">January 2020</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/12/">December 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/11/">November 2019</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/10/">October 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/09/">September 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/08/">August 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/07/">July 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/06/">June 2019</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/05/">May 2019</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/04/">April 2019</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/03/">March 2019</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/02/">February 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/01/">January 2019</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/12/">December 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/11/">November 2018</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/10/">October 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/09/">September 2018</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/08/">August 2018</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/07/">July 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/06/">June 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/05/">May 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/04/">April 2018</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/03/">March 2018</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/02/">February 2018</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/01/">January 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/12/">December 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/11/">November 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/10/">October 2017</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/09/">September 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/08/">August 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/07/">July 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/06/">June 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/05/">May 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/04/">April 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/03/">March 2017</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/02/">February 2017</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/01/">January 2017</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/12/">December 2016</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/11/">November 2016</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/10/">October 2016</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/09/">September 2016</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/08/">August 2016</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/07/">July 2016</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/06/">June 2016</a><span class="archive-list-count">14</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/05/">May 2016</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/04/">April 2016</a><span class="archive-list-count">14</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/03/">March 2016</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/02/">February 2016</a><span class="archive-list-count">8</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/01/">January 2016</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/12/">December 2015</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/11/">November 2015</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/10/">October 2015</a><span class="archive-list-count">9</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/09/">September 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/08/">August 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/07/">July 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/06/">June 2015</a><span class="archive-list-count">8</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/05/">May 2015</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/04/">April 2015</a><span class="archive-list-count">15</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/03/">March 2015</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/02/">February 2015</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/01/">January 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/12/">December 2014</a><span class="archive-list-count">28</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/11/">November 2014</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/10/">October 2014</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/09/">September 2014</a><span class="archive-list-count">28</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/08/">August 2014</a><span class="archive-list-count">19</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/07/">July 2014</a><span class="archive-list-count">1</span></li></ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">近期文章</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+            <a href="/2021/10/06/replace-implementations-in-go-std-libs-at-runtime/">强制更改Go标准库的实现</a>
+          </li>
+        
+          <li>
+            <a href="/2021/08/30/how-is-go-generic-implemented/">Go泛型是怎么实现的?</a>
+          </li>
+        
+          <li>
+            <a href="/2021/08/01/benchmark-of-rpc-frameworks/">2021年Go生态圈rpc框架benchmark</a>
+          </li>
+        
+          <li>
+            <a href="/2021/07/13/Updating-the-Go-Memory-Model/">[译]更新Go内存模型</a>
+          </li>
+        
+          <li>
+            <a href="/2021/07/11/Programming-Language-Memory-Models/">[译]编程语言内存模型</a>
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">友情链接</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+			 
+            <a href="http://stackshare.io" target="_blank">技术栈</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://toutiao.io/" target="_blank">开发者头条</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://weekly.manong.io/issues/" target="_blank">码农周刊</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.tuicool.com/mags" target="_blank">编程狂人周刊</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.importnew.com/" target="_blank">importnew</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://ifeve.com/" target="_blank">并发编程网</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://github.com" target="_blank">github</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://stackoverflow.com/" target="_blank">stackoverflow</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.javacodegeeks.com/" target="_blank">javacodegeeks</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.infoq.com/" target="_blank">infoq</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.dzone.com/links/index.html" target="_blank">dzone</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://oj.leetcode.com/problems/" target="_blank">leetcode</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://tutorials.jenkov.com" target="_blank">jenkov</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://howtodoinjava.com" target="_blank">HowToDoInJava</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://java-design-patterns.com/patterns/" target="_blank">java design patterns</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://medium.com/netflix-techblog" target="_blank">Netflix技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://www.techiedelight.com" target="_blank">Techie Delight</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://engineering.linkedin.com/blog" target="_blank">Linkedin技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://blogs.dropbox.com/tech/" target="_blank">Dropbox技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://code.fb.com" target="_blank">Facebook技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://jm.taobao.org" target="_blank">淘宝中间件团队</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://tech.meituan.com" target="_blank">美团技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://blogs.360.cn" target="_blank">360技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://xiaomi-info.github.io" target="_blank">小米信息部技术团队</a>
+			
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+      
+
+  
+</aside>
+        
+      </div>
+      <footer id="footer">
+  
+  <div class="outer">
+    <div id="footer-info" class="inner">
+      &copy; 2021 smallnest<br>
+	  Powered by <a href="http://hexo.io/" target="_blank">Hexo</a>
+    </div>
+  </div>
+</footer>
+    </div>
+    <nav id="mobile-nav">
+  
+    
+      <a href="/" class="mobile-nav-link"><i class="fa fa-home">&nbsp;</i>首页</a>
+    
+  
+    
+      <a href="/archives" class="mobile-nav-link"><i class="fa fa-folder-o">&nbsp;</i>归档</a>
+    
+  
+    
+      <a href="https://github.com/smallnest" class="mobile-nav-link"><i class="fa fa-github">&nbsp;</i>github</a>
+    
+  
+    
+      <a class="mobile-nav-link" href="#"><i class="fa fa-bars">&nbsp;</i>网站群</a>
+    
+      
+            <a class="mobile-nav-link" href="/goasm">&nbsp;&nbsp;<i class="fa fa-language">&nbsp;</i>Go汇编示例</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="https://gowebexamples.com">&nbsp;&nbsp;<i class="fa fa-external-link">&nbsp;</i>Go Web开发示例</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://go-database-sql.org">&nbsp;&nbsp;<i class="fa fa-external-link">&nbsp;</i>Go 数据库开发教程</a>
+          
+          
+    
+      
+            
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://rpcx.io">&nbsp;&nbsp;<i class="fa undefined">&nbsp;</i>RPCX官网</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://cn.doc.rpcx.io">&nbsp;&nbsp;<i class="fa undefined">&nbsp;</i>RPC开发指南</a>
+          
+          
+    
+    
+  
+    
+      <a href="/ScalaCollectionsCookbook" class="mobile-nav-link"><i class="fa fa-book">&nbsp;</i>Scala集合技术手册</a>
+    
+  
+    
+      <a href="/about" class="mobile-nav-link"><i class="fa fa-lemon-o">&nbsp;</i>关于</a>
+    
+  
+</nav>
+    
+<script src="//cdn.staticfile.org/jquery/1.11.1/jquery.min.js"></script>
+<script src="//cdn.bootcss.com/jquery.lazyload/1.9.1/jquery.lazyload.min.js"></script>
+
+<script src="//cdnjs.cloudflare.com/ajax/libs/fancybox/3.2.5/jquery.fancybox.min.js"></script>
+
+
+<script src="/js/script.js" type="text/javascript"></script>
+
+<!-- mathjax config similar to math.stackexchange -->
+<script type="text/x-mathjax-config">
+  MathJax.Hub.Config({
+    tex2jax: {
+      inlineMath: [ ['$','$'], ["\\(","\\)"] ],
+      processEscapes: true,
+      skipTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code']
+    }
+  });
+  MathJax.Hub.Queue(function() {
+      var all = MathJax.Hub.getAllJax(), i;
+      for(i=0; i < all.length; i += 1) {
+        all[i].SourceElement().parentNode.className += ' has-jax';
+      }
+  });
+</script>
+<script type="text/javascript" src="//cdn.bootcss.com/mathjax/2.6.0-beta.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML">
+</script>
+
+<div id="totop" style="position:fixed;bottom:150px;right:10px;cursor: pointer;z-index: 2000;">
+	<a title="返回顶部"><img src="/images/scrollup.png"/></a>
+</div>
+<script src="/js/totop.js" type="text/javascript"></script>
+
+
+
+
+<script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "//hm.baidu.com/hm.js?e085d87993250aab11f3e0c15f1c2785";
+  var s = document.getElementsByTagName("script")[0]; 
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+
+
+  </div>
+</body>
+</html>

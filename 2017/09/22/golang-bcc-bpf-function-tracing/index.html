@@ -1,0 +1,717 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset="utf-8">
+  
+  <title>[译]使用 bcc/BPF 分析 go 程序</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+  <meta name="description" content="BCC 是基于 BPF 的 Linux IO 分析、监控、网络工具集合。BPF Compiler Collection (BCC) 是创建高效内核追踪和处理程序的工具包，包含几个有用的工具和用例。BCC 扩展了 BPF (Berkeley Packet Filters) 的用途，BPF 之前被称为 eBPF，是 Linux 3.15 新增的一个新特性。BCC 大部分的功能都要求 Linux 4.">
+<meta property="og:type" content="article">
+<meta property="og:title" content="[译]使用 bcc/BPF 分析 go 程序">
+<meta property="og:url" content="https://colobu.com/2017/09/22/golang-bcc-bpf-function-tracing/">
+<meta property="og:site_name" content="鸟窝">
+<meta property="og:description" content="BCC 是基于 BPF 的 Linux IO 分析、监控、网络工具集合。BPF Compiler Collection (BCC) 是创建高效内核追踪和处理程序的工具包，包含几个有用的工具和用例。BCC 扩展了 BPF (Berkeley Packet Filters) 的用途，BPF 之前被称为 eBPF，是 Linux 3.15 新增的一个新特性。BCC 大部分的功能都要求 Linux 4.">
+<meta property="og:image" content="bcc_tracing_tools_2017.png">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="[译]使用 bcc/BPF 分析 go 程序">
+<meta name="twitter:description" content="BCC 是基于 BPF 的 Linux IO 分析、监控、网络工具集合。BPF Compiler Collection (BCC) 是创建高效内核追踪和处理程序的工具包，包含几个有用的工具和用例。BCC 扩展了 BPF (Berkeley Packet Filters) 的用途，BPF 之前被称为 eBPF，是 Linux 3.15 新增的一个新特性。BCC 大部分的功能都要求 Linux 4.">
+
+  
+  <link rel="alternative" href="/atom.xml" title="鸟窝" type="application/atom+xml">
+  
+  
+  <link rel="icon" href="/favicon.png">
+  
+  <link rel="stylesheet" href="/css/style.css" type="text/css">
+
+  <link href="//cdn.staticfile.org/font-awesome/4.2.0/css/font-awesome.css" rel="stylesheet">
+  
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/fancybox/2.1.7/css/jquery.fancybox.min.css"
+    media="screen" type="text/css">
+  
+  <link rel="stylesheet" href="//cdnjs.cloudflare.com/ajax/libs/animate.css/3.1.1/animate.min.css" media="screen"
+    type="text/css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/tonsky/FiraCode@1.207/distr/fira_code.css">
+</head>
+<body>
+  <div id="container">
+    <div id="wrap">
+      <header id="header">
+  <div id="banner"></div>
+  <div id="header-outer" class="outer">
+    <div id="header-title" class="inner">
+      <h1 id="logo-wrap" class="animated bounceInLeft">
+        <a href="/" id="logo">鸟窝</a>
+      </h1>
+      
+        <h2 id="subtitle-wrap" class="animated bounceInLeft">
+          <a href="/" id="subtitle">大道至简 Simplicity is the ultimate form of sophistication</a>
+        </h2>
+      
+    </div>
+    <div id="header-inner" class="inner">
+      <nav id="main-nav">
+        <a id="main-nav-toggle" class="nav-icon"></a>
+        
+          
+            <a class="main-nav-link" href="/"><i class="fa fa-home">&nbsp;</i>首页</a>
+          
+          
+          
+            <a class="main-nav-link" href="/archives"><i class="fa fa-folder-o">&nbsp;</i>归档</a>
+          
+          
+          
+            <a class="main-nav-link" href="https://github.com/smallnest"><i class="fa fa-github">&nbsp;</i>github</a>
+          
+          
+          
+            <div class="dropdown main-nav-link"><a class="main-nav-link" href="#"><i class="fa fa-bars">&nbsp;</i>网站群</a>
+              <div class="dropdown-content">
+          
+            
+              <a href="/goasm"><i class="fa fa-language"></i>&nbsp;Go汇编示例</a>
+            
+                
+          
+            
+              <a href="https://gowebexamples.com"><i class="fa fa-external-link"></i>&nbsp;Go Web开发示例</a>
+            
+                
+          
+            
+              <a href="http://go-database-sql.org"><i class="fa fa-external-link"></i>&nbsp;Go 数据库开发教程</a>
+            
+                
+          
+            
+              <hr>
+            
+                
+          
+            
+              <a href="http://rpcx.io"><i class="fa undefined"></i>&nbsp;RPCX官网</a>
+            
+                
+          
+            
+              <a href="http://cn.doc.rpcx.io"><i class="fa undefined"></i>&nbsp;RPC开发指南</a>
+            
+                
+          
+          </div>
+        </div>
+          
+          
+          
+            <a class="main-nav-link" href="/ScalaCollectionsCookbook"><i class="fa fa-book">&nbsp;</i>Scala集合技术手册</a>
+          
+          
+          
+            <a class="main-nav-link" href="/about"><i class="fa fa-lemon-o">&nbsp;</i>关于</a>
+          
+          
+
+
+      </nav>
+      <nav id="sub-nav">
+        
+          <a id="nav-rss-link" class="nav-icon" href="/atom.xml" title="RSS Feed"></a>
+        
+        <a id="nav-search-btn" class="nav-icon" title="Search"></a>
+      </nav>
+      <div id="search-form-wrap">
+        <form action="http://www.baidu.com/baidu" method="get" accept-charset="utf-8" class="search-form">
+          <input type="search" name="word" maxlength="20" class="search-form-input" placeholder="Search">
+          <input type="submit" value="" class="search-form-submit">
+          <input name=tn type=hidden value="bds">
+          <input name=cl type=hidden value="3">
+          <input name=ct type=hidden value="2097152">
+          <input type="hidden" name="si" value="colobu.com">
+        </form>
+      </div>
+    </div>
+  </div>
+</header>
+      <div class="outer">
+        <section id="main"><script>function show_answer(btn, x) { if (btn.value === "显示答案") { btn.value = "隐藏答案" } else { btn.value = "显示答案" } var as = document.getElementById(x); if (as.style.display === "none") { as.style.display = "block" } else { as.style.display = "none" } }</script>
+
+<article id="post-golang-bcc-bpf-function-tracing" class="article article-type-post" itemscope
+  itemprop="blogPost">
+  <div class="article-meta">
+    <a href="/2017/09/22/golang-bcc-bpf-function-tracing/" class="article-date">
+  <time datetime="2017-09-22T06:03:54.000Z" itemprop="datePublished">2017年09月22日</time>
+</a>
+    
+  <div class="article-category">
+    <a class="article-category-link" href="/categories/Go/">Go</a>
+  </div>
+
+    
+  <div class="article-author"> by Brendan Gregg</div>
+
+  </div>
+  <div class="article-inner">
+    
+    
+    <header class="article-header">
+      
+  
+    <h1 class="article-title" itemprop="name">
+      [译]使用 bcc/BPF 分析 go 程序
+	  
+    </h1>
+  
+
+    </header>
+    
+    <div class="article-entry" itemprop="articleBody">
+      
+      
+      
+      <blockquote>
+<p>BCC 是基于 BPF 的 Linux IO 分析、监控、网络工具集合。BPF Compiler Collection (BCC) 是创建高效内核追踪和处理程序的工具包，包含几个有用的工具和用例。BCC 扩展了 BPF (Berkeley Packet Filters) 的用途，BPF 之前被称为 eBPF，是 Linux 3.15 新增的一个新特性。BCC 大部分的功能都要求 Linux 4.1+。</p>
+</blockquote>
+<p>本文翻译自性能分析大牛<a href="http://www.brendangregg.com/index.html" target="_blank" rel="external">Brendan Gregg</a>的 2017年中旬的一篇文章: <a href="http://www.brendangregg.com/blog/2017-01-31/golang-bcc-bpf-function-tracing.html" target="_blank" rel="external">Golang bcc/BPF Function Tracing</a>, 介绍如何使用最新的工具更加深入的分析Go程序。</p>
+<a id="more"></a>
+<p><img src="bcc_tracing_tools_2017.png" alt="Linux bbc/BPF tracing tools"></p>
+<p>本文中我将逐步展示一个新的分析Go程序的方式： 使用Linux 4.x的 eBPF 技术进行动态分析。如果你搜索一下<code>go</code>和<code>BPF</code>关键字， 你会发现一些使用 BPF的Go程序库(比如 <a href="https://github.com/iovisor/gobpf" target="_blank" rel="external">gobpf</a>)。这并不是我想在本文中介绍的：我是要使用 BPF 来对Go程序进行性能分析和调试。 如果你还不了解 BPF, 我几周前在 linux.conf.au 有一些介绍 (<a href="https://www.youtube.com/watch?v=JRFNIKUROPE" target="_blank" rel="external">youtube</a>, <a href="http://www.slideshare.net/brendangregg/bpf-tracing-and-more" target="_blank" rel="external">slideshare</a>)。</p>
+<p>现在已经有一些方式可以调试和跟踪(debug and trace)Go程序, 包括(但不限于下列方式):</p>
+<ul>
+<li>使用 <a href="https://golang.org/doc/gdb" target="_blank" rel="external">gdb</a>和 go runtime支持</li>
+<li><a href="https://golang.org/pkg/runtime/trace/" target="_blank" rel="external">go execution tracer</a></li>
+<li>GODEBUG, 使用 gctrace 和 schedtrace 参数</li>
+</ul>
+<p>BPF tracing技术可以做更多的工作，当然它也有自己的优缺点，下面我会用一个简单的<code>hello.go</code>程序来演示这些：</p>
+<figure class="highlight go"><figcaption><span>hello.go</span></figcaption><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> main</div><div class="line"></div><div class="line"><span class="keyword">import</span> <span class="string">"fmt"</span></div><div class="line"></div><div class="line"><span class="keyword">func</span> main() {</div><div class="line">        fmt.Println(<span class="string">"Hello, BPF!"</span>)</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>我会用<code>gccgo</code>先编译，然后再用 go 自己的编译器来编译 (如果你不知道它们之间的区别，请看 VonC 做的这个 <a href="http://stackoverflow.com/a/25811505" target="_blank" rel="external">总结</a>。 一句话, gccgo可以产生更加优化的二进制文件，但适用于更老版本的go)。</p>
+<h3 id="函数统计_(gccgo)">函数统计 (gccgo)</h3>
+<p>编译:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line">$ gccgo -o hello hello.<span class="keyword">go</span></div><div class="line">$ ./hello</div><div class="line">Hello, BPF!</div></pre></td></tr></table></figure>
+
+<p>现在可以使用 <a href="https://github.com/iovisor/bcc" target="_blank" rel="external">bcc</a> tool <code>funccount</code> 动态跟踪和统计所有的以<code>fmt.</code>开头的Go库函数，我同时会在另外一个终端中运行这个hello程序：</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div></pre></td><td class="code"><pre><div class="line"><span class="comment"># funccount 'go:fmt.*'</span></div><div class="line">Tracing <span class="number">160</span> functions <span class="keyword">for</span> <span class="string">"go:fmt.*"</span><span class="keyword">...</span> Hit Ctrl-C to end.</div><div class="line">^C</div><div class="line">FUNC                                    COUNT</div><div class="line">fmt..import                                 <span class="number">1</span></div><div class="line">fmt.padString.pN7_fmt.fmt                   <span class="number">1</span></div><div class="line">fmt.fmt_s.pN7_fmt.fmt                       <span class="number">1</span></div><div class="line">fmt.WriteString.pN10_fmt.buffer             <span class="number">1</span></div><div class="line">fmt.free.pN6_fmt.pp                         <span class="number">1</span></div><div class="line">fmt.fmtString.pN6_fmt.pp                    <span class="number">1</span></div><div class="line">fmt.doPrint.pN6_fmt.pp                      <span class="number">1</span></div><div class="line">fmt.init.pN7_fmt.fmt                        <span class="number">1</span></div><div class="line">fmt.printArg.pN6_fmt.pp                     <span class="number">1</span></div><div class="line">fmt.WriteByte.pN10_fmt.buffer               <span class="number">1</span></div><div class="line">fmt.Println                                 <span class="number">1</span></div><div class="line">fmt.truncate.pN7_fmt.fmt                    <span class="number">1</span></div><div class="line">fmt.Fprintln                                <span class="number">1</span></div><div class="line">fmt.$nested1                                <span class="number">1</span></div><div class="line">fmt.newPrinter                              <span class="number">1</span></div><div class="line">fmt.clearflags.pN7_fmt.fmt                  <span class="number">2</span></div><div class="line">Detaching...</div></pre></td></tr></table></figure>
+
+<p>漂亮! 输出结果中包含了<code>fmt.Println()</code>, 还有一些其它的调用。</p>
+<p>实际并不需要以特定的方式运行Go程序， 你可以跟踪一个已经运行的Go程序进程，并不需要重新启动它， 怎么做呢？</p>
+<ul>
+<li>使用 <a href="http://www.brendangregg.com/blog/2015-06-28/linux-ftrace-uprobe.html" target="_blank" rel="external">Linux uprobes: User-Level Dynamic Tracing</a>, Linux 3.5中增加的一个功能。 它使用一个软中断重写了kernel的指令，并且当跟踪程序结束的时候会恢复进程。</li>
+<li>gccgo编译的程序有一个标准的符号表，可以用来查询函数。</li>
+<li>本例中使用了 <code>libgo</code>, 它包含<code>fmt</code>包。</li>
+<li>uprobes可以附加到已经运行的进程上， 或者像我上面做的那样， 捕获所有使用它的进程。</li>
+<li>更有效地， 我经常统计内核上下文的函数调用次数， 只将调用次数发送到用户空间。</li>
+</ul>
+<p>对于操作系统来讲， 这个二进制文件的信息如下：</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div></pre></td><td class="code"><pre><div class="line"><span class="variable">$ </span>file hello</div><div class="line"><span class="symbol">hello:</span> <span class="constant">ELF</span> <span class="number">64</span>-bit <span class="constant">LSB</span> executable, x86-<span class="number">64</span>, version <span class="number">1</span> (<span class="constant">SYSV</span>), dynamically linked, interpreter /lib64/ld-linux-x86-<span class="number">64</span>.so.<span class="number">2</span>, <span class="keyword">for</span> <span class="constant">GNU</span>/<span class="constant">Linux</span> <span class="number">2.6</span>.<span class="number">32</span>, <span class="constant">BuildID</span>[sha1]=<span class="number">4</span>dc45f1eb023f44ddb32c15bbe0fb4f933e61815, <span class="keyword">not</span> stripped</div><div class="line"><span class="variable">$ </span>ls -lh hello</div><div class="line">-rwxr-xr-x <span class="number">1</span> bgregg root <span class="number">29</span>K <span class="constant">Jan</span> <span class="number">12</span> <span class="number">21</span><span class="symbol">:</span><span class="number">18</span> hello</div><div class="line"><span class="variable">$ </span>ldd hello</div><div class="line">    linux-vdso.so.<span class="number">1</span> =&gt;  (<span class="number">0x00007ffc4cb1a000</span>)</div><div class="line">    libgo.so.<span class="number">9</span> =&gt; <span class="regexp">/usr/lib</span><span class="regexp">/x86_64-linux-gnu/libgo</span>.so.<span class="number">9</span> (<span class="number">0x00007f25f2407000</span>)</div><div class="line">    libgcc_s.so.<span class="number">1</span> =&gt; <span class="regexp">/lib/x</span>86_64-linux-gnu/libgcc_s.so.<span class="number">1</span> (<span class="number">0x00007f25f21f1000</span>)</div><div class="line">    libc.so.<span class="number">6</span> =&gt; <span class="regexp">/lib/x</span>86_64-linux-gnu/libc.so.<span class="number">6</span> (<span class="number">0x00007f25f1e27000</span>)</div><div class="line">    /lib64/ld-linux-x86-<span class="number">64</span>.so.<span class="number">2</span> (<span class="number">0x0000560b44960000</span>)</div><div class="line">    libpthread.so.<span class="number">0</span> =&gt; <span class="regexp">/lib/x</span>86_64-linux-gnu/libpthread.so.<span class="number">0</span> (<span class="number">0x00007f25f1c0a000</span>)</div><div class="line">    libm.so.<span class="number">6</span> =&gt; <span class="regexp">/lib/x</span>86_64-linux-gnu/libm.so.<span class="number">6</span> (<span class="number">0x00007f25f1901000</span>)</div><div class="line"><span class="variable">$ </span>objdump -tT /usr/lib/x86_64-linux-gnu/libgo.so.<span class="number">9</span> | grep fmt.<span class="constant">Println</span></div><div class="line"><span class="number">0000000001221070</span> g     <span class="constant">O</span> .data.rel.ro   <span class="number">000000000000000</span>8              fmt.<span class="constant">Println</span><span class="variable">$descriptor</span></div><div class="line"><span class="number">0000000000</span>97809<span class="number">0</span> g     <span class="constant">F</span> .text  <span class="number">0000000000000075</span>              fmt.<span class="constant">Println</span></div><div class="line"><span class="number">0000000001221070</span> g    <span class="constant">DO</span> .data.rel.ro   <span class="number">000000000000000</span>8  <span class="constant">Base</span>        fmt.<span class="constant">Println</span><span class="variable">$descriptor</span></div><div class="line"><span class="number">0000000000</span>97809<span class="number">0</span> g    <span class="constant">DF</span> .text  <span class="number">0000000000000075</span>  <span class="constant">Base</span>        fmt.<span class="constant">Println</span></div></pre></td></tr></table></figure>
+
+<p>看起来像编译的 C 程序， 你可以使用很多已有的调试器和跟踪器， 包括 bcc/BPF。 而且比那么即时编译的运行时比如 Java 和 Node.js更容易操作。目前唯一一点不爽的就是函数名包含一些非标准的字符， 比如本例中的&quot;.&quot; 。</p>
+<p><code>funccount</code> 支持一些参数， 比如<code>-p</code>指定某个进程ID, <code>-i</code>指定输出的时间间隔。它当前只能同时支持最多1000个跟踪对象(probe), 对于<code>fmt.*</code>来说，函数不多还OK, 但是如果跟踪所有的<code>libgo</code>中的函数就有问题了:</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div></pre></td><td class="code"><pre><div class="line"><span class="comment"># funccount 'go:*'</span></div><div class="line">maximum <span class="keyword">of</span> <span class="number">1000</span> probes allowed, attempted <span class="number">21178</span></div></pre></td></tr></table></figure>
+
+<p>嗯哼， 不工作了。 就像 bcc/BPF 中其它一些问题一样， 如果这个限制在应用中阻碍太多的话我们考虑寻找一个方式来解决它。</p>
+<h3 id="函数统计_(Go_gc)">函数统计 (Go gc)</h3>
+<p>使用 Go gc编译器来编译:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line">$ <span class="keyword">go</span> build hello.<span class="keyword">go</span></div><div class="line">$ ./hello</div><div class="line">Hello, BPF!</div></pre></td></tr></table></figure>
+
+<p>统计 <code>fmt</code> 的函数调用:</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div></pre></td><td class="code"><pre><div class="line"><span class="comment"># funccount '/home/bgregg/hello:fmt.*'</span></div><div class="line">Tracing <span class="number">78</span> functions <span class="keyword">for</span> <span class="string">"/home/bgregg/hello:fmt.*"</span><span class="keyword">...</span> Hit Ctrl-C to end.</div><div class="line">^C</div><div class="line">FUNC                                    COUNT</div><div class="line">fmt.init.1                                  <span class="number">1</span></div><div class="line">fmt.(*fmt).padString                        <span class="number">1</span></div><div class="line">fmt.(*fmt).truncate                         <span class="number">1</span></div><div class="line">fmt.(*fmt).fmt_s                            <span class="number">1</span></div><div class="line">fmt.newPrinter                              <span class="number">1</span></div><div class="line">fmt.(*pp).free                              <span class="number">1</span></div><div class="line">fmt.Fprintln                                <span class="number">1</span></div><div class="line">fmt.Println                                 <span class="number">1</span></div><div class="line">fmt.(*pp).fmtString                         <span class="number">1</span></div><div class="line">fmt.(*pp).printArg                          <span class="number">1</span></div><div class="line">fmt.(*pp).doPrint                           <span class="number">1</span></div><div class="line">fmt.glob.func1                              <span class="number">1</span></div><div class="line">fmt.init                                    <span class="number">1</span></div><div class="line">Detaching...</div></pre></td></tr></table></figure>
+
+<p>你仍然可以跟踪<code>fmt.Println()</code>, 但是现在是从二进制程序中找到它， 而不是在<code>libgo</code>中， 这是因为：</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div></pre></td><td class="code"><pre><div class="line"><span class="variable">$ </span>file hello</div><div class="line"><span class="symbol">hello:</span> <span class="constant">ELF</span> <span class="number">64</span>-bit <span class="constant">LSB</span> executable, x86-<span class="number">64</span>, version <span class="number">1</span> (<span class="constant">SYSV</span>), statically linked, <span class="keyword">not</span> stripped</div><div class="line"><span class="variable">$ </span>ls -lh hello</div><div class="line">-rwxr-xr-x <span class="number">1</span> bgregg root <span class="number">2.2</span>M <span class="constant">Jan</span> <span class="number">12</span> <span class="number">05</span><span class="symbol">:</span><span class="number">16</span> hello</div><div class="line"><span class="variable">$ </span>ldd hello</div><div class="line">    <span class="keyword">not</span> a dynamic executable</div><div class="line"><span class="variable">$ </span>objdump -t hello | grep fmt.<span class="constant">Println</span></div><div class="line"><span class="number">000000000045</span>a68<span class="number">0</span> g     <span class="constant">F</span> .text  <span class="number">00000000000000</span>e<span class="number">0</span> fmt.<span class="constant">Println</span></div></pre></td></tr></table></figure>
+
+<p>它包含一个 2M的静态库， 这个库中包含<code>fmt</code>的函数。</p>
+<p>另外一个不同就是函数名中包含不常见的符号: &quot;*&quot;, &quot;(&quot;等等。</p>
+<h3 id="函数跟踪_(gccgo)">函数跟踪 (gccgo)</h3>
+<p>这次我将尝试 Sasha Goldshtein 的跟踪工具， 也是 <a href="https://github.com/iovisor/bcc" target="_blank" rel="external">bcc</a>跟踪工具集中一个。我会使用它来观察函数的每次调用。<br>还是先使用<code>gccgo</code>来编译， 这次的简单小程序叫做 <code>functions.go</code>:</p>
+<figure class="highlight go"><figcaption><span>functions.go</span></figcaption><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> main</div><div class="line"></div><div class="line"><span class="keyword">import</span> <span class="string">"fmt"</span></div><div class="line"></div><div class="line"><span class="keyword">func</span> add(x <span class="typename">int</span>, y <span class="typename">int</span>) <span class="typename">int</span> {</div><div class="line">    <span class="keyword">return</span> x + y</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> main() {</div><div class="line">    fmt.Println(add<span class="number">(42</span>,<span class="number"> 13</span>))</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>开始跟踪 <code>add()</code> 函数:</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line"># trace <span class="string">'/home/bgregg/functions:main.add'</span></div><div class="line">PID    TID    COMM         FUNC             </div><div class="line"><span class="number">14424</span>  <span class="number">14424</span>  functions    main.<span class="built_in">add</span></div></pre></td></tr></table></figure>
+
+<p>还可以查看它的传入的参数:</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line"># trace <span class="string">'/home/bgregg/functions:main.add "%d %d" arg1, arg2'</span></div><div class="line">PID    TID    COMM         FUNC             -</div><div class="line"><span class="number">14390</span>  <span class="number">14390</span>  functions    main.<span class="built_in">add</span>         <span class="number">42</span> <span class="number">13</span></div></pre></td></tr></table></figure>
+
+<p>酷，工作正常，参数显示正确。</p>
+<p><code>trace</code> 还有其它的参数(使用 -h 查看), b比如时间戳、堆栈信息等。</p>
+<h3 id="函数跟踪_(Go_gc)">函数跟踪 (Go gc)</h3>
+<p>目前位置一切按照预想的执行。 同样的程序， 使用 <code>go gc</code>编译器来编译:</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div></pre></td><td class="code"><pre><div class="line">$ <span class="keyword">go</span> build functions.<span class="keyword">go</span></div><div class="line"></div><div class="line"># trace <span class="string">'/home/bgregg/functions:main.add "%d %d" arg1, arg2'</span></div><div class="line">could not determine address of symbol main.<span class="built_in">add</span></div><div class="line"></div><div class="line">$ objdump -<span class="keyword">t</span> functions | <span class="keyword">grep</span> main.<span class="built_in">add</span></div><div class="line">$</div></pre></td></tr></table></figure>
+
+<p>什么？没有<code>main.add()</code>函数？ 难道它被内联了？禁止内联：</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line">$ <span class="keyword">go</span> build -gcflags <span class="string">'-l'</span> functions.<span class="keyword">go</span></div><div class="line">$ objdump -<span class="keyword">t</span> functions | <span class="keyword">grep</span> main.<span class="built_in">add</span></div><div class="line"><span class="number">0000000000401000</span> <span class="keyword">g</span>     F .text  <span class="number">0000000000000020</span> main.<span class="built_in">add</span></div></pre></td></tr></table></figure>
+
+<p>现在好了，虚惊一场。 跟踪这个程序和它的参数：</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line"># trace <span class="string">'/home/bgregg/functions:main.add "%d %d" arg1, arg2'</span></div><div class="line">PID    TID    COMM         FUNC             -</div><div class="line"><span class="number">16061</span>  <span class="number">16061</span>  functions    main.<span class="built_in">add</span>         <span class="number">536912504</span> <span class="number">16</span></div></pre></td></tr></table></figure>
+
+<p>有点不对， 参数应该是 <code>42</code> 和 <code>13</code>,并不是<code>536912504</code> 和 <code>16</code>。</p>
+<p>超期gdb调试:</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div><div class="line">35</div><div class="line">36</div><div class="line">37</div><div class="line">38</div><div class="line">39</div><div class="line">40</div><div class="line">41</div></pre></td><td class="code"><pre><div class="line">$ gdb ./functions</div><div class="line">[<span class="keyword">...</span>]</div><div class="line"><span class="keyword">warning</span>: File <span class="string">"/usr/share/go-1.6/src/runtime/runtime-gdb.py"</span> auto-loading has been declined</div><div class="line"> by your `auto-load safe-path' set to "$debugdir:$datadir/auto-load".</div><div class="line">[...]</div><div class="line">(gdb) b main.add</div><div class="line">Breakpoint 1 at 0x401000: file /home/bgregg/functions.go, line 6.</div><div class="line">(gdb) r</div><div class="line">Starting program: /home/bgregg/functions </div><div class="line">[New LWP 16082]</div><div class="line">[New LWP 16083]</div><div class="line">[New LWP 16084]</div><div class="line"></div><div class="line">Thread 1 "functions" hit Breakpoint 1, main.add (x=42, y=13, ~r2=4300314240) at</div><div class="line"> /home/bgregg/functions.go:6</div><div class="line">6           return x + y</div><div class="line">(gdb) i r</div><div class="line">rax            0xc820000180 859530330496</div><div class="line">rbx            0x584ea0 5787296</div><div class="line">rcx            0xc820000180 859530330496</div><div class="line">rdx            0xc82005a048 859530698824</div><div class="line">rsi            0x10 16</div><div class="line">rdi            0xc82000a2a0 859530371744</div><div class="line">rbp            0x0  0x0</div><div class="line">rsp            0xc82003fed0 0xc82003fed0</div><div class="line">r8             0x41 65</div><div class="line">r9             0x41 65</div><div class="line">r10            0x4d8ba0 5082016</div><div class="line">r11            0x0  0</div><div class="line">r12            0x10 16</div><div class="line">r13            0x52a3c4 5415876</div><div class="line">r14            0xa  10</div><div class="line">r15            0x8  8</div><div class="line">rip            0x401000 0x401000 </div><div class="line">eflags         0x206    [ PF IF ]</div><div class="line">cs             0xe033   57395</div><div class="line">ss             0xe02b   57387</div><div class="line">ds             0x0  0</div><div class="line">es             0x0  0</div><div class="line">fs             0x0  0</div><div class="line">gs             0x0  0</div></pre></td></tr></table></figure>
+
+<p>我包含了<code>runtime-gdb.py</code>启动时的警告， 这个警告很有用：如果我想更深入到go的上下文， 我会解决这个问题。及时忽略这个问题, gdb也显示了参数的&quot;x=42, y=13&quot;.</p>
+<p>我也检查了寄存器的值， bcc的trace程序也是从这些寄存器中得到的值。 从 <code>syscall(2)</code> man帮助中可以知道：</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line">       arch/ABI      arg1  arg2  arg3  arg4  arg5  arg6  arg7  Notes</div><div class="line">       ──────────────────────────────────────────────────────────────────</div><div class="line">[<span class="keyword">...</span>]</div><div class="line">       x86_64        rdi   rsi   rdx   r10   r8    r9    -</div></pre></td></tr></table></figure>
+
+<p>但是 42 和 13 并没有在寄存器 rdi 或者 rsi 中， 原因在于Go gc编译器并不遵循标准的 AMD ABI 函数调用约定， 这导致这个调试器或者其它的调试器跟踪参数有问题(我以前也听过前同事抱怨过这个问题)。我猜Go需要使用一个不同的ABI来返回值， 因为它需要返回多个值。</p>
+<p>我查看了 Go 汇编器的快速手册， 还有Plan 9 的汇编手册，看起来函数在栈上传递，  42 和 13在栈上:</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line">(gdb) x/3dg $<span class="literal">rsp</span></div><div class="line"><span class="number">0xc82003fed0</span>:   <span class="number">4198477</span> <span class="number">42</span></div><div class="line"><span class="number">0xc82003fee0</span>:   <span class="number">13</span></div></pre></td></tr></table></figure>
+
+<p>BPF也可以获取这些值， 作为验证， 我 hacked几个别名， 把这些参数叫做<code>go1</code>,<code>go2</code>：</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line"># trace <span class="string">'/home/bgregg/functions:main.add "%d %d" go1, go2'</span></div><div class="line">PID    TID    COMM         FUNC             -</div><div class="line"><span class="number">17555</span>  <span class="number">17555</span>  functions    main.<span class="built_in">add</span>         <span class="number">42</span> <span class="number">13</span></div></pre></td></tr></table></figure>
+
+<p>完美。希望你读到这篇文章的时候， 我(或者其他人)已经解决了这个问题，并把它加入懂啊 bcc trace工具中。 可能叫&quot;goarg1&quot;, &quot;goarg2&quot;更好。</p>
+<h3 id="Interface_参数">Interface 参数</h3>
+<p>下面我会演示另一个<code>fmt.Println()</code>打印字符串的例子，但这一次参数是<code>interface</code>类型。从 go 的 <code>src/fmt/print.go</code>源代码中可以看到：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> Println(a ...<span class="keyword">interface</span>{}) (n <span class="typename">int</span>, err error) {</div><div class="line">    <span class="keyword">return</span> Fprintln(os.Stdout, a...)</div></pre></td></tr></table></figure>
+
+<p>使用gccgo编译， 然后使用 gdb 调试 你可以看到这个字符串：</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div></pre></td><td class="code"><pre><div class="line">$ gdb ./hello</div><div class="line">[<span class="keyword">...</span>]</div><div class="line">(gdb) b fmt.Println</div><div class="line">Breakpoint <span class="number">1</span> at <span class="number">0x401c50</span></div><div class="line">(gdb) r</div><div class="line">Starting program: /home/bgregg/hello </div><div class="line">[Thread debugging using libthread_db enabled]</div><div class="line">Using host libthread_db <span class="keyword">library</span> <span class="string">"/lib/x86_64-linux-gnu/libthread_db.so.1"</span>.</div><div class="line">[New Thread <span class="number">0x7ffff449c700</span> (LWP <span class="number">16836</span>)]</div><div class="line">[New Thread <span class="number">0x7ffff3098700</span> (LWP <span class="number">16837</span>)]</div><div class="line">[Switching to Thread <span class="number">0x7ffff3098700</span> (LWP <span class="number">16837</span>)]</div><div class="line"></div><div class="line">Thread <span class="number">3</span> <span class="string">"hello"</span> hit Breakpoint <span class="number">1</span>, fmt.Println (a=<span class="keyword">...</span>) at ../../../src/libgo/go/fmt/print.go:<span class="number">263</span></div><div class="line"><span class="number">263</span> ../../../src/libgo/go/fmt/print.go: No such file or directory.</div><div class="line">(gdb) p a</div><div class="line">$<span class="number">1</span> = {__values = <span class="number">0xc208000240</span>, __count = <span class="number">1</span>, __capacity = <span class="number">1</span>}</div><div class="line">(gdb) p a.__values</div><div class="line">$<span class="number">18</span> = (struct {<span class="keyword">...</span>} *) <span class="number">0xc208000240</span></div><div class="line">(gdb) p a.__values[<span class="number">0</span>]</div><div class="line">$<span class="number">20</span> = {__type_descriptor = <span class="number">0x4037c0</span> &lt;__go_tdn_string&gt;, __object = <span class="number">0xc208000210</span>}</div><div class="line">(gdb) x/s *<span class="number">0xc208000210</span></div><div class="line"><span class="number">0x403483</span>:   <span class="string">"Hello, BPF!"</span></div></pre></td></tr></table></figure>
+
+<p>可以正常查到这个字符串（我不确定是否有更容易的方式检查）。你也可以写一个定制的 bcc/BPF 程序来检查， 我们可以增加更多的别名来命名这些接口参数。</p>
+<h3 id="函数耗时">函数耗时</h3>
+<p>下面是一个跟踪函数耗时的简单例子：</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div></pre></td><td class="code"><pre><div class="line"><span class="comment"># funclatency 'go:fmt.Println'</span></div><div class="line"><span class="constant">Tracing </span><span class="number">1</span> functions <span class="keyword">for</span> <span class="string">"go:fmt.Println"</span>... <span class="constant">Hit Ctrl-C </span>to <span class="keyword">end</span>.</div><div class="line">^<span class="constant">C</span></div><div class="line"></div><div class="line"><span class="constant">Function </span>= fmt.<span class="constant">Println </span>[<span class="number">3041</span>]</div><div class="line">     nsecs               <span class="symbol">:</span> count     distribution</div><div class="line">         <span class="number">0</span> -&gt; <span class="number">1</span>          <span class="symbol">:</span> <span class="number">0</span>        |                                        |</div><div class="line">         <span class="number">2</span> -&gt; <span class="number">3</span>          <span class="symbol">:</span> <span class="number">0</span>        |                                        |</div><div class="line">         <span class="number">4</span> -&gt; <span class="number">7</span>          <span class="symbol">:</span> <span class="number">0</span>        |                                        |</div><div class="line">         <span class="number">8</span> -&gt; <span class="number">15</span>         <span class="symbol">:</span> <span class="number">0</span>        |                                        |</div><div class="line">        <span class="number">16</span> -&gt; <span class="number">31</span>         <span class="symbol">:</span> <span class="number">0</span>        |                                        |</div><div class="line">        <span class="number">32</span> -&gt; <span class="number">63</span>         <span class="symbol">:</span> <span class="number">0</span>        |                                        |</div><div class="line">        <span class="number">64</span> -&gt; <span class="number">127</span>        <span class="symbol">:</span> <span class="number">0</span>        |                                        |</div><div class="line">       <span class="number">128</span> -&gt; <span class="number">255</span>        <span class="symbol">:</span> <span class="number">0</span>        |                                        |</div><div class="line">       <span class="number">256</span> -&gt; <span class="number">511</span>        <span class="symbol">:</span> <span class="number">0</span>        |                                        |</div><div class="line">       <span class="number">512</span> -&gt; <span class="number">1023</span>       <span class="symbol">:</span> <span class="number">0</span>        |                                        |</div><div class="line">      <span class="number">1024</span> -&gt; <span class="number">2047</span>       <span class="symbol">:</span> <span class="number">0</span>        |                                        |</div><div class="line">      <span class="number">2048</span> -&gt; <span class="number">4095</span>       <span class="symbol">:</span> <span class="number">0</span>        |                                        |</div><div class="line">      <span class="number">4096</span> -&gt; <span class="number">8191</span>       <span class="symbol">:</span> <span class="number">0</span>        |                                        |</div><div class="line">      <span class="number">8192</span> -&gt; <span class="number">16383</span>      <span class="symbol">:</span> <span class="number">27</span>       |****************************************|</div><div class="line">     <span class="number">16384</span> -&gt; <span class="number">32767</span>      <span class="symbol">:</span> <span class="number">3</span>        |****                                    |</div><div class="line"><span class="constant">Detaching.</span>..</div></pre></td></tr></table></figure>
+
+<p>它显示了<code>fmt.Println()</code>函数耗时的直方图(单位纳秒), 我在一个循环中不停的调用这个函数。</p>
+<p><strong>⚠️警告</strong>: 这里有些不幸的问题： 如果在方法调用的时候goroutine从一个操作系统线程切换到另外一个线程，<code>funclatency</code>程序并不会找匹配的返回。 我们需要一个新工具， <code>gofunclatency</code>, 使用 go的内部 <code>GOID</code> 来跟踪耗时， 而不是根据操作系统的<code>TID</code>。同时修改<code>uretprobes</code>修改Go进程可能导致Go进程崩溃， 我们需要调试和制定一个修复计划。可以查看 Suresh 的评论以了解其中的细节。</p>
+<h3 id="下一步">下一步</h3>
+<p>利用动态跟踪和Linux eBPF技术，使用bcc的<code>funccount</code>和<code>trace</code>工具，我们快速了解了一个新的调试Go程序的技术。有些功能非常成功，有些功能还有一些挑战。 函数调用统计工作很完美，但是跟踪gccgo编译的函数参数的时候美问题，但是跟踪Go gc编译的函数参数有些问题， 因为Go gc编译器没有遵循标准的ABI调用约定，所以这个工具需要加强。 作为概念性的验证，我修改了bcc trace工具来显示Go gc编译的函数参数，但是这个特性需要正确实现和集成。处理接口对象也是一个挑战，因为Go支持多返回值， 这些都是我们需要加强的工作，以便是这些调试和跟踪工作更容易， 就像在c中增加一些宏一样。</p>
+<p>希望之后还有一个后续的文章来介绍这些bcc/BPF功能的提升(不一定是我，如果你感兴趣，请拿好接力棒)。</p>
+<p>另一个重要的跟踪问题，可以在下一篇文章中介绍，就是堆栈(stack trace)。值得高兴的是， Go已经在 1.7中实现了基于 frame pointer的堆栈。</p>
+<p>最后，另一个重要的可以单拉出一篇文章介绍的跟踪问题是和内核上下文一起跟踪Go函数。 BPF和bcc都可以跟踪内核函数， 和用户空间一样。可以想象我们可以创建一个新的工具来同时跟踪这两个。</p>
+
+      
+    </div>
+    <footer class="article-footer">
+      
+  <ul class="article-tag-list"><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/bbc/">bbc</a></li><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/trace/">trace</a></li></ul>
+
+
+      
+      <!-- <link rel="stylesheet" href="https://unpkg.com/gitalk/dist/gitalk.css">
+      <script src="https://unpkg.com/gitalk/dist/gitalk.min.js"></script> -->
+      <section id="comments">
+        <script src="https://utteranc.es/client.js"
+                repo="smallnest/gitalk"
+                issue-term="title"
+                theme="github-light"
+                crossorigin="anonymous"
+                async>
+        </script>
+        <!-- <div id="gitalk-container"></div>
+        <script type="text/javascript">
+          var gitalkOpts = {
+            id: '2017/09/22/golang-bcc-bpf-function-tracing/',
+            owner: 'smallnest',
+            repo: 'gitalk',
+            title: '[译]使用 bcc/BPF 分析 go 程序',
+            body: 'https://colobu.com/2017/09/22/golang-bcc-bpf-function-tracing/',
+            clientID: 'bc02724130ed5b7ee275',
+            clientSecret: '68cb0bae2f93a8b88b09e0eb9b08c844b06a9047',
+            admin: ['smallnest'],
+            distractionFreeMode: false
+          };
+
+          const gitalk = new Gitalk(gitalkOpts)
+          gitalk.render('gitalk-container')
+        </script> -->
+        <noscript> 为正常使用评论功能请激活JavaScript</noscript>
+      </section>
+
+      
+
+    </footer>
+  </div>
+  
+  
+<nav id="article-nav">
+  
+    <a href="/2017/09/27/distributed-systems-theory-for-the-distributed-systems-engineer/" id="article-nav-newer" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">Newer</strong>
+      <div class="article-nav-title">
+        
+          [转][译]面向分布式系统工程师的分布式系统理论
+        
+      </div>
+    </a>
+  
+  
+    <a href="/2017/08/31/configuration-file-format/" id="article-nav-older" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">Older</strong>
+      <div class="article-nav-title">常用配置文件格式</div>
+    </a>
+  
+</nav>
+
+  
+</article></section>
+        
+          <aside id="sidebar">
+  
+      <div class="widget-wrap">
+    <h3 class="widget-title">原创图书</h3>
+    <div class="widget">
+      <a href="/ScalaCollectionsCookbook/">
+        <img width="100%" src="/ScalaCollectionsCookbook/scala_collections_cookbook.jpg">
+        <img width="100%" src="/ScalaCollectionsCookbook/scala_collections_cookbook_tw.png">
+      </a>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">分类</h3>
+    <div class="widget">
+      <ul class="category-list"><li class="category-list-item"><a class="category-list-link" href="/categories/Android/">Android</a><span class="category-list-count">12</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/C/">C++</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/DOTNET/">DOTNET</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Docker/">Docker</a><span class="category-list-count">5</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Go/">Go</a><span class="category-list-count">175</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Java/">Java</a><span class="category-list-count">64</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Linux/">Linux</a><span class="category-list-count">7</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Rust/">Rust</a><span class="category-list-count">12</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Scala/">Scala</a><span class="category-list-count">18</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/分享/">分享</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/前端开发/">前端开发</a><span class="category-list-count">18</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/区块链/">区块链</a><span class="category-list-count">8</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/大数据/">大数据</a><span class="category-list-count">60</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/工具/">工具</a><span class="category-list-count">28</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/数据库/">数据库</a><span class="category-list-count">3</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/架构/">架构</a><span class="category-list-count">26</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/算法/">算法</a><span class="category-list-count">4</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/管理/">管理</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/网络编程/">网络编程</a><span class="category-list-count">13</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/读书笔记/">读书笔记</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/运维/">运维</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/高并发编程/">高并发编程</a><span class="category-list-count">20</span></li></ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">标签云</h3>
+    <div class="widget tagcloud">
+      <a href="/tags/Android/" style="font-size: 15.71px;">Android</a><a href="/tags/ApacheBench/" style="font-size: 11.43px;">ApacheBench</a><a href="/tags/Bower/" style="font-size: 10.00px;">Bower</a><a href="/tags/C/" style="font-size: 10.00px;">C#</a><a href="/tags/CDN/" style="font-size: 10.00px;">CDN</a><a href="/tags/CQRS/" style="font-size: 10.00px;">CQRS</a><a href="/tags/CRC/" style="font-size: 10.00px;">CRC</a><a href="/tags/CSS/" style="font-size: 11.43px;">CSS</a><a href="/tags/CompletableFuture/" style="font-size: 10.00px;">CompletableFuture</a><a href="/tags/Comsat/" style="font-size: 10.00px;">Comsat</a><a href="/tags/Curator/" style="font-size: 18.57px;">Curator</a><a href="/tags/DSL/" style="font-size: 10.00px;">DSL</a><a href="/tags/Disruptor/" style="font-size: 10.00px;">Disruptor</a><a href="/tags/Docker/" style="font-size: 11.43px;">Docker</a><a href="/tags/Ember/" style="font-size: 11.43px;">Ember</a><a href="/tags/FastJson/" style="font-size: 10.00px;">FastJson</a><a href="/tags/Fiber/" style="font-size: 10.00px;">Fiber</a><a href="/tags/GAE/" style="font-size: 10.00px;">GAE</a><a href="/tags/GC/" style="font-size: 12.86px;">GC</a><a href="/tags/Gnuplot/" style="font-size: 10.00px;">Gnuplot</a><a href="/tags/Go/" style="font-size: 14.29px;">Go</a><a href="/tags/Gradle/" style="font-size: 10.00px;">Gradle</a><a href="/tags/Grunt/" style="font-size: 10.00px;">Grunt</a><a href="/tags/Gulp/" style="font-size: 10.00px;">Gulp</a><a href="/tags/Hadoop/" style="font-size: 10.00px;">Hadoop</a><a href="/tags/Hazelcast/" style="font-size: 10.00px;">Hazelcast</a><a href="/tags/IPFS/" style="font-size: 10.00px;">IPFS</a><a href="/tags/Ignite/" style="font-size: 10.00px;">Ignite</a><a href="/tags/JVM/" style="font-size: 10.00px;">JVM</a><a href="/tags/Java/" style="font-size: 17.14px;">Java</a><a href="/tags/Kafka/" style="font-size: 20.00px;">Kafka</a><a href="/tags/Lambda/" style="font-size: 14.29px;">Lambda</a><a href="/tags/Linux/" style="font-size: 12.86px;">Linux</a><a href="/tags/LongAdder/" style="font-size: 10.00px;">LongAdder</a><a href="/tags/MathJax/" style="font-size: 10.00px;">MathJax</a><a href="/tags/Maven/" style="font-size: 11.43px;">Maven</a><a href="/tags/Memcached/" style="font-size: 10.00px;">Memcached</a><a href="/tags/Metrics/" style="font-size: 10.00px;">Metrics</a><a href="/tags/Mongo/" style="font-size: 12.86px;">Mongo</a><a href="/tags/Netty/" style="font-size: 15.71px;">Netty</a>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">归档</h3>
+    <div class="widget">
+      <ul class="archive-list"><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/10/">October 2021</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/08/">August 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/07/">July 2021</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/06/">June 2021</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/05/">May 2021</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/04/">April 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/03/">March 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/02/">February 2021</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/01/">January 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/12/">December 2020</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/11/">November 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/09/">September 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/08/">August 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/07/">July 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/06/">June 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/05/">May 2020</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/04/">April 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/03/">March 2020</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/02/">February 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/01/">January 2020</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/12/">December 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/11/">November 2019</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/10/">October 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/09/">September 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/08/">August 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/07/">July 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/06/">June 2019</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/05/">May 2019</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/04/">April 2019</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/03/">March 2019</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/02/">February 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/01/">January 2019</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/12/">December 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/11/">November 2018</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/10/">October 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/09/">September 2018</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/08/">August 2018</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/07/">July 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/06/">June 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/05/">May 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/04/">April 2018</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/03/">March 2018</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/02/">February 2018</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/01/">January 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/12/">December 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/11/">November 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/10/">October 2017</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/09/">September 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/08/">August 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/07/">July 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/06/">June 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/05/">May 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/04/">April 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/03/">March 2017</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/02/">February 2017</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/01/">January 2017</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/12/">December 2016</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/11/">November 2016</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/10/">October 2016</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/09/">September 2016</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/08/">August 2016</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/07/">July 2016</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/06/">June 2016</a><span class="archive-list-count">14</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/05/">May 2016</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/04/">April 2016</a><span class="archive-list-count">14</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/03/">March 2016</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/02/">February 2016</a><span class="archive-list-count">8</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/01/">January 2016</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/12/">December 2015</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/11/">November 2015</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/10/">October 2015</a><span class="archive-list-count">9</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/09/">September 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/08/">August 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/07/">July 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/06/">June 2015</a><span class="archive-list-count">8</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/05/">May 2015</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/04/">April 2015</a><span class="archive-list-count">15</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/03/">March 2015</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/02/">February 2015</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/01/">January 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/12/">December 2014</a><span class="archive-list-count">28</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/11/">November 2014</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/10/">October 2014</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/09/">September 2014</a><span class="archive-list-count">28</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/08/">August 2014</a><span class="archive-list-count">19</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/07/">July 2014</a><span class="archive-list-count">1</span></li></ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">近期文章</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+            <a href="/2021/10/06/replace-implementations-in-go-std-libs-at-runtime/">强制更改Go标准库的实现</a>
+          </li>
+        
+          <li>
+            <a href="/2021/08/30/how-is-go-generic-implemented/">Go泛型是怎么实现的?</a>
+          </li>
+        
+          <li>
+            <a href="/2021/08/01/benchmark-of-rpc-frameworks/">2021年Go生态圈rpc框架benchmark</a>
+          </li>
+        
+          <li>
+            <a href="/2021/07/13/Updating-the-Go-Memory-Model/">[译]更新Go内存模型</a>
+          </li>
+        
+          <li>
+            <a href="/2021/07/11/Programming-Language-Memory-Models/">[译]编程语言内存模型</a>
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">友情链接</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+			 
+            <a href="http://stackshare.io" target="_blank">技术栈</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://toutiao.io/" target="_blank">开发者头条</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://weekly.manong.io/issues/" target="_blank">码农周刊</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.tuicool.com/mags" target="_blank">编程狂人周刊</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.importnew.com/" target="_blank">importnew</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://ifeve.com/" target="_blank">并发编程网</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://github.com" target="_blank">github</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://stackoverflow.com/" target="_blank">stackoverflow</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.javacodegeeks.com/" target="_blank">javacodegeeks</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.infoq.com/" target="_blank">infoq</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.dzone.com/links/index.html" target="_blank">dzone</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://oj.leetcode.com/problems/" target="_blank">leetcode</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://tutorials.jenkov.com" target="_blank">jenkov</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://howtodoinjava.com" target="_blank">HowToDoInJava</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://java-design-patterns.com/patterns/" target="_blank">java design patterns</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://medium.com/netflix-techblog" target="_blank">Netflix技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://www.techiedelight.com" target="_blank">Techie Delight</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://engineering.linkedin.com/blog" target="_blank">Linkedin技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://blogs.dropbox.com/tech/" target="_blank">Dropbox技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://code.fb.com" target="_blank">Facebook技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://jm.taobao.org" target="_blank">淘宝中间件团队</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://tech.meituan.com" target="_blank">美团技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://blogs.360.cn" target="_blank">360技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://xiaomi-info.github.io" target="_blank">小米信息部技术团队</a>
+			
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+      
+
+  
+</aside>
+        
+      </div>
+      <footer id="footer">
+  
+  <div class="outer">
+    <div id="footer-info" class="inner">
+      &copy; 2021 smallnest<br>
+	  Powered by <a href="http://hexo.io/" target="_blank">Hexo</a>
+    </div>
+  </div>
+</footer>
+    </div>
+    <nav id="mobile-nav">
+  
+    
+      <a href="/" class="mobile-nav-link"><i class="fa fa-home">&nbsp;</i>首页</a>
+    
+  
+    
+      <a href="/archives" class="mobile-nav-link"><i class="fa fa-folder-o">&nbsp;</i>归档</a>
+    
+  
+    
+      <a href="https://github.com/smallnest" class="mobile-nav-link"><i class="fa fa-github">&nbsp;</i>github</a>
+    
+  
+    
+      <a class="mobile-nav-link" href="#"><i class="fa fa-bars">&nbsp;</i>网站群</a>
+    
+      
+            <a class="mobile-nav-link" href="/goasm">&nbsp;&nbsp;<i class="fa fa-language">&nbsp;</i>Go汇编示例</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="https://gowebexamples.com">&nbsp;&nbsp;<i class="fa fa-external-link">&nbsp;</i>Go Web开发示例</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://go-database-sql.org">&nbsp;&nbsp;<i class="fa fa-external-link">&nbsp;</i>Go 数据库开发教程</a>
+          
+          
+    
+      
+            
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://rpcx.io">&nbsp;&nbsp;<i class="fa undefined">&nbsp;</i>RPCX官网</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://cn.doc.rpcx.io">&nbsp;&nbsp;<i class="fa undefined">&nbsp;</i>RPC开发指南</a>
+          
+          
+    
+    
+  
+    
+      <a href="/ScalaCollectionsCookbook" class="mobile-nav-link"><i class="fa fa-book">&nbsp;</i>Scala集合技术手册</a>
+    
+  
+    
+      <a href="/about" class="mobile-nav-link"><i class="fa fa-lemon-o">&nbsp;</i>关于</a>
+    
+  
+</nav>
+    
+<script src="//cdn.staticfile.org/jquery/1.11.1/jquery.min.js"></script>
+<script src="//cdn.bootcss.com/jquery.lazyload/1.9.1/jquery.lazyload.min.js"></script>
+
+<script src="//cdnjs.cloudflare.com/ajax/libs/fancybox/3.2.5/jquery.fancybox.min.js"></script>
+
+
+<script src="/js/script.js" type="text/javascript"></script>
+
+<!-- mathjax config similar to math.stackexchange -->
+<script type="text/x-mathjax-config">
+  MathJax.Hub.Config({
+    tex2jax: {
+      inlineMath: [ ['$','$'], ["\\(","\\)"] ],
+      processEscapes: true,
+      skipTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code']
+    }
+  });
+  MathJax.Hub.Queue(function() {
+      var all = MathJax.Hub.getAllJax(), i;
+      for(i=0; i < all.length; i += 1) {
+        all[i].SourceElement().parentNode.className += ' has-jax';
+      }
+  });
+</script>
+<script type="text/javascript" src="//cdn.bootcss.com/mathjax/2.6.0-beta.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML">
+</script>
+
+<div id="totop" style="position:fixed;bottom:150px;right:10px;cursor: pointer;z-index: 2000;">
+	<a title="返回顶部"><img src="/images/scrollup.png"/></a>
+</div>
+<script src="/js/totop.js" type="text/javascript"></script>
+
+
+
+
+<script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "//hm.baidu.com/hm.js?e085d87993250aab11f3e0c15f1c2785";
+  var s = document.getElementsByTagName("script")[0]; 
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+
+
+  </div>
+</body>
+</html>

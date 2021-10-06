@@ -1,0 +1,718 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset="utf-8">
+  
+  <title>Go 1.9 sync.Map揭秘</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+  <meta name="description" content="在Go 1.6之前， 内置的map类型是部分goroutine安全的，并发的读没有问题，并发的写可能有问题。自go 1.6之后， 并发地读写map会报错，这在一些知名的开源库中都存在这个问题，所以go 1.9之前的解决方案是额外绑定一个锁，封装成一个新的struct或者单独使用锁都可以。
+本文带你深入到sync.Map的具体实现中，看看为了增加一个功能，代码是如何变的复杂的,以及作者在实现sync">
+<meta property="og:type" content="article">
+<meta property="og:title" content="Go 1.9 sync.Map揭秘">
+<meta property="og:url" content="https://colobu.com/2017/07/11/dive-into-sync-Map/">
+<meta property="og:site_name" content="鸟窝">
+<meta property="og:description" content="在Go 1.6之前， 内置的map类型是部分goroutine安全的，并发的读没有问题，并发的写可能有问题。自go 1.6之后， 并发地读写map会报错，这在一些知名的开源库中都存在这个问题，所以go 1.9之前的解决方案是额外绑定一个锁，封装成一个新的struct或者单独使用锁都可以。
+本文带你深入到sync.Map的具体实现中，看看为了增加一个功能，代码是如何变的复杂的,以及作者在实现sync">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="Go 1.9 sync.Map揭秘">
+<meta name="twitter:description" content="在Go 1.6之前， 内置的map类型是部分goroutine安全的，并发的读没有问题，并发的写可能有问题。自go 1.6之后， 并发地读写map会报错，这在一些知名的开源库中都存在这个问题，所以go 1.9之前的解决方案是额外绑定一个锁，封装成一个新的struct或者单独使用锁都可以。
+本文带你深入到sync.Map的具体实现中，看看为了增加一个功能，代码是如何变的复杂的,以及作者在实现sync">
+
+  
+  <link rel="alternative" href="/atom.xml" title="鸟窝" type="application/atom+xml">
+  
+  
+  <link rel="icon" href="/favicon.png">
+  
+  <link rel="stylesheet" href="/css/style.css" type="text/css">
+
+  <link href="//cdn.staticfile.org/font-awesome/4.2.0/css/font-awesome.css" rel="stylesheet">
+  
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/fancybox/2.1.7/css/jquery.fancybox.min.css"
+    media="screen" type="text/css">
+  
+  <link rel="stylesheet" href="//cdnjs.cloudflare.com/ajax/libs/animate.css/3.1.1/animate.min.css" media="screen"
+    type="text/css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/tonsky/FiraCode@1.207/distr/fira_code.css">
+</head>
+<body>
+  <div id="container">
+    <div id="wrap">
+      <header id="header">
+  <div id="banner"></div>
+  <div id="header-outer" class="outer">
+    <div id="header-title" class="inner">
+      <h1 id="logo-wrap" class="animated bounceInLeft">
+        <a href="/" id="logo">鸟窝</a>
+      </h1>
+      
+        <h2 id="subtitle-wrap" class="animated bounceInLeft">
+          <a href="/" id="subtitle">大道至简 Simplicity is the ultimate form of sophistication</a>
+        </h2>
+      
+    </div>
+    <div id="header-inner" class="inner">
+      <nav id="main-nav">
+        <a id="main-nav-toggle" class="nav-icon"></a>
+        
+          
+            <a class="main-nav-link" href="/"><i class="fa fa-home">&nbsp;</i>首页</a>
+          
+          
+          
+            <a class="main-nav-link" href="/archives"><i class="fa fa-folder-o">&nbsp;</i>归档</a>
+          
+          
+          
+            <a class="main-nav-link" href="https://github.com/smallnest"><i class="fa fa-github">&nbsp;</i>github</a>
+          
+          
+          
+            <div class="dropdown main-nav-link"><a class="main-nav-link" href="#"><i class="fa fa-bars">&nbsp;</i>网站群</a>
+              <div class="dropdown-content">
+          
+            
+              <a href="/goasm"><i class="fa fa-language"></i>&nbsp;Go汇编示例</a>
+            
+                
+          
+            
+              <a href="https://gowebexamples.com"><i class="fa fa-external-link"></i>&nbsp;Go Web开发示例</a>
+            
+                
+          
+            
+              <a href="http://go-database-sql.org"><i class="fa fa-external-link"></i>&nbsp;Go 数据库开发教程</a>
+            
+                
+          
+            
+              <hr>
+            
+                
+          
+            
+              <a href="http://rpcx.io"><i class="fa undefined"></i>&nbsp;RPCX官网</a>
+            
+                
+          
+            
+              <a href="http://cn.doc.rpcx.io"><i class="fa undefined"></i>&nbsp;RPC开发指南</a>
+            
+                
+          
+          </div>
+        </div>
+          
+          
+          
+            <a class="main-nav-link" href="/ScalaCollectionsCookbook"><i class="fa fa-book">&nbsp;</i>Scala集合技术手册</a>
+          
+          
+          
+            <a class="main-nav-link" href="/about"><i class="fa fa-lemon-o">&nbsp;</i>关于</a>
+          
+          
+
+
+      </nav>
+      <nav id="sub-nav">
+        
+          <a id="nav-rss-link" class="nav-icon" href="/atom.xml" title="RSS Feed"></a>
+        
+        <a id="nav-search-btn" class="nav-icon" title="Search"></a>
+      </nav>
+      <div id="search-form-wrap">
+        <form action="http://www.baidu.com/baidu" method="get" accept-charset="utf-8" class="search-form">
+          <input type="search" name="word" maxlength="20" class="search-form-input" placeholder="Search">
+          <input type="submit" value="" class="search-form-submit">
+          <input name=tn type=hidden value="bds">
+          <input name=cl type=hidden value="3">
+          <input name=ct type=hidden value="2097152">
+          <input type="hidden" name="si" value="colobu.com">
+        </form>
+      </div>
+    </div>
+  </div>
+</header>
+      <div class="outer">
+        <section id="main"><script>function show_answer(btn, x) { if (btn.value === "显示答案") { btn.value = "隐藏答案" } else { btn.value = "显示答案" } var as = document.getElementById(x); if (as.style.display === "none") { as.style.display = "block" } else { as.style.display = "none" } }</script>
+
+<article id="post-dive-into-sync-Map" class="article article-type-post" itemscope
+  itemprop="blogPost">
+  <div class="article-meta">
+    <a href="/2017/07/11/dive-into-sync-Map/" class="article-date">
+  <time datetime="2017-07-11T10:09:48.000Z" itemprop="datePublished">2017年07月11日</time>
+</a>
+    
+  <div class="article-category">
+    <a class="article-category-link" href="/categories/Go/">Go</a>
+  </div>
+
+    
+  <div class="article-author"> by smallnest</div>
+
+  </div>
+  <div class="article-inner">
+    
+    
+    <header class="article-header">
+      
+  
+    <h1 class="article-title" itemprop="name">
+      Go 1.9 sync.Map揭秘
+	  
+    </h1>
+  
+
+    </header>
+    
+    <div class="article-entry" itemprop="articleBody">
+      
+      <h1 id="expanderHead" style="cursor:pointer;">
+        目录 <span id="expanderSign">[−]</span>
+      </h1>
+      <div id="article-entry-toc" data-role="collapsible" class="article-entry-toc">
+        <ol class="toc"><li class="toc-item toc-level-3"><a class="toc-link" href="#有并发问题的map"><span class="toc-text">有并发问题的map</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#Go_1-9之前的解决方案"><span class="toc-text">Go 1.9之前的解决方案</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#sync-Map"><span class="toc-text">sync.Map</span></a><ol class="toc-child"><li class="toc-item toc-level-4"><a class="toc-link" href="#Load"><span class="toc-text">Load</span></a></li><li class="toc-item toc-level-4"><a class="toc-link" href="#Store"><span class="toc-text">Store</span></a></li><li class="toc-item toc-level-4"><a class="toc-link" href="#Delete"><span class="toc-text">Delete</span></a></li><li class="toc-item toc-level-4"><a class="toc-link" href="#Range"><span class="toc-text">Range</span></a></li></ol></li><li class="toc-item toc-level-3"><a class="toc-link" href="#sync-Map的性能"><span class="toc-text">sync.Map的性能</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#其它"><span class="toc-text">其它</span></a></li></ol>
+      </div>
+      
+      
+      
+      <p>在Go 1.6之前， 内置的map类型是部分goroutine安全的，并发的读没有问题，并发的写可能有问题。自go 1.6之后， 并发地读写map会报错，这在一些知名的开源库中都存在这个问题，所以go 1.9之前的解决方案是额外绑定一个锁，封装成一个新的struct或者单独使用锁都可以。</p>
+<p>本文带你深入到<code>sync.Map</code>的具体实现中，看看为了增加一个功能，代码是如何变的复杂的,以及作者在实现<code>sync.Map</code>的一些思想。</p>
+<a id="more"></a>
+<h3 id="有并发问题的map">有并发问题的map</h3>
+<p>官方的<a href="https://golang.org/doc/faq#atomic_maps" target="_blank" rel="external">faq</a>已经提到内建的<code>map</code>不是线程(goroutine)安全的。</p>
+<p>首先，让我们看一段并发读写的代码,下列程序中一个goroutine一直读，一个goroutine一只写同一个键值，即即使读写的键不相同，而且map也没有&quot;扩容&quot;等操作，代码还是会报错。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> main</div><div class="line"></div><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	m := <span class="built_in">make</span>(<span class="keyword">map</span>[<span class="typename">int</span>]<span class="typename">int</span>)</div><div class="line"></div><div class="line">	<span class="keyword">go</span> <span class="keyword">func</span>() {</div><div class="line">		<span class="keyword">for</span> {</div><div class="line">			_ = m<span class="number">[1</span>]</div><div class="line">		}</div><div class="line">	}()</div><div class="line"></div><div class="line">	<span class="keyword">go</span> <span class="keyword">func</span>() {</div><div class="line">		<span class="keyword">for</span> {</div><div class="line">			m<span class="number">[2</span>] =<span class="number"> 2</span></div><div class="line">		}</div><div class="line">	}()</div><div class="line"></div><div class="line">	<span class="keyword">select</span> {}</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>错误信息是: <code>fatal error: concurrent map read and map write</code>。</p>
+<p>如果你查看Go的源代码: <a href="https://github.com/golang/go/blob/master/src/runtime/hashmap_fast.go#L118" target="_blank" rel="external">hashmap_fast.go#L118</a>,会看到读的时候会检查<code>hashWriting</code>标志， 如果有这个标志，就会报并发错误。</p>
+<p>写的时候会设置这个标志: <a href="https://github.com/golang/go/blob/master/src/runtime/hashmap.go#L542" target="_blank" rel="external">hashmap.go#L542</a></p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">h.flags |= hashWriting</div></pre></td></tr></table></figure>
+
+<p><a href="https://github.com/golang/go/blob/master/src/runtime/hashmap.go#L628" target="_blank" rel="external">hashmap.go#L628</a>设置完之后会取消这个标记。</p>
+<p>当然，代码中还有好几处并发读写的检查， 比如写的时候也会检查是不是有并发的写，删除键的时候类似写，遍历的时候并发读写问题等。</p>
+<p>有时候，map的并发问题不是那么容易被发现, 你可以利用<code>-race</code>参数来检查。</p>
+<h3 id="Go_1-9之前的解决方案">Go 1.9之前的解决方案</h3>
+<p>但是，很多时候，我们会并发地使用map对象，尤其是在一定规模的项目中，map总会保存goroutine共享的数据。在Go官方blog的<a href="https://blog.golang.org/go-maps-in-action" target="_blank" rel="external">Go maps in action</a>一文中，提供了一种简便的解决方案。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">var</span> counter = <span class="keyword">struct</span>{</div><div class="line">    sync.RWMutex</div><div class="line">    m <span class="keyword">map</span>[<span class="typename">string</span>]<span class="typename">int</span></div><div class="line">}{m: <span class="built_in">make</span>(<span class="keyword">map</span>[<span class="typename">string</span>]<span class="typename">int</span>)}</div></pre></td></tr></table></figure>
+
+<p>它使用嵌入struct为map增加一个读写锁。</p>
+<p>读数据的时候很方便的加锁：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line">counter.RLock()</div><div class="line">n := counter.m[<span class="string">"some_key"</span>]</div><div class="line">counter.RUnlock()</div><div class="line">fmt.Println(<span class="string">"some_key:"</span>, n)</div></pre></td></tr></table></figure>
+
+<p>写数据的时候:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line">counter.Lock()</div><div class="line">counter.m[<span class="string">"some_key"</span>]++</div><div class="line">counter.Unlock()</div></pre></td></tr></table></figure>
+
+<h3 id="sync-Map">sync.Map</h3>
+<p>可以说，上面的解决方案相当简洁，并且利用读写锁而不是Mutex可以进一步减少读写的时候因为锁带来的性能。</p>
+<p>但是，它在一些场景下也有问题，如果熟悉Java的同学，可以对比一下java的<code>ConcurrentHashMap</code>的实现，在map的数据非常大的情况下，一把锁会导致大并发的客户端共争一把锁，Java的解决方案是<code>shard</code>, 内部使用多个锁，每个区间共享一把锁，这样减少了数据共享一把锁带来的性能影响，<a href="https://github.com/orcaman" target="_blank" rel="external">orcaman</a>提供了这个思路的一个实现： <a href="https://github.com/orcaman/concurrent-map" target="_blank" rel="external">concurrent-map</a>，他也询问了Go相关的开发人员是否在Go中也实现这种<a href="https://github.com/golang/go/issues/20360" target="_blank" rel="external">方案</a>，由于实现的复杂性，答案是<code>Yes, we considered it.</code>,但是除非有特别的性能提升和应用场景，否则没有进一步的开发消息。</p>
+<p>那么，在Go 1.9中<code>sync.Map</code>是怎么实现的呢？它是如何解决并发提升性能的呢？</p>
+<p><code>sync.Map</code>的实现有几个优化点，这里先列出来，我们后面慢慢分析。</p>
+<ol>
+<li>空间换时间。 通过冗余的两个数据结构(read、dirty),实现加锁对性能的影响。</li>
+<li>使用只读数据(read)，避免读写冲突。</li>
+<li>动态调整，miss次数多了之后，将dirty数据提升为read。</li>
+<li>double-checking。</li>
+<li>延迟删除。 删除一个键值只是打标记，只有在提升dirty的时候才清理删除的数据。</li>
+<li>优先从read读取、更新、删除，因为对read的读取不需要锁。</li>
+</ol>
+<p>下面我们介绍<code>sync.Map</code>的重点代码，以便理解它的实现思想。</p>
+<p>首先，我们看一下<code>sync.Map</code>的数据结构：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> Map <span class="keyword">struct</span> {</div><div class="line">	<span class="comment">// 当涉及到dirty数据的操作的时候，需要使用这个锁</span></div><div class="line">	mu Mutex</div><div class="line"></div><div class="line">	<span class="comment">// 一个只读的数据结构，因为只读，所以不会有读写冲突。</span></div><div class="line">	<span class="comment">// 所以从这个数据中读取总是安全的。</span></div><div class="line">	<span class="comment">// 实际上，实际也会更新这个数据的entries,如果entry是未删除的(unexpunged), 并不需要加锁。如果entry已经被删除了，需要加锁，以便更新dirty数据。</span></div><div class="line">	read atomic.Value <span class="comment">// readOnly</span></div><div class="line"></div><div class="line">	<span class="comment">// dirty数据包含当前的map包含的entries,它包含最新的entries(包括read中未删除的数据,虽有冗余，但是提升dirty字段为read的时候非常快，不用一个一个的复制，而是直接将这个数据结构作为read字段的一部分),有些数据还可能没有移动到read字段中。</span></div><div class="line">	<span class="comment">// 对于dirty的操作需要加锁，因为对它的操作可能会有读写竞争。</span></div><div class="line">	<span class="comment">// 当dirty为空的时候， 比如初始化或者刚提升完，下一次的写操作会复制read字段中未删除的数据到这个数据中。</span></div><div class="line">	dirty <span class="keyword">map</span>[<span class="keyword">interface</span>{}]*entry</div><div class="line"></div><div class="line">	<span class="comment">// 当从Map中读取entry的时候，如果read中不包含这个entry,会尝试从dirty中读取，这个时候会将misses加一，</span></div><div class="line">	<span class="comment">// 当misses累积到 dirty的长度的时候， 就会将dirty提升为read,避免从dirty中miss太多次。因为操作dirty需要加锁。</span></div><div class="line">	misses <span class="typename">int</span></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>它的数据结构很简单，值包含四个字段：<code>read</code>、<code>mu</code>、<code>dirty</code>、<code>misses</code>。</p>
+<p>它使用了冗余的数据结构<code>read</code>、<code>dirty</code>。<code>dirty</code>中会包含<code>read</code>中为删除的entries，新增加的entries会加入到<code>dirty</code>中。</p>
+<p><code>read</code>的数据结构是：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> readOnly <span class="keyword">struct</span> {</div><div class="line">	m       <span class="keyword">map</span>[<span class="keyword">interface</span>{}]*entry</div><div class="line">	amended <span class="typename">bool</span> <span class="comment">// 如果Map.dirty有些数据不在中的时候，这个值为true</span></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p><code>amended</code>指明<code>Map.dirty</code>中有<code>readOnly.m</code>未包含的数据，所以如果从<code>Map.read</code>找不到数据的话，还要进一步到<code>Map.dirty</code>中查找。</p>
+<p>对Map.read的修改是通过原子操作进行的。</p>
+<p>虽然<code>read</code>和<code>dirty</code>有冗余数据，但这些数据是通过指针指向同一个数据，所以尽管Map的value会很大，但是冗余的空间占用还是有限的。</p>
+<p><code>readOnly.m</code>和<code>Map.dirty</code>存储的值类型是<code>*entry</code>,它包含一个指针p, 指向用户存储的value值。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> entry <span class="keyword">struct</span> {</div><div class="line">	p unsafe.Pointer <span class="comment">// *interface{}</span></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>p有三种值：</p>
+<ul>
+<li>nil: entry已被删除了，并且m.dirty为nil</li>
+<li>expunged: entry已被删除了，并且m.dirty不为nil，而且这个entry不存在于m.dirty中</li>
+<li>其它： entry是一个正常的值</li>
+</ul>
+<p>以上是<code>sync.Map</code>的数据结构，下面我们重点看看<code>Load</code>、<code>Store</code>、<code>Delete</code>、<code>Range</code>这四个方法，其它辅助方法可以参考这四个方法来理解。</p>
+<h4 id="Load">Load</h4>
+<p>加载方法，也就是提供一个键<code>key</code>,查找对应的值<code>value</code>,如果不存在，通过<code>ok</code>反映：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> (m *Map) Load(key <span class="keyword">interface</span>{}) (value <span class="keyword">interface</span>{}, ok <span class="typename">bool</span>) {</div><div class="line">	<span class="comment">// 1.首先从m.read中得到只读readOnly,从它的map中查找，不需要加锁</span></div><div class="line">	read, _ := m.read.Load().(readOnly)</div><div class="line">	e, ok := read.m[key]</div><div class="line"></div><div class="line">	<span class="comment">// 2. 如果没找到，并且m.dirty中有新数据，需要从m.dirty查找，这个时候需要加锁</span></div><div class="line">	<span class="keyword">if</span> !ok && read.amended {</div><div class="line">		m.mu.Lock()</div><div class="line">		<span class="comment">// 双检查，避免加锁的时候m.dirty提升为m.read,这个时候m.read可能被替换了。</span></div><div class="line">		read, _ = m.read.Load().(readOnly)</div><div class="line">		e, ok = read.m[key]</div><div class="line"></div><div class="line">		<span class="comment">// 如果m.read中还是不存在，并且m.dirty中有新数据</span></div><div class="line">		<span class="keyword">if</span> !ok && read.amended {</div><div class="line">			<span class="comment">// 从m.dirty查找</span></div><div class="line">			e, ok = m.dirty[key]</div><div class="line">			<span class="comment">// 不管m.dirty中存不存在，都将misses计数加一</span></div><div class="line">			<span class="comment">// missLocked()中满足条件后就会提升m.dirty</span></div><div class="line">			m.missLocked()</div><div class="line">		}</div><div class="line">		m.mu.Unlock()</div><div class="line">	}</div><div class="line">	<span class="keyword">if</span> !ok {</div><div class="line">		<span class="keyword">return</span> <span class="constant">nil</span>, <span class="constant">false</span></div><div class="line">	}</div><div class="line">	<span class="keyword">return</span> e.load()</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>这里有两个值的关注的地方。一个是首先从<code>m.read</code>中加载，不存在的情况下，并且<code>m.dirty</code>中有新数据，加锁，然后从<code>m.dirty</code>中加载。</p>
+<p>二是这里使用了双检查的处理，因为在下面的两个语句中，这两行语句并不是一个原子操作。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">if</span> !ok && read.amended {</div><div class="line">		m.mu.Lock()</div></pre></td></tr></table></figure>
+
+<p>虽然第一句执行的时候条件满足，但是在加锁之前，<code>m.dirty</code>可能被提升为<code>m.read</code>,所以加锁后还得再检查<code>m.read</code>，后续的方法中都使用了这个方法。</p>
+<p>双检查的技术Java程序员非常熟悉了，单例模式的实现之一就是利用双检查的技术。</p>
+<p>可以看到，如果我们查询的键值正好存在于<code>m.read</code>中，无须加锁，直接返回，理论上性能优异。即使不存在于<code>m.read</code>中，经过<code>miss</code>几次之后，<code>m.dirty</code>会被提升为<code>m.read</code>，又会从<code>m.read</code>中查找。所以对于更新／增加较少，加载存在的key很多的case,性能基本和无锁的map类似。</p>
+<p>下面看看<code>m.dirty</code>是如何被提升的。 <code>missLocked</code>方法中可能会将<code>m.dirty</code>提升。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> (m *Map) missLocked() {</div><div class="line">	m.misses++</div><div class="line">	<span class="keyword">if</span> m.misses &lt; <span class="built_in">len</span>(m.dirty) {</div><div class="line">		<span class="keyword">return</span></div><div class="line">	}</div><div class="line">	m.read.Store(readOnly{m: m.dirty})</div><div class="line">	m.dirty = <span class="constant">nil</span></div><div class="line">	m.misses =<span class="number"> 0</span></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>上面的最后三行代码就是提升<code>m.dirty</code>的，很简单的将<code>m.dirty</code>作为<code>readOnly</code>的<code>m</code>字段，原子更新<code>m.read</code>。提升后<code>m.dirty</code>、<code>m.misses</code>重置， 并且<code>m.read.amended</code>为false。</p>
+<h4 id="Store">Store</h4>
+<p>这个方法是更新或者新增一个entry。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div><div class="line">35</div><div class="line">36</div><div class="line">37</div><div class="line">38</div><div class="line">39</div><div class="line">40</div><div class="line">41</div><div class="line">42</div><div class="line">43</div><div class="line">44</div><div class="line">45</div><div class="line">46</div><div class="line">47</div><div class="line">48</div><div class="line">49</div><div class="line">50</div><div class="line">51</div><div class="line">52</div><div class="line">53</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> (m *Map) Store(key, value <span class="keyword">interface</span>{}) {</div><div class="line">	<span class="comment">// 如果m.read存在这个键，并且这个entry没有被标记删除，尝试直接存储。</span></div><div class="line">	<span class="comment">// 因为m.dirty也指向这个entry,所以m.dirty也保持最新的entry。</span></div><div class="line">	read, _ := m.read.Load().(readOnly)</div><div class="line">	<span class="keyword">if</span> e, ok := read.m[key]; ok && e.tryStore(&value) {</div><div class="line">		<span class="keyword">return</span></div><div class="line">	}</div><div class="line"></div><div class="line">	<span class="comment">// 如果`m.read`不存在或者已经被标记删除</span></div><div class="line">	m.mu.Lock()</div><div class="line">	read, _ = m.read.Load().(readOnly)</div><div class="line"></div><div class="line">	<span class="keyword">if</span> e, ok := read.m[key]; ok {</div><div class="line">		<span class="keyword">if</span> e.unexpungeLocked() { <span class="comment">//标记成未被删除</span></div><div class="line">			m.dirty[key] = e <span class="comment">//m.dirty中不存在这个键，所以加入m.dirty</span></div><div class="line">		}</div><div class="line">		e.storeLocked(&value) <span class="comment">//更新</span></div><div class="line">	} <span class="keyword">else</span> <span class="keyword">if</span> e, ok := m.dirty[key]; ok { <span class="comment">// m.dirty存在这个键，更新</span></div><div class="line">		e.storeLocked(&value)</div><div class="line">	} <span class="keyword">else</span> { <span class="comment">//新键值</span></div><div class="line">		<span class="keyword">if</span> !read.amended { <span class="comment">//m.dirty中没有新的数据，往m.dirty中增加第一个新键</span></div><div class="line">			m.dirtyLocked() <span class="comment">//从m.read中复制未删除的数据</span></div><div class="line">			m.read.Store(readOnly{m: read.m, amended: <span class="constant">true</span>})</div><div class="line">		}</div><div class="line">		m.dirty[key] = newEntry(value) <span class="comment">//将这个entry加入到m.dirty中</span></div><div class="line">	}</div><div class="line">	m.mu.Unlock()</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> (m *Map) dirtyLocked() {</div><div class="line">	<span class="keyword">if</span> m.dirty != <span class="constant">nil</span> {</div><div class="line">		<span class="keyword">return</span></div><div class="line">	}</div><div class="line"></div><div class="line">	read, _ := m.read.Load().(readOnly)</div><div class="line">	m.dirty = <span class="built_in">make</span>(<span class="keyword">map</span>[<span class="keyword">interface</span>{}]*entry, <span class="built_in">len</span>(read.m))</div><div class="line">	<span class="keyword">for</span> k, e := <span class="keyword">range</span> read.m {</div><div class="line">		<span class="keyword">if</span> !e.tryExpungeLocked() {</div><div class="line">			m.dirty[k] = e</div><div class="line">		}</div><div class="line">	}</div><div class="line">}</div><div class="line"><span class="keyword">func</span> (e *entry) tryExpungeLocked() (isExpunged <span class="typename">bool</span>) {</div><div class="line">	p := atomic.LoadPointer(&e.p)</div><div class="line">	<span class="keyword">for</span> p == <span class="constant">nil</span> {</div><div class="line">		<span class="comment">// 将已经删除标记为nil的数据标记为expunged</span></div><div class="line">		<span class="keyword">if</span> atomic.CompareAndSwapPointer(&e.p, <span class="constant">nil</span>, expunged) {</div><div class="line">			<span class="keyword">return</span> <span class="constant">true</span></div><div class="line">		}</div><div class="line">		p = atomic.LoadPointer(&e.p)</div><div class="line">	}</div><div class="line">	<span class="keyword">return</span> p == expunged</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>你可以看到，以上操作都是先从操作<code>m.read</code>开始的，不满足条件再加锁，然后操作<code>m.dirty</code>。</p>
+<p><code>Store</code>可能会在某种情况下(初始化或者m.dirty刚被提升后)从<code>m.read</code>中复制数据，如果这个时候<code>m.read</code>中数据量非常大，可能会影响性能。</p>
+<h4 id="Delete">Delete</h4>
+<p>删除一个键值。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> (m *Map) Delete(key <span class="keyword">interface</span>{}) {</div><div class="line">	read, _ := m.read.Load().(readOnly)</div><div class="line">	e, ok := read.m[key]</div><div class="line">	<span class="keyword">if</span> !ok && read.amended {</div><div class="line">		m.mu.Lock()</div><div class="line">		read, _ = m.read.Load().(readOnly)</div><div class="line">		e, ok = read.m[key]</div><div class="line">		<span class="keyword">if</span> !ok && read.amended {</div><div class="line">			<span class="built_in">delete</span>(m.dirty, key)</div><div class="line">		}</div><div class="line">		m.mu.Unlock()</div><div class="line">	}</div><div class="line">	<span class="keyword">if</span> ok {</div><div class="line">		e.<span class="built_in">delete</span>()</div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>同样，删除操作还是从<code>m.read</code>中开始， 如果这个entry不存在于<code>m.read</code>中，并且<code>m.dirty</code>中有新数据，则加锁尝试从<code>m.dirty</code>中删除。</p>
+<p>注意，还是要双检查的。 从<code>m.dirty</code>中直接删除即可，就当它没存在过，但是如果是从<code>m.read</code>中删除，并不会直接删除，而是打标记：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> (e *entry) <span class="built_in">delete</span>() (hadValue <span class="typename">bool</span>) {</div><div class="line">	<span class="keyword">for</span> {</div><div class="line">		p := atomic.LoadPointer(&e.p)</div><div class="line">		<span class="comment">// 已标记为删除</span></div><div class="line">		<span class="keyword">if</span> p == <span class="constant">nil</span> || p == expunged {</div><div class="line">			<span class="keyword">return</span> <span class="constant">false</span></div><div class="line">		}</div><div class="line">		<span class="comment">// 原子操作，e.p标记为nil</span></div><div class="line">		<span class="keyword">if</span> atomic.CompareAndSwapPointer(&e.p, p, <span class="constant">nil</span>) {</div><div class="line">			<span class="keyword">return</span> <span class="constant">true</span></div><div class="line">		}</div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<h4 id="Range">Range</h4>
+<p>因为<code>for ... range map</code>是内建的语言特性，所以没有办法使用<code>for range</code>遍历<code>sync.Map</code>, 但是可以使用它的<code>Range</code>方法，通过回调的方式遍历。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> (m *Map) Range(f <span class="keyword">func</span>(key, value <span class="keyword">interface</span>{}) <span class="typename">bool</span>) {</div><div class="line">	read, _ := m.read.Load().(readOnly)</div><div class="line"></div><div class="line">	<span class="comment">// 如果m.dirty中有新数据，则提升m.dirty,然后在遍历</span></div><div class="line">	<span class="keyword">if</span> read.amended {</div><div class="line">		<span class="comment">//提升m.dirty</span></div><div class="line">		m.mu.Lock()</div><div class="line">		read, _ = m.read.Load().(readOnly) <span class="comment">//双检查</span></div><div class="line">		<span class="keyword">if</span> read.amended {</div><div class="line">			read = readOnly{m: m.dirty}</div><div class="line">			m.read.Store(read)</div><div class="line">			m.dirty = <span class="constant">nil</span></div><div class="line">			m.misses =<span class="number"> 0</span></div><div class="line">		}</div><div class="line">		m.mu.Unlock()</div><div class="line">	}</div><div class="line"></div><div class="line">	<span class="comment">// 遍历, for range是安全的</span></div><div class="line">	<span class="keyword">for</span> k, e := <span class="keyword">range</span> read.m {</div><div class="line">		v, ok := e.load()</div><div class="line">		<span class="keyword">if</span> !ok {</div><div class="line">			<span class="keyword">continue</span></div><div class="line">		}</div><div class="line">		<span class="keyword">if</span> !f(k, v) {</div><div class="line">			<span class="keyword">break</span></div><div class="line">		}</div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>Range方法调用前可能会做一个<code>m.dirty</code>的提升，不过提升<code>m.dirty</code>不是一个耗时的操作。</p>
+<h3 id="sync-Map的性能">sync.Map的性能</h3>
+<p>Go 1.9源代码中提供了性能的测试： <a href="https://github.com/golang/go/blob/master/src/sync/map_bench_test.go" target="_blank" rel="external">map_bench_test.go</a>、<a href="https://github.com/golang/go/blob/master/src/sync/map_reference_test.go" target="_blank" rel="external">map_reference_test.go</a></p>
+<p>我也基于这些代码修改了一下，得到下面的测试数据，相比较以前的解决方案，性能多少回有些提升，如果你特别关注性能，可以考虑<code>sync.Map</code>。</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div></pre></td><td class="code"><pre><div class="line">BenchmarkHitAll/*<span class="keyword">sync</span>.RWMutexMap-<span class="number">4</span>   	<span class="number">20000000</span>	        <span class="number">83.8</span> ns/op</div><div class="line">BenchmarkHitAll/*<span class="keyword">sync</span>.Map-<span class="number">4</span>          	<span class="number">30000000</span>	        <span class="number">59.9</span> ns/op</div><div class="line">BenchmarkHitAll_WithoutPrompting/*<span class="keyword">sync</span>.RWMutexMap-<span class="number">4</span>         	<span class="number">20000000</span>	        <span class="number">96.9</span> ns/op</div><div class="line">BenchmarkHitAll_WithoutPrompting/*<span class="keyword">sync</span>.Map-<span class="number">4</span>                	<span class="number">20000000</span>	        <span class="number">64.1</span> ns/op</div><div class="line">BenchmarkHitNone/*<span class="keyword">sync</span>.RWMutexMap-<span class="number">4</span>                         	<span class="number">20000000</span>	        <span class="number">79.1</span> ns/op</div><div class="line">BenchmarkHitNone/*<span class="keyword">sync</span>.Map-<span class="number">4</span>                                	<span class="number">30000000</span>	        <span class="number">43.3</span> ns/op</div><div class="line">BenchmarkHit_WithoutPrompting/*<span class="keyword">sync</span>.RWMutexMap-<span class="number">4</span>            	<span class="number">20000000</span>	        <span class="number">81.5</span> ns/op</div><div class="line">BenchmarkHit_WithoutPrompting/*<span class="keyword">sync</span>.Map-<span class="number">4</span>                   	<span class="number">30000000</span>	        <span class="number">44.0</span> ns/op</div><div class="line">BenchmarkUpdate/*<span class="keyword">sync</span>.RWMutexMap-<span class="number">4</span>                          	 <span class="number">5000000</span>	       <span class="number">328</span> ns/op</div><div class="line">BenchmarkUpdate/*<span class="keyword">sync</span>.Map-<span class="number">4</span>                                 	<span class="number">10000000</span>	       <span class="number">146</span> ns/op</div><div class="line">BenchmarkUpdate_WithoutPrompting/*<span class="keyword">sync</span>.RWMutexMap-<span class="number">4</span>         	 <span class="number">5000000</span>	       <span class="number">336</span> ns/op</div><div class="line">BenchmarkUpdate_WithoutPrompting/*<span class="keyword">sync</span>.Map-<span class="number">4</span>                	 <span class="number">5000000</span>	       <span class="number">324</span> ns/op</div><div class="line">BenchmarkDelete/*<span class="keyword">sync</span>.RWMutexMap-<span class="number">4</span>                          	<span class="number">10000000</span>	       <span class="number">155</span> ns/op</div><div class="line">BenchmarkDelete/*<span class="keyword">sync</span>.Map-<span class="number">4</span>                                 	<span class="number">30000000</span>	        <span class="number">55.0</span> ns/op</div><div class="line">BenchmarkDelete_WithoutPrompting/*<span class="keyword">sync</span>.RWMutexMap-<span class="number">4</span>         	<span class="number">10000000</span>	       <span class="number">173</span> ns/op</div><div class="line">BenchmarkDelete_WithoutPrompting/*<span class="keyword">sync</span>.Map-<span class="number">4</span>                	<span class="number">10000000</span>	       <span class="number">147</span> ns/op</div></pre></td></tr></table></figure>
+
+<h3 id="其它">其它</h3>
+<p><code>sync.Map</code>没有<code>Len</code>方法，并且目前没有迹象要加上 (<a href="https://github.com/golang/go/issues/20680" target="_blank" rel="external">issue#20680</a>),所以如果想得到当前Map中有效的entries的数量，需要使用<code>Range</code>方法遍历一次， 比较X疼。</p>
+<p><code>LoadOrStore</code>方法如果提供的key存在，则返回已存在的值(Load)，否则保存提供的键值(Store)。</p>
+
+      
+    </div>
+    <footer class="article-footer">
+      
+
+      
+      <!-- <link rel="stylesheet" href="https://unpkg.com/gitalk/dist/gitalk.css">
+      <script src="https://unpkg.com/gitalk/dist/gitalk.min.js"></script> -->
+      <section id="comments">
+        <script src="https://utteranc.es/client.js"
+                repo="smallnest/gitalk"
+                issue-term="title"
+                theme="github-light"
+                crossorigin="anonymous"
+                async>
+        </script>
+        <!-- <div id="gitalk-container"></div>
+        <script type="text/javascript">
+          var gitalkOpts = {
+            id: '2017/07/11/dive-into-sync-Map/',
+            owner: 'smallnest',
+            repo: 'gitalk',
+            title: 'Go 1.9 sync.Map揭秘',
+            body: 'https://colobu.com/2017/07/11/dive-into-sync-Map/',
+            clientID: 'bc02724130ed5b7ee275',
+            clientSecret: '68cb0bae2f93a8b88b09e0eb9b08c844b06a9047',
+            admin: ['smallnest'],
+            distractionFreeMode: false
+          };
+
+          const gitalk = new Gitalk(gitalkOpts)
+          gitalk.render('gitalk-container')
+        </script> -->
+        <noscript> 为正常使用评论功能请激活JavaScript</noscript>
+      </section>
+
+      
+
+    </footer>
+  </div>
+  
+  
+<nav id="article-nav">
+  
+    <a href="/2017/08/04/talk-about-getting-goroutine-id-again/" id="article-nav-newer" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">Newer</strong>
+      <div class="article-nav-title">
+        
+          再谈谈获取 goroutine id 的方法
+        
+      </div>
+    </a>
+  
+  
+    <a href="/2017/07/11/show-connections-in-MACOS/" id="article-nav-older" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">Older</strong>
+      <div class="article-nav-title">Mac OS X显示连接</div>
+    </a>
+  
+</nav>
+
+  
+</article></section>
+        
+          <aside id="sidebar">
+  
+      <div class="widget-wrap">
+    <h3 class="widget-title">原创图书</h3>
+    <div class="widget">
+      <a href="/ScalaCollectionsCookbook/">
+        <img width="100%" src="/ScalaCollectionsCookbook/scala_collections_cookbook.jpg">
+        <img width="100%" src="/ScalaCollectionsCookbook/scala_collections_cookbook_tw.png">
+      </a>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">分类</h3>
+    <div class="widget">
+      <ul class="category-list"><li class="category-list-item"><a class="category-list-link" href="/categories/Android/">Android</a><span class="category-list-count">12</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/C/">C++</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/DOTNET/">DOTNET</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Docker/">Docker</a><span class="category-list-count">5</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Go/">Go</a><span class="category-list-count">175</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Java/">Java</a><span class="category-list-count">64</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Linux/">Linux</a><span class="category-list-count">7</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Rust/">Rust</a><span class="category-list-count">12</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Scala/">Scala</a><span class="category-list-count">18</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/分享/">分享</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/前端开发/">前端开发</a><span class="category-list-count">18</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/区块链/">区块链</a><span class="category-list-count">8</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/大数据/">大数据</a><span class="category-list-count">60</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/工具/">工具</a><span class="category-list-count">28</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/数据库/">数据库</a><span class="category-list-count">3</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/架构/">架构</a><span class="category-list-count">26</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/算法/">算法</a><span class="category-list-count">4</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/管理/">管理</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/网络编程/">网络编程</a><span class="category-list-count">13</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/读书笔记/">读书笔记</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/运维/">运维</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/高并发编程/">高并发编程</a><span class="category-list-count">20</span></li></ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">标签云</h3>
+    <div class="widget tagcloud">
+      <a href="/tags/Android/" style="font-size: 15.71px;">Android</a><a href="/tags/ApacheBench/" style="font-size: 11.43px;">ApacheBench</a><a href="/tags/Bower/" style="font-size: 10.00px;">Bower</a><a href="/tags/C/" style="font-size: 10.00px;">C#</a><a href="/tags/CDN/" style="font-size: 10.00px;">CDN</a><a href="/tags/CQRS/" style="font-size: 10.00px;">CQRS</a><a href="/tags/CRC/" style="font-size: 10.00px;">CRC</a><a href="/tags/CSS/" style="font-size: 11.43px;">CSS</a><a href="/tags/CompletableFuture/" style="font-size: 10.00px;">CompletableFuture</a><a href="/tags/Comsat/" style="font-size: 10.00px;">Comsat</a><a href="/tags/Curator/" style="font-size: 18.57px;">Curator</a><a href="/tags/DSL/" style="font-size: 10.00px;">DSL</a><a href="/tags/Disruptor/" style="font-size: 10.00px;">Disruptor</a><a href="/tags/Docker/" style="font-size: 11.43px;">Docker</a><a href="/tags/Ember/" style="font-size: 11.43px;">Ember</a><a href="/tags/FastJson/" style="font-size: 10.00px;">FastJson</a><a href="/tags/Fiber/" style="font-size: 10.00px;">Fiber</a><a href="/tags/GAE/" style="font-size: 10.00px;">GAE</a><a href="/tags/GC/" style="font-size: 12.86px;">GC</a><a href="/tags/Gnuplot/" style="font-size: 10.00px;">Gnuplot</a><a href="/tags/Go/" style="font-size: 14.29px;">Go</a><a href="/tags/Gradle/" style="font-size: 10.00px;">Gradle</a><a href="/tags/Grunt/" style="font-size: 10.00px;">Grunt</a><a href="/tags/Gulp/" style="font-size: 10.00px;">Gulp</a><a href="/tags/Hadoop/" style="font-size: 10.00px;">Hadoop</a><a href="/tags/Hazelcast/" style="font-size: 10.00px;">Hazelcast</a><a href="/tags/IPFS/" style="font-size: 10.00px;">IPFS</a><a href="/tags/Ignite/" style="font-size: 10.00px;">Ignite</a><a href="/tags/JVM/" style="font-size: 10.00px;">JVM</a><a href="/tags/Java/" style="font-size: 17.14px;">Java</a><a href="/tags/Kafka/" style="font-size: 20.00px;">Kafka</a><a href="/tags/Lambda/" style="font-size: 14.29px;">Lambda</a><a href="/tags/Linux/" style="font-size: 12.86px;">Linux</a><a href="/tags/LongAdder/" style="font-size: 10.00px;">LongAdder</a><a href="/tags/MathJax/" style="font-size: 10.00px;">MathJax</a><a href="/tags/Maven/" style="font-size: 11.43px;">Maven</a><a href="/tags/Memcached/" style="font-size: 10.00px;">Memcached</a><a href="/tags/Metrics/" style="font-size: 10.00px;">Metrics</a><a href="/tags/Mongo/" style="font-size: 12.86px;">Mongo</a><a href="/tags/Netty/" style="font-size: 15.71px;">Netty</a>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">归档</h3>
+    <div class="widget">
+      <ul class="archive-list"><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/10/">October 2021</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/08/">August 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/07/">July 2021</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/06/">June 2021</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/05/">May 2021</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/04/">April 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/03/">March 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/02/">February 2021</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/01/">January 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/12/">December 2020</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/11/">November 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/09/">September 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/08/">August 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/07/">July 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/06/">June 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/05/">May 2020</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/04/">April 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/03/">March 2020</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/02/">February 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/01/">January 2020</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/12/">December 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/11/">November 2019</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/10/">October 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/09/">September 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/08/">August 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/07/">July 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/06/">June 2019</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/05/">May 2019</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/04/">April 2019</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/03/">March 2019</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/02/">February 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/01/">January 2019</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/12/">December 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/11/">November 2018</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/10/">October 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/09/">September 2018</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/08/">August 2018</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/07/">July 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/06/">June 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/05/">May 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/04/">April 2018</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/03/">March 2018</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/02/">February 2018</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/01/">January 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/12/">December 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/11/">November 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/10/">October 2017</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/09/">September 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/08/">August 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/07/">July 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/06/">June 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/05/">May 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/04/">April 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/03/">March 2017</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/02/">February 2017</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/01/">January 2017</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/12/">December 2016</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/11/">November 2016</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/10/">October 2016</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/09/">September 2016</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/08/">August 2016</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/07/">July 2016</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/06/">June 2016</a><span class="archive-list-count">14</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/05/">May 2016</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/04/">April 2016</a><span class="archive-list-count">14</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/03/">March 2016</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/02/">February 2016</a><span class="archive-list-count">8</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/01/">January 2016</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/12/">December 2015</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/11/">November 2015</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/10/">October 2015</a><span class="archive-list-count">9</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/09/">September 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/08/">August 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/07/">July 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/06/">June 2015</a><span class="archive-list-count">8</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/05/">May 2015</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/04/">April 2015</a><span class="archive-list-count">15</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/03/">March 2015</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/02/">February 2015</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/01/">January 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/12/">December 2014</a><span class="archive-list-count">28</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/11/">November 2014</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/10/">October 2014</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/09/">September 2014</a><span class="archive-list-count">28</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/08/">August 2014</a><span class="archive-list-count">19</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/07/">July 2014</a><span class="archive-list-count">1</span></li></ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">近期文章</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+            <a href="/2021/10/06/replace-implementations-in-go-std-libs-at-runtime/">强制更改Go标准库的实现</a>
+          </li>
+        
+          <li>
+            <a href="/2021/08/30/how-is-go-generic-implemented/">Go泛型是怎么实现的?</a>
+          </li>
+        
+          <li>
+            <a href="/2021/08/01/benchmark-of-rpc-frameworks/">2021年Go生态圈rpc框架benchmark</a>
+          </li>
+        
+          <li>
+            <a href="/2021/07/13/Updating-the-Go-Memory-Model/">[译]更新Go内存模型</a>
+          </li>
+        
+          <li>
+            <a href="/2021/07/11/Programming-Language-Memory-Models/">[译]编程语言内存模型</a>
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">友情链接</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+			 
+            <a href="http://stackshare.io" target="_blank">技术栈</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://toutiao.io/" target="_blank">开发者头条</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://weekly.manong.io/issues/" target="_blank">码农周刊</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.tuicool.com/mags" target="_blank">编程狂人周刊</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.importnew.com/" target="_blank">importnew</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://ifeve.com/" target="_blank">并发编程网</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://github.com" target="_blank">github</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://stackoverflow.com/" target="_blank">stackoverflow</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.javacodegeeks.com/" target="_blank">javacodegeeks</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.infoq.com/" target="_blank">infoq</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.dzone.com/links/index.html" target="_blank">dzone</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://oj.leetcode.com/problems/" target="_blank">leetcode</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://tutorials.jenkov.com" target="_blank">jenkov</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://howtodoinjava.com" target="_blank">HowToDoInJava</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://java-design-patterns.com/patterns/" target="_blank">java design patterns</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://medium.com/netflix-techblog" target="_blank">Netflix技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://www.techiedelight.com" target="_blank">Techie Delight</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://engineering.linkedin.com/blog" target="_blank">Linkedin技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://blogs.dropbox.com/tech/" target="_blank">Dropbox技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://code.fb.com" target="_blank">Facebook技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://jm.taobao.org" target="_blank">淘宝中间件团队</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://tech.meituan.com" target="_blank">美团技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://blogs.360.cn" target="_blank">360技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://xiaomi-info.github.io" target="_blank">小米信息部技术团队</a>
+			
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+      
+
+  
+</aside>
+        
+      </div>
+      <footer id="footer">
+  
+  <div class="outer">
+    <div id="footer-info" class="inner">
+      &copy; 2021 smallnest<br>
+	  Powered by <a href="http://hexo.io/" target="_blank">Hexo</a>
+    </div>
+  </div>
+</footer>
+    </div>
+    <nav id="mobile-nav">
+  
+    
+      <a href="/" class="mobile-nav-link"><i class="fa fa-home">&nbsp;</i>首页</a>
+    
+  
+    
+      <a href="/archives" class="mobile-nav-link"><i class="fa fa-folder-o">&nbsp;</i>归档</a>
+    
+  
+    
+      <a href="https://github.com/smallnest" class="mobile-nav-link"><i class="fa fa-github">&nbsp;</i>github</a>
+    
+  
+    
+      <a class="mobile-nav-link" href="#"><i class="fa fa-bars">&nbsp;</i>网站群</a>
+    
+      
+            <a class="mobile-nav-link" href="/goasm">&nbsp;&nbsp;<i class="fa fa-language">&nbsp;</i>Go汇编示例</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="https://gowebexamples.com">&nbsp;&nbsp;<i class="fa fa-external-link">&nbsp;</i>Go Web开发示例</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://go-database-sql.org">&nbsp;&nbsp;<i class="fa fa-external-link">&nbsp;</i>Go 数据库开发教程</a>
+          
+          
+    
+      
+            
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://rpcx.io">&nbsp;&nbsp;<i class="fa undefined">&nbsp;</i>RPCX官网</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://cn.doc.rpcx.io">&nbsp;&nbsp;<i class="fa undefined">&nbsp;</i>RPC开发指南</a>
+          
+          
+    
+    
+  
+    
+      <a href="/ScalaCollectionsCookbook" class="mobile-nav-link"><i class="fa fa-book">&nbsp;</i>Scala集合技术手册</a>
+    
+  
+    
+      <a href="/about" class="mobile-nav-link"><i class="fa fa-lemon-o">&nbsp;</i>关于</a>
+    
+  
+</nav>
+    
+<script src="//cdn.staticfile.org/jquery/1.11.1/jquery.min.js"></script>
+<script src="//cdn.bootcss.com/jquery.lazyload/1.9.1/jquery.lazyload.min.js"></script>
+
+<script src="//cdnjs.cloudflare.com/ajax/libs/fancybox/3.2.5/jquery.fancybox.min.js"></script>
+
+
+<script src="/js/script.js" type="text/javascript"></script>
+
+<!-- mathjax config similar to math.stackexchange -->
+<script type="text/x-mathjax-config">
+  MathJax.Hub.Config({
+    tex2jax: {
+      inlineMath: [ ['$','$'], ["\\(","\\)"] ],
+      processEscapes: true,
+      skipTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code']
+    }
+  });
+  MathJax.Hub.Queue(function() {
+      var all = MathJax.Hub.getAllJax(), i;
+      for(i=0; i < all.length; i += 1) {
+        all[i].SourceElement().parentNode.className += ' has-jax';
+      }
+  });
+</script>
+<script type="text/javascript" src="//cdn.bootcss.com/mathjax/2.6.0-beta.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML">
+</script>
+
+<div id="totop" style="position:fixed;bottom:150px;right:10px;cursor: pointer;z-index: 2000;">
+	<a title="返回顶部"><img src="/images/scrollup.png"/></a>
+</div>
+<script src="/js/totop.js" type="text/javascript"></script>
+
+
+
+
+<script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "//hm.baidu.com/hm.js?e085d87993250aab11f3e0c15f1c2785";
+  var s = document.getElementsByTagName("script")[0]; 
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+
+
+  </div>
+</body>
+</html>

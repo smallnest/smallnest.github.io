@@ -1,0 +1,698 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset="utf-8">
+  
+  <title>[译]Go net/http 超时机制完全手册</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+  <meta name="description" content="英文原始出处: The complete guide to Go net/http timeouts, 作者: Filippo Valsorda
+当用Go写HTTP的服务器和客户端的时候，超时处理总是最易犯错和最微妙的地方之一。错误可能来自很多地方，一个错误可能等待很长时间没有结果，直到网络故障或者进程挂起。
+HTTP是一个复杂的、多阶段(multi-stage)协议，所以没有一个放之四海而皆准的">
+<meta property="og:type" content="article">
+<meta property="og:title" content="[译]Go net/http 超时机制完全手册">
+<meta property="og:url" content="https://colobu.com/2016/07/01/the-complete-guide-to-golang-net-http-timeouts/">
+<meta property="og:site_name" content="鸟窝">
+<meta property="og:description" content="英文原始出处: The complete guide to Go net/http timeouts, 作者: Filippo Valsorda
+当用Go写HTTP的服务器和客户端的时候，超时处理总是最易犯错和最微妙的地方之一。错误可能来自很多地方，一个错误可能等待很长时间没有结果，直到网络故障或者进程挂起。
+HTTP是一个复杂的、多阶段(multi-stage)协议，所以没有一个放之四海而皆准的">
+<meta property="og:image" content="server-timeout.png">
+<meta property="og:image" content="client-timeout.png">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="[译]Go net/http 超时机制完全手册">
+<meta name="twitter:description" content="英文原始出处: The complete guide to Go net/http timeouts, 作者: Filippo Valsorda
+当用Go写HTTP的服务器和客户端的时候，超时处理总是最易犯错和最微妙的地方之一。错误可能来自很多地方，一个错误可能等待很长时间没有结果，直到网络故障或者进程挂起。
+HTTP是一个复杂的、多阶段(multi-stage)协议，所以没有一个放之四海而皆准的">
+
+  
+  <link rel="alternative" href="/atom.xml" title="鸟窝" type="application/atom+xml">
+  
+  
+  <link rel="icon" href="/favicon.png">
+  
+  <link rel="stylesheet" href="/css/style.css" type="text/css">
+
+  <link href="//cdn.staticfile.org/font-awesome/4.2.0/css/font-awesome.css" rel="stylesheet">
+  
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/fancybox/2.1.7/css/jquery.fancybox.min.css"
+    media="screen" type="text/css">
+  
+  <link rel="stylesheet" href="//cdnjs.cloudflare.com/ajax/libs/animate.css/3.1.1/animate.min.css" media="screen"
+    type="text/css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/tonsky/FiraCode@1.207/distr/fira_code.css">
+</head>
+<body>
+  <div id="container">
+    <div id="wrap">
+      <header id="header">
+  <div id="banner"></div>
+  <div id="header-outer" class="outer">
+    <div id="header-title" class="inner">
+      <h1 id="logo-wrap" class="animated bounceInLeft">
+        <a href="/" id="logo">鸟窝</a>
+      </h1>
+      
+        <h2 id="subtitle-wrap" class="animated bounceInLeft">
+          <a href="/" id="subtitle">大道至简 Simplicity is the ultimate form of sophistication</a>
+        </h2>
+      
+    </div>
+    <div id="header-inner" class="inner">
+      <nav id="main-nav">
+        <a id="main-nav-toggle" class="nav-icon"></a>
+        
+          
+            <a class="main-nav-link" href="/"><i class="fa fa-home">&nbsp;</i>首页</a>
+          
+          
+          
+            <a class="main-nav-link" href="/archives"><i class="fa fa-folder-o">&nbsp;</i>归档</a>
+          
+          
+          
+            <a class="main-nav-link" href="https://github.com/smallnest"><i class="fa fa-github">&nbsp;</i>github</a>
+          
+          
+          
+            <div class="dropdown main-nav-link"><a class="main-nav-link" href="#"><i class="fa fa-bars">&nbsp;</i>网站群</a>
+              <div class="dropdown-content">
+          
+            
+              <a href="/goasm"><i class="fa fa-language"></i>&nbsp;Go汇编示例</a>
+            
+                
+          
+            
+              <a href="https://gowebexamples.com"><i class="fa fa-external-link"></i>&nbsp;Go Web开发示例</a>
+            
+                
+          
+            
+              <a href="http://go-database-sql.org"><i class="fa fa-external-link"></i>&nbsp;Go 数据库开发教程</a>
+            
+                
+          
+            
+              <hr>
+            
+                
+          
+            
+              <a href="http://rpcx.io"><i class="fa undefined"></i>&nbsp;RPCX官网</a>
+            
+                
+          
+            
+              <a href="http://cn.doc.rpcx.io"><i class="fa undefined"></i>&nbsp;RPC开发指南</a>
+            
+                
+          
+          </div>
+        </div>
+          
+          
+          
+            <a class="main-nav-link" href="/ScalaCollectionsCookbook"><i class="fa fa-book">&nbsp;</i>Scala集合技术手册</a>
+          
+          
+          
+            <a class="main-nav-link" href="/about"><i class="fa fa-lemon-o">&nbsp;</i>关于</a>
+          
+          
+
+
+      </nav>
+      <nav id="sub-nav">
+        
+          <a id="nav-rss-link" class="nav-icon" href="/atom.xml" title="RSS Feed"></a>
+        
+        <a id="nav-search-btn" class="nav-icon" title="Search"></a>
+      </nav>
+      <div id="search-form-wrap">
+        <form action="http://www.baidu.com/baidu" method="get" accept-charset="utf-8" class="search-form">
+          <input type="search" name="word" maxlength="20" class="search-form-input" placeholder="Search">
+          <input type="submit" value="" class="search-form-submit">
+          <input name=tn type=hidden value="bds">
+          <input name=cl type=hidden value="3">
+          <input name=ct type=hidden value="2097152">
+          <input type="hidden" name="si" value="colobu.com">
+        </form>
+      </div>
+    </div>
+  </div>
+</header>
+      <div class="outer">
+        <section id="main"><script>function show_answer(btn, x) { if (btn.value === "显示答案") { btn.value = "隐藏答案" } else { btn.value = "显示答案" } var as = document.getElementById(x); if (as.style.display === "none") { as.style.display = "block" } else { as.style.display = "none" } }</script>
+
+<article id="post-the-complete-guide-to-golang-net-http-timeouts" class="article article-type-post" itemscope
+  itemprop="blogPost">
+  <div class="article-meta">
+    <a href="/2016/07/01/the-complete-guide-to-golang-net-http-timeouts/" class="article-date">
+  <time datetime="2016-07-01T06:56:19.000Z" itemprop="datePublished">2016年07月01日</time>
+</a>
+    
+  <div class="article-category">
+    <a class="article-category-link" href="/categories/Go/">Go</a>
+  </div>
+
+    
+  <div class="article-author"> by Filippo Valsorda</div>
+
+  </div>
+  <div class="article-inner">
+    
+    
+    <header class="article-header">
+      
+  
+    <h1 class="article-title" itemprop="name">
+      [译]Go net/http 超时机制完全手册
+	  
+    </h1>
+  
+
+    </header>
+    
+    <div class="article-entry" itemprop="articleBody">
+      
+      <h1 id="expanderHead" style="cursor:pointer;">
+        目录 <span id="expanderSign">[−]</span>
+      </h1>
+      <div id="article-entry-toc" data-role="collapsible" class="article-entry-toc">
+        <ol class="toc"><li class="toc-item toc-level-3"><a class="toc-link" href="#SetDeadline"><span class="toc-text">SetDeadline</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#服务器端超时设置"><span class="toc-text">服务器端超时设置</span></a><ol class="toc-child"><li class="toc-item toc-level-4"><a class="toc-link" href="#http-ListenAndServe_的错误"><span class="toc-text">http.ListenAndServe 的错误</span></a></li><li class="toc-item toc-level-4"><a class="toc-link" href="#关于流"><span class="toc-text">关于流</span></a></li></ol></li><li class="toc-item toc-level-3"><a class="toc-link" href="#客户端超时设置"><span class="toc-text">客户端超时设置</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#Cancel_和_Context"><span class="toc-text">Cancel 和 Context</span></a></li></ol>
+      </div>
+      
+      
+      
+      <p>英文原始出处: <a href="https://blog.cloudflare.com/the-complete-guide-to-golang-net-http-timeouts/" target="_blank" rel="external">The complete guide to Go net/http timeouts</a>, 作者: <a href="https://blog.cloudflare.com/author/filippo/" target="_blank" rel="external">Filippo Valsorda</a></p>
+<p>当用Go写HTTP的服务器和客户端的时候，超时处理总是最易犯错和最微妙的地方之一。错误可能来自很多地方，一个错误可能等待很长时间没有结果，直到网络故障或者进程挂起。</p>
+<p>HTTP是一个复杂的、多阶段(multi-stage)协议，所以没有一个放之四海而皆准的超时解决方案，比如一个流服务、一个JSON API和一个Comet服务对超时的需求都不相同， 往往默认值不是你想要的。</p>
+<p>本文我将拆解需要超时设置的各个阶段，看看用什么不同的方式去处理它， 包括服务器端和客户端。</p>
+<a id="more"></a>
+<h3 id="SetDeadline">SetDeadline</h3>
+<p>首先，你需要了解Go实现超时的网络原语(primitive): <strong>Deadline</strong> (最后期限)。</p>
+<p><code>net.Conn</code>为Deadline提供了多个方法<code>Set[Read|Write]Deadline(time.Time)</code>。Deadline是一个绝对时间值，当到达这个时间的时候，所有的 I/O 操作都会失败，返回超时(timeout)错误。</p>
+<p><strong>Deadline不是超时</strong>(timeout)。一旦设置它们永久生效(或者直到下一次调用SetDeadline), 不管此时连接是否被使用和怎么用。所以如果想使用<code>SetDeadline</code>建立超时机制，你不得不每次在<code>Read/Write</code>操作之前调用它。</p>
+<p>你可能不想自己调用<code>SetDeadline</code>, 而是让<code>net/http</code>代替你调用，所以你可以调用更高级的timeout方法。但是请记住，所有的超时的实现都是基于Deadline,  所以它们不会每次接收或者发送重新设置这个值(so they <strong>do NOT reset every time data is sent or received</strong>)。</p>
+<blockquote>
+<p>江南雨的指正：<br>应该是由于“Deadline是一个绝对时间值”，不是真的超时机制，所以作者特别提醒，这个值不会自动重置的，需要每次手动设置。</p>
+</blockquote>
+<h3 id="服务器端超时设置">服务器端超时设置</h3>
+<p><img src="server-timeout.png" alt=""></p>
+<p>对于暴露在网上的服务器来说，为客户端连接设置超时至关重要，否则巨慢的或者隐失的客户端可能导致文件句柄无法释放，最终导致服务器出现下面的错误:</p>
+<pre class="highlight">
+http: Accept error: accept tcp [::]:80: accept4: too many open files; retrying in 5ms  
+</pre>
+
+
+<p><code>http.Server</code>有两个设置超时的方法: <code>ReadTimeout</code> 和 <code>and</code>WriteTimeout`。你可以显示地设置它们：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div></pre></td><td class="code"><pre><div class="line">srv := &http.Server{  </div><div class="line">    ReadTimeout:<span class="number"> 5</span> * time.Second,</div><div class="line">    WriteTimeout:<span class="number"> 10</span> * time.Second,</div><div class="line">}</div><div class="line">log.Println(srv.ListenAndServe())</div></pre></td></tr></table></figure>
+
+<p><code>ReadTimeout</code>的时间计算是从连接被接受(accept)到request body完全被读取(如果你不读取body，那么时间截止到读完header为止)。它的内部实现是在<code>Accept</code>立即调用<code>SetReadDeadline</code>方法(<a href="https://github.com/golang/go/blob/3ba31558d1bca8ae6d2f03209b4cae55381175b3/src/net/http/server.go#L750" target="_blank" rel="external">代码行</a>)。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div></pre></td><td class="code"><pre><div class="line">  ……</div><div class="line">  <span class="keyword">if</span> d := c.server.ReadTimeout; d !=<span class="number"> 0</span> {</div><div class="line">	c.rwc.SetReadDeadline(time.Now().Add(d))</div><div class="line">}</div><div class="line"><span class="keyword">if</span> d := c.server.WriteTimeout; d !=<span class="number"> 0</span> {</div><div class="line">	c.rwc.SetWriteDeadline(time.Now().Add(d))</div><div class="line">}</div><div class="line">  ……</div></pre></td></tr></table></figure>
+
+<p><code>WriteTimeout</code>的时间计算正常是从request header的读取结束开始，到 response write结束为止 (也就是 ServeHTTP 方法的声明周期), 它是通过在<code>readRequest</code>方法结束的时候调用<code>SetWriteDeadline</code>实现的(<a href="https://github.com/golang/go/blob/3ba31558d1bca8ae6d2f03209b4cae55381175b3/src/net/http/server.go#L753-L755" target="_blank" rel="external">代码行</a>)。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> (c *conn) readRequest(ctx context.Context) (w *response, err error) {</div><div class="line">	<span class="keyword">if</span> c.hijacked() {</div><div class="line">		<span class="keyword">return</span> <span class="constant">nil</span>, ErrHijacked</div><div class="line">	}</div><div class="line"></div><div class="line">	<span class="keyword">if</span> d := c.server.ReadTimeout; d !=<span class="number"> 0</span> {</div><div class="line">		c.rwc.SetReadDeadline(time.Now().Add(d))</div><div class="line">	}</div><div class="line">	<span class="keyword">if</span> d := c.server.WriteTimeout; d !=<span class="number"> 0</span> {</div><div class="line">		<span class="keyword">defer</span> <span class="keyword">func</span>() {</div><div class="line">			c.rwc.SetWriteDeadline(time.Now().Add(d))</div><div class="line">		}()</div><div class="line">	}</div><div class="line"></div><div class="line">  ……</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>但是，当连接是HTTPS的时候，<code>SetWriteDeadline</code>会在<code>Accept</code>之后立即调用(<a href="https://github.com/golang/go/blob/3ba31558d1bca8ae6d2f03209b4cae55381175b3/src/net/http/server.go#L1477-L1483" target="_blank" rel="external">代码</a>)，所以它的时间计算也包括 TLS握手时的写的时间。 讨厌的是， 这就意味着(也只有这种情况) <code>WriteTimeout</code>设置的时间也包含读取Headerd到读取body第一个字节这段时间。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">if</span> tlsConn, ok := c.rwc.(*tls.Conn); ok {</div><div class="line">		<span class="keyword">if</span> d := c.server.ReadTimeout; d !=<span class="number"> 0</span> {</div><div class="line">			c.rwc.SetReadDeadline(time.Now().Add(d))</div><div class="line">		}</div><div class="line">		<span class="keyword">if</span> d := c.server.WriteTimeout; d !=<span class="number"> 0</span> {</div><div class="line">			c.rwc.SetWriteDeadline(time.Now().Add(d))</div><div class="line">		}</div><div class="line">    ……</div></pre></td></tr></table></figure>
+
+<p>当你处理不可信的客户端和网络的时候，你应该同时设置读写超时，这样客户端就不会因为读慢或者写慢长久的持有这个连接了。</p>
+<p>最后，还有一个<code>http.TimeoutHandler</code>方法。 它并不是Server参数，而是一个Handler包装函数，可以限制 <code>ServeHTTP</code>调用。它缓存response, 如果deadline超过了则发送 <em>504 Gateway Timeout</em> 错误。 注意这个功能<a href="https://github.com/golang/go/issues/15327" target="_blank" rel="external">在 1.6 中有问题，在1.6.2中改正了</a>。</p>
+<h4 id="http-ListenAndServe_的错误">http.ListenAndServe 的错误</h4>
+<p>顺便提一句，<code>net/http</code>包下的封装的绕过<code>http.Server</code>的函数<code>http.ListenAndServe</code>, <code>http.ListenAndServeTLS</code> 和 <code>http.Serve</code>并不适合实现互联网的服务器。这些函数让超时设置默认不启用，并且你没有办法设置启用超时处理。所以如果你使用它们，你会很快发现连接泄漏，太多的文件句柄。我犯过这种错误至少五六次。</p>
+<p>取而代之，你应该创建一个<code>http.Server</code>示例，设置<code>ReadTimeout</code>和<code>WriteTimeout</code>,像上面的例子中一样使用相应的方法。</p>
+<h4 id="关于流">关于流</h4>
+<p>令人心塞的是， 没有办法从<code>ServeHTTP</code>中访问底层的<code>net.Conn</code>，所以提供流服务强制不去设置<code>WriteTimeout</code>（这也可能是为什么这些值的默认值总为0）。如果无法访问<code>net.Conn</code>就不能在每次<code>Write</code>的时候调用<code>SetWriteDeadline</code>来实现一个正确的idle timeout。</p>
+<p>而且，也没有办法取消一个阻塞的<code>ResponseWriter.Write</code>，因为<code>ResponseWriter.Close</code>没有文档指出它可以取消一个阻塞并发写。也没有办法使用Timer创建以俄国手工的timeout 杯具就是流服务器不能对于慢读的客户端进行防护。我提交的了一个［bug](<a href="https://github.com/golang/go/issues/16100)，欢迎大家反馈。" target="_blank" rel="external">https://github.com/golang/go/issues/16100)，欢迎大家反馈。</a></p>
+<blockquote>
+<p><em>编者按</em>: 作者此处的说法是有问题的，可以通过Hijack获取net.Conn,既然可以可以获取net.Conn,我们就可以调用它的SetWriteDeadline方法。代码例子如下：</p>
+</blockquote>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div><div class="line">35</div><div class="line">36</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> main</div><div class="line"></div><div class="line"><span class="keyword">import</span> (</div><div class="line">	<span class="string">"fmt"</span></div><div class="line">	<span class="string">"log"</span></div><div class="line">	<span class="string">"net/http"</span></div><div class="line">)</div><div class="line"></div><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	http.HandleFunc(<span class="string">"/hijack"</span>, <span class="keyword">func</span>(w http.ResponseWriter, r *http.Request) {</div><div class="line">		hj, ok := w.(http.Hijacker)</div><div class="line">		<span class="keyword">if</span> !ok {</div><div class="line">			http.Error(w, <span class="string">"webserver doesn't support hijacking"</span>, http.StatusInternalServerError)</div><div class="line">			<span class="keyword">return</span></div><div class="line">		}</div><div class="line">		conn, bufrw, err := hj.Hijack()</div><div class="line">		<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">			http.Error(w, err.Error(), http.StatusInternalServerError)</div><div class="line">			<span class="keyword">return</span></div><div class="line">		}</div><div class="line">		<span class="comment">// Don't forget to close the connection:</span></div><div class="line">		<span class="keyword">defer</span> conn.Close()</div><div class="line"></div><div class="line">		conn.SetWriteDeadline(time.Now().Add<span class="number">(10</span> * time.Second))</div><div class="line"></div><div class="line">		bufrw.WriteString(<span class="string">"Now we're speaking raw TCP. Say hi: "</span>)</div><div class="line">		bufrw.Flush()</div><div class="line">		s, err := bufrw.ReadString(<span class="string">'\n'</span>)</div><div class="line">		<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">			log.Printf(<span class="string">"error reading string: %v"</span>, err)</div><div class="line">			<span class="keyword">return</span></div><div class="line">		}</div><div class="line">		fmt.Fprintf(bufrw, <span class="string">"You said: %q\nBye.\n"</span>, s)</div><div class="line">		bufrw.Flush()</div><div class="line">	})</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<h3 id="客户端超时设置">客户端超时设置</h3>
+<p><img src="client-timeout.png" alt=""></p>
+<p>Client端的超时设置说复杂也复杂，说简单也简单，看你怎么用了，最重要的就是不要有资源泄漏的情况或者程序被卡住。</p>
+<p>最简单的方式就是使用<code>http.Client</code>的 <code>Timeout</code>字段。 它的时间计算包括从连接(Dial)到读完response body。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line">c := &http.Client{  </div><div class="line">    Timeout:<span class="number"> 15</span> * time.Second,</div><div class="line">}</div><div class="line">resp, err := c.Get(<span class="string">"https://blog.filippo.io/"</span>)</div></pre></td></tr></table></figure>
+
+<p>就像服务器端一样，<code>http.GET</code>使用Client的时候也<a href="https://golang.org/pkg/net/http/#DefaultClient" target="_blank" rel="external">没有超时设置</a>,所以在互联网上使用也很危险。</p>
+<p>有一些更细粒度的超时控制：</p>
+<ul>
+<li><code>net.Dialer.Timeout</code> 限制建立TCP连接的时间</li>
+<li><code>http.Transport.TLSHandshakeTimeout</code> 限制 TLS握手的时间</li>
+<li><code>http.Transport.ResponseHeaderTimeout</code> 限制读取response header的时间</li>
+<li><code>http.Transport.ExpectContinueTimeout</code> 限制client在发送包含 <code>Expect: 100-continue</code>的header到收到继续发送body的response之间的时间等待。注意在1.6中设置这个值会<a href="https://github.com/golang/go/issues/14391" target="_blank" rel="external">禁用HTTP/2</a>(<code>DefaultTransport</code>自1.6.2起是个特例)</li>
+</ul>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div></pre></td><td class="code"><pre><div class="line">c := &http.Client{  </div><div class="line">    Transport: &Transport{</div><div class="line">        Dial: (&net.Dialer{</div><div class="line">                Timeout:  <span class="number"> 30</span> * time.Second,</div><div class="line">                KeepAlive:<span class="number"> 30</span> * time.Second,</div><div class="line">        }).Dial,</div><div class="line">        TLSHandshakeTimeout:  <span class="number"> 10</span> * time.Second,</div><div class="line">        ResponseHeaderTimeout:<span class="number"> 10</span> * time.Second,</div><div class="line">        ExpectContinueTimeout:<span class="number"> 1</span> * time.Second,</div><div class="line">    }</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>如我所讲，没有办法限制发送request的时间。读取response body (原文是读取request body，按照理解应该是读取response可以手工控制)的时间花费可以手工的通过一个<code>time.Timer</code>来实现, 读取发生在调用Client.Do之后（详见下一节）。</p>
+<p>最后将一点，在Go 1.7中，增加了一个<code>http.Transport.IdleConnTimeout</code>， 它不控制client request的阻塞阶段，但是可以控制连接池中一个连接可以idle多长时间。</p>
+<p>注意一个Client缺省的可以执行 <em>redirect</em>。<code>http.Client.Timeout</code>包含所有的<code>redirect</code>，而细粒度的超时控制参数只针对单次请求有效， 因为<code>http.Transport</code>是一个底层的类型，没有<code>redirect</code>的概念。</p>
+<h3 id="Cancel_和_Context">Cancel 和 Context</h3>
+<p><code>net/http</code>提供了两种方式取消一个client的请求: <code>Request.Cancel</code>以及Go 1.7新加的<code>Context</code>。</p>
+<p><code>Request.Cancel</code>是一个可选的channel, 当设置这个值并且close它的时候，request就会终止，就好像超时了一样(实际它们的实现是一样的，在写本文的时候我还发现一个1.7 的 一个<a href="https://github.com/golang/go/issues/16094" target="_blank" rel="external">bug</a>, 所有的cancel操作返回的错误还是timeout error )。</p>
+<p>我们可以使用<code>Request.Cancel</code>和<code>time.Timer</code>来构建一个细粒度的超时控制，允许读取流数据的时候推迟deadline:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div><div class="line">35</div><div class="line">36</div><div class="line">37</div><div class="line">38</div><div class="line">39</div><div class="line">40</div><div class="line">41</div><div class="line">42</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> main</div><div class="line"></div><div class="line"><span class="keyword">import</span> (  </div><div class="line">    <span class="string">"io"</span></div><div class="line">    <span class="string">"io/ioutil"</span></div><div class="line">    <span class="string">"log"</span></div><div class="line">    <span class="string">"net/http"</span></div><div class="line">    <span class="string">"time"</span></div><div class="line">)</div><div class="line"></div><div class="line"><span class="keyword">func</span> main() {  </div><div class="line">    c := <span class="built_in">make</span>(<span class="keyword">chan</span> <span class="keyword">struct</span>{})</div><div class="line">    timer := time.AfterFunc<span class="number">(5</span>*time.Second, <span class="keyword">func</span>() {</div><div class="line">        <span class="built_in">close</span>(c)</div><div class="line">    })</div><div class="line"></div><div class="line">        <span class="comment">// Serve 256 bytes every second.</span></div><div class="line">    req, err := http.NewRequest(<span class="string">"GET"</span>, <span class="string">"http://httpbin.org/range/2048?duration=8&chunk_size=256"</span>, <span class="constant">nil</span>)</div><div class="line">    <span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">        log.Fatal(err)</div><div class="line">    }</div><div class="line">    req.Cancel = c</div><div class="line"></div><div class="line">    log.Println(<span class="string">"Sending request..."</span>)</div><div class="line">    resp, err := http.DefaultClient.Do(req)</div><div class="line">    <span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">        log.Fatal(err)</div><div class="line">    }</div><div class="line">    <span class="keyword">defer</span> resp.Body.Close()</div><div class="line"></div><div class="line">    log.Println(<span class="string">"Reading body..."</span>)</div><div class="line">    <span class="keyword">for</span> {</div><div class="line">        timer.Reset<span class="number">(2</span> * time.Second)</div><div class="line">                <span class="comment">// Try instead: timer.Reset(50 * time.Millisecond)</span></div><div class="line">        _, err = io.CopyN(ioutil.Discard, resp.Body,<span class="number"> 256</span>)</div><div class="line">        <span class="keyword">if</span> err == io.EOF {</div><div class="line">            <span class="keyword">break</span></div><div class="line">        } <span class="keyword">else</span> <span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">            log.Fatal(err)</div><div class="line">        }</div><div class="line">    }</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>上面的例子中我们为Do方法执行阶段设置5秒的超时，但是我们至少花费8秒执行8次才能读完所欲的body，每一次设置2秒的超时。我们可以为流 API这样处理避免程序死在那里。 如果超过两秒我们没有从服务器读取到数据， io.CopyN会返回<code>net/http: request canceled</code>错误。</p>
+<p>在1.7中， context包升级了，进入到标准库中。Context有很多<a href="https://blog.golang.org/context" target="_blank" rel="external">值得学习的功能</a>，但是对于本文介绍的内容来讲，你只需直到它可以用来替换和扔掉<code>Request.Cancel</code>。</p>
+<p>用Context取消请求很简单，我们只需得到一个新的Context和它的cancel()函数，这是通过context.WithCancel方法得到的，然后创建一个request并使用<code>Request.WithContext</code>绑定它。当我们想取消这个请求是，我们调用<code>cancel()</code>取消这个Context:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div></pre></td><td class="code"><pre><div class="line">ctx, cancel := context.WithCancel(context.TODO())  </div><div class="line">timer := time.AfterFunc<span class="number">(5</span>*time.Second, <span class="keyword">func</span>() {  </div><div class="line">    cancel()</div><div class="line">})</div><div class="line"></div><div class="line">req, err := http.NewRequest(<span class="string">"GET"</span>, <span class="string">"http://httpbin.org/range/2048?duration=8&chunk_size=256"</span>, <span class="constant">nil</span>)  </div><div class="line"><span class="keyword">if</span> err != <span class="constant">nil</span> {  </div><div class="line">    log.Fatal(err)</div><div class="line">}</div><div class="line">req = req.WithContext(ctx)</div></pre></td></tr></table></figure>
+
+<p>Context好处还在于如果parent context被取消的时候(在<code>context.WithCancel</code>调用的时候传递进来的)，子context也会取消， 命令会进行传递。</p>
+<p>好了，这就是本文要讲的全部，希望我没有超过你的阅读deadline。</p>
+<p><a href="https://www.cloudflare.com/join-our-team/" target="_blank" rel="external">作者的公司cloudflare在英国、美国和新加坡招人</a>。云初创公司，挺知名。</p>
+
+      
+    </div>
+    <footer class="article-footer">
+      
+
+      
+      <!-- <link rel="stylesheet" href="https://unpkg.com/gitalk/dist/gitalk.css">
+      <script src="https://unpkg.com/gitalk/dist/gitalk.min.js"></script> -->
+      <section id="comments">
+        <script src="https://utteranc.es/client.js"
+                repo="smallnest/gitalk"
+                issue-term="title"
+                theme="github-light"
+                crossorigin="anonymous"
+                async>
+        </script>
+        <!-- <div id="gitalk-container"></div>
+        <script type="text/javascript">
+          var gitalkOpts = {
+            id: '2016/07/01/the-complete-guide-to-golang-net-http',
+            owner: 'smallnest',
+            repo: 'gitalk',
+            title: '[译]Go net/http 超时机制完全手册',
+            body: 'https://colobu.com/2016/07/01/the-complete-guide-to-golang-net-http-timeouts/',
+            clientID: 'bc02724130ed5b7ee275',
+            clientSecret: '68cb0bae2f93a8b88b09e0eb9b08c844b06a9047',
+            admin: ['smallnest'],
+            distractionFreeMode: false
+          };
+
+          const gitalk = new Gitalk(gitalkOpts)
+          gitalk.render('gitalk-container')
+        </script> -->
+        <noscript> 为正常使用评论功能请激活JavaScript</noscript>
+      </section>
+
+      
+
+    </footer>
+  </div>
+  
+  
+<nav id="article-nav">
+  
+    <a href="/2016/07/02/bloom-filter-for-scala/" id="article-nav-newer" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">Newer</strong>
+      <div class="article-nav-title">
+        
+          [译]JVM上最快的Bloom filter实现
+        
+      </div>
+    </a>
+  
+  
+    <a href="/2016/06/30/dive-into-go-10/" id="article-nav-older" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">Older</strong>
+      <div class="article-nav-title">深入Go语言 - 10</div>
+    </a>
+  
+</nav>
+
+  
+</article></section>
+        
+          <aside id="sidebar">
+  
+      <div class="widget-wrap">
+    <h3 class="widget-title">原创图书</h3>
+    <div class="widget">
+      <a href="/ScalaCollectionsCookbook/">
+        <img width="100%" src="/ScalaCollectionsCookbook/scala_collections_cookbook.jpg">
+        <img width="100%" src="/ScalaCollectionsCookbook/scala_collections_cookbook_tw.png">
+      </a>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">分类</h3>
+    <div class="widget">
+      <ul class="category-list"><li class="category-list-item"><a class="category-list-link" href="/categories/Android/">Android</a><span class="category-list-count">12</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/C/">C++</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/DOTNET/">DOTNET</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Docker/">Docker</a><span class="category-list-count">5</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Go/">Go</a><span class="category-list-count">175</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Java/">Java</a><span class="category-list-count">64</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Linux/">Linux</a><span class="category-list-count">7</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Rust/">Rust</a><span class="category-list-count">12</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Scala/">Scala</a><span class="category-list-count">18</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/分享/">分享</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/前端开发/">前端开发</a><span class="category-list-count">18</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/区块链/">区块链</a><span class="category-list-count">8</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/大数据/">大数据</a><span class="category-list-count">60</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/工具/">工具</a><span class="category-list-count">28</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/数据库/">数据库</a><span class="category-list-count">3</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/架构/">架构</a><span class="category-list-count">26</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/算法/">算法</a><span class="category-list-count">4</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/管理/">管理</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/网络编程/">网络编程</a><span class="category-list-count">13</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/读书笔记/">读书笔记</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/运维/">运维</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/高并发编程/">高并发编程</a><span class="category-list-count">20</span></li></ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">标签云</h3>
+    <div class="widget tagcloud">
+      <a href="/tags/Android/" style="font-size: 15.71px;">Android</a><a href="/tags/ApacheBench/" style="font-size: 11.43px;">ApacheBench</a><a href="/tags/Bower/" style="font-size: 10.00px;">Bower</a><a href="/tags/C/" style="font-size: 10.00px;">C#</a><a href="/tags/CDN/" style="font-size: 10.00px;">CDN</a><a href="/tags/CQRS/" style="font-size: 10.00px;">CQRS</a><a href="/tags/CRC/" style="font-size: 10.00px;">CRC</a><a href="/tags/CSS/" style="font-size: 11.43px;">CSS</a><a href="/tags/CompletableFuture/" style="font-size: 10.00px;">CompletableFuture</a><a href="/tags/Comsat/" style="font-size: 10.00px;">Comsat</a><a href="/tags/Curator/" style="font-size: 18.57px;">Curator</a><a href="/tags/DSL/" style="font-size: 10.00px;">DSL</a><a href="/tags/Disruptor/" style="font-size: 10.00px;">Disruptor</a><a href="/tags/Docker/" style="font-size: 11.43px;">Docker</a><a href="/tags/Ember/" style="font-size: 11.43px;">Ember</a><a href="/tags/FastJson/" style="font-size: 10.00px;">FastJson</a><a href="/tags/Fiber/" style="font-size: 10.00px;">Fiber</a><a href="/tags/GAE/" style="font-size: 10.00px;">GAE</a><a href="/tags/GC/" style="font-size: 12.86px;">GC</a><a href="/tags/Gnuplot/" style="font-size: 10.00px;">Gnuplot</a><a href="/tags/Go/" style="font-size: 14.29px;">Go</a><a href="/tags/Gradle/" style="font-size: 10.00px;">Gradle</a><a href="/tags/Grunt/" style="font-size: 10.00px;">Grunt</a><a href="/tags/Gulp/" style="font-size: 10.00px;">Gulp</a><a href="/tags/Hadoop/" style="font-size: 10.00px;">Hadoop</a><a href="/tags/Hazelcast/" style="font-size: 10.00px;">Hazelcast</a><a href="/tags/IPFS/" style="font-size: 10.00px;">IPFS</a><a href="/tags/Ignite/" style="font-size: 10.00px;">Ignite</a><a href="/tags/JVM/" style="font-size: 10.00px;">JVM</a><a href="/tags/Java/" style="font-size: 17.14px;">Java</a><a href="/tags/Kafka/" style="font-size: 20.00px;">Kafka</a><a href="/tags/Lambda/" style="font-size: 14.29px;">Lambda</a><a href="/tags/Linux/" style="font-size: 12.86px;">Linux</a><a href="/tags/LongAdder/" style="font-size: 10.00px;">LongAdder</a><a href="/tags/MathJax/" style="font-size: 10.00px;">MathJax</a><a href="/tags/Maven/" style="font-size: 11.43px;">Maven</a><a href="/tags/Memcached/" style="font-size: 10.00px;">Memcached</a><a href="/tags/Metrics/" style="font-size: 10.00px;">Metrics</a><a href="/tags/Mongo/" style="font-size: 12.86px;">Mongo</a><a href="/tags/Netty/" style="font-size: 15.71px;">Netty</a>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">归档</h3>
+    <div class="widget">
+      <ul class="archive-list"><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/10/">October 2021</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/08/">August 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/07/">July 2021</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/06/">June 2021</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/05/">May 2021</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/04/">April 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/03/">March 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/02/">February 2021</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/01/">January 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/12/">December 2020</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/11/">November 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/09/">September 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/08/">August 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/07/">July 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/06/">June 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/05/">May 2020</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/04/">April 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/03/">March 2020</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/02/">February 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/01/">January 2020</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/12/">December 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/11/">November 2019</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/10/">October 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/09/">September 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/08/">August 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/07/">July 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/06/">June 2019</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/05/">May 2019</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/04/">April 2019</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/03/">March 2019</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/02/">February 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/01/">January 2019</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/12/">December 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/11/">November 2018</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/10/">October 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/09/">September 2018</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/08/">August 2018</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/07/">July 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/06/">June 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/05/">May 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/04/">April 2018</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/03/">March 2018</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/02/">February 2018</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/01/">January 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/12/">December 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/11/">November 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/10/">October 2017</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/09/">September 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/08/">August 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/07/">July 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/06/">June 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/05/">May 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/04/">April 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/03/">March 2017</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/02/">February 2017</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/01/">January 2017</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/12/">December 2016</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/11/">November 2016</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/10/">October 2016</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/09/">September 2016</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/08/">August 2016</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/07/">July 2016</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/06/">June 2016</a><span class="archive-list-count">14</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/05/">May 2016</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/04/">April 2016</a><span class="archive-list-count">14</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/03/">March 2016</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/02/">February 2016</a><span class="archive-list-count">8</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/01/">January 2016</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/12/">December 2015</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/11/">November 2015</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/10/">October 2015</a><span class="archive-list-count">9</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/09/">September 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/08/">August 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/07/">July 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/06/">June 2015</a><span class="archive-list-count">8</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/05/">May 2015</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/04/">April 2015</a><span class="archive-list-count">15</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/03/">March 2015</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/02/">February 2015</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/01/">January 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/12/">December 2014</a><span class="archive-list-count">28</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/11/">November 2014</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/10/">October 2014</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/09/">September 2014</a><span class="archive-list-count">28</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/08/">August 2014</a><span class="archive-list-count">19</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/07/">July 2014</a><span class="archive-list-count">1</span></li></ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">近期文章</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+            <a href="/2021/10/06/replace-implementations-in-go-std-libs-at-runtime/">强制更改Go标准库的实现</a>
+          </li>
+        
+          <li>
+            <a href="/2021/08/30/how-is-go-generic-implemented/">Go泛型是怎么实现的?</a>
+          </li>
+        
+          <li>
+            <a href="/2021/08/01/benchmark-of-rpc-frameworks/">2021年Go生态圈rpc框架benchmark</a>
+          </li>
+        
+          <li>
+            <a href="/2021/07/13/Updating-the-Go-Memory-Model/">[译]更新Go内存模型</a>
+          </li>
+        
+          <li>
+            <a href="/2021/07/11/Programming-Language-Memory-Models/">[译]编程语言内存模型</a>
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">友情链接</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+			 
+            <a href="http://stackshare.io" target="_blank">技术栈</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://toutiao.io/" target="_blank">开发者头条</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://weekly.manong.io/issues/" target="_blank">码农周刊</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.tuicool.com/mags" target="_blank">编程狂人周刊</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.importnew.com/" target="_blank">importnew</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://ifeve.com/" target="_blank">并发编程网</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://github.com" target="_blank">github</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://stackoverflow.com/" target="_blank">stackoverflow</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.javacodegeeks.com/" target="_blank">javacodegeeks</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.infoq.com/" target="_blank">infoq</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.dzone.com/links/index.html" target="_blank">dzone</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://oj.leetcode.com/problems/" target="_blank">leetcode</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://tutorials.jenkov.com" target="_blank">jenkov</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://howtodoinjava.com" target="_blank">HowToDoInJava</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://java-design-patterns.com/patterns/" target="_blank">java design patterns</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://medium.com/netflix-techblog" target="_blank">Netflix技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://www.techiedelight.com" target="_blank">Techie Delight</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://engineering.linkedin.com/blog" target="_blank">Linkedin技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://blogs.dropbox.com/tech/" target="_blank">Dropbox技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://code.fb.com" target="_blank">Facebook技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://jm.taobao.org" target="_blank">淘宝中间件团队</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://tech.meituan.com" target="_blank">美团技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://blogs.360.cn" target="_blank">360技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://xiaomi-info.github.io" target="_blank">小米信息部技术团队</a>
+			
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+      
+
+  
+</aside>
+        
+      </div>
+      <footer id="footer">
+  
+  <div class="outer">
+    <div id="footer-info" class="inner">
+      &copy; 2021 smallnest<br>
+	  Powered by <a href="http://hexo.io/" target="_blank">Hexo</a>
+    </div>
+  </div>
+</footer>
+    </div>
+    <nav id="mobile-nav">
+  
+    
+      <a href="/" class="mobile-nav-link"><i class="fa fa-home">&nbsp;</i>首页</a>
+    
+  
+    
+      <a href="/archives" class="mobile-nav-link"><i class="fa fa-folder-o">&nbsp;</i>归档</a>
+    
+  
+    
+      <a href="https://github.com/smallnest" class="mobile-nav-link"><i class="fa fa-github">&nbsp;</i>github</a>
+    
+  
+    
+      <a class="mobile-nav-link" href="#"><i class="fa fa-bars">&nbsp;</i>网站群</a>
+    
+      
+            <a class="mobile-nav-link" href="/goasm">&nbsp;&nbsp;<i class="fa fa-language">&nbsp;</i>Go汇编示例</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="https://gowebexamples.com">&nbsp;&nbsp;<i class="fa fa-external-link">&nbsp;</i>Go Web开发示例</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://go-database-sql.org">&nbsp;&nbsp;<i class="fa fa-external-link">&nbsp;</i>Go 数据库开发教程</a>
+          
+          
+    
+      
+            
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://rpcx.io">&nbsp;&nbsp;<i class="fa undefined">&nbsp;</i>RPCX官网</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://cn.doc.rpcx.io">&nbsp;&nbsp;<i class="fa undefined">&nbsp;</i>RPC开发指南</a>
+          
+          
+    
+    
+  
+    
+      <a href="/ScalaCollectionsCookbook" class="mobile-nav-link"><i class="fa fa-book">&nbsp;</i>Scala集合技术手册</a>
+    
+  
+    
+      <a href="/about" class="mobile-nav-link"><i class="fa fa-lemon-o">&nbsp;</i>关于</a>
+    
+  
+</nav>
+    
+<script src="//cdn.staticfile.org/jquery/1.11.1/jquery.min.js"></script>
+<script src="//cdn.bootcss.com/jquery.lazyload/1.9.1/jquery.lazyload.min.js"></script>
+
+<script src="//cdnjs.cloudflare.com/ajax/libs/fancybox/3.2.5/jquery.fancybox.min.js"></script>
+
+
+<script src="/js/script.js" type="text/javascript"></script>
+
+<!-- mathjax config similar to math.stackexchange -->
+<script type="text/x-mathjax-config">
+  MathJax.Hub.Config({
+    tex2jax: {
+      inlineMath: [ ['$','$'], ["\\(","\\)"] ],
+      processEscapes: true,
+      skipTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code']
+    }
+  });
+  MathJax.Hub.Queue(function() {
+      var all = MathJax.Hub.getAllJax(), i;
+      for(i=0; i < all.length; i += 1) {
+        all[i].SourceElement().parentNode.className += ' has-jax';
+      }
+  });
+</script>
+<script type="text/javascript" src="//cdn.bootcss.com/mathjax/2.6.0-beta.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML">
+</script>
+
+<div id="totop" style="position:fixed;bottom:150px;right:10px;cursor: pointer;z-index: 2000;">
+	<a title="返回顶部"><img src="/images/scrollup.png"/></a>
+</div>
+<script src="/js/totop.js" type="text/javascript"></script>
+
+
+
+
+<script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "//hm.baidu.com/hm.js?e085d87993250aab11f3e0c15f1c2785";
+  var s = document.getElementsByTagName("script")[0]; 
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+
+
+  </div>
+</body>
+</html>

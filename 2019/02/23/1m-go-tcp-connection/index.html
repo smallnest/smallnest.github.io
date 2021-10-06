@@ -1,0 +1,738 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset="utf-8">
+  
+  <title>百万 Go TCP 连接的思考: epoll方式减少资源占用</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+  <meta name="description" content="前几天 Eran Yanay 在 Gophercon Israel 分享了一个讲座：Going Infinite, handling 1M websockets connections in Go, 介绍了使用Go实现支持百万连接的websocket服务器，引起了很大的反响。事实上，相关的技术在2017年的一篇技术中已经介绍： A Million WebSockets and Go, 这篇2017">
+<meta property="og:type" content="article">
+<meta property="og:title" content="百万 Go TCP 连接的思考: epoll方式减少资源占用">
+<meta property="og:url" content="https://colobu.com/2019/02/23/1m-go-tcp-connection/">
+<meta property="og:site_name" content="鸟窝">
+<meta property="og:description" content="前几天 Eran Yanay 在 Gophercon Israel 分享了一个讲座：Going Infinite, handling 1M websockets connections in Go, 介绍了使用Go实现支持百万连接的websocket服务器，引起了很大的反响。事实上，相关的技术在2017年的一篇技术中已经介绍： A Million WebSockets and Go, 这篇2017">
+<meta property="og:image" content="huge-connections.jpg">
+<meta property="og:image" content="high-throughputs.jpg">
+<meta property="og:image" content="low-latency.jpg">
+<meta property="og:image" content="1-before-start.png">
+<meta property="og:image" content="1-connected.png">
+<meta property="og:image" content="1-before-start.png">
+<meta property="og:image" content="2-connected.png">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="百万 Go TCP 连接的思考: epoll方式减少资源占用">
+<meta name="twitter:description" content="前几天 Eran Yanay 在 Gophercon Israel 分享了一个讲座：Going Infinite, handling 1M websockets connections in Go, 介绍了使用Go实现支持百万连接的websocket服务器，引起了很大的反响。事实上，相关的技术在2017年的一篇技术中已经介绍： A Million WebSockets and Go, 这篇2017">
+
+  
+  <link rel="alternative" href="/atom.xml" title="鸟窝" type="application/atom+xml">
+  
+  
+  <link rel="icon" href="/favicon.png">
+  
+  <link rel="stylesheet" href="/css/style.css" type="text/css">
+
+  <link href="//cdn.staticfile.org/font-awesome/4.2.0/css/font-awesome.css" rel="stylesheet">
+  
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/fancybox/2.1.7/css/jquery.fancybox.min.css"
+    media="screen" type="text/css">
+  
+  <link rel="stylesheet" href="//cdnjs.cloudflare.com/ajax/libs/animate.css/3.1.1/animate.min.css" media="screen"
+    type="text/css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/tonsky/FiraCode@1.207/distr/fira_code.css">
+</head>
+<body>
+  <div id="container">
+    <div id="wrap">
+      <header id="header">
+  <div id="banner"></div>
+  <div id="header-outer" class="outer">
+    <div id="header-title" class="inner">
+      <h1 id="logo-wrap" class="animated bounceInLeft">
+        <a href="/" id="logo">鸟窝</a>
+      </h1>
+      
+        <h2 id="subtitle-wrap" class="animated bounceInLeft">
+          <a href="/" id="subtitle">大道至简 Simplicity is the ultimate form of sophistication</a>
+        </h2>
+      
+    </div>
+    <div id="header-inner" class="inner">
+      <nav id="main-nav">
+        <a id="main-nav-toggle" class="nav-icon"></a>
+        
+          
+            <a class="main-nav-link" href="/"><i class="fa fa-home">&nbsp;</i>首页</a>
+          
+          
+          
+            <a class="main-nav-link" href="/archives"><i class="fa fa-folder-o">&nbsp;</i>归档</a>
+          
+          
+          
+            <a class="main-nav-link" href="https://github.com/smallnest"><i class="fa fa-github">&nbsp;</i>github</a>
+          
+          
+          
+            <div class="dropdown main-nav-link"><a class="main-nav-link" href="#"><i class="fa fa-bars">&nbsp;</i>网站群</a>
+              <div class="dropdown-content">
+          
+            
+              <a href="/goasm"><i class="fa fa-language"></i>&nbsp;Go汇编示例</a>
+            
+                
+          
+            
+              <a href="https://gowebexamples.com"><i class="fa fa-external-link"></i>&nbsp;Go Web开发示例</a>
+            
+                
+          
+            
+              <a href="http://go-database-sql.org"><i class="fa fa-external-link"></i>&nbsp;Go 数据库开发教程</a>
+            
+                
+          
+            
+              <hr>
+            
+                
+          
+            
+              <a href="http://rpcx.io"><i class="fa undefined"></i>&nbsp;RPCX官网</a>
+            
+                
+          
+            
+              <a href="http://cn.doc.rpcx.io"><i class="fa undefined"></i>&nbsp;RPC开发指南</a>
+            
+                
+          
+          </div>
+        </div>
+          
+          
+          
+            <a class="main-nav-link" href="/ScalaCollectionsCookbook"><i class="fa fa-book">&nbsp;</i>Scala集合技术手册</a>
+          
+          
+          
+            <a class="main-nav-link" href="/about"><i class="fa fa-lemon-o">&nbsp;</i>关于</a>
+          
+          
+
+
+      </nav>
+      <nav id="sub-nav">
+        
+          <a id="nav-rss-link" class="nav-icon" href="/atom.xml" title="RSS Feed"></a>
+        
+        <a id="nav-search-btn" class="nav-icon" title="Search"></a>
+      </nav>
+      <div id="search-form-wrap">
+        <form action="http://www.baidu.com/baidu" method="get" accept-charset="utf-8" class="search-form">
+          <input type="search" name="word" maxlength="20" class="search-form-input" placeholder="Search">
+          <input type="submit" value="" class="search-form-submit">
+          <input name=tn type=hidden value="bds">
+          <input name=cl type=hidden value="3">
+          <input name=ct type=hidden value="2097152">
+          <input type="hidden" name="si" value="colobu.com">
+        </form>
+      </div>
+    </div>
+  </div>
+</header>
+      <div class="outer">
+        <section id="main"><script>function show_answer(btn, x) { if (btn.value === "显示答案") { btn.value = "隐藏答案" } else { btn.value = "显示答案" } var as = document.getElementById(x); if (as.style.display === "none") { as.style.display = "block" } else { as.style.display = "none" } }</script>
+
+<article id="post-1m-go-tcp-connection" class="article article-type-post" itemscope
+  itemprop="blogPost">
+  <div class="article-meta">
+    <a href="/2019/02/23/1m-go-tcp-connection/" class="article-date">
+  <time datetime="2019-02-22T22:10:39.000Z" itemprop="datePublished">2019年02月23日</time>
+</a>
+    
+  <div class="article-category">
+    <a class="article-category-link" href="/categories/Go/">Go</a>
+  </div>
+
+    
+  <div class="article-author"> by smallnest</div>
+
+  </div>
+  <div class="article-inner">
+    
+    
+    <header class="article-header">
+      
+  
+    <h1 class="article-title" itemprop="name">
+      百万 Go TCP 连接的思考: epoll方式减少资源占用
+	  
+    </h1>
+  
+
+    </header>
+    
+    <div class="article-entry" itemprop="articleBody">
+      
+      
+      
+      <p>前几天 Eran Yanay 在 Gophercon Israel 分享了一个讲座：<a href="https://speakerdeck.com/eranyanay/going-infinite-handling-1m-websockets-connections-in-go" target="_blank" rel="external">Going Infinite, handling 1M websockets connections in Go</a>, 介绍了使用Go实现支持百万连接的websocket服务器，引起了很大的反响。事实上，相关的技术在2017年的一篇技术中已经介绍： <a href="https://medium.freecodecamp.org/million-websockets-and-go-cc58418460bb" target="_blank" rel="external">A Million WebSockets and Go</a>, 这篇2017年文章的作者Sergey Kamardin也就是 Eran Yanay 项目中使用的ws库的作者。</p>
+<p>第一篇 <a href="https://colobu.com/2019/02/23/1m-go-tcp-connection/" target="_blank" rel="external">百万 Go TCP 连接的思考: epoll方式减少资源占用</a><br>第二篇 <a href="https://colobu.com/2019/02/27/1m-go-tcp-connection-2/" target="_blank" rel="external">百万 Go TCP 连接的思考2: 百万连接的吞吐率和延迟</a><br>第三篇 <a href="https://colobu.com/2019/02/28/1m-go-tcp-connection-3/" target="_blank" rel="external">百万 Go TCP 连接的思考: 正常连接下的吞吐率和延迟</a></p>
+<p>相关代码已发布到github上: <a href="https://github.com/smallnest/1m-go-tcp-server" target="_blank" rel="external">1m-go-tcp-server</a>。</p>
+<a id="more"></a>
+<p>Sergey Kamardin 在 <a href="https://medium.freecodecamp.org/million-websockets-and-go-cc58418460bb" target="_blank" rel="external">A Million WebSockets and Go</a> 一文中介绍了epoll的使用(<a href="https://github.com/mailru/easygo" target="_blank" rel="external">mailru/easygo</a>,支持epoll on linux, kqueue onbsd, darwin), ws的zero copy的upgrade等技术。</p>
+<p>Eran Yanay的分享中对epoll的处理做了简化，而且提供了docker测试的脚本，很方便的在单机上进行百万连接的测试。</p>
+<p>2015年的时候我也曾作为百万连接的websocket的服务器的比较：<a href="https://colobu.com/2015/05/22/implement-C1000K-servers-by-spray-netty-undertow-and-node-js/" target="_blank" rel="external">使用四种框架分别实现百万websocket常连接的服务器 </a>、<a href="https://colobu.com/2015/07/14/performance-comparison-of-7-websocket-frameworks/" target="_blank" rel="external">七种WebSocket框架的性能比较</a>。应该说，只要服务器硬件资源足够(内存和CPU), 实现百万连接的服务器并不是很难的事情，</p>
+<p>操作系统会为每一个连接分配一定的内存空间外（主要是内部网络数据结构sk_buff的大小、连接的读写缓存，<a href="https://stackoverflow.com/questions/8646190/how-much-memory-is-consumed-by-the-linux-kernel-per-tcp-ip-network-connection" target="_blank" rel="external">sof</a>）,虽然这些可以进行调优，但是如果想使用正常的操作系统的TCP/IP栈的话，这些是硬性的需求。刨去这些，不同的编程语言不同的框架的设计，甚至是不同的需求场景，都会极大的影响TCP服务器内存的占用和处理。</p>
+<p>一般Go语言的TCP(和HTTP)的处理都是每一个连接启动一个goroutine去处理，因为我们被教导goroutine的不像thread, 它是很便宜的，可以在服务器上启动成千上万的goroutine。但是对于一百万的连接，这种<strong>goroutine-per-connection</strong>的模式就至少要启动一百万个goroutine，这对资源的消耗也是极大的。针对不同的操作系统和不同的Go版本，一个goroutine锁使用的最小的栈大小是2KB ~ 8 KB (<a href="https://github.com/golang/go/blob/release-branch.go1.11/src/runtime/stack.go#L64-L82" target="_blank" rel="external">go stack</a>),如果在每个goroutine中在分配byte buffer用以从连接中读写数据，几十G的内存轻轻松松就分配出去了。</p>
+<p>所以Eran Yanay使用epoll的方式代替<strong>goroutine-per-connection</strong>的模式，使用一个goroutine代码一百万的goroutine, 另外使用ws减少buffer的分配，极大的减少了内存的占用，这也是大家热议的一个话题。</p>
+<p>当然诚如作者所言，他并不是要提供一个更好的优化的websocket框架，而是演示了采用一些技术进行的优化，通过阅读他的slide和代码，我们至少有以下疑问？</p>
+<ul>
+<li>虽然支持百万连接，但是并发的吞吐率和延迟是怎样的？</li>
+<li>服务器实现的是单goroutine的处理，如果业务代码耗时较长会怎么样</li>
+<li>主要适合什么场景？</li>
+</ul>
+<p>吞吐率和延迟需要数据来支撑，但是显然这个单goroutine处理的模式不适合耗时较长的业务处理，&quot;hello world&quot;或者直接的简单的memory操作应该没有问题。对于百万连接但是并发量很小的场景，比如消息推送、页游等场景，这种实现应该是没有问题的。但是对于并发量很大，延迟要求比较低的场景，这种实现可能会存在问题。</p>
+<p>这篇文章和后续的两篇文章，将测试巨量连接/高并发/低延迟场景的几种服务器模式的性能，通过比较相应的连接、吞吐率、延迟，给读者一个有价值的选型参考。</p>
+<p>作为一个更通用的测试，我们实现的是TCP服务器，而不是websocket服务器。</p>
+<p>在实现一个TCP服务器的时候，首先你要问自己，到底你需要的是哪一个类型的服务器？</p>
+<p style="display:inline"><img src="huge-connections.jpg" width="250px" style="float:left;margin-right:50px;"><img src="high-throughputs.jpg" width="250px" style="float:left"><img src="low-latency.jpg" width="250px"></p>
+
+<p>当然你可能会回答，我都想要啊。但是对于一个单机服务器，资源是有限的，鱼与熊掌不可兼得，我们只能尽力挖掘单个服务器的能力，有些情况下必须通过堆服务器的方式解决，尤其在双十一、春节等时候，很大程度上都是通过扩容来解决的，这是因为单个服务器确确实实能力有限。</p>
+<p>尽管单个服务器能力有限，不同的设计取得的性能也是不一样的，这个系列的文章测试不同的场景、不同的设计对性能的影响以及总结，主要包括：</p>
+<ul>
+<li>百万连接情况下的goroutine-per-connection模式服务器的资源占用</li>
+<li>百万连接情况下的epoller模式服务器的资源占用</li>
+<li>百万连接情况下epoller模式服务器的吞吐率和延迟 </li>
+<li>客户端为单goroutine和多goroutine情况下epoller方式测试</li>
+<li>服务器为多epoller情况下的吞吐率和延迟 (百万连接)</li>
+<li>prefork模式的epoller服务器 (百万连接)</li>
+<li>Reactor模式的epoller服务器 (百万连接)</li>
+<li>正常连接下高吞吐服务器的性能(连接数&lt;=5000)</li>
+<li>I/O密集型epoll服务器</li>
+<li>I/O密集型goroutine-per-connection服务器</li>
+<li>CPU密集型epoll服务器</li>
+<li>CPU密集型goroutine-per-connection服务器</li>
+</ul>
+<h2 id="零、_测试环境的搭建">零、 测试环境的搭建</h2>
+<p>我们在同一台机器上测试服务器和客户端。首先就是服务器参数的设置，主要是可以打开的文件数量。</p>
+<p><code>file-max</code>是设置系统所有进程一共可以打开的文件数量。同时程序也可以通过setrlimit调用设置每个进程的限制。</p>
+<p><code>echo  2000500 &gt; /proc/sys/fs/file-max</code>或者 <code>sysctl -w &quot;fs.file-max=2000500&quot;</code>可以实时更改这个参数，但是重启之后会恢复为默认值。<br>也可以修改<code>/etc/sysctl.conf</code>, 加入<code>fs.file-max = 2000500</code>重启或者<code>sysctl -w</code>生效。</p>
+<p>设置资源限制。首先修改<code>/proc/sys/fs/nr_open</code>,然后再用<code>ulimit</code>进行修改：</p>
+<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div></pre></td><td class="code"><pre><div class="line"><span class="built_in">echo</span> <span class="number">2000500</span> &gt; /proc/sys/fs/nr_open</div><div class="line">ulimit -n <span class="number">2000500</span></div></pre></td></tr></table></figure>
+
+<p><code>ulimit</code>设置当前shell以及由它启动的进程的资源限制，所以你如果打开多个shell窗口，应该都要进行设置。</p>
+<p>当然如果你想重启以后也会使用这些参数，你需要修改<code>/etc/sysctl.conf</code>中的<code>fs.nr_open</code>参数和<code>/etc/security/limits.conf</code>的参数：</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line"><span class="header"># vi /etc/security/limits.conf</span></div><div class="line"><span class="bullet">* </span>soft nofile 2000500 </div><div class="line"><span class="bullet">* </span>hard nofile 2000500</div></pre></td></tr></table></figure>
+
+<p>如果你开启了iptables，iptalbes会使用nf_conntrack模块跟踪连接，而这个连接跟踪的数量是有最大值的，当跟踪的连接超过这个最大值，就会导致连接失败。 通过命令查看</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div></pre></td><td class="code"><pre><div class="line"><span class="preprocessor"># wc -l /proc/net/nf_conntrack</span></div><div class="line">  <span class="number">1024000</span></div></pre></td></tr></table></figure>
+
+<p>查看最大值</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div></pre></td><td class="code"><pre><div class="line"><span class="preprocessor"># cat /proc/sys/net/nf_conntrack_max</span></div><div class="line"> <span class="number">1024000</span></div></pre></td></tr></table></figure>
+
+<p>可以通过修改这个最大值来解决这个问题</p>
+<p>在/etc/sysctl.conf添加内核参数 net.nf_conntrack_max = 2000500</p>
+<p>对于我们的测试来说，为了我们的测试方便，可能需要一些网络协议栈的调优，可以根据个人的情况进行设置。</p>
+<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div></pre></td><td class="code"><pre><div class="line">sysctl -w fs.file-max=<span class="number">2000500</span></div><div class="line">sysctl -w fs.nr_open=<span class="number">2000500</span></div><div class="line">sysctl -w net.nf_conntrack_max=<span class="number">2000500</span></div><div class="line">ulimit -n <span class="number">2000500</span></div><div class="line"></div><div class="line">sysctl -w net.ipv4.tcp_mem=<span class="string">'131072  262144  524288'</span></div><div class="line">sysctl -w net.ipv4.tcp_rmem=<span class="string">'8760  256960  4088000'</span></div><div class="line">sysctl -w net.ipv4.tcp_wmem=<span class="string">'8760  256960  4088000'</span></div><div class="line">sysctl -w net.core.rmem_max=<span class="number">16384</span></div><div class="line">sysctl -w net.core.wmem_max=<span class="number">16384</span></div><div class="line">sysctl -w net.core.somaxconn=<span class="number">2048</span></div><div class="line">sysctl -w net.ipv4.tcp_max_syn_backlog=<span class="number">2048</span></div><div class="line">sysctl -w /proc/sys/net/core/netdev_max_backlog=<span class="number">2048</span></div><div class="line">sysctl -w net.ipv4.tcp_tw_recycle=<span class="number">1</span></div><div class="line">sysctl -w net.ipv4.tcp_tw_reuse=<span class="number">1</span></div></pre></td></tr></table></figure>
+
+<p>另外，我的测试环境是是两颗 E5-2630 V4的CPU, 一共20个核，打开超线程40个逻辑核， 内存32G。</p>
+<h2 id="一、_简单的支持百万连接的TCP服务器">一、 简单的支持百万连接的TCP服务器</h2>
+<h3 id="服务器">服务器</h3>
+<p>首先我们实现一个百万连接的服务器，采用每个连接一个goroutine的模式(<code>goroutine-per-conn</code>)。</p>
+<figure class="highlight go"><figcaption><span>server.go</span></figcaption><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div><div class="line">35</div><div class="line">36</div><div class="line">37</div><div class="line">38</div><div class="line">39</div><div class="line">40</div><div class="line">41</div><div class="line">42</div><div class="line">43</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> main() {</div><div class="line"></div><div class="line">	ln, err := net.Listen(<span class="string">"tcp"</span>, <span class="string">":8972"</span>)</div><div class="line">	<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">		<span class="built_in">panic</span>(err)</div><div class="line">	}</div><div class="line"></div><div class="line">	<span class="keyword">go</span> <span class="keyword">func</span>() {</div><div class="line">		<span class="keyword">if</span> err := http.ListenAndServe(<span class="string">":6060"</span>, <span class="constant">nil</span>); err != <span class="constant">nil</span> {</div><div class="line">			log.Fatalf(<span class="string">"pprof failed: %v"</span>, err)</div><div class="line">		}</div><div class="line">	}()</div><div class="line"></div><div class="line">	<span class="keyword">var</span> connections []net.Conn</div><div class="line">	<span class="keyword">defer</span> <span class="keyword">func</span>() {</div><div class="line">		<span class="keyword">for</span> _, conn := <span class="keyword">range</span> connections {</div><div class="line">			conn.Close()</div><div class="line">		}</div><div class="line">	}()</div><div class="line"></div><div class="line">	<span class="keyword">for</span> {</div><div class="line">		conn, e := ln.Accept()</div><div class="line">		<span class="keyword">if</span> e != <span class="constant">nil</span> {</div><div class="line">			<span class="keyword">if</span> ne, ok := e.(net.Error); ok && ne.Temporary() {</div><div class="line">				log.Printf(<span class="string">"accept temp err: %v"</span>, ne)</div><div class="line">				<span class="keyword">continue</span></div><div class="line">			}</div><div class="line"></div><div class="line">			log.Printf(<span class="string">"accept err: %v"</span>, e)</div><div class="line">			<span class="keyword">return</span></div><div class="line">		}</div><div class="line"></div><div class="line">		<span class="keyword">go</span> handleConn(conn)</div><div class="line">		connections = <span class="built_in">append</span>(connections, conn)</div><div class="line">		<span class="keyword">if</span> <span class="built_in">len</span>(connections)<span class="number">%100</span> ==<span class="number"> 0</span> {</div><div class="line">			log.Printf(<span class="string">"total number of connections: %v"</span>, <span class="built_in">len</span>(connections))</div><div class="line">		}</div><div class="line">	}</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> handleConn(conn net.Conn) {</div><div class="line">	io.Copy(ioutil.Discard, conn)</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>编译<code>go build -o server server.go</code>,然后运行<code>./server</code>。</p>
+<h3 id="客户端">客户端</h3>
+<p>客户端建立好连接后，不断的轮询每个连接，发送一个简单的<code>hello world\n</code>的消息。</p>
+<figure class="highlight go"><figcaption><span>client.go</span></figcaption><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div><div class="line">35</div><div class="line">36</div><div class="line">37</div><div class="line">38</div><div class="line">39</div><div class="line">40</div><div class="line">41</div><div class="line">42</div><div class="line">43</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">var</span> (</div><div class="line">	ip          = flag.String(<span class="string">"ip"</span>, <span class="string">"127.0.0.1"</span>, <span class="string">"server IP"</span>)</div><div class="line">	connections = flag.Int(<span class="string">"conn"</span>,<span class="number"> 1</span>, <span class="string">"number of tcp connections"</span>)</div><div class="line">)</div><div class="line"></div><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	flag.Parse()</div><div class="line"></div><div class="line">	addr := *ip + <span class="string">":8972"</span></div><div class="line">	log.Printf(<span class="string">"连接到 %s"</span>, addr)</div><div class="line">	<span class="keyword">var</span> conns []net.Conn</div><div class="line">	<span class="keyword">for</span> i :=<span class="number"> 0</span>; i &lt; *connections; i++ {</div><div class="line">		c, err := net.DialTimeout(<span class="string">"tcp"</span>, addr,<span class="number"> 10</span>*time.Second)</div><div class="line">		<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">			fmt.Println(<span class="string">"failed to connect"</span>, i, err)</div><div class="line">			i--</div><div class="line">			<span class="keyword">continue</span></div><div class="line">		}</div><div class="line">		conns = <span class="built_in">append</span>(conns, c)</div><div class="line">		time.Sleep(time.Millisecond)</div><div class="line">	}</div><div class="line"></div><div class="line">	<span class="keyword">defer</span> <span class="keyword">func</span>() {</div><div class="line">		<span class="keyword">for</span> _, c := <span class="keyword">range</span> conns {</div><div class="line">			c.Close()</div><div class="line">		}</div><div class="line">	}()</div><div class="line"></div><div class="line">	log.Printf(<span class="string">"完成初始化 %d 连接"</span>, <span class="built_in">len</span>(conns))</div><div class="line"></div><div class="line">	tts := time.Second</div><div class="line">	<span class="keyword">if</span> *connections &gt;<span class="number"> 100</span> {</div><div class="line">		tts = time.Millisecond *<span class="number"> 5</span></div><div class="line">	}</div><div class="line"></div><div class="line">	<span class="keyword">for</span> {</div><div class="line">		<span class="keyword">for</span> i :=<span class="number"> 0</span>; i &lt; <span class="built_in">len</span>(conns); i++ {</div><div class="line">			time.Sleep(tts)</div><div class="line">			conn := conns[i]</div><div class="line">			conn.Write([]<span class="typename">byte</span>(<span class="string">"hello world\r\n"</span>))</div><div class="line">		}</div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>因为从一个IP连接到同一个服务器的某个端口最多也只能建立65535个连接，所以直接运行客户端没办法建立百万的连接。 Eran Yanay采用docker的方法确实让人眼前一亮（我以前都是通过手工设置多个ip的方式实现，采用docker的方式更简单）。</p>
+<p>我们使用50个docker容器做客户端，每个建立2万个连接，总共建立一百万的连接。</p>
+<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">./setup.sh <span class="number">20000</span> <span class="number">50</span> <span class="number">172.17</span>.<span class="number">0.1</span></div></pre></td></tr></table></figure>
+
+<p><code>setup.sh</code>内容如下，使用几M大小的<code>alpine</code>docker镜像跑测试：</p>
+<figure class="highlight sh"><figcaption><span>setup.sh</span></figcaption><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div></pre></td><td class="code"><pre><div class="line"><span class="comment">#!/bin/bash address, 缺省是 172.17.0.1</span></div><div class="line"></div><div class="line">CONNECTIONS=<span class="variable">$1</span></div><div class="line">REPLICAS=<span class="variable">$2</span></div><div class="line">IP=<span class="variable">$3</span></div><div class="line"></div><div class="line"><span class="comment">#go build --tags "static netgo" -o client client.go</span></div><div class="line"><span class="keyword">for</span> (( c=<span class="number">0</span>; c&lt;<span class="variable">${REPLICAS}</span>; c++ ))</div><div class="line"><span class="keyword">do</span></div><div class="line">    docker run -v $(<span class="built_in">pwd</span>)/client:/client --name <span class="number">1</span>mclient_<span class="variable">$c</span> <span class="operator">-d</span> alpine /client \</div><div class="line">    -conn=<span class="variable">${CONNECTIONS}</span> -ip=<span class="variable">${IP}</span></div><div class="line"><span class="keyword">done</span></div></pre></td></tr></table></figure>
+
+<h3 id="数据分析">数据分析</h3>
+<p>使用以下工具查看性能：</p>
+<ul>
+<li>dstat：查看机器的资源占用（cpu， memory，中断数和上下文切换次数）</li>
+<li>ss：查看网络连接情况</li>
+<li>pprof：查看服务器的性能</li>
+<li>report.sh: 后续通过脚本查看延迟 </li>
+</ul>
+<p><img src="1-before-start.png" alt="没连接前的服务器"><br><img src="1-connected.png" alt="建立百万连接后的服务器"></p>
+<p>可以看到建立连接后大约占了19G的内存，CPU占用非常小，网络传输1.4MB左右的样子。</p>
+<h2 id="二、_服务器epoll方式实现">二、 服务器epoll方式实现</h2>
+<p>和Eran Yanay最初指出的一样，上述方案使用了上百万的goroutine,耗费了太多了内存资源和调度，改为epoll模式，大大降低了内存的使用。Eran Yanay的epoll实现只针对Linux的epoll而实现，比mailru的easygo实现和使用起来要简单，我们采用他的这种实现方式。</p>
+<p>Go的net方式在Linux也是通过epoll方式实现的，为什么我们还要再使用epoll方式进行封装呢？原因在于Go将epoll方式封装再内部，对外并没有直接提供epoll的方式来使用。好处是降低的开发的难度，保持了Go类似&quot;同步&quot;读写的便利型，但是对于需要大量的连接的情况，我们采用这种每个连接一个goroutine的方式占用资源太多了，所以这一节介绍的就是hack连接的文件描述符，采用epoll的方式自己管理读写。</p>
+<h3 id="服务器-1">服务器</h3>
+<p>服务器需要改造一下：</p>
+<figure class="highlight go"><figcaption><span>server.go</span></figcaption><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div><div class="line">35</div><div class="line">36</div><div class="line">37</div><div class="line">38</div><div class="line">39</div><div class="line">40</div><div class="line">41</div><div class="line">42</div><div class="line">43</div><div class="line">44</div><div class="line">45</div><div class="line">46</div><div class="line">47</div><div class="line">48</div><div class="line">49</div><div class="line">50</div><div class="line">51</div><div class="line">52</div><div class="line">53</div><div class="line">54</div><div class="line">55</div><div class="line">56</div><div class="line">57</div><div class="line">58</div><div class="line">59</div><div class="line">60</div><div class="line">61</div><div class="line">62</div><div class="line">63</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">var</span> epoller *epoll</div><div class="line"></div><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	setLimit()</div><div class="line"></div><div class="line">	ln, err := net.Listen(<span class="string">"tcp"</span>, <span class="string">":8972"</span>)</div><div class="line">	<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">		<span class="built_in">panic</span>(err)</div><div class="line">	}</div><div class="line"></div><div class="line">	<span class="keyword">go</span> <span class="keyword">func</span>() {</div><div class="line">		<span class="keyword">if</span> err := http.ListenAndServe(<span class="string">":6060"</span>, <span class="constant">nil</span>); err != <span class="constant">nil</span> {</div><div class="line">			log.Fatalf(<span class="string">"pprof failed: %v"</span>, err)</div><div class="line">		}</div><div class="line">	}()</div><div class="line"></div><div class="line">	epoller, err = MkEpoll()</div><div class="line">	<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">		<span class="built_in">panic</span>(err)</div><div class="line">	}</div><div class="line"></div><div class="line">	<span class="keyword">go</span> start()</div><div class="line"></div><div class="line">	<span class="keyword">for</span> {</div><div class="line">		conn, e := ln.Accept()</div><div class="line">		<span class="keyword">if</span> e != <span class="constant">nil</span> {</div><div class="line">			<span class="keyword">if</span> ne, ok := e.(net.Error); ok && ne.Temporary() {</div><div class="line">				log.Printf(<span class="string">"accept temp err: %v"</span>, ne)</div><div class="line">				<span class="keyword">continue</span></div><div class="line">			}</div><div class="line"></div><div class="line">			log.Printf(<span class="string">"accept err: %v"</span>, e)</div><div class="line">			<span class="keyword">return</span></div><div class="line">		}</div><div class="line"></div><div class="line">		<span class="keyword">if</span> err := epoller.Add(conn); err != <span class="constant">nil</span> {</div><div class="line">			log.Printf(<span class="string">"failed to add connection %v"</span>, err)</div><div class="line">			conn.Close()</div><div class="line">		}</div><div class="line">	}</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> start() {</div><div class="line">	<span class="keyword">var</span> buf = <span class="built_in">make</span>([]<span class="typename">byte</span>,<span class="number"> 8</span>)</div><div class="line">	<span class="keyword">for</span> {</div><div class="line">		connections, err := epoller.Wait()</div><div class="line">		<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">			log.Printf(<span class="string">"failed to epoll wait %v"</span>, err)</div><div class="line">			<span class="keyword">continue</span></div><div class="line">		}</div><div class="line">		<span class="keyword">for</span> _, conn := <span class="keyword">range</span> connections {</div><div class="line">			<span class="keyword">if</span> conn == <span class="constant">nil</span> {</div><div class="line">				<span class="keyword">break</span></div><div class="line">			}</div><div class="line">			<span class="keyword">if</span> _, err := conn.Read(buf); err != <span class="constant">nil</span> {</div><div class="line">				<span class="keyword">if</span> err := epoller.Remove(conn); err != <span class="constant">nil</span> {</div><div class="line">					log.Printf(<span class="string">"failed to remove %v"</span>, err)</div><div class="line">				}</div><div class="line">				conn.Close()</div><div class="line">			}</div><div class="line">		}</div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p><code>listener</code>还是保持原来的样子，<code>Accept</code>一个新的客户端请求后，就把它加入到epoll的管理中。单独起<strong>一个</strong> gorouting监听数据到来的事件，每次只最多读取100个事件。</p>
+<p>epoll的实现如下：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div><div class="line">35</div><div class="line">36</div><div class="line">37</div><div class="line">38</div><div class="line">39</div><div class="line">40</div><div class="line">41</div><div class="line">42</div><div class="line">43</div><div class="line">44</div><div class="line">45</div><div class="line">46</div><div class="line">47</div><div class="line">48</div><div class="line">49</div><div class="line">50</div><div class="line">51</div><div class="line">52</div><div class="line">53</div><div class="line">54</div><div class="line">55</div><div class="line">56</div><div class="line">57</div><div class="line">58</div><div class="line">59</div><div class="line">60</div><div class="line">61</div><div class="line">62</div><div class="line">63</div><div class="line">64</div><div class="line">65</div><div class="line">66</div><div class="line">67</div><div class="line">68</div><div class="line">69</div><div class="line">70</div><div class="line">71</div><div class="line">72</div><div class="line">73</div><div class="line">74</div><div class="line">75</div><div class="line">76</div><div class="line">77</div><div class="line">78</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> epoll <span class="keyword">struct</span> {</div><div class="line">	fd          <span class="typename">int</span></div><div class="line">	connections <span class="keyword">map</span>[<span class="typename">int</span>]net.Conn</div><div class="line">	lock        *sync.RWMutex</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> MkEpoll() (*epoll, error) {</div><div class="line">	fd, err := unix.EpollCreate1<span class="number">(0</span>)</div><div class="line">	<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">		<span class="keyword">return</span> <span class="constant">nil</span>, err</div><div class="line">	}</div><div class="line">	<span class="keyword">return</span> &epoll{</div><div class="line">		fd:          fd,</div><div class="line">		lock:        &sync.RWMutex{},</div><div class="line">		connections: <span class="built_in">make</span>(<span class="keyword">map</span>[<span class="typename">int</span>]net.Conn),</div><div class="line">	}, <span class="constant">nil</span></div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> (e *epoll) Add(conn net.Conn) error {</div><div class="line">	<span class="comment">// Extract file descriptor associated with the connection</span></div><div class="line">	fd := socketFD(conn)</div><div class="line">	err := unix.EpollCtl(e.fd, syscall.EPOLL_CTL_ADD, fd, &unix.EpollEvent{Events: unix.POLLIN | unix.POLLHUP, Fd: <span class="typename">int32</span>(fd)})</div><div class="line">	<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">		<span class="keyword">return</span> err</div><div class="line">	}</div><div class="line">	e.lock.Lock()</div><div class="line">	<span class="keyword">defer</span> e.lock.Unlock()</div><div class="line">	e.connections[fd] = conn</div><div class="line">	<span class="keyword">if</span> <span class="built_in">len</span>(e.connections)<span class="number">%100</span> ==<span class="number"> 0</span> {</div><div class="line">		log.Printf(<span class="string">"total number of connections: %v"</span>, <span class="built_in">len</span>(e.connections))</div><div class="line">	}</div><div class="line">	<span class="keyword">return</span> <span class="constant">nil</span></div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> (e *epoll) Remove(conn net.Conn) error {</div><div class="line">	fd := socketFD(conn)</div><div class="line">	err := unix.EpollCtl(e.fd, syscall.EPOLL_CTL_DEL, fd, <span class="constant">nil</span>)</div><div class="line">	<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">		<span class="keyword">return</span> err</div><div class="line">	}</div><div class="line">	e.lock.Lock()</div><div class="line">	<span class="keyword">defer</span> e.lock.Unlock()</div><div class="line">	<span class="built_in">delete</span>(e.connections, fd)</div><div class="line">	<span class="keyword">if</span> <span class="built_in">len</span>(e.connections)<span class="number">%100</span> ==<span class="number"> 0</span> {</div><div class="line">		log.Printf(<span class="string">"total number of connections: %v"</span>, <span class="built_in">len</span>(e.connections))</div><div class="line">	}</div><div class="line">	<span class="keyword">return</span> <span class="constant">nil</span></div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> (e *epoll) Wait() ([]net.Conn, error) {</div><div class="line">	events := <span class="built_in">make</span>([]unix.EpollEvent,<span class="number"> 100</span>)</div><div class="line">	n, err := unix.EpollWait(e.fd, events,<span class="number"> 100</span>)</div><div class="line">	<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">		<span class="keyword">return</span> <span class="constant">nil</span>, err</div><div class="line">	}</div><div class="line">	e.lock.RLock()</div><div class="line">	<span class="keyword">defer</span> e.lock.RUnlock()</div><div class="line">	<span class="keyword">var</span> connections []net.Conn</div><div class="line">	<span class="keyword">for</span> i :=<span class="number"> 0</span>; i &lt; n; i++ {</div><div class="line">		conn := e.connections[<span class="typename">int</span>(events[i].Fd)]</div><div class="line">		connections = <span class="built_in">append</span>(connections, conn)</div><div class="line">	}</div><div class="line">	<span class="keyword">return</span> connections, <span class="constant">nil</span></div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> socketFD(conn net.Conn) <span class="typename">int</span> {</div><div class="line">	<span class="comment">//tls := reflect.TypeOf(conn.UnderlyingConn()) == reflect.TypeOf(&tls.Conn{})</span></div><div class="line">	<span class="comment">// Extract the file descriptor associated with the connection</span></div><div class="line">	<span class="comment">//connVal := reflect.Indirect(reflect.ValueOf(conn)).FieldByName("conn").Elem()</span></div><div class="line">	tcpConn := reflect.Indirect(reflect.ValueOf(conn)).FieldByName(<span class="string">"conn"</span>)</div><div class="line">	<span class="comment">//if tls {</span></div><div class="line">	<span class="comment">//	tcpConn = reflect.Indirect(tcpConn.Elem())</span></div><div class="line">	<span class="comment">//}</span></div><div class="line">	fdVal := tcpConn.FieldByName(<span class="string">"fd"</span>)</div><div class="line">	pfdVal := reflect.Indirect(fdVal).FieldByName(<span class="string">"pfd"</span>)</div><div class="line"></div><div class="line">	<span class="keyword">return</span> <span class="typename">int</span>(pfdVal.FieldByName(<span class="string">"Sysfd"</span>).Int())</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<h3 id="客户端-1">客户端</h3>
+<p>还是运行上面的客户端，因为刚才已经建立了50个客户端的容器，我们需要先把他们删除：</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">docker rm -vf  $(docker <span class="keyword">ps</span> -<span class="keyword">a</span> --format <span class="string">'{ {.ID} } { {.Names} }'</span>|<span class="keyword">grep</span> <span class="string">'1mclient_'</span> |awk <span class="string">'{print $1}'</span>)</div></pre></td></tr></table></figure>
+
+<p>然后再启动50个客户端，每个客户端2万个连接进行进行测试</p>
+<figure class="highlight client"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">./setup.<span class="keyword">sh</span> <span class="number">20000</span> <span class="number">50</span> <span class="number">172.17</span>.<span class="number">0.1</span></div></pre></td></tr></table></figure>
+
+<h3 id="数据分析-1">数据分析</h3>
+<p>使用以下工具查看性能：</p>
+<ul>
+<li>dstat：查看机器的资源占用（cpu， memory，中断数和上下文切换次数）</li>
+<li>ss：查看网络连接情况</li>
+<li>pprof：查看服务器的性能</li>
+<li>report.sh: 后续通过脚本查看延迟 </li>
+</ul>
+<p><img src="1-before-start.png" alt="没连接前的服务器"><br><img src="2-connected.png" alt="建立百万连接后的服务器"></p>
+<p>可以看到建立连接后大约占了10G的内存，CPU占用非常小。</p>
+<p>有一个专门使用epoll实现的网络库<a href="https://github.com/tidwall/evio" target="_blank" rel="external">tidwall/evio</a>,可以专门开发epoll方式的网络程序。去年阿里中间件大赛，美团的王亚普使用evio库杀入到排行榜第五名，也是前五中唯一一个使用Go实现的代码，其它使用Go标准库实现的代码并没有达到6983 tps/s 的程序，这也说明了再一些场景下采用epoll方式也能带来性能的提升。（<a href="https://www.jianshu.com/p/cceaaaf5d154" target="_blank" rel="external">天池中间件大赛Golang版Service Mesh思路分享</a>）</p>
+<p>但是也正如evio作者所说，evio并不能提到Go标准net库，它只使用特定的场景, 实现redis/haproxy等proxy。因为它是单goroutine处理处理的，或者你可以实现多goroutine的event-loop,但是针对一些I/O或者计算耗时的场景，未必能展现出它的优势出来。</p>
+<p>我们知道Redis的实现是单线程的，正如作者<a href="http://antirez.com/news/94" target="_blank" rel="external">Clarifications about Redis and Memcached</a>介绍的，Redis主要是内存中的数据操作，单线程根本不是瓶颈(持久化是独立线程)我们后续的测试也会印证这一点。所以epoll I/O dispatcher之后是采用单线程还是Reactor模式(多线程事件处理)还是看具体的业务。</p>
+<p>下一篇文章我们会继续测试百万连接情况下的吞吐率和延迟，这是上面的两篇文章所没有提到的。</p>
+<h2 id="参考">参考</h2>
+<ol>
+<li><a href="https://mrotaru.wordpress.com/2013/10/10/scaling-to-12-million-concurrent-connections-how-migratorydata-did-it/" target="_blank" rel="external">https://mrotaru.wordpress.com/2013/10/10/scaling-to-12-million-concurrent-connections-how-migratorydata-did-it/</a></li>
+<li><a href="https://stackoverflow.com/questions/22090229/how-did-whatsapp-achieve-2-million-connections-per-server" target="_blank" rel="external">https://stackoverflow.com/questions/22090229/how-did-whatsapp-achieve-2-million-connections-per-server</a></li>
+<li><a href="https://github.com/eranyanay/1m-go-websockets" target="_blank" rel="external">https://github.com/eranyanay/1m-go-websockets</a></li>
+<li><a href="https://medium.freecodecamp.org/million-websockets-and-go-cc58418460bb" target="_blank" rel="external">https://medium.freecodecamp.org/million-websockets-and-go-cc58418460bb</a></li>
+</ol>
+
+      
+    </div>
+    <footer class="article-footer">
+      
+
+      
+      <!-- <link rel="stylesheet" href="https://unpkg.com/gitalk/dist/gitalk.css">
+      <script src="https://unpkg.com/gitalk/dist/gitalk.min.js"></script> -->
+      <section id="comments">
+        <script src="https://utteranc.es/client.js"
+                repo="smallnest/gitalk"
+                issue-term="title"
+                theme="github-light"
+                crossorigin="anonymous"
+                async>
+        </script>
+        <!-- <div id="gitalk-container"></div>
+        <script type="text/javascript">
+          var gitalkOpts = {
+            id: '2019/02/23/1m-go-tcp-connection/',
+            owner: 'smallnest',
+            repo: 'gitalk',
+            title: '百万 Go TCP 连接的思考: epoll方式减少资源占用',
+            body: 'https://colobu.com/2019/02/23/1m-go-tcp-connection/',
+            clientID: 'bc02724130ed5b7ee275',
+            clientSecret: '68cb0bae2f93a8b88b09e0eb9b08c844b06a9047',
+            admin: ['smallnest'],
+            distractionFreeMode: false
+          };
+
+          const gitalk = new Gitalk(gitalkOpts)
+          gitalk.render('gitalk-container')
+        </script> -->
+        <noscript> 为正常使用评论功能请激活JavaScript</noscript>
+      </section>
+
+      
+
+    </footer>
+  </div>
+  
+  
+<nav id="article-nav">
+  
+    <a href="/2019/02/25/some-useful-patterns-in-go/" id="article-nav-newer" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">Newer</strong>
+      <div class="article-nav-title">
+        
+          [译]Go开发中一些有用的模式
+        
+      </div>
+    </a>
+  
+  
+    <a href="/2019/02/22/how-to-find-cpu-cores-in-linux/" id="article-nav-older" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">Older</strong>
+      <div class="article-nav-title">在Linux中查询CPU的核数</div>
+    </a>
+  
+</nav>
+
+  
+</article></section>
+        
+          <aside id="sidebar">
+  
+      <div class="widget-wrap">
+    <h3 class="widget-title">原创图书</h3>
+    <div class="widget">
+      <a href="/ScalaCollectionsCookbook/">
+        <img width="100%" src="/ScalaCollectionsCookbook/scala_collections_cookbook.jpg">
+        <img width="100%" src="/ScalaCollectionsCookbook/scala_collections_cookbook_tw.png">
+      </a>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">分类</h3>
+    <div class="widget">
+      <ul class="category-list"><li class="category-list-item"><a class="category-list-link" href="/categories/Android/">Android</a><span class="category-list-count">12</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/C/">C++</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/DOTNET/">DOTNET</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Docker/">Docker</a><span class="category-list-count">5</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Go/">Go</a><span class="category-list-count">175</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Java/">Java</a><span class="category-list-count">64</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Linux/">Linux</a><span class="category-list-count">7</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Rust/">Rust</a><span class="category-list-count">12</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Scala/">Scala</a><span class="category-list-count">18</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/分享/">分享</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/前端开发/">前端开发</a><span class="category-list-count">18</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/区块链/">区块链</a><span class="category-list-count">8</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/大数据/">大数据</a><span class="category-list-count">60</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/工具/">工具</a><span class="category-list-count">28</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/数据库/">数据库</a><span class="category-list-count">3</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/架构/">架构</a><span class="category-list-count">26</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/算法/">算法</a><span class="category-list-count">4</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/管理/">管理</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/网络编程/">网络编程</a><span class="category-list-count">13</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/读书笔记/">读书笔记</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/运维/">运维</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/高并发编程/">高并发编程</a><span class="category-list-count">20</span></li></ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">标签云</h3>
+    <div class="widget tagcloud">
+      <a href="/tags/Android/" style="font-size: 15.71px;">Android</a><a href="/tags/ApacheBench/" style="font-size: 11.43px;">ApacheBench</a><a href="/tags/Bower/" style="font-size: 10.00px;">Bower</a><a href="/tags/C/" style="font-size: 10.00px;">C#</a><a href="/tags/CDN/" style="font-size: 10.00px;">CDN</a><a href="/tags/CQRS/" style="font-size: 10.00px;">CQRS</a><a href="/tags/CRC/" style="font-size: 10.00px;">CRC</a><a href="/tags/CSS/" style="font-size: 11.43px;">CSS</a><a href="/tags/CompletableFuture/" style="font-size: 10.00px;">CompletableFuture</a><a href="/tags/Comsat/" style="font-size: 10.00px;">Comsat</a><a href="/tags/Curator/" style="font-size: 18.57px;">Curator</a><a href="/tags/DSL/" style="font-size: 10.00px;">DSL</a><a href="/tags/Disruptor/" style="font-size: 10.00px;">Disruptor</a><a href="/tags/Docker/" style="font-size: 11.43px;">Docker</a><a href="/tags/Ember/" style="font-size: 11.43px;">Ember</a><a href="/tags/FastJson/" style="font-size: 10.00px;">FastJson</a><a href="/tags/Fiber/" style="font-size: 10.00px;">Fiber</a><a href="/tags/GAE/" style="font-size: 10.00px;">GAE</a><a href="/tags/GC/" style="font-size: 12.86px;">GC</a><a href="/tags/Gnuplot/" style="font-size: 10.00px;">Gnuplot</a><a href="/tags/Go/" style="font-size: 14.29px;">Go</a><a href="/tags/Gradle/" style="font-size: 10.00px;">Gradle</a><a href="/tags/Grunt/" style="font-size: 10.00px;">Grunt</a><a href="/tags/Gulp/" style="font-size: 10.00px;">Gulp</a><a href="/tags/Hadoop/" style="font-size: 10.00px;">Hadoop</a><a href="/tags/Hazelcast/" style="font-size: 10.00px;">Hazelcast</a><a href="/tags/IPFS/" style="font-size: 10.00px;">IPFS</a><a href="/tags/Ignite/" style="font-size: 10.00px;">Ignite</a><a href="/tags/JVM/" style="font-size: 10.00px;">JVM</a><a href="/tags/Java/" style="font-size: 17.14px;">Java</a><a href="/tags/Kafka/" style="font-size: 20.00px;">Kafka</a><a href="/tags/Lambda/" style="font-size: 14.29px;">Lambda</a><a href="/tags/Linux/" style="font-size: 12.86px;">Linux</a><a href="/tags/LongAdder/" style="font-size: 10.00px;">LongAdder</a><a href="/tags/MathJax/" style="font-size: 10.00px;">MathJax</a><a href="/tags/Maven/" style="font-size: 11.43px;">Maven</a><a href="/tags/Memcached/" style="font-size: 10.00px;">Memcached</a><a href="/tags/Metrics/" style="font-size: 10.00px;">Metrics</a><a href="/tags/Mongo/" style="font-size: 12.86px;">Mongo</a><a href="/tags/Netty/" style="font-size: 15.71px;">Netty</a>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">归档</h3>
+    <div class="widget">
+      <ul class="archive-list"><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/10/">October 2021</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/08/">August 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/07/">July 2021</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/06/">June 2021</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/05/">May 2021</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/04/">April 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/03/">March 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/02/">February 2021</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/01/">January 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/12/">December 2020</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/11/">November 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/09/">September 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/08/">August 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/07/">July 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/06/">June 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/05/">May 2020</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/04/">April 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/03/">March 2020</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/02/">February 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/01/">January 2020</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/12/">December 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/11/">November 2019</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/10/">October 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/09/">September 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/08/">August 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/07/">July 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/06/">June 2019</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/05/">May 2019</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/04/">April 2019</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/03/">March 2019</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/02/">February 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/01/">January 2019</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/12/">December 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/11/">November 2018</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/10/">October 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/09/">September 2018</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/08/">August 2018</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/07/">July 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/06/">June 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/05/">May 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/04/">April 2018</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/03/">March 2018</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/02/">February 2018</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/01/">January 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/12/">December 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/11/">November 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/10/">October 2017</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/09/">September 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/08/">August 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/07/">July 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/06/">June 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/05/">May 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/04/">April 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/03/">March 2017</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/02/">February 2017</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/01/">January 2017</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/12/">December 2016</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/11/">November 2016</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/10/">October 2016</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/09/">September 2016</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/08/">August 2016</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/07/">July 2016</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/06/">June 2016</a><span class="archive-list-count">14</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/05/">May 2016</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/04/">April 2016</a><span class="archive-list-count">14</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/03/">March 2016</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/02/">February 2016</a><span class="archive-list-count">8</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/01/">January 2016</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/12/">December 2015</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/11/">November 2015</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/10/">October 2015</a><span class="archive-list-count">9</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/09/">September 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/08/">August 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/07/">July 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/06/">June 2015</a><span class="archive-list-count">8</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/05/">May 2015</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/04/">April 2015</a><span class="archive-list-count">15</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/03/">March 2015</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/02/">February 2015</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/01/">January 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/12/">December 2014</a><span class="archive-list-count">28</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/11/">November 2014</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/10/">October 2014</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/09/">September 2014</a><span class="archive-list-count">28</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/08/">August 2014</a><span class="archive-list-count">19</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/07/">July 2014</a><span class="archive-list-count">1</span></li></ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">近期文章</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+            <a href="/2021/10/06/replace-implementations-in-go-std-libs-at-runtime/">强制更改Go标准库的实现</a>
+          </li>
+        
+          <li>
+            <a href="/2021/08/30/how-is-go-generic-implemented/">Go泛型是怎么实现的?</a>
+          </li>
+        
+          <li>
+            <a href="/2021/08/01/benchmark-of-rpc-frameworks/">2021年Go生态圈rpc框架benchmark</a>
+          </li>
+        
+          <li>
+            <a href="/2021/07/13/Updating-the-Go-Memory-Model/">[译]更新Go内存模型</a>
+          </li>
+        
+          <li>
+            <a href="/2021/07/11/Programming-Language-Memory-Models/">[译]编程语言内存模型</a>
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">友情链接</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+			 
+            <a href="http://stackshare.io" target="_blank">技术栈</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://toutiao.io/" target="_blank">开发者头条</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://weekly.manong.io/issues/" target="_blank">码农周刊</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.tuicool.com/mags" target="_blank">编程狂人周刊</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.importnew.com/" target="_blank">importnew</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://ifeve.com/" target="_blank">并发编程网</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://github.com" target="_blank">github</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://stackoverflow.com/" target="_blank">stackoverflow</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.javacodegeeks.com/" target="_blank">javacodegeeks</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.infoq.com/" target="_blank">infoq</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.dzone.com/links/index.html" target="_blank">dzone</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://oj.leetcode.com/problems/" target="_blank">leetcode</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://tutorials.jenkov.com" target="_blank">jenkov</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://howtodoinjava.com" target="_blank">HowToDoInJava</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://java-design-patterns.com/patterns/" target="_blank">java design patterns</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://medium.com/netflix-techblog" target="_blank">Netflix技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://www.techiedelight.com" target="_blank">Techie Delight</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://engineering.linkedin.com/blog" target="_blank">Linkedin技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://blogs.dropbox.com/tech/" target="_blank">Dropbox技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://code.fb.com" target="_blank">Facebook技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://jm.taobao.org" target="_blank">淘宝中间件团队</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://tech.meituan.com" target="_blank">美团技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://blogs.360.cn" target="_blank">360技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://xiaomi-info.github.io" target="_blank">小米信息部技术团队</a>
+			
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+      
+
+  
+</aside>
+        
+      </div>
+      <footer id="footer">
+  
+  <div class="outer">
+    <div id="footer-info" class="inner">
+      &copy; 2021 smallnest<br>
+	  Powered by <a href="http://hexo.io/" target="_blank">Hexo</a>
+    </div>
+  </div>
+</footer>
+    </div>
+    <nav id="mobile-nav">
+  
+    
+      <a href="/" class="mobile-nav-link"><i class="fa fa-home">&nbsp;</i>首页</a>
+    
+  
+    
+      <a href="/archives" class="mobile-nav-link"><i class="fa fa-folder-o">&nbsp;</i>归档</a>
+    
+  
+    
+      <a href="https://github.com/smallnest" class="mobile-nav-link"><i class="fa fa-github">&nbsp;</i>github</a>
+    
+  
+    
+      <a class="mobile-nav-link" href="#"><i class="fa fa-bars">&nbsp;</i>网站群</a>
+    
+      
+            <a class="mobile-nav-link" href="/goasm">&nbsp;&nbsp;<i class="fa fa-language">&nbsp;</i>Go汇编示例</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="https://gowebexamples.com">&nbsp;&nbsp;<i class="fa fa-external-link">&nbsp;</i>Go Web开发示例</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://go-database-sql.org">&nbsp;&nbsp;<i class="fa fa-external-link">&nbsp;</i>Go 数据库开发教程</a>
+          
+          
+    
+      
+            
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://rpcx.io">&nbsp;&nbsp;<i class="fa undefined">&nbsp;</i>RPCX官网</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://cn.doc.rpcx.io">&nbsp;&nbsp;<i class="fa undefined">&nbsp;</i>RPC开发指南</a>
+          
+          
+    
+    
+  
+    
+      <a href="/ScalaCollectionsCookbook" class="mobile-nav-link"><i class="fa fa-book">&nbsp;</i>Scala集合技术手册</a>
+    
+  
+    
+      <a href="/about" class="mobile-nav-link"><i class="fa fa-lemon-o">&nbsp;</i>关于</a>
+    
+  
+</nav>
+    
+<script src="//cdn.staticfile.org/jquery/1.11.1/jquery.min.js"></script>
+<script src="//cdn.bootcss.com/jquery.lazyload/1.9.1/jquery.lazyload.min.js"></script>
+
+<script src="//cdnjs.cloudflare.com/ajax/libs/fancybox/3.2.5/jquery.fancybox.min.js"></script>
+
+
+<script src="/js/script.js" type="text/javascript"></script>
+
+<!-- mathjax config similar to math.stackexchange -->
+<script type="text/x-mathjax-config">
+  MathJax.Hub.Config({
+    tex2jax: {
+      inlineMath: [ ['$','$'], ["\\(","\\)"] ],
+      processEscapes: true,
+      skipTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code']
+    }
+  });
+  MathJax.Hub.Queue(function() {
+      var all = MathJax.Hub.getAllJax(), i;
+      for(i=0; i < all.length; i += 1) {
+        all[i].SourceElement().parentNode.className += ' has-jax';
+      }
+  });
+</script>
+<script type="text/javascript" src="//cdn.bootcss.com/mathjax/2.6.0-beta.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML">
+</script>
+
+<div id="totop" style="position:fixed;bottom:150px;right:10px;cursor: pointer;z-index: 2000;">
+	<a title="返回顶部"><img src="/images/scrollup.png"/></a>
+</div>
+<script src="/js/totop.js" type="text/javascript"></script>
+
+
+
+
+<script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "//hm.baidu.com/hm.js?e085d87993250aab11f3e0c15f1c2785";
+  var s = document.getElementsByTagName("script")[0]; 
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+
+
+  </div>
+</body>
+</html>

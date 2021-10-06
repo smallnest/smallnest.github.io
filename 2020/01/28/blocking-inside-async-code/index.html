@@ -1,0 +1,677 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset="utf-8">
+  
+  <title>[译]异步代码中的阻塞操作</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+  <meta name="description" content="Stjepan Glavina是Rust流行的库Crossbeam的作者，最近一年专注于async-std的开发。他最近写了两篇关于rust异步编程的文章，我翻译成中文，学习一下。
+本篇原文是:Blocking inside async code。
+以下是翻译：
+大家好，很久没写博文了，这次回来感觉真好。首先带来一个好消息。在Crossbeam上花了两年的时间后，2019年我把我的焦点放在了运行时">
+<meta property="og:type" content="article">
+<meta property="og:title" content="[译]异步代码中的阻塞操作">
+<meta property="og:url" content="https://colobu.com/2020/01/28/blocking-inside-async-code/">
+<meta property="og:site_name" content="鸟窝">
+<meta property="og:description" content="Stjepan Glavina是Rust流行的库Crossbeam的作者，最近一年专注于async-std的开发。他最近写了两篇关于rust异步编程的文章，我翻译成中文，学习一下。
+本篇原文是:Blocking inside async code。
+以下是翻译：
+大家好，很久没写博文了，这次回来感觉真好。首先带来一个好消息。在Crossbeam上花了两年的时间后，2019年我把我的焦点放在了运行时">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="[译]异步代码中的阻塞操作">
+<meta name="twitter:description" content="Stjepan Glavina是Rust流行的库Crossbeam的作者，最近一年专注于async-std的开发。他最近写了两篇关于rust异步编程的文章，我翻译成中文，学习一下。
+本篇原文是:Blocking inside async code。
+以下是翻译：
+大家好，很久没写博文了，这次回来感觉真好。首先带来一个好消息。在Crossbeam上花了两年的时间后，2019年我把我的焦点放在了运行时">
+
+  
+  <link rel="alternative" href="/atom.xml" title="鸟窝" type="application/atom+xml">
+  
+  
+  <link rel="icon" href="/favicon.png">
+  
+  <link rel="stylesheet" href="/css/style.css" type="text/css">
+
+  <link href="//cdn.staticfile.org/font-awesome/4.2.0/css/font-awesome.css" rel="stylesheet">
+  
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/fancybox/2.1.7/css/jquery.fancybox.min.css"
+    media="screen" type="text/css">
+  
+  <link rel="stylesheet" href="//cdnjs.cloudflare.com/ajax/libs/animate.css/3.1.1/animate.min.css" media="screen"
+    type="text/css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/tonsky/FiraCode@1.207/distr/fira_code.css">
+</head>
+<body>
+  <div id="container">
+    <div id="wrap">
+      <header id="header">
+  <div id="banner"></div>
+  <div id="header-outer" class="outer">
+    <div id="header-title" class="inner">
+      <h1 id="logo-wrap" class="animated bounceInLeft">
+        <a href="/" id="logo">鸟窝</a>
+      </h1>
+      
+        <h2 id="subtitle-wrap" class="animated bounceInLeft">
+          <a href="/" id="subtitle">大道至简 Simplicity is the ultimate form of sophistication</a>
+        </h2>
+      
+    </div>
+    <div id="header-inner" class="inner">
+      <nav id="main-nav">
+        <a id="main-nav-toggle" class="nav-icon"></a>
+        
+          
+            <a class="main-nav-link" href="/"><i class="fa fa-home">&nbsp;</i>首页</a>
+          
+          
+          
+            <a class="main-nav-link" href="/archives"><i class="fa fa-folder-o">&nbsp;</i>归档</a>
+          
+          
+          
+            <a class="main-nav-link" href="https://github.com/smallnest"><i class="fa fa-github">&nbsp;</i>github</a>
+          
+          
+          
+            <div class="dropdown main-nav-link"><a class="main-nav-link" href="#"><i class="fa fa-bars">&nbsp;</i>网站群</a>
+              <div class="dropdown-content">
+          
+            
+              <a href="/goasm"><i class="fa fa-language"></i>&nbsp;Go汇编示例</a>
+            
+                
+          
+            
+              <a href="https://gowebexamples.com"><i class="fa fa-external-link"></i>&nbsp;Go Web开发示例</a>
+            
+                
+          
+            
+              <a href="http://go-database-sql.org"><i class="fa fa-external-link"></i>&nbsp;Go 数据库开发教程</a>
+            
+                
+          
+            
+              <hr>
+            
+                
+          
+            
+              <a href="http://rpcx.io"><i class="fa undefined"></i>&nbsp;RPCX官网</a>
+            
+                
+          
+            
+              <a href="http://cn.doc.rpcx.io"><i class="fa undefined"></i>&nbsp;RPC开发指南</a>
+            
+                
+          
+          </div>
+        </div>
+          
+          
+          
+            <a class="main-nav-link" href="/ScalaCollectionsCookbook"><i class="fa fa-book">&nbsp;</i>Scala集合技术手册</a>
+          
+          
+          
+            <a class="main-nav-link" href="/about"><i class="fa fa-lemon-o">&nbsp;</i>关于</a>
+          
+          
+
+
+      </nav>
+      <nav id="sub-nav">
+        
+          <a id="nav-rss-link" class="nav-icon" href="/atom.xml" title="RSS Feed"></a>
+        
+        <a id="nav-search-btn" class="nav-icon" title="Search"></a>
+      </nav>
+      <div id="search-form-wrap">
+        <form action="http://www.baidu.com/baidu" method="get" accept-charset="utf-8" class="search-form">
+          <input type="search" name="word" maxlength="20" class="search-form-input" placeholder="Search">
+          <input type="submit" value="" class="search-form-submit">
+          <input name=tn type=hidden value="bds">
+          <input name=cl type=hidden value="3">
+          <input name=ct type=hidden value="2097152">
+          <input type="hidden" name="si" value="colobu.com">
+        </form>
+      </div>
+    </div>
+  </div>
+</header>
+      <div class="outer">
+        <section id="main"><script>function show_answer(btn, x) { if (btn.value === "显示答案") { btn.value = "隐藏答案" } else { btn.value = "显示答案" } var as = document.getElementById(x); if (as.style.display === "none") { as.style.display = "block" } else { as.style.display = "none" } }</script>
+
+<article id="post-blocking-inside-async-code" class="article article-type-post" itemscope
+  itemprop="blogPost">
+  <div class="article-meta">
+    <a href="/2020/01/28/blocking-inside-async-code/" class="article-date">
+  <time datetime="2020-01-28T12:04:41.000Z" itemprop="datePublished">2020年01月28日</time>
+</a>
+    
+  <div class="article-category">
+    <a class="article-category-link" href="/categories/Rust/">Rust</a>
+  </div>
+
+    
+  <div class="article-author"> by Stjepan Glavina</div>
+
+  </div>
+  <div class="article-inner">
+    
+    
+    <header class="article-header">
+      
+  
+    <h1 class="article-title" itemprop="name">
+      [译]异步代码中的阻塞操作
+	  
+    </h1>
+  
+
+    </header>
+    
+    <div class="article-entry" itemprop="articleBody">
+      
+      
+      
+      <p>Stjepan Glavina是Rust流行的库<a href="https://github.com/crossbeam-rs" target="_blank" rel="external">Crossbeam</a>的作者，最近一年专注于<a href="https://github.com/async-rs/async-std" target="_blank" rel="external">async-std</a>的开发。他最近写了两篇关于rust异步编程的文章，我翻译成中文，学习一下。</p>
+<p>本篇原文是:<a href="https://stjepang.github.io/2019/12/04/blocking-inside-async-code.html" target="_blank" rel="external">Blocking inside async code</a>。</p>
+<p>以下是翻译：</p>
+<p>大家好，很久没写博文了，这次回来感觉真好。首先带来一个好消息。在Crossbeam上花了两年的时间后，2019年我把我的焦点放在了运行时异步编程研究上(比如<code>async-std</code>和<code>tokio</code>)。尤其是我想让异步运行时(async runtimes)更有效、更健壮，同时也更简单。</p>
+<p>在这篇文章中，我想谈谈所有的运行时都面临的一个有趣的问题：从异步代码中调用阻塞函数。</p>
+<a id="more"></a>
+<h2 id="Async(异步)_和_Sync(同步)">Async(异步) 和 Sync(同步)</h2>
+<p>我们最终在stable rust版本中加上了<code>async/await</code>,现在准备重写所有的同步代码，让它们变成异步的。我们应该这么做吗？我不知道。</p>
+<p>sync库和async库的差异愈来越大，比如<code>std</code>和<code>async-std</code>库。看起来两者很相近，除了一个有阻塞函数(sync)，另一个有非阻塞函数(async)。类似的还有<a href="https://docs.rs/surf" target="_blank" rel="external">surf</a>和<a href="https://github.com/sbstp/attohttpc" target="_blank" rel="external">attohttpc</a>库,它们都是http client库，一个是sync库，一个是async库。现在所有的新库的开发者都面临一个简单的抉择：应该提供一个sync库还是async库，还是两者都提供？</p>
+<p>目前重复的API看起来很不幸，但是我个人很乐观，相信最终我们会找出一个办法出来。在任何情况下，我们都需要找到尽可能无缝地集成sync和async代码的方法。</p>
+<h2 id="从同步到异步，再到同步">从同步到异步，再到同步</h2>
+<p>rust的<code>main</code>函数是同步的，所以为了进入异步世界，我们需要显式的去做。使用<code>async-std</code>,我们可以通过调用<code>block_on()</code>函数进入异步世界：</p>
+<figure class="highlight rust"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">use</span> async_std::task;</div><div class="line"></div><div class="line"><span class="comment">// This is sync code.</span></div><div class="line"><span class="function"><span class="keyword">fn</span> <span class="title">main</span></span>() {</div><div class="line">    task::block_on(foo());</div><div class="line">}</div><div class="line"></div><div class="line"><span class="comment">// This is async code.</span></div><div class="line">async <span class="function"><span class="keyword">fn</span> <span class="title">foo</span></span>() {}</div></pre></td></tr></table></figure>
+
+<p>如果要从异步世界进入同步世界，可以在异步代码中调用同步代码：</p>
+<figure class="highlight rust"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div></pre></td><td class="code"><pre><div class="line"><span class="comment">// This is async code.</span></div><div class="line">async <span class="function"><span class="keyword">fn</span> <span class="title">foo</span></span>() {</div><div class="line">    bar();</div><div class="line">}</div><div class="line"></div><div class="line"><span class="comment">// This is sync code.</span></div><div class="line"><span class="function"><span class="keyword">fn</span> <span class="title">bar</span></span>() {}</div></pre></td></tr></table></figure>
+
+<p>所以为了从异步进入同步，我们不需要做任何额外的设置-只需调用同步函数就这么简单，除了...额...我们需要仔细关注需要花费很长时间的同步函数。孔子说在异步世界调用同步函数一定要三思。</p>
+<h2 id="阻塞影响并发">阻塞影响并发</h2>
+<p>异步运行时的一个假设就是每次对<code>future</code>轮询的时候，它能很快返回<code>Ready</code>状态或者<code>Pending</code>状态。在异步代码中长时间阻塞是异步编程的一个很大的禁忌，一定要避免发生。</p>
+<p>为了说明为什么，下面使用<code>surf</code>并发获取40个网页：</p>
+<figure class="highlight rust"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div><div class="line">35</div><div class="line">36</div><div class="line">37</div><div class="line">38</div><div class="line">39</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">use</span> async_std::task;</div><div class="line"><span class="keyword">use</span> std::time::Instant;</div><div class="line"></div><div class="line"><span class="comment">// Fetch the HTML contents of a web page.</span></div><div class="line">async <span class="function"><span class="keyword">fn</span> <span class="title">get</span></span>(url: &<span class="keyword">str</span>) -&gt; String {</div><div class="line">    surf::get(url).recv_string().await.unwrap()</div><div class="line">}</div><div class="line"></div><div class="line"><span class="function"><span class="keyword">fn</span> <span class="title">main</span></span>() {</div><div class="line">    task::block_on(async {</div><div class="line">        <span class="keyword">let</span> start = Instant::now();</div><div class="line">        <span class="keyword">let</span> <span class="keyword">mut</span> tasks = Vec::new();</div><div class="line"></div><div class="line">        <span class="comment">// Fetch the list of contributors for the first 40 minor Rust releases.</span></div><div class="line">        <span class="keyword">for</span> i <span class="keyword">in</span> <span class="number">0</span>..<span class="number">40</span> {</div><div class="line">            <span class="keyword">let</span> url = format!(<span class="string">"https://thanks.rust-lang.org/rust/1.{}.0/"</span>, i);</div><div class="line"></div><div class="line">            <span class="comment">// Spawn a task fetching the list.</span></div><div class="line">            tasks.push(task::spawn(async move {</div><div class="line">                <span class="keyword">let</span> html = get(&url).await;</div><div class="line"></div><div class="line">                <span class="comment">// Display the number of contributors to this Rust release.</span></div><div class="line">                <span class="keyword">for</span> line <span class="keyword">in</span> html.lines() {</div><div class="line">                    <span class="keyword">if</span> line.contains(<span class="string">"individuals"</span>) {</div><div class="line">                        println!(<span class="string">"{}"</span>, line.trim());</div><div class="line">                    }</div><div class="line">                }</div><div class="line">            }))</div><div class="line">        }</div><div class="line"></div><div class="line">        <span class="comment">// Wait for all tasks to complete.</span></div><div class="line">        <span class="keyword">for</span> t <span class="keyword">in</span> tasks {</div><div class="line">            t.await;</div><div class="line">        }</div><div class="line"></div><div class="line">        <span class="comment">// Display elapsed time.</span></div><div class="line">        dbg!(start.elapsed());</div><div class="line">    });</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>这个程序在我的机器上需要1.5秒就可以完成。注意因为<code>get</code>函数是异步的，所以获取40个页面是并发执行的。</p>
+<p>现在让我们把<code>get</code>改成阻塞方式。我们使用<code>attohttpc</code>代替<code>surf</code>,它们比较类似，除了提供一个同步的接口:</p>
+<figure class="highlight rust"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line">async <span class="function"><span class="keyword">fn</span> <span class="title">get</span></span>(url: &<span class="keyword">str</span>) -&gt; String {</div><div class="line">    attohttpc::get(url).send().unwrap().text().unwrap()</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>不出所料，这个程序现在效率更低，需要3秒钟完成。我的计算机有8个逻辑内核，这意味着异步std执行器生成8个工作线程，因此我们一次只能获取8个web页面。</p>
+<p>这个例子的教训是：阻塞会损害并发性。很重要的一点是，我们不要在异步代码内部阻塞，否则执行器将无法执行有用的工作-相反，它只会浪费时间阻塞。</p>
+<h2 id="阻塞无处不在">阻塞无处不在</h2>
+<p>通过上面的我们看到了异步代码中的阻塞是如何影响性能的。当然，这个例子有点”做作“，因为您只需要使用<code>surf</code>而不是<code>attohttpc</code>，问题就解决了。但坏消息是，阻塞是不易察觉的：它无处不在，你甚至没有意识到！</p>
+<p>考虑<strong>标准输入</strong>和<strong>标准输出</strong>。很明显，读取标准输入块时，不应该在异步代码中使用<code>std::io::Stdin</code>。但是如果你看到<code>println!</code>你会皱眉头吗！我敢打赌，我们大部分时间都假设打印到标准输出不会阻塞，而它确实是阻塞的。</p>
+<p>如果你想知道什么场景下<code>println!()</code>会阻塞，可以假想我们在shell中执行<code>program1 | program2</code>，这样<code>program1</code>的输出就通过管道传输到<code>program2</code>中。如果<code>program2</code>读取输入的速度非常慢，那么<code>program1</code>将不得不在打印某些内容并且管道已满时阻塞。</p>
+<p>密集的计算也会导致阻塞。假设我们通过调用<code>v.sort()</code>对一个非常大的<code>Vec</code>进行排序。如果排序需要一秒钟左右的时间来完成，我们应该考虑将该计算从异步执行器中移除。</p>
+<p>有时甚至有一些程序员不太小心会掉进的“陷阱”。例如，假设我们使用<code>Rayon</code>在异步代码中调用<code>v.par_sort()</code>,人们可能会天真地认为这是可以的，因为排序发生在Rayon的执行器中，而事实是异步执行器仍然会阻塞以等待Rayon的结果。</p>
+<p>但性能下降并不是唯一的问题。如果异步执行器的每一个线程都陷在读取标准输入之类的事情上，那么整个程序也有可能陷入<strong>死锁状态</strong>，无法继续执行！</p>
+<p>最后，值得一提的是，即使是简单的内存访问也可能被阻塞！例如，考虑驻留在旋转磁盘上的swap memory。如果线程正在访问磁盘上的swap memory，它将不得不阻塞，直到该页从物理磁盘中取出并移到主内存中。</p>
+<p>所以阻塞是非常普遍的，很难从异步代码中完全分离出来。我相信我们必须接受这样一个事实：不管我们如何小心地消除阻塞，阻塞总是存在于异步代码中。</p>
+<h2 id="可能的解决方案">可能的解决方案</h2>
+<p>当我们预期在异步代码中阻塞时，我们应该考虑将阻塞逻辑移动到不同的线程池中，这样执行器就可以继续运行而不必等待它。像<code>async std</code>和<code>tokio</code>这样的运行时提供了<a href="https://docs.rs/async-std/1.2.0/async_std/task/fn.spawn_blocking.html" target="_blank" rel="external">spawn_blocking()</a>函数来帮助解决这个问题。</p>
+<p>为了演示如何使用该函数，让我们看看<a href="https://docs.rs/async-std/1.2.0/async_std/fs/fn.read_to_string.html" target="_blank" rel="external">fs::read_to_string()</a>是如何在<code>async std</code>中实现的：</p>
+<figure class="highlight rust"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line">async <span class="function"><span class="keyword">fn</span> <span class="title">read_to_string</span></span>&lt;P: AsRef&lt;Path&gt;&gt;(path: P) -&gt; io::Result&lt;String&gt; {</div><div class="line">    <span class="keyword">let</span> path = path.as_ref().to_owned();</div><div class="line">    spawn_blocking(move || std::fs::read_to_string(path)).await</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>函数<code>spawn_blocking()</code>将闭包生成到专用于运行阻塞函数的特殊线程池中。然后，异步执行器不必阻塞闭包的结果，而是异步<code>await</code>返回的<code>JoinHandle</code>的结果。</p>
+<p>注意，我们不能将对path的引用传递到闭包中，因为在同步版本完成之前，可能会取消<code>read_to_string()</code>函数。不幸的是，将路径传递到闭包的唯一方法是克隆它。这有点低效，也有点笨重。</p>
+<p>幸运的是，Tokio有一种运行阻塞函数的替代方法：它可以就地执行闭包，并告诉当前线程停止作为异步执行器的一部分，并将该职责移交给一个新线程。在某种程度上，它与<code>spawn_blocking()</code>相反——我们没有将闭包发送到新线程并继续事件循环，而是将事件循环发送到新线程并继续运行闭包。</p>
+<p>这是<code>block_in_place()</code>实现异步<code>read_to_string()</code>的方式:</p>
+<figure class="highlight rust"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line">async <span class="function"><span class="keyword">fn</span> <span class="title">read_to_string</span></span>&lt;P: AsRef&lt;Path&gt;&gt;(path: P) -&gt; io::Result&lt;String&gt; {</div><div class="line">    block_in_place(|| std::fs::read_to_string(path))</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>注意我们不必再clone path，这是因为在内部<code>sync read_to_string()</code>完成之前你不可能取消外部的<code>async read_to_string()</code>。</p>
+<p>虽然<code>spawn_blocking()</code>和<code>block_in_place()</code>都解决了异步执行器陷入阻塞代码的问题，但它们之间有一个重要的区别。注意<code>spawn_blocking()</code>实际上是一个异步函数，因为它返回一个可以等待的<code>future</code>，而<code>block_in_place()</code>只是一个普通的同步函数。</p>
+<p>通过例子看看有什么区别：</p>
+<figure class="highlight rust"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">let</span> (s1, s2) = futures::join!(read_to_string(<span class="string">"foo.txt"</span>), read_to_string(<span class="string">"bar.txt"</span>));</div></pre></td></tr></table></figure>
+
+<p>如果<code>read_to_string()</code>是通过<code>spawn_blocking()</code>实现的，那么这两个文件可以并行的读取，而如果是通过<code>block_in_place()</code>实现的，那么这两个文件是串行读取的，一个读完才读下一个。</p>
+<h2 id="结论">结论</h2>
+<p>关键结论是：</p>
+<ul>
+<li>在异步代码中阻塞将使性能受损，甚至导致死锁。</li>
+<li>我们需要使用<code>spawn_blocking()</code>或<code>block_in_place()</code>隔离程序的阻塞部分。</li>
+<li>阻塞无处不在，很难完全隔离它。</li>
+</ul>
+<p>此外，有时甚至很难说什么代码是阻塞的，什么代码不是阻塞的。如果一个函数需要1秒来完成，我们可能会认为它是阻塞的。但如果需要1毫秒呢？好吧，取决于特定的用例-有时我们应该考虑阻塞，有时我们不应该。这完全取决于你的场景。</p>
+<p>阻塞是可怕的，我们需要防御地将它与异步代码隔离开来。但是我们只能做这么多，阻塞仍然不可避免地会潜入到我们的异步代码中。这听起来可能是一个令人悲伤和失望的状况，但我很乐观。我相信有比<code>spawn_blocking()</code>和<code>block_in_place()</code> 更好的解决方案，我将在下面的博客文章中讨论。</p>
+
+      
+    </div>
+    <footer class="article-footer">
+      
+
+      
+      <!-- <link rel="stylesheet" href="https://unpkg.com/gitalk/dist/gitalk.css">
+      <script src="https://unpkg.com/gitalk/dist/gitalk.min.js"></script> -->
+      <section id="comments">
+        <script src="https://utteranc.es/client.js"
+                repo="smallnest/gitalk"
+                issue-term="title"
+                theme="github-light"
+                crossorigin="anonymous"
+                async>
+        </script>
+        <!-- <div id="gitalk-container"></div>
+        <script type="text/javascript">
+          var gitalkOpts = {
+            id: '2020/01/28/blocking-inside-async-code/',
+            owner: 'smallnest',
+            repo: 'gitalk',
+            title: '[译]异步代码中的阻塞操作',
+            body: 'https://colobu.com/2020/01/28/blocking-inside-async-code/',
+            clientID: 'bc02724130ed5b7ee275',
+            clientSecret: '68cb0bae2f93a8b88b09e0eb9b08c844b06a9047',
+            admin: ['smallnest'],
+            distractionFreeMode: false
+          };
+
+          const gitalk = new Gitalk(gitalkOpts)
+          gitalk.render('gitalk-container')
+        </script> -->
+        <noscript> 为正常使用评论功能请激活JavaScript</noscript>
+      </section>
+
+      
+
+    </footer>
+  </div>
+  
+  
+<nav id="article-nav">
+  
+    <a href="/2020/01/30/build-your-own-block-on/" id="article-nav-newer" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">Newer</strong>
+      <div class="article-nav-title">
+        
+          [译]构建你自己的block_on
+        
+      </div>
+    </a>
+  
+  
+    <a href="/2020/01/21/benchmark-2019-spring-of-popular-rpc-frameworks/" id="article-nav-older" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">Older</strong>
+      <div class="article-nav-title">2020 新春流行的RPC框架性能大比拼</div>
+    </a>
+  
+</nav>
+
+  
+</article></section>
+        
+          <aside id="sidebar">
+  
+      <div class="widget-wrap">
+    <h3 class="widget-title">原创图书</h3>
+    <div class="widget">
+      <a href="/ScalaCollectionsCookbook/">
+        <img width="100%" src="/ScalaCollectionsCookbook/scala_collections_cookbook.jpg">
+        <img width="100%" src="/ScalaCollectionsCookbook/scala_collections_cookbook_tw.png">
+      </a>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">分类</h3>
+    <div class="widget">
+      <ul class="category-list"><li class="category-list-item"><a class="category-list-link" href="/categories/Android/">Android</a><span class="category-list-count">12</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/C/">C++</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/DOTNET/">DOTNET</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Docker/">Docker</a><span class="category-list-count">5</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Go/">Go</a><span class="category-list-count">175</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Java/">Java</a><span class="category-list-count">64</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Linux/">Linux</a><span class="category-list-count">7</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Rust/">Rust</a><span class="category-list-count">12</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Scala/">Scala</a><span class="category-list-count">18</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/分享/">分享</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/前端开发/">前端开发</a><span class="category-list-count">18</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/区块链/">区块链</a><span class="category-list-count">8</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/大数据/">大数据</a><span class="category-list-count">60</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/工具/">工具</a><span class="category-list-count">28</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/数据库/">数据库</a><span class="category-list-count">3</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/架构/">架构</a><span class="category-list-count">26</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/算法/">算法</a><span class="category-list-count">4</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/管理/">管理</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/网络编程/">网络编程</a><span class="category-list-count">13</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/读书笔记/">读书笔记</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/运维/">运维</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/高并发编程/">高并发编程</a><span class="category-list-count">20</span></li></ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">标签云</h3>
+    <div class="widget tagcloud">
+      <a href="/tags/Android/" style="font-size: 15.71px;">Android</a><a href="/tags/ApacheBench/" style="font-size: 11.43px;">ApacheBench</a><a href="/tags/Bower/" style="font-size: 10.00px;">Bower</a><a href="/tags/C/" style="font-size: 10.00px;">C#</a><a href="/tags/CDN/" style="font-size: 10.00px;">CDN</a><a href="/tags/CQRS/" style="font-size: 10.00px;">CQRS</a><a href="/tags/CRC/" style="font-size: 10.00px;">CRC</a><a href="/tags/CSS/" style="font-size: 11.43px;">CSS</a><a href="/tags/CompletableFuture/" style="font-size: 10.00px;">CompletableFuture</a><a href="/tags/Comsat/" style="font-size: 10.00px;">Comsat</a><a href="/tags/Curator/" style="font-size: 18.57px;">Curator</a><a href="/tags/DSL/" style="font-size: 10.00px;">DSL</a><a href="/tags/Disruptor/" style="font-size: 10.00px;">Disruptor</a><a href="/tags/Docker/" style="font-size: 11.43px;">Docker</a><a href="/tags/Ember/" style="font-size: 11.43px;">Ember</a><a href="/tags/FastJson/" style="font-size: 10.00px;">FastJson</a><a href="/tags/Fiber/" style="font-size: 10.00px;">Fiber</a><a href="/tags/GAE/" style="font-size: 10.00px;">GAE</a><a href="/tags/GC/" style="font-size: 12.86px;">GC</a><a href="/tags/Gnuplot/" style="font-size: 10.00px;">Gnuplot</a><a href="/tags/Go/" style="font-size: 14.29px;">Go</a><a href="/tags/Gradle/" style="font-size: 10.00px;">Gradle</a><a href="/tags/Grunt/" style="font-size: 10.00px;">Grunt</a><a href="/tags/Gulp/" style="font-size: 10.00px;">Gulp</a><a href="/tags/Hadoop/" style="font-size: 10.00px;">Hadoop</a><a href="/tags/Hazelcast/" style="font-size: 10.00px;">Hazelcast</a><a href="/tags/IPFS/" style="font-size: 10.00px;">IPFS</a><a href="/tags/Ignite/" style="font-size: 10.00px;">Ignite</a><a href="/tags/JVM/" style="font-size: 10.00px;">JVM</a><a href="/tags/Java/" style="font-size: 17.14px;">Java</a><a href="/tags/Kafka/" style="font-size: 20.00px;">Kafka</a><a href="/tags/Lambda/" style="font-size: 14.29px;">Lambda</a><a href="/tags/Linux/" style="font-size: 12.86px;">Linux</a><a href="/tags/LongAdder/" style="font-size: 10.00px;">LongAdder</a><a href="/tags/MathJax/" style="font-size: 10.00px;">MathJax</a><a href="/tags/Maven/" style="font-size: 11.43px;">Maven</a><a href="/tags/Memcached/" style="font-size: 10.00px;">Memcached</a><a href="/tags/Metrics/" style="font-size: 10.00px;">Metrics</a><a href="/tags/Mongo/" style="font-size: 12.86px;">Mongo</a><a href="/tags/Netty/" style="font-size: 15.71px;">Netty</a>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">归档</h3>
+    <div class="widget">
+      <ul class="archive-list"><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/10/">October 2021</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/08/">August 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/07/">July 2021</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/06/">June 2021</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/05/">May 2021</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/04/">April 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/03/">March 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/02/">February 2021</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/01/">January 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/12/">December 2020</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/11/">November 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/09/">September 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/08/">August 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/07/">July 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/06/">June 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/05/">May 2020</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/04/">April 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/03/">March 2020</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/02/">February 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/01/">January 2020</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/12/">December 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/11/">November 2019</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/10/">October 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/09/">September 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/08/">August 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/07/">July 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/06/">June 2019</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/05/">May 2019</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/04/">April 2019</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/03/">March 2019</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/02/">February 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/01/">January 2019</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/12/">December 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/11/">November 2018</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/10/">October 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/09/">September 2018</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/08/">August 2018</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/07/">July 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/06/">June 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/05/">May 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/04/">April 2018</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/03/">March 2018</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/02/">February 2018</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/01/">January 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/12/">December 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/11/">November 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/10/">October 2017</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/09/">September 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/08/">August 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/07/">July 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/06/">June 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/05/">May 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/04/">April 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/03/">March 2017</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/02/">February 2017</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/01/">January 2017</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/12/">December 2016</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/11/">November 2016</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/10/">October 2016</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/09/">September 2016</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/08/">August 2016</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/07/">July 2016</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/06/">June 2016</a><span class="archive-list-count">14</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/05/">May 2016</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/04/">April 2016</a><span class="archive-list-count">14</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/03/">March 2016</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/02/">February 2016</a><span class="archive-list-count">8</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/01/">January 2016</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/12/">December 2015</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/11/">November 2015</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/10/">October 2015</a><span class="archive-list-count">9</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/09/">September 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/08/">August 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/07/">July 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/06/">June 2015</a><span class="archive-list-count">8</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/05/">May 2015</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/04/">April 2015</a><span class="archive-list-count">15</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/03/">March 2015</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/02/">February 2015</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/01/">January 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/12/">December 2014</a><span class="archive-list-count">28</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/11/">November 2014</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/10/">October 2014</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/09/">September 2014</a><span class="archive-list-count">28</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/08/">August 2014</a><span class="archive-list-count">19</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/07/">July 2014</a><span class="archive-list-count">1</span></li></ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">近期文章</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+            <a href="/2021/10/06/replace-implementations-in-go-std-libs-at-runtime/">强制更改Go标准库的实现</a>
+          </li>
+        
+          <li>
+            <a href="/2021/08/30/how-is-go-generic-implemented/">Go泛型是怎么实现的?</a>
+          </li>
+        
+          <li>
+            <a href="/2021/08/01/benchmark-of-rpc-frameworks/">2021年Go生态圈rpc框架benchmark</a>
+          </li>
+        
+          <li>
+            <a href="/2021/07/13/Updating-the-Go-Memory-Model/">[译]更新Go内存模型</a>
+          </li>
+        
+          <li>
+            <a href="/2021/07/11/Programming-Language-Memory-Models/">[译]编程语言内存模型</a>
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">友情链接</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+			 
+            <a href="http://stackshare.io" target="_blank">技术栈</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://toutiao.io/" target="_blank">开发者头条</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://weekly.manong.io/issues/" target="_blank">码农周刊</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.tuicool.com/mags" target="_blank">编程狂人周刊</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.importnew.com/" target="_blank">importnew</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://ifeve.com/" target="_blank">并发编程网</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://github.com" target="_blank">github</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://stackoverflow.com/" target="_blank">stackoverflow</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.javacodegeeks.com/" target="_blank">javacodegeeks</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.infoq.com/" target="_blank">infoq</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.dzone.com/links/index.html" target="_blank">dzone</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://oj.leetcode.com/problems/" target="_blank">leetcode</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://tutorials.jenkov.com" target="_blank">jenkov</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://howtodoinjava.com" target="_blank">HowToDoInJava</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://java-design-patterns.com/patterns/" target="_blank">java design patterns</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://medium.com/netflix-techblog" target="_blank">Netflix技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://www.techiedelight.com" target="_blank">Techie Delight</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://engineering.linkedin.com/blog" target="_blank">Linkedin技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://blogs.dropbox.com/tech/" target="_blank">Dropbox技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://code.fb.com" target="_blank">Facebook技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://jm.taobao.org" target="_blank">淘宝中间件团队</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://tech.meituan.com" target="_blank">美团技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://blogs.360.cn" target="_blank">360技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://xiaomi-info.github.io" target="_blank">小米信息部技术团队</a>
+			
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+      
+
+  
+</aside>
+        
+      </div>
+      <footer id="footer">
+  
+  <div class="outer">
+    <div id="footer-info" class="inner">
+      &copy; 2021 smallnest<br>
+	  Powered by <a href="http://hexo.io/" target="_blank">Hexo</a>
+    </div>
+  </div>
+</footer>
+    </div>
+    <nav id="mobile-nav">
+  
+    
+      <a href="/" class="mobile-nav-link"><i class="fa fa-home">&nbsp;</i>首页</a>
+    
+  
+    
+      <a href="/archives" class="mobile-nav-link"><i class="fa fa-folder-o">&nbsp;</i>归档</a>
+    
+  
+    
+      <a href="https://github.com/smallnest" class="mobile-nav-link"><i class="fa fa-github">&nbsp;</i>github</a>
+    
+  
+    
+      <a class="mobile-nav-link" href="#"><i class="fa fa-bars">&nbsp;</i>网站群</a>
+    
+      
+            <a class="mobile-nav-link" href="/goasm">&nbsp;&nbsp;<i class="fa fa-language">&nbsp;</i>Go汇编示例</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="https://gowebexamples.com">&nbsp;&nbsp;<i class="fa fa-external-link">&nbsp;</i>Go Web开发示例</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://go-database-sql.org">&nbsp;&nbsp;<i class="fa fa-external-link">&nbsp;</i>Go 数据库开发教程</a>
+          
+          
+    
+      
+            
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://rpcx.io">&nbsp;&nbsp;<i class="fa undefined">&nbsp;</i>RPCX官网</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://cn.doc.rpcx.io">&nbsp;&nbsp;<i class="fa undefined">&nbsp;</i>RPC开发指南</a>
+          
+          
+    
+    
+  
+    
+      <a href="/ScalaCollectionsCookbook" class="mobile-nav-link"><i class="fa fa-book">&nbsp;</i>Scala集合技术手册</a>
+    
+  
+    
+      <a href="/about" class="mobile-nav-link"><i class="fa fa-lemon-o">&nbsp;</i>关于</a>
+    
+  
+</nav>
+    
+<script src="//cdn.staticfile.org/jquery/1.11.1/jquery.min.js"></script>
+<script src="//cdn.bootcss.com/jquery.lazyload/1.9.1/jquery.lazyload.min.js"></script>
+
+<script src="//cdnjs.cloudflare.com/ajax/libs/fancybox/3.2.5/jquery.fancybox.min.js"></script>
+
+
+<script src="/js/script.js" type="text/javascript"></script>
+
+<!-- mathjax config similar to math.stackexchange -->
+<script type="text/x-mathjax-config">
+  MathJax.Hub.Config({
+    tex2jax: {
+      inlineMath: [ ['$','$'], ["\\(","\\)"] ],
+      processEscapes: true,
+      skipTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code']
+    }
+  });
+  MathJax.Hub.Queue(function() {
+      var all = MathJax.Hub.getAllJax(), i;
+      for(i=0; i < all.length; i += 1) {
+        all[i].SourceElement().parentNode.className += ' has-jax';
+      }
+  });
+</script>
+<script type="text/javascript" src="//cdn.bootcss.com/mathjax/2.6.0-beta.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML">
+</script>
+
+<div id="totop" style="position:fixed;bottom:150px;right:10px;cursor: pointer;z-index: 2000;">
+	<a title="返回顶部"><img src="/images/scrollup.png"/></a>
+</div>
+<script src="/js/totop.js" type="text/javascript"></script>
+
+
+
+
+<script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "//hm.baidu.com/hm.js?e085d87993250aab11f3e0c15f1c2785";
+  var s = document.getElementsByTagName("script")[0]; 
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+
+
+  </div>
+</body>
+</html>

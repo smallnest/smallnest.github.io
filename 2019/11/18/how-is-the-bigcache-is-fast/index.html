@@ -1,0 +1,714 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset="utf-8">
+  
+  <title>妙到颠毫: bigcache优化技巧</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+  <meta name="description" content="最近看到 yoko 翻译的一篇文章: [译] Go开源项目BigCache如何加速并发访问以及避免高额的GC开销, 翻译自 How BigCache avoids expensive GC cycles and speeds up concurrent access in Go, 应该是 Douglas Makey Mendez Molero 在阅读了 bigcache 的作者写的 bigcach">
+<meta property="og:type" content="article">
+<meta property="og:title" content="妙到颠毫: bigcache优化技巧">
+<meta property="og:url" content="https://colobu.com/2019/11/18/how-is-the-bigcache-is-fast/">
+<meta property="og:site_name" content="鸟窝">
+<meta property="og:description" content="最近看到 yoko 翻译的一篇文章: [译] Go开源项目BigCache如何加速并发访问以及避免高额的GC开销, 翻译自 How BigCache avoids expensive GC cycles and speeds up concurrent access in Go, 应该是 Douglas Makey Mendez Molero 在阅读了 bigcache 的作者写的 bigcach">
+<meta property="og:image" content="gc.png">
+<meta property="og:image" content="gc2.png">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="妙到颠毫: bigcache优化技巧">
+<meta name="twitter:description" content="最近看到 yoko 翻译的一篇文章: [译] Go开源项目BigCache如何加速并发访问以及避免高额的GC开销, 翻译自 How BigCache avoids expensive GC cycles and speeds up concurrent access in Go, 应该是 Douglas Makey Mendez Molero 在阅读了 bigcache 的作者写的 bigcach">
+
+  
+  <link rel="alternative" href="/atom.xml" title="鸟窝" type="application/atom+xml">
+  
+  
+  <link rel="icon" href="/favicon.png">
+  
+  <link rel="stylesheet" href="/css/style.css" type="text/css">
+
+  <link href="//cdn.staticfile.org/font-awesome/4.2.0/css/font-awesome.css" rel="stylesheet">
+  
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/fancybox/2.1.7/css/jquery.fancybox.min.css"
+    media="screen" type="text/css">
+  
+  <link rel="stylesheet" href="//cdnjs.cloudflare.com/ajax/libs/animate.css/3.1.1/animate.min.css" media="screen"
+    type="text/css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/tonsky/FiraCode@1.207/distr/fira_code.css">
+</head>
+<body>
+  <div id="container">
+    <div id="wrap">
+      <header id="header">
+  <div id="banner"></div>
+  <div id="header-outer" class="outer">
+    <div id="header-title" class="inner">
+      <h1 id="logo-wrap" class="animated bounceInLeft">
+        <a href="/" id="logo">鸟窝</a>
+      </h1>
+      
+        <h2 id="subtitle-wrap" class="animated bounceInLeft">
+          <a href="/" id="subtitle">大道至简 Simplicity is the ultimate form of sophistication</a>
+        </h2>
+      
+    </div>
+    <div id="header-inner" class="inner">
+      <nav id="main-nav">
+        <a id="main-nav-toggle" class="nav-icon"></a>
+        
+          
+            <a class="main-nav-link" href="/"><i class="fa fa-home">&nbsp;</i>首页</a>
+          
+          
+          
+            <a class="main-nav-link" href="/archives"><i class="fa fa-folder-o">&nbsp;</i>归档</a>
+          
+          
+          
+            <a class="main-nav-link" href="https://github.com/smallnest"><i class="fa fa-github">&nbsp;</i>github</a>
+          
+          
+          
+            <div class="dropdown main-nav-link"><a class="main-nav-link" href="#"><i class="fa fa-bars">&nbsp;</i>网站群</a>
+              <div class="dropdown-content">
+          
+            
+              <a href="/goasm"><i class="fa fa-language"></i>&nbsp;Go汇编示例</a>
+            
+                
+          
+            
+              <a href="https://gowebexamples.com"><i class="fa fa-external-link"></i>&nbsp;Go Web开发示例</a>
+            
+                
+          
+            
+              <a href="http://go-database-sql.org"><i class="fa fa-external-link"></i>&nbsp;Go 数据库开发教程</a>
+            
+                
+          
+            
+              <hr>
+            
+                
+          
+            
+              <a href="http://rpcx.io"><i class="fa undefined"></i>&nbsp;RPCX官网</a>
+            
+                
+          
+            
+              <a href="http://cn.doc.rpcx.io"><i class="fa undefined"></i>&nbsp;RPC开发指南</a>
+            
+                
+          
+          </div>
+        </div>
+          
+          
+          
+            <a class="main-nav-link" href="/ScalaCollectionsCookbook"><i class="fa fa-book">&nbsp;</i>Scala集合技术手册</a>
+          
+          
+          
+            <a class="main-nav-link" href="/about"><i class="fa fa-lemon-o">&nbsp;</i>关于</a>
+          
+          
+
+
+      </nav>
+      <nav id="sub-nav">
+        
+          <a id="nav-rss-link" class="nav-icon" href="/atom.xml" title="RSS Feed"></a>
+        
+        <a id="nav-search-btn" class="nav-icon" title="Search"></a>
+      </nav>
+      <div id="search-form-wrap">
+        <form action="http://www.baidu.com/baidu" method="get" accept-charset="utf-8" class="search-form">
+          <input type="search" name="word" maxlength="20" class="search-form-input" placeholder="Search">
+          <input type="submit" value="" class="search-form-submit">
+          <input name=tn type=hidden value="bds">
+          <input name=cl type=hidden value="3">
+          <input name=ct type=hidden value="2097152">
+          <input type="hidden" name="si" value="colobu.com">
+        </form>
+      </div>
+    </div>
+  </div>
+</header>
+      <div class="outer">
+        <section id="main"><script>function show_answer(btn, x) { if (btn.value === "显示答案") { btn.value = "隐藏答案" } else { btn.value = "显示答案" } var as = document.getElementById(x); if (as.style.display === "none") { as.style.display = "block" } else { as.style.display = "none" } }</script>
+
+<article id="post-how-is-the-bigcache-is-fast" class="article article-type-post" itemscope
+  itemprop="blogPost">
+  <div class="article-meta">
+    <a href="/2019/11/18/how-is-the-bigcache-is-fast/" class="article-date">
+  <time datetime="2019-11-18T06:57:36.000Z" itemprop="datePublished">2019年11月18日</time>
+</a>
+    
+  <div class="article-category">
+    <a class="article-category-link" href="/categories/Go/">Go</a>
+  </div>
+
+    
+  <div class="article-author"> by smallnest</div>
+
+  </div>
+  <div class="article-inner">
+    
+    
+    <header class="article-header">
+      
+  
+    <h1 class="article-title" itemprop="name">
+      妙到颠毫: bigcache优化技巧
+	  
+    </h1>
+  
+
+    </header>
+    
+    <div class="article-entry" itemprop="articleBody">
+      
+      
+      
+      <p>最近看到 yoko 翻译的一篇文章: <a href="https://pengrl.com/p/35302/" target="_blank" rel="external">[译] Go开源项目BigCache如何加速并发访问以及避免高额的GC开销</a>, 翻译自 <a href="https://dev.to/douglasmakey/how-bigcache-avoids-expensive-gc-cycles-and-speeds-up-concurrent-access-in-go-12bb" target="_blank" rel="external">How BigCache avoids expensive GC cycles and speeds up concurrent access in Go</a>, 应该是 Douglas Makey Mendez Molero 在阅读了 bigcache 的作者写的 bigcache设计文章<a href="https://allegro.tech/2016/03/writing-fast-cache-service-in-go.html" target="_blank" rel="external">Writing a very fast cache service with millions of entries in Go</a>做的一些调研和总结。</p>
+<p>我在刚读取这篇文档的时候，顺着连接把相关的文章都找出来细细读了一遍，结合bigcache的代码，仔细学习了相关的优化设计，感觉设计非常的精妙，所以特意根据自己的理解又总结了一篇。</p>
+<p>bigcache的精妙的设计也吸引了fasthttp的作者Aliaksandr Valialkin，他在bigcache的基础上，结合自己的公司的使用场景，进一步的做了相应的优化， 也开源了这个项目<a href="https://github.com/VictoriaMetrics/fastcache" target="_blank" rel="external">fastcache</a>, 本文在最后也做了介绍。</p>
+<a id="more"></a>
+<h2 id="设计BigCache的初衷">设计BigCache的初衷</h2>
+<p>bigcache的作者也不是想当然的开发一个库，而且项目遇到了需求。需求如下：</p>
+<ul>
+<li>支持http协议</li>
+<li>支持 <strong>10K</strong> RPS (5k 写，5k 读)</li>
+<li>cache对象至少保持10分钟</li>
+<li>相应时间平均 5ms, p99.9 10毫秒， p99.999 400毫秒</li>
+<li>其它HTTP的一些需求</li>
+</ul>
+<p>为了满足这些需求,要求开发的cache库要保证：</p>
+<ul>
+<li>即使有百万的缓存对象也要非常快</li>
+<li>支持大并发访问</li>
+<li>一定时间后支持剔除</li>
+</ul>
+<p>作者考察了一番缓存框架比如memcached、redis、couchbase等，发觉都不太满足需求，因为这些都是独立的程序，访问它们需要网络的开销，延时无法保障，作者需要一个进程内的基于内存的cache库。虽然Go生态圈有众多的cache库如 <a href="https://github.com/golang/groupcache/tree/master/lru" target="_blank" rel="external">LRU groups cache</a>, <a href="https://github.com/patrickmn/go-cache" target="_blank" rel="external">go-cache</a>, <a href="https://github.com/diegobernardes/ttlcache" target="_blank" rel="external">ttlcache</a>, <a href="https://github.com/coocood/freecache" target="_blank" rel="external">freecache</a>,但是只有freecache满足需求，不过作者最后还是决定自己取开发一个cache库。</p>
+<p>以上是bigcache诞生的背景，接下来我们欣赏一下bigcache和其它库优美的设计。</p>
+<h2 id="处理大并发访问">处理大并发访问</h2>
+<p>cache就像一个大的hashtable, 可不可以使用一个<code>map[string][]byte</code> + <code>sync.RWMutex</code> 实现满足需求的cache呢？</p>
+<p><code>sync.RWMutex</code>虽然对读写进行了优化，但是对于并发的读，最终还是把写变成了串行，一旦写的并发量大的时候，即使写不同的key, 对应的goroutine也会block住，只允许一个写执行，这是一个瓶颈，并且不可控。</p>
+<p>解决并发的问题有一个方法叫做 shard (分片), 每个分片一把锁。 很多大并发场景下为了减小并发的压力都会采用这种方法，大的场景比如数据库的分片，小的场景就如刚才的场景。 Java 8 之前的ConcurrentMap就是采用分片(segment)的方式减少竞争, Go也有一个类似思想设计的map库:<a href="https://github.com/orcaman/concurrent-map" target="_blank" rel="external">concurrent-map</a>。</p>
+<p>对于每一个缓存对象，根据它的key计算它的哈希值: <code>hash(key) % N</code>, <code>N</code>是分片数量。 理想情况下N个 goroutine 每次请求正好平均落在各自的分片上，这样就不会有竞争了，即使有多个goroutine落在同一个分片上，如果hash比较平均的话，单个shard的压力也会比较小。 </p>
+<p>竞争小了有什么好处？ 延迟可以大大提高，因为等待获取锁的时间变小了。</p>
+<p>当然这里有一些要考虑的地方：</p>
+<p><strong>1、N的选择</strong></p>
+<p>既然分片可以很好的降低锁的竞争，那么N是不是越大越好呢？当然不是，如果N非常大，比如每个缓存对象一个锁，那么会带来很多额外的不必要的开销。可以选择一个不太大的值，在性能和花销上寻找一个平衡。</p>
+<p>另外, <code>N</code>是 2的幂， 比如16、32、64。这样设计的好处就是计算余数可以使用位运算快速计算。</p>
+<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line">func (c *BigCache) getShard(hashedKey uint64) (shard *cacheShard) {</div><div class="line">	<span class="keyword">return</span> c.shards[hashedKey&c.shardMask]</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>因为对于2的幂<code>N</code>，对于任意的<code>x</code>, 下面的公式成立:</p>
+<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">x mod N = (x & (N − <span class="number">1</span>))</div></pre></td></tr></table></figure>
+
+<p>所以只需要使用一次按位AND (<code>&amp;</code>)就可以求得它的余数。</p>
+<p><strong>2、选择hash算法</strong></p>
+<p>以前已经有非常多的哈希算法，最近几年也出现了一些新的哈希算法，也被人使用Go语言来实现。</p>
+<p>很显然，一个优秀的哈希算法要保证:</p>
+<ul>
+<li>哈希值应该比较随机 (质量)</li>
+<li>哈希速度比较快 (速度)</li>
+<li>尽量不产生额外的内存分配,避免对垃圾回收产生压力 (耗费资源少)</li>
+</ul>
+<p>项目<a href="https://github.com/smallnest/hash-bench" target="_blank" rel="external">hash-bench</a>对常用的几种Hash算法进行了比较。</p>
+<p>bigcache提供了一个默认的Hash的实现，采用fnv64a算法。这个算法的好处是采用位运算的方式在栈上进行运算，避免在堆上分配。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> fnv64a <span class="keyword">struct</span>{}</div><div class="line"></div><div class="line"><span class="keyword">const</span> (</div><div class="line">	<span class="comment">// offset64 FNVa offset basis. See https://en.wikipedia.org/wiki/Fowler–Noll–Vo_hash_function#FNV-1a_hash</span></div><div class="line">	offset64 =<span class="number"> 14695981039346656037</span></div><div class="line">	<span class="comment">// prime64 FNVa prime value. See https://en.wikipedia.org/wiki/Fowler–Noll–Vo_hash_function#FNV-1a_hash</span></div><div class="line">	prime64 =<span class="number"> 1099511628211</span></div><div class="line">)</div><div class="line"></div><div class="line"><span class="comment">// Sum64 gets the string and returns its uint64 hash value.</span></div><div class="line"><span class="keyword">func</span> (f fnv64a) Sum64(key <span class="typename">string</span>) <span class="typename">uint64</span> {</div><div class="line">	<span class="keyword">var</span> hash <span class="typename">uint64</span> = offset64</div><div class="line">	<span class="keyword">for</span> i :=<span class="number"> 0</span>; i &lt; <span class="built_in">len</span>(key); i++ {</div><div class="line">		hash ^= <span class="typename">uint64</span>(key[i])</div><div class="line">		hash *= prime64</div><div class="line">	}</div><div class="line"></div><div class="line">	<span class="keyword">return</span> hash</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<h2 id="忽略内存开销">忽略内存开销</h2>
+<p>对于Go语言中的map, 垃圾回收器在 <code>mark</code>和<code>scan</code>阶段检查map中的每一个元素, 如果缓存中包含数百万的缓存对象，垃圾回收器对这些对象的无意义的检查导致不必要的时间开销。</p>
+<p>bigcache的作者做了测试。他们测试了简单的HTTP/JSON序列化(不会访问cache)。 在cache为空的时候1万的QPS的耗时大约10毫秒。当cache填满的时候， P99的请求都会超过1秒。监控显示堆中包含4千万的对象， GC过程中的 <code>mark</code> 和 <code>scan</code> 也需要4秒。</p>
+<p>我们可以很容易测试这种状况，比如下面的代码：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div><div class="line">35</div><div class="line">36</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> main</div><div class="line"></div><div class="line"><span class="keyword">import</span> <span class="string">"time"</span></div><div class="line"></div><div class="line"><span class="keyword">type</span> Item <span class="keyword">struct</span> {</div><div class="line">	A <span class="typename">string</span></div><div class="line">	B <span class="typename">string</span></div><div class="line">	C <span class="typename">string</span></div><div class="line">	D <span class="typename">string</span></div><div class="line">	E <span class="typename">string</span></div><div class="line">	F <span class="typename">string</span></div><div class="line">	G G</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">type</span> G <span class="keyword">struct</span> {</div><div class="line">	H <span class="typename">int</span></div><div class="line">	I <span class="typename">int</span></div><div class="line">	K <span class="typename">int</span></div><div class="line">	L <span class="typename">int</span></div><div class="line">	M <span class="typename">int</span></div><div class="line">	N <span class="typename">int</span></div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	m := <span class="built_in">make</span>(<span class="keyword">map</span>[<span class="typename">int</span>]*Item,<span class="number"> 10</span><span class="number">*1024</span><span class="number">*1024</span>)</div><div class="line"></div><div class="line">	<span class="keyword">for</span> i :=<span class="number"> 0</span>; i &lt;<span class="number"> 1024</span><span class="number">*1024</span>; i++ {</div><div class="line">		m[i] = &Item{}</div><div class="line">	}</div><div class="line"></div><div class="line">	<span class="keyword">for</span> i :=<span class="number"> 0</span>; ; i++ {</div><div class="line">		<span class="built_in">delete</span>(m, i)</div><div class="line">		m<span class="number">[1024</span><span class="number">*1024</span>+i] = &Item{}</div><div class="line">		time.Sleep<span class="number">(10</span> * time.Millisecond)</div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>只有一个map对象，里面包含一百万的元素，每10毫秒删一个放一个。<br>并发量相当小，并且单个的goroutine也没有竞争，但是由于元素的数量巨大，垃圾回收在<code>mark/scan</code>阶段需要花费上百毫秒进行标记和遍历。</p>
+<p><img src="gc.png" alt=""></p>
+<p>那么如何解决这个问题呢？</p>
+<p>我们知道垃圾回收器检查的是堆上的资源，如果不把对象放在堆上，不就解决这个问题了吗？还真有这样的项目<a href="https://godoc.org/github.com/glycerine/offheap" target="_blank" rel="external">offheap</a>，它提供了定制的<code>Malloc()</code> 和 <code>Free()</code>，但是你的缓存需要基于这些方法定制。当然一些基于垃圾回收的编程语言为了减少垃圾回收的时间，都会提供相应的库，比如<a href="https://dzone.com/articles/java-chroniclemap-part-1-go-off-heap" target="_blank" rel="external">Java: ChronicleMap, Part 1: Go Off-Heap</a>。堆外内存很容易产生内存泄漏。</p>
+<p>第二种方式是使用<a href="https://github.com/coocood/freecache" target="_blank" rel="external">freecache</a>。freecache通过减少指针的数量以零GC开销实现map。它将键和值保存在<code>ringbuffer</code>中，并使用索引查找对象。</p>
+<p>第三种优化方法是和Go 1.5中一个修复有关(<a href="https://github.com/golang/go/issues/9477" target="_blank" rel="external">#9477</a>), 这个issue还是描述了包含大量对象的map的垃圾回收时的耗时问题，Go的开发者优化了垃圾回收时对于map的处理，如果map对象中的key和value不包含指针，那么垃圾回收器就会对它们进行优化：</p>
+<blockquote>
+<p>runtime: do not scan maps when k/v do not contain pointers</p>
+<p>Currently we scan maps even if k/v does not contain pointers.<br>This is required because overflow buckets are hanging off the main table.<br>This change introduces a separate array that contains pointers to all<br>overflow buckets and keeps them alive. Buckets themselves are marked<br>as containing no pointers and are not scanned by GC (if k/v does not<br>contain pointers).</p>
+<p>This brings maps in line with slices and chans -- GC does not scan<br>their contents if elements do not contain pointers.</p>
+<p>Currently scanning of a map[int]int with 2e8 entries (~8GB heap)<br>takes ~8 seconds. With this change scanning takes negligible time.</p>
+<p><a href="https://go-review.googlesource.com/c/go/+/3288" target="_blank" rel="external">https://go-review.googlesource.com/c/go/+/3288</a></p>
+</blockquote>
+<p>所以如果我们的对象不包含指针，虽然也是分配在堆上，但是垃圾回收可以无视它们。</p>
+<p>如果我们把map定义成<code>map[int]int</code>，就会发现gc的耗时就会将下来了。</p>
+<p><img src="gc2.png" alt=""></p>
+<p>遗憾的是，我们没办法要求用户的缓存对象只能包含<code>int</code>、<code>bool</code>这样的基本数据类型。</p>
+<p>解决办法就是使用哈希值作为<code>map[int]int</code>的key。 把缓存对象序列化后放到一个预先分配的大的字节数组中，然后将它在数组中的offset作为<code>map[int]int</code>的value。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div><div class="line">35</div><div class="line">36</div><div class="line">37</div><div class="line">38</div><div class="line">39</div><div class="line">40</div><div class="line">41</div><div class="line">42</div><div class="line">43</div><div class="line">44</div><div class="line">45</div><div class="line">46</div><div class="line">47</div><div class="line">48</div><div class="line">49</div><div class="line">50</div><div class="line">51</div><div class="line">52</div><div class="line">53</div><div class="line">54</div><div class="line">55</div><div class="line">56</div><div class="line">57</div><div class="line">58</div><div class="line">59</div><div class="line">60</div><div class="line">61</div><div class="line">62</div><div class="line">63</div><div class="line">64</div><div class="line">65</div><div class="line">66</div><div class="line">67</div><div class="line">68</div><div class="line">69</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> cacheShard <span class="keyword">struct</span> {</div><div class="line">	hashmap     <span class="keyword">map</span>[<span class="typename">uint64</span>]<span class="typename">uint32</span></div><div class="line">	entries     queue.BytesQueue</div><div class="line">	lock        sync.RWMutex</div><div class="line">	entryBuffer []<span class="typename">byte</span></div><div class="line">	onRemove    onRemoveCallback</div><div class="line"></div><div class="line">	isVerbose    <span class="typename">bool</span></div><div class="line">	statsEnabled <span class="typename">bool</span></div><div class="line">	logger       Logger</div><div class="line">	clock        clock</div><div class="line">	lifeWindow   <span class="typename">uint64</span></div><div class="line"></div><div class="line">	hashmapStats <span class="keyword">map</span>[<span class="typename">uint64</span>]<span class="typename">uint32</span></div><div class="line">	stats        Stats</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> (s *cacheShard) set(key <span class="typename">string</span>, hashedKey <span class="typename">uint64</span>, entry []<span class="typename">byte</span>) error {</div><div class="line">	currentTimestamp := <span class="typename">uint64</span>(s.clock.epoch())</div><div class="line"></div><div class="line">	s.lock.Lock()</div><div class="line"></div><div class="line">    <span class="comment">// 查找是否已经存在了对应的缓存对象，如果存在，将它的值置为空</span></div><div class="line">	<span class="keyword">if</span> previousIndex := s.hashmap[hashedKey]; previousIndex !=<span class="number"> 0</span> {</div><div class="line">		<span class="keyword">if</span> previousEntry, err := s.entries.Get(<span class="typename">int</span>(previousIndex)); err == <span class="constant">nil</span> {</div><div class="line">			resetKeyFromEntry(previousEntry)</div><div class="line">		}</div><div class="line">	}</div><div class="line"></div><div class="line">    <span class="comment">// 触发是否要移除最老的缓存对象</span></div><div class="line">	<span class="keyword">if</span> oldestEntry, err := s.entries.Peek(); err == <span class="constant">nil</span> {</div><div class="line">		s.onEvict(oldestEntry, currentTimestamp, s.removeOldestEntry)</div><div class="line">	}</div><div class="line"></div><div class="line">    <span class="comment">// 将对象放入到一个字节数组中，如果已有的字节数组(slice)可以放得下此对象，则重用，否则新建一个字节数组</span></div><div class="line">	w := wrapEntry(currentTimestamp, hashedKey, key, entry, &s.entryBuffer)</div><div class="line"></div><div class="line">	<span class="keyword">for</span> {</div><div class="line">        <span class="comment">// 尝试放入到字节队列中，成功则加入到map中</span></div><div class="line">		<span class="keyword">if</span> index, err := s.entries.Push(w); err == <span class="constant">nil</span> {</div><div class="line">			s.hashmap[hashedKey] = <span class="typename">uint32</span>(index)</div><div class="line">			s.lock.Unlock()</div><div class="line">			<span class="keyword">return</span> <span class="constant">nil</span></div><div class="line">        }</div><div class="line">        <span class="comment">// 如果空间不足，移除最老的元素</span></div><div class="line">		<span class="keyword">if</span> s.removeOldestEntry(NoSpace) != <span class="constant">nil</span> {</div><div class="line">			s.lock.Unlock()</div><div class="line">			<span class="keyword">return</span> fmt.Errorf(<span class="string">"entry is bigger than max shard size"</span>)</div><div class="line">		}</div><div class="line">	}</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> wrapEntry(timestamp <span class="typename">uint64</span>, hash <span class="typename">uint64</span>, key <span class="typename">string</span>, entry []<span class="typename">byte</span>, buffer *[]<span class="typename">byte</span>) []<span class="typename">byte</span> {</div><div class="line">	keyLength := <span class="built_in">len</span>(key)</div><div class="line">	blobLength := <span class="built_in">len</span>(entry) + headersSizeInBytes + keyLength</div><div class="line"></div><div class="line">	<span class="keyword">if</span> blobLength &gt; <span class="built_in">len</span>(*buffer) {</div><div class="line">		*buffer = <span class="built_in">make</span>([]<span class="typename">byte</span>, blobLength)</div><div class="line">	}</div><div class="line">	blob := *buffer</div><div class="line"></div><div class="line">	binary.LittleEndian.PutUint64(blob, timestamp)</div><div class="line">	binary.LittleEndian.PutUint64(blob[timestampSizeInBytes:], hash)</div><div class="line">	binary.LittleEndian.PutUint16(blob[timestampSizeInBytes+hashSizeInBytes:], <span class="typename">uint16</span>(keyLength))</div><div class="line">	<span class="built_in">copy</span>(blob[headersSizeInBytes:], key)</div><div class="line">	<span class="built_in">copy</span>(blob[headersSizeInBytes+keyLength:], entry)</div><div class="line"></div><div class="line">	<span class="keyword">return</span> blob[:blobLength]</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p><code>queue.BytesQueue</code>是一个字节数组，可以做到按需分配。当加入一个<code>[]byte</code>时，它会把数据copy到尾部。</p>
+<p>值得注意的是删除缓存元素的时候bigcache只是把它从的索引从<code>map[uint64]uint32</code>中删除了，并把它在<code>queue.BytesQueue</code>队列中的长度置为0。那么删除操作会不会在<code>queue.BytesQueue</code>中造成很多的“虫洞”？从它的实现上来看，<strong>会</strong>, 而且这些&quot;虫洞&quot;不会被整理，也不会被移除。因为它的底层是使用一个字节数组实现的，&quot;虫洞&quot;的移除是一个耗时的操作，会导致锁的持有时间过长。 那么寻找合适的&quot;虫洞&quot;重用呢？虽然遍历的方法寻找&quot;虫洞&quot;也是一个比较耗时的操作，我觉得这里有优化的空间。</p>
+<p>bigcache只能等待清理最老的元素的时候把这些&quot;虫洞&quot;删除掉。</p>
+<h2 id="剔除">剔除</h2>
+<p>对于 bigcache来说， 剔除还有意义吗？或许有。如果我们不想使用某个key的缓存对象，我们可以把它删除。</p>
+<p>首先，在增加一个元素之前，会检查最老的元素要不要删除。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">if</span> oldestEntry, err := s.entries.Peek(); err == <span class="constant">nil</span> {</div><div class="line">	s.onEvict(oldestEntry, currentTimestamp, s.removeOldestEntry)</div><div class="line">   }</div></pre></td></tr></table></figure>
+
+<p>其次，在添加一个元素失败后，会清理空间删除最老的元素。</p>
+<p>同时， 还会专门有一个定时的清理goroutine, 负责移除过期数据。</p>
+<p>另外需要注意的是缓存对象没有读取的时候刷新过期时间的功能，所以放入的缓存对象最终免不了过期的命运。</p>
+<p>另外所有的缓存对象的<code>lifewindow</code>都是一样的，比如30分钟、两小时。</p>
+<p>所以，如果你真的使用bigcache, 还是得需要注意它的这些设计，看看这些设计是否和你的场景相吻合。</p>
+<h2 id="fastcache">fastcache</h2>
+<p>bigcache在特定时候还是有问题，就是当<code>queue.BytesQueue</code>的容量不够的时候，它会进行扩展，扩展是一个很重的操作，它会复制原来的数据到新的字节数组上。</p>
+<p>fasthttp 的作者采用类似bigcache的思想实现了<a href="https://github.com/VictoriaMetrics/fastcache" target="_blank" rel="external">fastcache</a>，他使用<code>chunks [][]byte</code>替换<code>queue.BytesQueue</code>，chunk是一个 ring buffer, 每个chunk 64KB。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> bucket <span class="keyword">struct</span> {</div><div class="line">	mu sync.RWMutex</div><div class="line"></div><div class="line">	<span class="comment">// chunks is a ring buffer with encoded (k, v) pairs.</span></div><div class="line">	<span class="comment">// It consists of 64KB chunks.</span></div><div class="line">	chunks [][]<span class="typename">byte</span></div><div class="line"></div><div class="line">	<span class="comment">// m maps hash(k) to idx of (k, v) pair in chunks.</span></div><div class="line">	m <span class="keyword">map</span>[<span class="typename">uint64</span>]<span class="typename">uint64</span></div><div class="line"></div><div class="line">	<span class="comment">// idx points to chunks for writing the next (k, v) pair.</span></div><div class="line">	idx <span class="typename">uint64</span></div><div class="line"></div><div class="line">	<span class="comment">// gen is the generation of chunks.</span></div><div class="line">	gen <span class="typename">uint64</span></div><div class="line"></div><div class="line">	getCalls    <span class="typename">uint64</span></div><div class="line">	setCalls    <span class="typename">uint64</span></div><div class="line">	misses      <span class="typename">uint64</span></div><div class="line">	collisions  <span class="typename">uint64</span></div><div class="line">	corruptions <span class="typename">uint64</span></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>虽然<code>chunks [][]byte</code>也包含很多的chunk, 但是由于chunk的size比较大，所以可以大大缩小垃圾回收需要mark/scan的对象的数量。带来的好处就是扩容的时候只需要增加更多的chunk即可。</p>
+<p>删除还是一样，只是从map中删除，不会从<code>chunks</code>中删除。</p>
+<p>fastcache没有过期的概念，所以缓存对象不会被过期剔除。</p>
+<h2 id="参考文档">参考文档</h2>
+<ol>
+<li><a href="http://allegro.tech/2016/03/writing-fast-cache-service-in-go.html" target="_blank" rel="external">http://allegro.tech/2016/03/writing-fast-cache-service-in-go.html</a></li>
+<li><a href="https://github.com/allegro/bigcache" target="_blank" rel="external">https://github.com/allegro/bigcache</a></li>
+<li><a href="https://dev.to/douglasmakey/how-bigcache-avoids-expensive-gc-cycles-and-speeds-up-concurrent-access-in-go-12bb" target="_blank" rel="external">https://dev.to/douglasmakey/how-bigcache-avoids-expensive-gc-cycles-and-speeds-up-concurrent-access-in-go-12bb</a></li>
+<li><a href="https://pengrl.com/p/35302/" target="_blank" rel="external">https://pengrl.com/p/35302/</a></li>
+<li><a href="https://github.com/VictoriaMetrics/fastcache" target="_blank" rel="external">https://github.com/VictoriaMetrics/fastcache</a></li>
+<li><a href="https://www.openmymind.net/Shard-Your-Hash-table-to-reduce-write-locks/" target="_blank" rel="external">https://www.openmymind.net/Shard-Your-Hash-table-to-reduce-write-locks/</a></li>
+<li><a href="https://medium.com/@itsromiljain/curious-case-of-concurrenthashmap-90249632d335" target="_blank" rel="external">https://medium.com/@itsromiljain/curious-case-of-concurrenthashmap-90249632d335</a></li>
+<li><a href="https://segmentfault.com/a/1190000012926722" target="_blank" rel="external">https://segmentfault.com/a/1190000012926722</a></li>
+<li><a href="https://github.com/coocood/freecache" target="_blank" rel="external">https://github.com/coocood/freecache</a></li>
+</ol>
+
+      
+    </div>
+    <footer class="article-footer">
+      
+
+      
+      <!-- <link rel="stylesheet" href="https://unpkg.com/gitalk/dist/gitalk.css">
+      <script src="https://unpkg.com/gitalk/dist/gitalk.min.js"></script> -->
+      <section id="comments">
+        <script src="https://utteranc.es/client.js"
+                repo="smallnest/gitalk"
+                issue-term="title"
+                theme="github-light"
+                crossorigin="anonymous"
+                async>
+        </script>
+        <!-- <div id="gitalk-container"></div>
+        <script type="text/javascript">
+          var gitalkOpts = {
+            id: '2019/11/18/how-is-the-bigcache-is-fast/',
+            owner: 'smallnest',
+            repo: 'gitalk',
+            title: '妙到颠毫: bigcache优化技巧',
+            body: 'https://colobu.com/2019/11/18/how-is-the-bigcache-is-fast/',
+            clientID: 'bc02724130ed5b7ee275',
+            clientSecret: '68cb0bae2f93a8b88b09e0eb9b08c844b06a9047',
+            admin: ['smallnest'],
+            distractionFreeMode: false
+          };
+
+          const gitalk = new Gitalk(gitalkOpts)
+          gitalk.render('gitalk-container')
+        </script> -->
+        <noscript> 为正常使用评论功能请激活JavaScript</noscript>
+      </section>
+
+      
+
+    </footer>
+  </div>
+  
+  
+<nav id="article-nav">
+  
+    <a href="/2019/12/02/How-to-Setup-MySQL-Master-Master-Replication/" id="article-nav-newer" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">Newer</strong>
+      <div class="article-nav-title">
+        
+          [译]配置 MySQL 主主复制
+        
+      </div>
+    </a>
+  
+  
+    <a href="/2019/11/05/Golang-Templates-Cheatsheet/" id="article-nav-older" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">Older</strong>
+      <div class="article-nav-title">[译]Golang template 小抄</div>
+    </a>
+  
+</nav>
+
+  
+</article></section>
+        
+          <aside id="sidebar">
+  
+      <div class="widget-wrap">
+    <h3 class="widget-title">原创图书</h3>
+    <div class="widget">
+      <a href="/ScalaCollectionsCookbook/">
+        <img width="100%" src="/ScalaCollectionsCookbook/scala_collections_cookbook.jpg">
+        <img width="100%" src="/ScalaCollectionsCookbook/scala_collections_cookbook_tw.png">
+      </a>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">分类</h3>
+    <div class="widget">
+      <ul class="category-list"><li class="category-list-item"><a class="category-list-link" href="/categories/Android/">Android</a><span class="category-list-count">12</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/C/">C++</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/DOTNET/">DOTNET</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Docker/">Docker</a><span class="category-list-count">5</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Go/">Go</a><span class="category-list-count">175</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Java/">Java</a><span class="category-list-count">64</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Linux/">Linux</a><span class="category-list-count">7</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Rust/">Rust</a><span class="category-list-count">12</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Scala/">Scala</a><span class="category-list-count">18</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/分享/">分享</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/前端开发/">前端开发</a><span class="category-list-count">18</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/区块链/">区块链</a><span class="category-list-count">8</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/大数据/">大数据</a><span class="category-list-count">60</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/工具/">工具</a><span class="category-list-count">28</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/数据库/">数据库</a><span class="category-list-count">3</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/架构/">架构</a><span class="category-list-count">26</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/算法/">算法</a><span class="category-list-count">4</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/管理/">管理</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/网络编程/">网络编程</a><span class="category-list-count">13</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/读书笔记/">读书笔记</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/运维/">运维</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/高并发编程/">高并发编程</a><span class="category-list-count">20</span></li></ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">标签云</h3>
+    <div class="widget tagcloud">
+      <a href="/tags/Android/" style="font-size: 15.71px;">Android</a><a href="/tags/ApacheBench/" style="font-size: 11.43px;">ApacheBench</a><a href="/tags/Bower/" style="font-size: 10.00px;">Bower</a><a href="/tags/C/" style="font-size: 10.00px;">C#</a><a href="/tags/CDN/" style="font-size: 10.00px;">CDN</a><a href="/tags/CQRS/" style="font-size: 10.00px;">CQRS</a><a href="/tags/CRC/" style="font-size: 10.00px;">CRC</a><a href="/tags/CSS/" style="font-size: 11.43px;">CSS</a><a href="/tags/CompletableFuture/" style="font-size: 10.00px;">CompletableFuture</a><a href="/tags/Comsat/" style="font-size: 10.00px;">Comsat</a><a href="/tags/Curator/" style="font-size: 18.57px;">Curator</a><a href="/tags/DSL/" style="font-size: 10.00px;">DSL</a><a href="/tags/Disruptor/" style="font-size: 10.00px;">Disruptor</a><a href="/tags/Docker/" style="font-size: 11.43px;">Docker</a><a href="/tags/Ember/" style="font-size: 11.43px;">Ember</a><a href="/tags/FastJson/" style="font-size: 10.00px;">FastJson</a><a href="/tags/Fiber/" style="font-size: 10.00px;">Fiber</a><a href="/tags/GAE/" style="font-size: 10.00px;">GAE</a><a href="/tags/GC/" style="font-size: 12.86px;">GC</a><a href="/tags/Gnuplot/" style="font-size: 10.00px;">Gnuplot</a><a href="/tags/Go/" style="font-size: 14.29px;">Go</a><a href="/tags/Gradle/" style="font-size: 10.00px;">Gradle</a><a href="/tags/Grunt/" style="font-size: 10.00px;">Grunt</a><a href="/tags/Gulp/" style="font-size: 10.00px;">Gulp</a><a href="/tags/Hadoop/" style="font-size: 10.00px;">Hadoop</a><a href="/tags/Hazelcast/" style="font-size: 10.00px;">Hazelcast</a><a href="/tags/IPFS/" style="font-size: 10.00px;">IPFS</a><a href="/tags/Ignite/" style="font-size: 10.00px;">Ignite</a><a href="/tags/JVM/" style="font-size: 10.00px;">JVM</a><a href="/tags/Java/" style="font-size: 17.14px;">Java</a><a href="/tags/Kafka/" style="font-size: 20.00px;">Kafka</a><a href="/tags/Lambda/" style="font-size: 14.29px;">Lambda</a><a href="/tags/Linux/" style="font-size: 12.86px;">Linux</a><a href="/tags/LongAdder/" style="font-size: 10.00px;">LongAdder</a><a href="/tags/MathJax/" style="font-size: 10.00px;">MathJax</a><a href="/tags/Maven/" style="font-size: 11.43px;">Maven</a><a href="/tags/Memcached/" style="font-size: 10.00px;">Memcached</a><a href="/tags/Metrics/" style="font-size: 10.00px;">Metrics</a><a href="/tags/Mongo/" style="font-size: 12.86px;">Mongo</a><a href="/tags/Netty/" style="font-size: 15.71px;">Netty</a>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">归档</h3>
+    <div class="widget">
+      <ul class="archive-list"><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/10/">October 2021</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/08/">August 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/07/">July 2021</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/06/">June 2021</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/05/">May 2021</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/04/">April 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/03/">March 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/02/">February 2021</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/01/">January 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/12/">December 2020</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/11/">November 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/09/">September 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/08/">August 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/07/">July 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/06/">June 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/05/">May 2020</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/04/">April 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/03/">March 2020</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/02/">February 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/01/">January 2020</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/12/">December 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/11/">November 2019</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/10/">October 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/09/">September 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/08/">August 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/07/">July 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/06/">June 2019</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/05/">May 2019</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/04/">April 2019</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/03/">March 2019</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/02/">February 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/01/">January 2019</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/12/">December 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/11/">November 2018</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/10/">October 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/09/">September 2018</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/08/">August 2018</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/07/">July 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/06/">June 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/05/">May 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/04/">April 2018</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/03/">March 2018</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/02/">February 2018</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/01/">January 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/12/">December 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/11/">November 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/10/">October 2017</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/09/">September 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/08/">August 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/07/">July 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/06/">June 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/05/">May 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/04/">April 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/03/">March 2017</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/02/">February 2017</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/01/">January 2017</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/12/">December 2016</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/11/">November 2016</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/10/">October 2016</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/09/">September 2016</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/08/">August 2016</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/07/">July 2016</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/06/">June 2016</a><span class="archive-list-count">14</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/05/">May 2016</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/04/">April 2016</a><span class="archive-list-count">14</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/03/">March 2016</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/02/">February 2016</a><span class="archive-list-count">8</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/01/">January 2016</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/12/">December 2015</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/11/">November 2015</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/10/">October 2015</a><span class="archive-list-count">9</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/09/">September 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/08/">August 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/07/">July 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/06/">June 2015</a><span class="archive-list-count">8</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/05/">May 2015</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/04/">April 2015</a><span class="archive-list-count">15</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/03/">March 2015</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/02/">February 2015</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/01/">January 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/12/">December 2014</a><span class="archive-list-count">28</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/11/">November 2014</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/10/">October 2014</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/09/">September 2014</a><span class="archive-list-count">28</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/08/">August 2014</a><span class="archive-list-count">19</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/07/">July 2014</a><span class="archive-list-count">1</span></li></ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">近期文章</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+            <a href="/2021/10/06/replace-implementations-in-go-std-libs-at-runtime/">强制更改Go标准库的实现</a>
+          </li>
+        
+          <li>
+            <a href="/2021/08/30/how-is-go-generic-implemented/">Go泛型是怎么实现的?</a>
+          </li>
+        
+          <li>
+            <a href="/2021/08/01/benchmark-of-rpc-frameworks/">2021年Go生态圈rpc框架benchmark</a>
+          </li>
+        
+          <li>
+            <a href="/2021/07/13/Updating-the-Go-Memory-Model/">[译]更新Go内存模型</a>
+          </li>
+        
+          <li>
+            <a href="/2021/07/11/Programming-Language-Memory-Models/">[译]编程语言内存模型</a>
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">友情链接</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+			 
+            <a href="http://stackshare.io" target="_blank">技术栈</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://toutiao.io/" target="_blank">开发者头条</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://weekly.manong.io/issues/" target="_blank">码农周刊</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.tuicool.com/mags" target="_blank">编程狂人周刊</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.importnew.com/" target="_blank">importnew</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://ifeve.com/" target="_blank">并发编程网</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://github.com" target="_blank">github</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://stackoverflow.com/" target="_blank">stackoverflow</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.javacodegeeks.com/" target="_blank">javacodegeeks</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.infoq.com/" target="_blank">infoq</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.dzone.com/links/index.html" target="_blank">dzone</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://oj.leetcode.com/problems/" target="_blank">leetcode</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://tutorials.jenkov.com" target="_blank">jenkov</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://howtodoinjava.com" target="_blank">HowToDoInJava</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://java-design-patterns.com/patterns/" target="_blank">java design patterns</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://medium.com/netflix-techblog" target="_blank">Netflix技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://www.techiedelight.com" target="_blank">Techie Delight</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://engineering.linkedin.com/blog" target="_blank">Linkedin技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://blogs.dropbox.com/tech/" target="_blank">Dropbox技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://code.fb.com" target="_blank">Facebook技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://jm.taobao.org" target="_blank">淘宝中间件团队</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://tech.meituan.com" target="_blank">美团技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://blogs.360.cn" target="_blank">360技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://xiaomi-info.github.io" target="_blank">小米信息部技术团队</a>
+			
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+      
+
+  
+</aside>
+        
+      </div>
+      <footer id="footer">
+  
+  <div class="outer">
+    <div id="footer-info" class="inner">
+      &copy; 2021 smallnest<br>
+	  Powered by <a href="http://hexo.io/" target="_blank">Hexo</a>
+    </div>
+  </div>
+</footer>
+    </div>
+    <nav id="mobile-nav">
+  
+    
+      <a href="/" class="mobile-nav-link"><i class="fa fa-home">&nbsp;</i>首页</a>
+    
+  
+    
+      <a href="/archives" class="mobile-nav-link"><i class="fa fa-folder-o">&nbsp;</i>归档</a>
+    
+  
+    
+      <a href="https://github.com/smallnest" class="mobile-nav-link"><i class="fa fa-github">&nbsp;</i>github</a>
+    
+  
+    
+      <a class="mobile-nav-link" href="#"><i class="fa fa-bars">&nbsp;</i>网站群</a>
+    
+      
+            <a class="mobile-nav-link" href="/goasm">&nbsp;&nbsp;<i class="fa fa-language">&nbsp;</i>Go汇编示例</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="https://gowebexamples.com">&nbsp;&nbsp;<i class="fa fa-external-link">&nbsp;</i>Go Web开发示例</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://go-database-sql.org">&nbsp;&nbsp;<i class="fa fa-external-link">&nbsp;</i>Go 数据库开发教程</a>
+          
+          
+    
+      
+            
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://rpcx.io">&nbsp;&nbsp;<i class="fa undefined">&nbsp;</i>RPCX官网</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://cn.doc.rpcx.io">&nbsp;&nbsp;<i class="fa undefined">&nbsp;</i>RPC开发指南</a>
+          
+          
+    
+    
+  
+    
+      <a href="/ScalaCollectionsCookbook" class="mobile-nav-link"><i class="fa fa-book">&nbsp;</i>Scala集合技术手册</a>
+    
+  
+    
+      <a href="/about" class="mobile-nav-link"><i class="fa fa-lemon-o">&nbsp;</i>关于</a>
+    
+  
+</nav>
+    
+<script src="//cdn.staticfile.org/jquery/1.11.1/jquery.min.js"></script>
+<script src="//cdn.bootcss.com/jquery.lazyload/1.9.1/jquery.lazyload.min.js"></script>
+
+<script src="//cdnjs.cloudflare.com/ajax/libs/fancybox/3.2.5/jquery.fancybox.min.js"></script>
+
+
+<script src="/js/script.js" type="text/javascript"></script>
+
+<!-- mathjax config similar to math.stackexchange -->
+<script type="text/x-mathjax-config">
+  MathJax.Hub.Config({
+    tex2jax: {
+      inlineMath: [ ['$','$'], ["\\(","\\)"] ],
+      processEscapes: true,
+      skipTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code']
+    }
+  });
+  MathJax.Hub.Queue(function() {
+      var all = MathJax.Hub.getAllJax(), i;
+      for(i=0; i < all.length; i += 1) {
+        all[i].SourceElement().parentNode.className += ' has-jax';
+      }
+  });
+</script>
+<script type="text/javascript" src="//cdn.bootcss.com/mathjax/2.6.0-beta.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML">
+</script>
+
+<div id="totop" style="position:fixed;bottom:150px;right:10px;cursor: pointer;z-index: 2000;">
+	<a title="返回顶部"><img src="/images/scrollup.png"/></a>
+</div>
+<script src="/js/totop.js" type="text/javascript"></script>
+
+
+
+
+<script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "//hm.baidu.com/hm.js?e085d87993250aab11f3e0c15f1c2785";
+  var s = document.getElementsByTagName("script")[0]; 
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+
+
+  </div>
+</body>
+</html>

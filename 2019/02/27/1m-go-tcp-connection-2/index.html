@@ -1,0 +1,742 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset="utf-8">
+  
+  <title>百万 Go TCP 连接的思考2: 百万连接的吞吐率和延迟</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+  <meta name="description" content="上一篇epoll方式减少资源占用 介绍了测试环境以及epoll方式实现百万连接的TCP服务器。这篇文章介绍百万连接服务器的几种实现方式，以及它们的吞吐率和延迟。
+这几种服务器的实现包括：epoll、multiple epoller、prefork 和 workerpool。
+第一篇 百万 Go TCP 连接的思考: epoll方式减少资源占用第二篇 百万 Go TCP 连接的思考2: 百万连接的吞">
+<meta property="og:type" content="article">
+<meta property="og:title" content="百万 Go TCP 连接的思考2: 百万连接的吞吐率和延迟">
+<meta property="og:url" content="https://colobu.com/2019/02/27/1m-go-tcp-connection-2/">
+<meta property="og:site_name" content="鸟窝">
+<meta property="og:description" content="上一篇epoll方式减少资源占用 介绍了测试环境以及epoll方式实现百万连接的TCP服务器。这篇文章介绍百万连接服务器的几种实现方式，以及它们的吞吐率和延迟。
+这几种服务器的实现包括：epoll、multiple epoller、prefork 和 workerpool。
+第一篇 百万 Go TCP 连接的思考: epoll方式减少资源占用第二篇 百万 Go TCP 连接的思考2: 百万连接的吞">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="百万 Go TCP 连接的思考2: 百万连接的吞吐率和延迟">
+<meta name="twitter:description" content="上一篇epoll方式减少资源占用 介绍了测试环境以及epoll方式实现百万连接的TCP服务器。这篇文章介绍百万连接服务器的几种实现方式，以及它们的吞吐率和延迟。
+这几种服务器的实现包括：epoll、multiple epoller、prefork 和 workerpool。
+第一篇 百万 Go TCP 连接的思考: epoll方式减少资源占用第二篇 百万 Go TCP 连接的思考2: 百万连接的吞">
+
+  
+  <link rel="alternative" href="/atom.xml" title="鸟窝" type="application/atom+xml">
+  
+  
+  <link rel="icon" href="/favicon.png">
+  
+  <link rel="stylesheet" href="/css/style.css" type="text/css">
+
+  <link href="//cdn.staticfile.org/font-awesome/4.2.0/css/font-awesome.css" rel="stylesheet">
+  
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/fancybox/2.1.7/css/jquery.fancybox.min.css"
+    media="screen" type="text/css">
+  
+  <link rel="stylesheet" href="//cdnjs.cloudflare.com/ajax/libs/animate.css/3.1.1/animate.min.css" media="screen"
+    type="text/css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/tonsky/FiraCode@1.207/distr/fira_code.css">
+</head>
+<body>
+  <div id="container">
+    <div id="wrap">
+      <header id="header">
+  <div id="banner"></div>
+  <div id="header-outer" class="outer">
+    <div id="header-title" class="inner">
+      <h1 id="logo-wrap" class="animated bounceInLeft">
+        <a href="/" id="logo">鸟窝</a>
+      </h1>
+      
+        <h2 id="subtitle-wrap" class="animated bounceInLeft">
+          <a href="/" id="subtitle">大道至简 Simplicity is the ultimate form of sophistication</a>
+        </h2>
+      
+    </div>
+    <div id="header-inner" class="inner">
+      <nav id="main-nav">
+        <a id="main-nav-toggle" class="nav-icon"></a>
+        
+          
+            <a class="main-nav-link" href="/"><i class="fa fa-home">&nbsp;</i>首页</a>
+          
+          
+          
+            <a class="main-nav-link" href="/archives"><i class="fa fa-folder-o">&nbsp;</i>归档</a>
+          
+          
+          
+            <a class="main-nav-link" href="https://github.com/smallnest"><i class="fa fa-github">&nbsp;</i>github</a>
+          
+          
+          
+            <div class="dropdown main-nav-link"><a class="main-nav-link" href="#"><i class="fa fa-bars">&nbsp;</i>网站群</a>
+              <div class="dropdown-content">
+          
+            
+              <a href="/goasm"><i class="fa fa-language"></i>&nbsp;Go汇编示例</a>
+            
+                
+          
+            
+              <a href="https://gowebexamples.com"><i class="fa fa-external-link"></i>&nbsp;Go Web开发示例</a>
+            
+                
+          
+            
+              <a href="http://go-database-sql.org"><i class="fa fa-external-link"></i>&nbsp;Go 数据库开发教程</a>
+            
+                
+          
+            
+              <hr>
+            
+                
+          
+            
+              <a href="http://rpcx.io"><i class="fa undefined"></i>&nbsp;RPCX官网</a>
+            
+                
+          
+            
+              <a href="http://cn.doc.rpcx.io"><i class="fa undefined"></i>&nbsp;RPC开发指南</a>
+            
+                
+          
+          </div>
+        </div>
+          
+          
+          
+            <a class="main-nav-link" href="/ScalaCollectionsCookbook"><i class="fa fa-book">&nbsp;</i>Scala集合技术手册</a>
+          
+          
+          
+            <a class="main-nav-link" href="/about"><i class="fa fa-lemon-o">&nbsp;</i>关于</a>
+          
+          
+
+
+      </nav>
+      <nav id="sub-nav">
+        
+          <a id="nav-rss-link" class="nav-icon" href="/atom.xml" title="RSS Feed"></a>
+        
+        <a id="nav-search-btn" class="nav-icon" title="Search"></a>
+      </nav>
+      <div id="search-form-wrap">
+        <form action="http://www.baidu.com/baidu" method="get" accept-charset="utf-8" class="search-form">
+          <input type="search" name="word" maxlength="20" class="search-form-input" placeholder="Search">
+          <input type="submit" value="" class="search-form-submit">
+          <input name=tn type=hidden value="bds">
+          <input name=cl type=hidden value="3">
+          <input name=ct type=hidden value="2097152">
+          <input type="hidden" name="si" value="colobu.com">
+        </form>
+      </div>
+    </div>
+  </div>
+</header>
+      <div class="outer">
+        <section id="main"><script>function show_answer(btn, x) { if (btn.value === "显示答案") { btn.value = "隐藏答案" } else { btn.value = "显示答案" } var as = document.getElementById(x); if (as.style.display === "none") { as.style.display = "block" } else { as.style.display = "none" } }</script>
+
+<article id="post-1m-go-tcp-connection-2" class="article article-type-post" itemscope
+  itemprop="blogPost">
+  <div class="article-meta">
+    <a href="/2019/02/27/1m-go-tcp-connection-2/" class="article-date">
+  <time datetime="2019-02-27T11:19:49.000Z" itemprop="datePublished">2019年02月27日</time>
+</a>
+    
+  <div class="article-category">
+    <a class="article-category-link" href="/categories/Go/">Go</a>
+  </div>
+
+    
+  <div class="article-author"> by smallnest</div>
+
+  </div>
+  <div class="article-inner">
+    
+    
+    <header class="article-header">
+      
+  
+    <h1 class="article-title" itemprop="name">
+      百万 Go TCP 连接的思考2: 百万连接的吞吐率和延迟
+	  
+    </h1>
+  
+
+    </header>
+    
+    <div class="article-entry" itemprop="articleBody">
+      
+      
+      
+      <p>上一篇<a href="/2019/02/23/1m-go-tcp-connection/">epoll方式减少资源占用</a> 介绍了测试环境以及epoll方式实现百万连接的TCP服务器。这篇文章介绍百万连接服务器的几种实现方式，以及它们的吞吐率和延迟。</p>
+<p>这几种服务器的实现包括：<code>epoll</code>、<code>multiple epoller</code>、<code>prefork</code> 和 <code>workerpool</code>。</p>
+<p>第一篇 <a href="https://colobu.com/2019/02/23/1m-go-tcp-connection/" target="_blank" rel="external">百万 Go TCP 连接的思考: epoll方式减少资源占用</a><br>第二篇 <a href="https://colobu.com/2019/02/27/1m-go-tcp-connection-2/" target="_blank" rel="external">百万 Go TCP 连接的思考2: 百万连接的吞吐率和延迟</a><br>第三篇 <a href="https://colobu.com/2019/02/28/1m-go-tcp-connection-3/" target="_blank" rel="external">百万 Go TCP 连接的思考: 正常连接下的吞吐率和延迟</a></p>
+<p>相关代码已发布到github上: <a href="https://github.com/smallnest/1m-go-tcp-server" target="_blank" rel="external">1m-go-tcp-server</a>。</p>
+<a id="more"></a>
+<h2 id="三、_epoll服务器加上吞吐率指标">三、 epoll服务器加上吞吐率指标</h2>
+<p>上一篇已经介绍了epoll方式的实现，为了测试吞吐率，我们需要通过传递特殊的数据来计算。</p>
+<p>客户端将它发送数据时的时间戳传给服务器，这个时间戳只需要8个字节，服务器不需要任何改动，只需要原封不动的将数据回传给客户端:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div></pre></td><td class="code"><pre><div class="line">......</div><div class="line"><span class="keyword">var</span> (</div><div class="line">	opsRate = metrics.NewRegisteredMeter(<span class="string">"ops"</span>, <span class="constant">nil</span>)</div><div class="line">)</div><div class="line"></div><div class="line"><span class="keyword">func</span> start() {</div><div class="line">	<span class="keyword">for</span> {</div><div class="line">		connections, err := epoller.Wait()</div><div class="line">		<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">			log.Printf(<span class="string">"failed to epoll wait %v"</span>, err)</div><div class="line">			<span class="keyword">continue</span></div><div class="line">		}</div><div class="line">		<span class="keyword">for</span> _, conn := <span class="keyword">range</span> connections {</div><div class="line">			<span class="keyword">if</span> conn == <span class="constant">nil</span> {</div><div class="line">				<span class="keyword">break</span></div><div class="line">			}</div><div class="line"></div><div class="line">			<span class="comment">// 将消息(时间戳)原封不动的写回</span></div><div class="line">			_, err = io.CopyN(conn, conn,<span class="number"> 8</span>)</div><div class="line">			<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">				<span class="keyword">if</span> err := epoller.Remove(conn); err != <span class="constant">nil</span> {</div><div class="line">					log.Printf(<span class="string">"failed to remove %v"</span>, err)</div><div class="line">				}</div><div class="line">				conn.Close()</div><div class="line">			}</div><div class="line"></div><div class="line">			opsRate.Mark<span class="number">(1</span>)</div><div class="line">		}</div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>这里epoll我们并没有注册为边缘触发的方式，默认是水平触发的方式。</p>
+<p>每次读取8个字节(时间戳)，然后返回给客户端。同时metric记录一次。</p>
+<p>metric库使用的是<a href="https://github.com/rcrowley/go-metrics" target="_blank" rel="external">rcrowley/go-metrics</a>。</p>
+<h3 id="四、客户端也修改为epoll方式">四、客户端也修改为epoll方式</h3>
+<p>客户端不再发送<code>hello world</code>数据，而是当前的时间戳，收到服务器的返回后，就可以计算出一次请求的总共的花费(延迟，latency)，然后发送下一个请求。</p>
+<p>所以客户端的测试并不是pipeline的方式，以下所有的测试都不是pipeline的方式，而是收到返回再发下一个请求。</p>
+<p>客户端也需要改成epoll的方式，原先一个goroutine轮训所有的连接的方式性能比较底下，所以改成epoll的方式：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div><div class="line">35</div><div class="line">36</div><div class="line">37</div><div class="line">38</div><div class="line">39</div><div class="line">40</div><div class="line">41</div><div class="line">42</div><div class="line">43</div><div class="line">44</div><div class="line">45</div><div class="line">46</div><div class="line">47</div><div class="line">48</div><div class="line">49</div><div class="line">50</div><div class="line">51</div><div class="line">52</div><div class="line">53</div><div class="line">54</div><div class="line">55</div><div class="line">56</div><div class="line">57</div><div class="line">58</div><div class="line">59</div><div class="line">60</div><div class="line">61</div><div class="line">62</div><div class="line">63</div><div class="line">64</div><div class="line">65</div><div class="line">66</div><div class="line">67</div><div class="line">68</div><div class="line">69</div><div class="line">70</div><div class="line">71</div><div class="line">72</div><div class="line">73</div><div class="line">74</div><div class="line">75</div><div class="line">76</div><div class="line">77</div><div class="line">78</div><div class="line">79</div><div class="line">80</div><div class="line">81</div><div class="line">82</div><div class="line">83</div><div class="line">84</div><div class="line">85</div><div class="line">86</div><div class="line">87</div><div class="line">88</div><div class="line">89</div><div class="line">90</div><div class="line">91</div><div class="line">92</div><div class="line">93</div><div class="line">94</div><div class="line">95</div><div class="line">96</div><div class="line">97</div><div class="line">98</div><div class="line">99</div><div class="line">100</div><div class="line">101</div><div class="line">102</div><div class="line">103</div><div class="line">104</div><div class="line">105</div><div class="line">106</div><div class="line">107</div><div class="line">108</div><div class="line">109</div><div class="line">110</div><div class="line">111</div><div class="line">112</div><div class="line">113</div><div class="line">114</div><div class="line">115</div><div class="line">116</div><div class="line">117</div><div class="line">118</div><div class="line">119</div><div class="line">120</div><div class="line">121</div><div class="line">122</div><div class="line">123</div><div class="line">124</div><div class="line">125</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> main</div><div class="line"></div><div class="line"><span class="keyword">import</span> (</div><div class="line">	<span class="string">"encoding/binary"</span></div><div class="line">	<span class="string">"flag"</span></div><div class="line">	<span class="string">"fmt"</span></div><div class="line">	<span class="string">"log"</span></div><div class="line">	<span class="string">"net"</span></div><div class="line">	<span class="string">"os"</span></div><div class="line">	<span class="string">"syscall"</span></div><div class="line">	<span class="string">"time"</span></div><div class="line"></div><div class="line">	<span class="string">"github.com/rcrowley/go-metrics"</span></div><div class="line">)</div><div class="line"></div><div class="line"><span class="keyword">var</span> (</div><div class="line">	ip          = flag.String(<span class="string">"ip"</span>, <span class="string">"127.0.0.1"</span>, <span class="string">"server IP"</span>)</div><div class="line">	connections = flag.Int(<span class="string">"conn"</span>,<span class="number"> 1</span>, <span class="string">"number of tcp connections"</span>)</div><div class="line">	startMetric = flag.String(<span class="string">"sm"</span>, time.Now().Format(<span class="string">"2006-01-02T15:04:05 -0700"</span>), <span class="string">"start time point of all clients"</span>)</div><div class="line">)</div><div class="line"></div><div class="line"><span class="keyword">var</span> (</div><div class="line">	opsRate = metrics.NewRegisteredTimer(<span class="string">"ops"</span>, <span class="constant">nil</span>)</div><div class="line">)</div><div class="line"><span class="keyword">var</span> epoller *epoll</div><div class="line"></div><div class="line"><span class="comment">// client改造成epoll方式, 处理epoll消息是单线程的</span></div><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	flag.Parse()</div><div class="line"></div><div class="line">	<span class="keyword">go</span> <span class="keyword">func</span>() {</div><div class="line">		startPoint, err := time.Parse(<span class="string">"2006-01-02T15:04:05 -0700"</span>, *startMetric)</div><div class="line">		<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">			<span class="built_in">panic</span>(err)</div><div class="line">		}</div><div class="line">		time.Sleep(startPoint.Sub(time.Now()))</div><div class="line"></div><div class="line">		metrics.Log(metrics.DefaultRegistry,<span class="number"> 5</span>*time.Second, log.New(os.Stderr, <span class="string">"metrics: "</span>, log.Lmicroseconds))</div><div class="line">	}()</div><div class="line"></div><div class="line">	<span class="keyword">var</span> err error</div><div class="line">	epoller, err = MkEpoll()</div><div class="line">	<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">		<span class="built_in">panic</span>(err)</div><div class="line">	}</div><div class="line"></div><div class="line">	addr := *ip + <span class="string">":8972"</span></div><div class="line">	log.Printf(<span class="string">"连接到 %s"</span>, addr)</div><div class="line">	<span class="keyword">var</span> conns []net.Conn</div><div class="line">	<span class="keyword">for</span> i :=<span class="number"> 0</span>; i &lt; *connections; i++ {</div><div class="line">		c, err := net.DialTimeout(<span class="string">"tcp"</span>, addr,<span class="number"> 10</span>*time.Second)</div><div class="line">		<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">			fmt.Println(<span class="string">"failed to connect"</span>, i, err)</div><div class="line">			i--</div><div class="line">			<span class="keyword">continue</span></div><div class="line">		}</div><div class="line">		<span class="keyword">if</span> err := epoller.Add(c); err != <span class="constant">nil</span> {</div><div class="line">			log.Printf(<span class="string">"failed to add connection %v"</span>, err)</div><div class="line">			c.Close()</div><div class="line">		}</div><div class="line">		conns = <span class="built_in">append</span>(conns, c)</div><div class="line">	}</div><div class="line"></div><div class="line">	log.Printf(<span class="string">"完成初始化 %d 连接"</span>, <span class="built_in">len</span>(conns))</div><div class="line"></div><div class="line">	tts := time.Second</div><div class="line">	<span class="keyword">if</span> *connections &gt;<span class="number"> 100</span> {</div><div class="line">		tts = time.Millisecond *<span class="number"> 5</span></div><div class="line">	}</div><div class="line"></div><div class="line">	<span class="keyword">go</span> start()</div><div class="line"></div><div class="line">	<span class="keyword">for</span> i :=<span class="number"> 0</span>; i &lt; <span class="built_in">len</span>(conns); i++ {</div><div class="line">		time.Sleep(tts)</div><div class="line">		conn := conns[i]</div><div class="line">		err = binary.Write(conn, binary.BigEndian, time.Now().UnixNano())</div><div class="line">		<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">			log.Printf(<span class="string">"failed to write timestamp %v"</span>, err)</div><div class="line">			<span class="keyword">if</span> err := epoller.Remove(conn); err != <span class="constant">nil</span> {</div><div class="line">				<span class="keyword">if</span> err := epoller.Remove(conn); err != <span class="constant">nil</span> {</div><div class="line">					log.Printf(<span class="string">"failed to remove %v"</span>, err)</div><div class="line">				}</div><div class="line">			}</div><div class="line">		}</div><div class="line">	}</div><div class="line"></div><div class="line">	<span class="keyword">select</span> {}</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> start() {</div><div class="line">	<span class="keyword">var</span> nano <span class="typename">int64</span></div><div class="line">	<span class="keyword">for</span> {</div><div class="line">		connections, err := epoller.Wait()</div><div class="line">		<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">			log.Printf(<span class="string">"failed to epoll wait %v"</span>, err)</div><div class="line">			<span class="keyword">continue</span></div><div class="line">		}</div><div class="line">		<span class="keyword">for</span> _, conn := <span class="keyword">range</span> connections {</div><div class="line">			<span class="keyword">if</span> conn == <span class="constant">nil</span> {</div><div class="line">				<span class="keyword">break</span></div><div class="line">			}</div><div class="line"></div><div class="line">			<span class="keyword">if</span> err := binary.Read(conn, binary.BigEndian, &nano); err != <span class="constant">nil</span> {</div><div class="line">				log.Printf(<span class="string">"failed to read %v"</span>, err)</div><div class="line">				<span class="keyword">if</span> err := epoller.Remove(conn); err != <span class="constant">nil</span> {</div><div class="line">					log.Printf(<span class="string">"failed to remove %v"</span>, err)</div><div class="line">				}</div><div class="line"></div><div class="line">				conn.Close()</div><div class="line">				<span class="keyword">continue</span></div><div class="line">			} <span class="keyword">else</span> {</div><div class="line">				opsRate.Update(time.Duration(time.Now().UnixNano() - nano))</div><div class="line">			}</div><div class="line"></div><div class="line">			err = binary.Write(conn, binary.BigEndian, time.Now().UnixNano())</div><div class="line">			<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">				log.Printf(<span class="string">"failed to write %v"</span>, err)</div><div class="line">				<span class="keyword">if</span> err := epoller.Remove(conn); err != <span class="constant">nil</span> {</div><div class="line">					log.Printf(<span class="string">"failed to remove %v"</span>, err)</div><div class="line">				}</div><div class="line">				conn.Close()</div><div class="line">			}</div><div class="line">		}</div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>使用的epoll实现代码和服务器端是一样的。</p>
+<p>客户端的统计会遇到一个问题，因为我们会启动50个docker容器，计算客户端的吞吐率的时候我们需要统计同一个时间段内这50个容器所有的请求和延迟。这里我们用了一个小小的技巧，让metrics库再同一个时间打印出它们的统计数据，基本可以保证统计的是这50个容器的同一个时间段内的指标。</p>
+<h3 id="数据分析">数据分析</h3>
+<p>这里我们对50个容器的日志进行统计， 汇总吞吐率进行相加，可以得到吞吐率(TPS)为 <strong>42495</strong>， 延迟(latency)为 <strong>23秒</strong>。</p>
+<h2 id="五、客户端改为多个epoller">五、客户端改为多个epoller</h2>
+<p>在上面的实现中，我们的客户端使用一个epoller处理所有的请求， 在事件监听的处理中，使用一个goroutine处理接收的所有的事件，如果处理事件比较慢，这个单一的goroutine将会是严重的瓶颈。</p>
+<p>所以我们要把它改成多goroutine的方式去处理。一种方式是启动一个线程池，采用多event loop的方式处理事件，另外一种方式是使用多个epoller， 每个epoller处理一批连接，每个epoller独自占用一个goroutine。 我们的客户端采用第二种方式，实现起来比较简单。</p>
+<blockquote>
+<p>Linux的Accept和epoller都曾有惊群的现象，也就是一个一个事件到来后会唤醒所有的监听的线程，目前这个问题应该已经不存在了。</p>
+</blockquote>
+<figure class="highlight go"><figcaption><span>client.go</span></figcaption><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div><div class="line">35</div><div class="line">36</div><div class="line">37</div><div class="line">38</div><div class="line">39</div><div class="line">40</div><div class="line">41</div><div class="line">42</div><div class="line">43</div><div class="line">44</div><div class="line">45</div><div class="line">46</div><div class="line">47</div><div class="line">48</div><div class="line">49</div><div class="line">50</div><div class="line">51</div><div class="line">52</div><div class="line">53</div><div class="line">54</div><div class="line">55</div><div class="line">56</div><div class="line">57</div><div class="line">58</div><div class="line">59</div><div class="line">60</div><div class="line">61</div><div class="line">62</div><div class="line">63</div><div class="line">64</div><div class="line">65</div><div class="line">66</div><div class="line">67</div><div class="line">68</div><div class="line">69</div><div class="line">70</div><div class="line">71</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	flag.Parse()</div><div class="line"></div><div class="line">	setLimit()</div><div class="line">	<span class="keyword">go</span> <span class="keyword">func</span>() {</div><div class="line">		startPoint, _ := time.Parse(<span class="string">"2006-01-02T15:04:05 -0700"</span>, *startMetric)</div><div class="line">		time.Sleep(startPoint.Sub(time.Now()))</div><div class="line"></div><div class="line">		metrics.Log(metrics.DefaultRegistry,<span class="number"> 5</span>*time.Second, log.New(os.Stderr, <span class="string">"metrics: "</span>, log.Lmicroseconds))</div><div class="line">	}()</div><div class="line"></div><div class="line">	addr := *ip + <span class="string">":8972"</span></div><div class="line">	log.Printf(<span class="string">"连接到 %s"</span>, addr)</div><div class="line"></div><div class="line">	<span class="keyword">for</span> i :=<span class="number"> 0</span>; i &lt; *c; i++ {</div><div class="line">		<span class="keyword">go</span> mkClient(addr, *connections/(*c))</div><div class="line">	}</div><div class="line"></div><div class="line">	<span class="keyword">select</span> {}</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> mkClient(addr <span class="typename">string</span>, connections <span class="typename">int</span>) {</div><div class="line">	epoller, err := MkEpoll()</div><div class="line">	<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">		<span class="built_in">panic</span>(err)</div><div class="line">	}</div><div class="line"></div><div class="line">	<span class="keyword">var</span> conns []net.Conn</div><div class="line">	<span class="keyword">for</span> i :=<span class="number"> 0</span>; i &lt; connections; i++ {</div><div class="line">		c, err := net.DialTimeout(<span class="string">"tcp"</span>, addr,<span class="number"> 10</span>*time.Second)</div><div class="line">		<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">			fmt.Println(<span class="string">"failed to connect"</span>, i, err)</div><div class="line">			i--</div><div class="line">			<span class="keyword">continue</span></div><div class="line">		}</div><div class="line">		<span class="keyword">if</span> err := epoller.Add(c); err != <span class="constant">nil</span> {</div><div class="line">			log.Printf(<span class="string">"failed to add connection %v"</span>, err)</div><div class="line">			c.Close()</div><div class="line">		}</div><div class="line">		conns = <span class="built_in">append</span>(conns, c)</div><div class="line">	}</div><div class="line"></div><div class="line">	log.Printf(<span class="string">"完成初始化 %d 连接"</span>, <span class="built_in">len</span>(conns))</div><div class="line"></div><div class="line">	<span class="keyword">go</span> start(epoller)</div><div class="line"></div><div class="line">	tts := time.Second</div><div class="line">	<span class="keyword">if</span> *c &gt;<span class="number"> 100</span> {</div><div class="line">		tts = time.Millisecond *<span class="number"> 5</span></div><div class="line">	}</div><div class="line"></div><div class="line">	<span class="keyword">for</span> i :=<span class="number"> 0</span>; i &lt; <span class="built_in">len</span>(conns); i++ {</div><div class="line">		time.Sleep(tts)</div><div class="line">		conn := conns[i]</div><div class="line">		err = binary.Write(conn, binary.BigEndian, time.Now().UnixNano())</div><div class="line">		<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">			log.Printf(<span class="string">"failed to write timestamp %v"</span>, err)</div><div class="line">			<span class="keyword">if</span> err := epoller.Remove(conn); err != <span class="constant">nil</span> {</div><div class="line">				<span class="keyword">if</span> err := epoller.Remove(conn); err != <span class="constant">nil</span> {</div><div class="line">					log.Printf(<span class="string">"failed to remove %v"</span>, err)</div><div class="line">				}</div><div class="line">			}</div><div class="line">		}</div><div class="line">	}</div><div class="line"></div><div class="line">	<span class="keyword">select</span> {}</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> start(epoller *epoll) {</div><div class="line">	...... <span class="comment">//同上</span></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>测试脚本稍微一下，增加一个epoller数量的控制：</p>
+<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div></pre></td><td class="code"><pre><div class="line">CONNECTIONS=<span class="variable">$1</span></div><div class="line">REPLICAS=<span class="variable">$2</span></div><div class="line">IP=<span class="variable">$3</span></div><div class="line">CONCURRENCY=<span class="variable">$4</span></div><div class="line"></div><div class="line">DATE=`date <span class="operator">-d</span> <span class="string">"+2 minutes"</span> +<span class="string">"%FT%T %z"</span>`</div><div class="line"></div><div class="line"><span class="keyword">for</span> (( c=<span class="number">0</span>; c&lt;<span class="variable">${REPLICAS}</span>; c++ ))</div><div class="line"><span class="keyword">do</span></div><div class="line">    docker run -v $(<span class="built_in">pwd</span>)/mclient:/client --name <span class="number">1</span>mclient_<span class="variable">$c</span> <span class="operator">-d</span> alpine /client \</div><div class="line">    -conn=<span class="variable">${CONNECTIONS}</span> -ip=<span class="variable">${IP}</span> -c=<span class="variable">${CONCURRENCY}</span> -sm <span class="string">"<span class="variable">${DATE}</span>"</span></div><div class="line"><span class="keyword">done</span></div></pre></td></tr></table></figure>
+
+<h3 id="数据分析-1">数据分析</h3>
+<p>这里我们对50个容器的日志进行统计， 汇总吞吐率进行相加，可以得到吞吐率(TPS)为 <strong>42402</strong>， 延迟(latency)为 <strong>0.8秒</strong>。</p>
+<p>吞吐率并没有增加，但是得益于我们客户端可以并发的处理消息，可以大大减小事务的延迟，将相关的延迟可以降低到一秒以下。</p>
+<h2 id="六、服务器改为多个epoller">六、服务器改为多个epoller</h2>
+<p>基于我们上面客户端使用多个epoller的启发，我们可以修改服务器端也采用多个epoller的方式，看看是否能增加吞吐率或者降低延迟。</p>
+<figure class="highlight go"><figcaption><span>server.go</span></figcaption><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div><div class="line">35</div><div class="line">36</div><div class="line">37</div><div class="line">38</div><div class="line">39</div><div class="line">40</div><div class="line">41</div><div class="line">42</div><div class="line">43</div><div class="line">44</div><div class="line">45</div><div class="line">46</div><div class="line">47</div><div class="line">48</div><div class="line">49</div><div class="line">50</div><div class="line">51</div><div class="line">52</div><div class="line">53</div><div class="line">54</div><div class="line">55</div><div class="line">56</div><div class="line">57</div><div class="line">58</div><div class="line">59</div><div class="line">60</div><div class="line">61</div><div class="line">62</div><div class="line">63</div><div class="line">64</div><div class="line">65</div><div class="line">66</div><div class="line">67</div><div class="line">68</div><div class="line">69</div><div class="line">70</div><div class="line">71</div><div class="line">72</div><div class="line">73</div><div class="line">74</div><div class="line">75</div><div class="line">76</div><div class="line">77</div><div class="line">78</div><div class="line">79</div><div class="line">80</div><div class="line">81</div><div class="line">82</div><div class="line">83</div><div class="line">84</div><div class="line">85</div><div class="line">86</div><div class="line">87</div><div class="line">88</div><div class="line">89</div><div class="line">90</div><div class="line">91</div><div class="line">92</div><div class="line">93</div><div class="line">94</div><div class="line">95</div><div class="line">96</div><div class="line">97</div><div class="line">98</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> main</div><div class="line"></div><div class="line"><span class="keyword">import</span> (</div><div class="line">	<span class="string">"flag"</span></div><div class="line">	<span class="string">"io"</span></div><div class="line">	<span class="string">"log"</span></div><div class="line">	<span class="string">"net"</span></div><div class="line">	<span class="string">"net/http"</span></div><div class="line">	_ <span class="string">"net/http/pprof"</span></div><div class="line">	<span class="string">"os"</span></div><div class="line">	<span class="string">"syscall"</span></div><div class="line">	<span class="string">"time"</span></div><div class="line"></div><div class="line">	<span class="string">"github.com/libp2p/go-reuseport"</span></div><div class="line">	<span class="string">"github.com/rcrowley/go-metrics"</span></div><div class="line">)</div><div class="line"></div><div class="line"><span class="keyword">var</span> (</div><div class="line">	c = flag.Int(<span class="string">"c"</span>,<span class="number"> 10</span>, <span class="string">"concurrency"</span>)</div><div class="line">)</div><div class="line"></div><div class="line"><span class="keyword">var</span> (</div><div class="line">	opsRate = metrics.NewRegisteredMeter(<span class="string">"ops"</span>, <span class="constant">nil</span>)</div><div class="line">)</div><div class="line"></div><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	flag.Parse()</div><div class="line"></div><div class="line">	<span class="keyword">go</span> metrics.Log(metrics.DefaultRegistry,<span class="number"> 5</span>*time.Second, log.New(os.Stderr, <span class="string">"metrics: "</span>, log.Lmicroseconds))</div><div class="line"></div><div class="line">	<span class="keyword">go</span> <span class="keyword">func</span>() {</div><div class="line">		<span class="keyword">if</span> err := http.ListenAndServe(<span class="string">":6060"</span>, <span class="constant">nil</span>); err != <span class="constant">nil</span> {</div><div class="line">			log.Fatalf(<span class="string">"pprof failed: %v"</span>, err)</div><div class="line">		}</div><div class="line">	}()</div><div class="line"></div><div class="line">	<span class="keyword">for</span> i :=<span class="number"> 0</span>; i &lt; *c; i++ {</div><div class="line">		<span class="keyword">go</span> startEpoll()</div><div class="line">	}</div><div class="line"></div><div class="line">	<span class="keyword">select</span> {}</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> startEpoll() {</div><div class="line">	ln, err := reuseport.Listen(<span class="string">"tcp"</span>, <span class="string">":8972"</span>)</div><div class="line">	<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">		<span class="built_in">panic</span>(err)</div><div class="line">	}</div><div class="line"></div><div class="line">	epoller, err := MkEpoll()</div><div class="line">	<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">		<span class="built_in">panic</span>(err)</div><div class="line">	}</div><div class="line"></div><div class="line">	<span class="keyword">go</span> start(epoller)</div><div class="line"></div><div class="line">	<span class="keyword">for</span> {</div><div class="line">		conn, e := ln.Accept()</div><div class="line">		<span class="keyword">if</span> e != <span class="constant">nil</span> {</div><div class="line">			<span class="keyword">if</span> ne, ok := e.(net.Error); ok && ne.Temporary() {</div><div class="line">				log.Printf(<span class="string">"accept temp err: %v"</span>, ne)</div><div class="line">				<span class="keyword">continue</span></div><div class="line">			}</div><div class="line"></div><div class="line">			log.Printf(<span class="string">"accept err: %v"</span>, e)</div><div class="line">			<span class="keyword">return</span></div><div class="line">		}</div><div class="line"></div><div class="line">		<span class="keyword">if</span> err := epoller.Add(conn); err != <span class="constant">nil</span> {</div><div class="line">			log.Printf(<span class="string">"failed to add connection %v"</span>, err)</div><div class="line">			conn.Close()</div><div class="line">		}</div><div class="line">	}</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> start(epoller *epoll) {</div><div class="line">	<span class="keyword">for</span> {</div><div class="line">		connections, err := epoller.Wait()</div><div class="line">		<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">			log.Printf(<span class="string">"failed to epoll wait %v"</span>, err)</div><div class="line">			<span class="keyword">continue</span></div><div class="line">		}</div><div class="line">		<span class="keyword">for</span> _, conn := <span class="keyword">range</span> connections {</div><div class="line">			<span class="keyword">if</span> conn == <span class="constant">nil</span> {</div><div class="line">				<span class="keyword">break</span></div><div class="line">			}</div><div class="line">			io.CopyN(conn, conn,<span class="number"> 8</span>)</div><div class="line">			<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">				<span class="keyword">if</span> err := epoller.Remove(conn); err != <span class="constant">nil</span> {</div><div class="line">					log.Printf(<span class="string">"failed to remove %v"</span>, err)</div><div class="line">				}</div><div class="line">				conn.Close()</div><div class="line">			}</div><div class="line"></div><div class="line">			opsRate.Mark<span class="number">(1</span>)</div><div class="line">		}</div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>和客户端的类似，我们启动了多个epoller。这里我们使用<code>reuseport</code>库启动多个goroutine监听同一个端口，这个特性应该在较新的Linux内核上已经支持， 内核会负责负载均衡。</p>
+<p>当然我们也可以启动一个goroutine进行监听，接收到客户端的请求后在交给某个epoller进行处理(随机或者轮询)，我们就负责连接的负载均衡。</p>
+<p>再或者，多个goroutine可以同时调用同一个<code>listener.Accept</code>方法，对<code>Accept</code>进行竞争。</p>
+<p>后面的处理逻辑和单个的epoller的方式是一样的，只不过我们使用多个goroutine进行处理。</p>
+<h3 id="数据分析-2">数据分析</h3>
+<p>这里我们对50个容器的日志进行统计， 汇总吞吐率进行相加，可以得到吞吐率(TPS)为 <strong>197814</strong>， 延迟(latency)为 <strong>0.9秒</strong>。</p>
+<p>以下所有的测试都使用多epoller的客户端，下面的比较也是针对多epoller的客户端的测试：</p>
+<p>和单poller的服务器实现相比较，多epoller的服务器客户端吞吐率大幅增加，而延迟略微增加。</p>
+<h2 id="七、_prefork实现服务器">七、 prefork实现服务器</h2>
+<p><a href="https://httpd.apache.org/docs/2.4/mod/prefork.html" target="_blank" rel="external">Prefork</a> 是Apache实现的一种服务方式。一个单一的控制进程启动的时候负责启动多个<strong>子进程</strong>，每个子进程都是独立的，使用单一的goroutine处理消息事件。</p>
+<p>这是一个有趣的实现方式，子进程可以共享父进程打开的文件，这样我们就可以把net.Listener传给子进程，让所有的子进程共同监听这个端口。</p>
+<p>传递给子进程的文件是通过<code>exec.Cmd.ExtraFiles</code>字段进行传递的:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> Cmd <span class="keyword">struct</span> {</div><div class="line">    ......</div><div class="line">    <span class="comment">// ExtraFiles specifies additional open files to be inherited by the</span></div><div class="line">    <span class="comment">// new process. It does not include standard input, standard output, or</span></div><div class="line">    <span class="comment">// standard error. If non-nil, entry i becomes file descriptor 3+i.</span></div><div class="line">    <span class="comment">//</span></div><div class="line">    <span class="comment">// ExtraFiles is not supported on Windows.</span></div><div class="line">    ExtraFiles []*os.File</div><div class="line">    ......</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>正如注释中所指出的，传递的第<strong>i</strong>个文件在子进程中的文件描述符为 <strong>3+i</strong>，所以如果父进程中启动子进程的命令如下的话：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div></pre></td><td class="code"><pre><div class="line">a_file_descriptor, _ := tcplistener.File()</div><div class="line"></div><div class="line">children[i] = exec.Command(os.Args<span class="number">[0</span>], <span class="string">"-prefork"</span>, <span class="string">"-child"</span>)</div><div class="line">children[i].Stdout = os.Stdout</div><div class="line">children[i].Stderr = os.Stderr</div><div class="line">children[i].ExtraFiles = []*os.File{a_file_descriptor}</div></pre></td></tr></table></figure>
+
+<p>子进程你可以这样得到这个父进程的文件：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">listener, err = net.FileListener(os.NewFile<span class="number">(3</span>, <span class="string">""</span>))</div></pre></td></tr></table></figure>
+
+<p>我们实现的是父进程和子进程共享同一个listener的方式， 如果你使用reuseport在每个子进程打开同一个端口应该也是可以的，这样就父子之间不需要共享同一个文件了。</p>
+<p>完整的服务器实现如下:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div><div class="line">35</div><div class="line">36</div><div class="line">37</div><div class="line">38</div><div class="line">39</div><div class="line">40</div><div class="line">41</div><div class="line">42</div><div class="line">43</div><div class="line">44</div><div class="line">45</div><div class="line">46</div><div class="line">47</div><div class="line">48</div><div class="line">49</div><div class="line">50</div><div class="line">51</div><div class="line">52</div><div class="line">53</div><div class="line">54</div><div class="line">55</div><div class="line">56</div><div class="line">57</div><div class="line">58</div><div class="line">59</div><div class="line">60</div><div class="line">61</div><div class="line">62</div><div class="line">63</div><div class="line">64</div><div class="line">65</div><div class="line">66</div><div class="line">67</div><div class="line">68</div><div class="line">69</div><div class="line">70</div><div class="line">71</div><div class="line">72</div><div class="line">73</div><div class="line">74</div><div class="line">75</div><div class="line">76</div><div class="line">77</div><div class="line">78</div><div class="line">79</div><div class="line">80</div><div class="line">81</div><div class="line">82</div><div class="line">83</div><div class="line">84</div><div class="line">85</div><div class="line">86</div><div class="line">87</div><div class="line">88</div><div class="line">89</div><div class="line">90</div><div class="line">91</div><div class="line">92</div><div class="line">93</div><div class="line">94</div><div class="line">95</div><div class="line">96</div><div class="line">97</div><div class="line">98</div><div class="line">99</div><div class="line">100</div><div class="line">101</div><div class="line">102</div><div class="line">103</div><div class="line">104</div><div class="line">105</div><div class="line">106</div><div class="line">107</div><div class="line">108</div><div class="line">109</div><div class="line">110</div><div class="line">111</div><div class="line">112</div><div class="line">113</div><div class="line">114</div><div class="line">115</div><div class="line">116</div><div class="line">117</div><div class="line">118</div><div class="line">119</div><div class="line">120</div><div class="line">121</div><div class="line">122</div><div class="line">123</div><div class="line">124</div><div class="line">125</div><div class="line">126</div><div class="line">127</div><div class="line">128</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> main</div><div class="line"></div><div class="line"><span class="keyword">import</span> (</div><div class="line">	<span class="string">"flag"</span></div><div class="line">	<span class="string">"io"</span></div><div class="line">	<span class="string">"log"</span></div><div class="line">	<span class="string">"net"</span></div><div class="line">	<span class="string">"os"</span></div><div class="line">	<span class="string">"os/exec"</span></div><div class="line">	<span class="string">"syscall"</span></div><div class="line">)</div><div class="line"></div><div class="line"><span class="keyword">var</span> (</div><div class="line">	c       = flag.Int(<span class="string">"c"</span>,<span class="number"> 10</span>, <span class="string">"concurrency"</span>)</div><div class="line">	prefork = flag.Bool(<span class="string">"prefork"</span>, <span class="constant">false</span>, <span class="string">"use prefork"</span>)</div><div class="line">	child   = flag.Bool(<span class="string">"child"</span>, <span class="constant">false</span>, <span class="string">"is child proc"</span>)</div><div class="line">)</div><div class="line"></div><div class="line"><span class="keyword">func</span> main() {</div><div class="line">    flag.Parse()</div><div class="line">    </div><div class="line">	<span class="keyword">var</span> ln net.Listener</div><div class="line">	<span class="keyword">var</span> err error</div><div class="line"></div><div class="line">	<span class="keyword">if</span> *prefork {</div><div class="line">		ln = doPrefork(*c)</div><div class="line">	} <span class="keyword">else</span> {</div><div class="line">		ln, err = net.Listen(<span class="string">"tcp"</span>, <span class="string">":8972"</span>)</div><div class="line">		<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">			<span class="built_in">panic</span>(err)</div><div class="line">		}</div><div class="line">	}</div><div class="line"></div><div class="line">	startEpoll(ln)</div><div class="line"></div><div class="line">	<span class="keyword">select</span> {}</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> startEpoll(ln net.Listener) {</div><div class="line">	epoller, err := MkEpoll()</div><div class="line">	<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">		<span class="built_in">panic</span>(err)</div><div class="line">	}</div><div class="line"></div><div class="line">	<span class="keyword">go</span> start(epoller)</div><div class="line"></div><div class="line">	<span class="keyword">for</span> {</div><div class="line">		conn, e := ln.Accept()</div><div class="line">		<span class="keyword">if</span> e != <span class="constant">nil</span> {</div><div class="line">			<span class="keyword">if</span> ne, ok := e.(net.Error); ok && ne.Temporary() {</div><div class="line">				log.Printf(<span class="string">"accept temp err: %v"</span>, ne)</div><div class="line">				<span class="keyword">continue</span></div><div class="line">			}</div><div class="line"></div><div class="line">			log.Printf(<span class="string">"accept err: %v"</span>, e)</div><div class="line">			<span class="keyword">return</span></div><div class="line">		}</div><div class="line"></div><div class="line">		<span class="keyword">if</span> err := epoller.Add(conn); err != <span class="constant">nil</span> {</div><div class="line">			log.Printf(<span class="string">"failed to add connection %v"</span>, err)</div><div class="line">			conn.Close()</div><div class="line">		}</div><div class="line">	}</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> doPrefork(c <span class="typename">int</span>) net.Listener {</div><div class="line">	<span class="keyword">var</span> listener net.Listener</div><div class="line">	<span class="keyword">if</span> !*child {</div><div class="line">		addr, err := net.ResolveTCPAddr(<span class="string">"tcp"</span>, <span class="string">":8972"</span>)</div><div class="line">		<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">			log.Fatal(err)</div><div class="line">		}</div><div class="line">		tcplistener, err := net.ListenTCP(<span class="string">"tcp"</span>, addr)</div><div class="line">		<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">			log.Fatal(err)</div><div class="line">		}</div><div class="line">		fl, err := tcplistener.File()</div><div class="line">		<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">			log.Fatal(err)</div><div class="line">		}</div><div class="line">		children := <span class="built_in">make</span>([]*exec.Cmd, c)</div><div class="line">		<span class="keyword">for</span> i := <span class="keyword">range</span> children {</div><div class="line">			children[i] = exec.Command(os.Args<span class="number">[0</span>], <span class="string">"-prefork"</span>, <span class="string">"-child"</span>)</div><div class="line">			children[i].Stdout = os.Stdout</div><div class="line">			children[i].Stderr = os.Stderr</div><div class="line">			children[i].ExtraFiles = []*os.File{fl}</div><div class="line">			err = children[i].Start()</div><div class="line">			<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">				log.Fatalf(<span class="string">"failed to start child: %v"</span>, err)</div><div class="line">			}</div><div class="line">		}</div><div class="line">		<span class="keyword">for</span> _, ch := <span class="keyword">range</span> children {</div><div class="line">			<span class="keyword">if</span> err := ch.Wait(); err != <span class="constant">nil</span> {</div><div class="line">				log.Printf(<span class="string">"failed to wait child's starting: %v"</span>, err)</div><div class="line">			}</div><div class="line">		}</div><div class="line">		os.Exit<span class="number">(0</span>)</div><div class="line">	} <span class="keyword">else</span> {</div><div class="line">		<span class="keyword">var</span> err error</div><div class="line">		listener, err = net.FileListener(os.NewFile<span class="number">(3</span>, <span class="string">""</span>))</div><div class="line">		<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">			log.Fatal(err)</div><div class="line">		}</div><div class="line">	}</div><div class="line">	<span class="keyword">return</span> listener</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> start(epoller *epoll) {</div><div class="line">	<span class="keyword">for</span> {</div><div class="line">		connections, err := epoller.Wait()</div><div class="line">		<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">			log.Printf(<span class="string">"failed to epoll wait %v"</span>, err)</div><div class="line">			<span class="keyword">continue</span></div><div class="line">		}</div><div class="line">		<span class="keyword">for</span> _, conn := <span class="keyword">range</span> connections {</div><div class="line">			<span class="keyword">if</span> conn == <span class="constant">nil</span> {</div><div class="line">				<span class="keyword">break</span></div><div class="line">			}</div><div class="line">			io.CopyN(conn, conn,<span class="number"> 8</span>)</div><div class="line">			<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">				<span class="keyword">if</span> err := epoller.Remove(conn); err != <span class="constant">nil</span> {</div><div class="line">					log.Printf(<span class="string">"failed to remove %v"</span>, err)</div><div class="line">				}</div><div class="line">				conn.Close()</div><div class="line">			}</div><div class="line">		}</div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<h3 id="数据分析-3">数据分析</h3>
+<p>服务器启动50个子进程: <code>./server -c 50 -prefork</code></p>
+<p>客户端还是一样: <code>./setupm.sh 20000 50 172.17.0.1 10</code>。</p>
+<p>这里我们对50个容器的日志进行统计， 汇总吞吐率进行相加，可以得到吞吐率(TPS)为 <strong>444415</strong>， 延迟(latency)为 <strong>1.5秒</strong>。</p>
+<p>和多poller的服务器实现相比较，prefork的服务器客户端吞吐率又大大幅增加，而延迟相对长一些了，比多poller的实现延迟翻倍。</p>
+<h2 id="八、_服务器实现workerpool">八、 服务器实现workerpool</h2>
+<p>从单个poller的代码分析可知，单goroutine处理消息到来的事件可能会有瓶颈，尤其是并发量比较大的情况下，无法使用多核的优势，因为我们采用多poller、prefork的方式可以并发地处理到来的消息，这里还有一种Reactor的方式，将I/O goroutine和业务goroutine分离， I/O goroutine采用单goroutine的方式，监听的消息交给一个goroutine池 (workerpool)去处理，这样可以并行的处理业务消息，而不会阻塞I/O goroutine。</p>
+<blockquote>
+<p>这里实现的消息读取也是在 workerpool 中实现的， 一般更通用的方式是I/O goroutine解析出消息， 将解析好的消息再交给workerpool去处理。我们这里的例子比较简单，所以读取消息也在workerpool中实现。</p>
+</blockquote>
+<p>worker pool的实现如下：</p>
+<figure class="highlight go"><figcaption><span>workerpool.go</span></figcaption><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div><div class="line">35</div><div class="line">36</div><div class="line">37</div><div class="line">38</div><div class="line">39</div><div class="line">40</div><div class="line">41</div><div class="line">42</div><div class="line">43</div><div class="line">44</div><div class="line">45</div><div class="line">46</div><div class="line">47</div><div class="line">48</div><div class="line">49</div><div class="line">50</div><div class="line">51</div><div class="line">52</div><div class="line">53</div><div class="line">54</div><div class="line">55</div><div class="line">56</div><div class="line">57</div><div class="line">58</div><div class="line">59</div><div class="line">60</div><div class="line">61</div><div class="line">62</div><div class="line">63</div><div class="line">64</div><div class="line">65</div><div class="line">66</div><div class="line">67</div><div class="line">68</div><div class="line">69</div><div class="line">70</div><div class="line">71</div><div class="line">72</div><div class="line">73</div><div class="line">74</div><div class="line">75</div><div class="line">76</div><div class="line">77</div></pre></td><td class="code"><pre><div class="line"></div><div class="line"><span class="keyword">package</span> main</div><div class="line"></div><div class="line"><span class="keyword">import</span> (</div><div class="line">	<span class="string">"io"</span></div><div class="line">	<span class="string">"log"</span></div><div class="line">	<span class="string">"net"</span></div><div class="line">	<span class="string">"sync"</span></div><div class="line">)</div><div class="line"></div><div class="line"><span class="keyword">type</span> pool <span class="keyword">struct</span> {</div><div class="line">	workers   <span class="typename">int</span></div><div class="line">	maxTasks  <span class="typename">int</span></div><div class="line">	taskQueue <span class="keyword">chan</span> net.Conn</div><div class="line"></div><div class="line">	mu     sync.Mutex</div><div class="line">	closed <span class="typename">bool</span></div><div class="line">	done   <span class="keyword">chan</span> <span class="keyword">struct</span>{}</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> newPool(w <span class="typename">int</span>, t <span class="typename">int</span>) *pool {</div><div class="line">	<span class="keyword">return</span> &pool{</div><div class="line">		workers:   w,</div><div class="line">		maxTasks:  t,</div><div class="line">		taskQueue: <span class="built_in">make</span>(<span class="keyword">chan</span> net.Conn, t),</div><div class="line">		done:      <span class="built_in">make</span>(<span class="keyword">chan</span> <span class="keyword">struct</span>{}),</div><div class="line">	}</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> (p *pool) Close() {</div><div class="line">	p.mu.Lock()</div><div class="line">	p.closed = <span class="constant">true</span></div><div class="line">	<span class="built_in">close</span>(p.done)</div><div class="line">	<span class="built_in">close</span>(p.taskQueue)</div><div class="line">	p.mu.Unlock()</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> (p *pool) addTask(conn net.Conn) {</div><div class="line">	p.mu.Lock()</div><div class="line">	<span class="keyword">if</span> p.closed {</div><div class="line">		p.mu.Unlock()</div><div class="line">		<span class="keyword">return</span></div><div class="line">	}</div><div class="line">	p.mu.Unlock()</div><div class="line"></div><div class="line">	p.taskQueue &lt;- conn</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> (p *pool) start() {</div><div class="line">	<span class="keyword">for</span> i :=<span class="number"> 0</span>; i &lt; p.workers; i++ {</div><div class="line">		<span class="keyword">go</span> p.startWorker()</div><div class="line">	}</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> (p *pool) startWorker() {</div><div class="line">	<span class="keyword">for</span> {</div><div class="line">		<span class="keyword">select</span> {</div><div class="line">		<span class="keyword">case</span> &lt;-p.done:</div><div class="line">			<span class="keyword">return</span></div><div class="line">		<span class="keyword">case</span> conn := &lt;-p.taskQueue:</div><div class="line">			<span class="keyword">if</span> conn != <span class="constant">nil</span> {</div><div class="line">				handleConn(conn)</div><div class="line">			}</div><div class="line">		}</div><div class="line">	}</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> handleConn(conn net.Conn) {</div><div class="line">	_, err := io.CopyN(conn, conn,<span class="number"> 8</span>)</div><div class="line">	<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">		<span class="keyword">if</span> err := epoller.Remove(conn); err != <span class="constant">nil</span> {</div><div class="line">			log.Printf(<span class="string">"failed to remove %v"</span>, err)</div><div class="line">		}</div><div class="line">		conn.Close()</div><div class="line">	}</div><div class="line">	opsRate.Mark<span class="number">(1</span>)</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>服务器端代码改造:</p>
+<figure class="highlight go"><figcaption><span>server.go</span></figcaption><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div><div class="line">35</div><div class="line">36</div><div class="line">37</div><div class="line">38</div><div class="line">39</div><div class="line">40</div><div class="line">41</div><div class="line">42</div><div class="line">43</div><div class="line">44</div><div class="line">45</div><div class="line">46</div><div class="line">47</div><div class="line">48</div><div class="line">49</div><div class="line">50</div><div class="line">51</div><div class="line">52</div><div class="line">53</div><div class="line">54</div><div class="line">55</div><div class="line">56</div><div class="line">57</div><div class="line">58</div><div class="line">59</div><div class="line">60</div><div class="line">61</div><div class="line">62</div><div class="line">63</div><div class="line">64</div><div class="line">65</div><div class="line">66</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">var</span> epoller *epoll</div><div class="line"><span class="keyword">var</span> workerPool *pool</div><div class="line"></div><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	flag.Parse()</div><div class="line"></div><div class="line">	<span class="keyword">go</span> metrics.Log(metrics.DefaultRegistry,<span class="number"> 5</span>*time.Second, log.New(os.Stderr, <span class="string">"metrics: "</span>, log.Lmicroseconds))</div><div class="line"></div><div class="line">	ln, err := net.Listen(<span class="string">"tcp"</span>, <span class="string">":8972"</span>)</div><div class="line">	<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">		<span class="built_in">panic</span>(err)</div><div class="line">	}</div><div class="line"></div><div class="line">	<span class="keyword">go</span> <span class="keyword">func</span>() {</div><div class="line">		<span class="keyword">if</span> err := http.ListenAndServe(<span class="string">":6060"</span>, <span class="constant">nil</span>); err != <span class="constant">nil</span> {</div><div class="line">			log.Fatalf(<span class="string">"pprof failed: %v"</span>, err)</div><div class="line">		}</div><div class="line">	}()</div><div class="line"></div><div class="line">	workerPool = newPool(*c,<span class="number"> 1000000</span>)</div><div class="line">	workerPool.start()</div><div class="line"></div><div class="line">	epoller, err = MkEpoll()</div><div class="line">	<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">		<span class="built_in">panic</span>(err)</div><div class="line">	}</div><div class="line"></div><div class="line">	<span class="keyword">go</span> start()</div><div class="line"></div><div class="line">	<span class="keyword">for</span> {</div><div class="line">		conn, e := ln.Accept()</div><div class="line">		<span class="keyword">if</span> e != <span class="constant">nil</span> {</div><div class="line">			<span class="keyword">if</span> ne, ok := e.(net.Error); ok && ne.Temporary() {</div><div class="line">				log.Printf(<span class="string">"accept temp err: %v"</span>, ne)</div><div class="line">				<span class="keyword">continue</span></div><div class="line">			}</div><div class="line"></div><div class="line">			log.Printf(<span class="string">"accept err: %v"</span>, e)</div><div class="line">			<span class="keyword">return</span></div><div class="line">		}</div><div class="line"></div><div class="line">		<span class="keyword">if</span> err := epoller.Add(conn); err != <span class="constant">nil</span> {</div><div class="line">			log.Printf(<span class="string">"failed to add connection %v"</span>, err)</div><div class="line">			conn.Close()</div><div class="line">		}</div><div class="line">	}</div><div class="line"></div><div class="line">	workerPool.Close()</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> start() {</div><div class="line">	<span class="keyword">for</span> {</div><div class="line">		connections, err := epoller.Wait()</div><div class="line">		<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">			log.Printf(<span class="string">"failed to epoll wait %v"</span>, err)</div><div class="line">			<span class="keyword">continue</span></div><div class="line">		}</div><div class="line">		<span class="keyword">for</span> _, conn := <span class="keyword">range</span> connections {</div><div class="line">			<span class="keyword">if</span> conn == <span class="constant">nil</span> {</div><div class="line">				<span class="keyword">break</span></div><div class="line">			}</div><div class="line"></div><div class="line">			workerPool.addTask(conn)</div><div class="line">		}</div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<h3 id="数据分析-4">数据分析</h3>
+<p>服务器启动50个子进程: <code>./server -c 50 -prefork</code></p>
+<p>客户端还是一样: <code>./setupm.sh 20000 50 172.17.0.1 10</code>。</p>
+<p>这里我们对50个容器的日志进行统计， 汇总吞吐率进行相加，可以得到吞吐率(TPS)为 <strong>190022</strong>， 延迟(latency)为 <strong>0.3秒</strong>。</p>
+<hr>
+
+<p><strong>总结</strong></p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>吞吐率 (tps)</th>
+<th>延迟 (latency)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>goroutine-per-conn</td>
+<td>202830</td>
+<td>4.9s</td>
+</tr>
+<tr>
+<td>单epoller(单epoller client)</td>
+<td>42495</td>
+<td>23s</td>
+</tr>
+<tr>
+<td>单epoller</td>
+<td>42402</td>
+<td>0.8s</td>
+</tr>
+<tr>
+<td>多epoller</td>
+<td>197814</td>
+<td>0.9s</td>
+</tr>
+<tr>
+<td>prefork</td>
+<td>444415</td>
+<td>1.5s</td>
+</tr>
+<tr>
+<td>workerpool</td>
+<td>190022</td>
+<td>0.3s</td>
+</tr>
+</tbody>
+</table>
+<p>从上表可以看出，客户端的实现对测试结果影响也是巨大的，不过实际我们的客户端分布在不同的节点上，而不像我们的测试不得不使用同一台机器启动百万个节点，所以下面的测试都是通过多epoller client进行测试的，尽量让客户端能并发的处理消息。</p>
+<p>从测试结果来看, 在百万并发的情况下， workerpool的实现还是不错的， 既能达到很高的吞吐率(19万)， 还能取得 0.3秒的延迟， 而且使用小量的goroutine的worker pool也不会占用太多的系统资源。prefork可以大幅提高吞吐率，但是延迟要稍微长一些。</p>
+<p>以上是在巨量连接情况下的各种实现的吞吐率和延迟的测试，这是一类的应用场景， 还有一类很大的应用场景， 比如企业内的服务通讯， 连接数并不会很多，我们将介绍这类场景下几种实现方案的吞吐率和延迟。</p>
+
+      
+    </div>
+    <footer class="article-footer">
+      
+
+      
+      <!-- <link rel="stylesheet" href="https://unpkg.com/gitalk/dist/gitalk.css">
+      <script src="https://unpkg.com/gitalk/dist/gitalk.min.js"></script> -->
+      <section id="comments">
+        <script src="https://utteranc.es/client.js"
+                repo="smallnest/gitalk"
+                issue-term="title"
+                theme="github-light"
+                crossorigin="anonymous"
+                async>
+        </script>
+        <!-- <div id="gitalk-container"></div>
+        <script type="text/javascript">
+          var gitalkOpts = {
+            id: '2019/02/27/1m-go-tcp-connection-2/',
+            owner: 'smallnest',
+            repo: 'gitalk',
+            title: '百万 Go TCP 连接的思考2: 百万连接的吞吐率和延迟',
+            body: 'https://colobu.com/2019/02/27/1m-go-tcp-connection-2/',
+            clientID: 'bc02724130ed5b7ee275',
+            clientSecret: '68cb0bae2f93a8b88b09e0eb9b08c844b06a9047',
+            admin: ['smallnest'],
+            distractionFreeMode: false
+          };
+
+          const gitalk = new Gitalk(gitalkOpts)
+          gitalk.render('gitalk-container')
+        </script> -->
+        <noscript> 为正常使用评论功能请激活JavaScript</noscript>
+      </section>
+
+      
+
+    </footer>
+  </div>
+  
+  
+<nav id="article-nav">
+  
+    <a href="/2019/02/28/1m-go-tcp-connection-3/" id="article-nav-newer" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">Newer</strong>
+      <div class="article-nav-title">
+        
+          百万 Go TCP 连接的思考3: 正常连接下的吞吐率和延迟
+        
+      </div>
+    </a>
+  
+  
+    <a href="/2019/02/25/some-useful-patterns-in-go/" id="article-nav-older" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">Older</strong>
+      <div class="article-nav-title">[译]Go开发中一些有用的模式</div>
+    </a>
+  
+</nav>
+
+  
+</article></section>
+        
+          <aside id="sidebar">
+  
+      <div class="widget-wrap">
+    <h3 class="widget-title">原创图书</h3>
+    <div class="widget">
+      <a href="/ScalaCollectionsCookbook/">
+        <img width="100%" src="/ScalaCollectionsCookbook/scala_collections_cookbook.jpg">
+        <img width="100%" src="/ScalaCollectionsCookbook/scala_collections_cookbook_tw.png">
+      </a>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">分类</h3>
+    <div class="widget">
+      <ul class="category-list"><li class="category-list-item"><a class="category-list-link" href="/categories/Android/">Android</a><span class="category-list-count">12</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/C/">C++</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/DOTNET/">DOTNET</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Docker/">Docker</a><span class="category-list-count">5</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Go/">Go</a><span class="category-list-count">175</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Java/">Java</a><span class="category-list-count">64</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Linux/">Linux</a><span class="category-list-count">7</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Rust/">Rust</a><span class="category-list-count">12</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Scala/">Scala</a><span class="category-list-count">18</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/分享/">分享</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/前端开发/">前端开发</a><span class="category-list-count">18</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/区块链/">区块链</a><span class="category-list-count">8</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/大数据/">大数据</a><span class="category-list-count">60</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/工具/">工具</a><span class="category-list-count">28</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/数据库/">数据库</a><span class="category-list-count">3</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/架构/">架构</a><span class="category-list-count">26</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/算法/">算法</a><span class="category-list-count">4</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/管理/">管理</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/网络编程/">网络编程</a><span class="category-list-count">13</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/读书笔记/">读书笔记</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/运维/">运维</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/高并发编程/">高并发编程</a><span class="category-list-count">20</span></li></ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">标签云</h3>
+    <div class="widget tagcloud">
+      <a href="/tags/Android/" style="font-size: 15.71px;">Android</a><a href="/tags/ApacheBench/" style="font-size: 11.43px;">ApacheBench</a><a href="/tags/Bower/" style="font-size: 10.00px;">Bower</a><a href="/tags/C/" style="font-size: 10.00px;">C#</a><a href="/tags/CDN/" style="font-size: 10.00px;">CDN</a><a href="/tags/CQRS/" style="font-size: 10.00px;">CQRS</a><a href="/tags/CRC/" style="font-size: 10.00px;">CRC</a><a href="/tags/CSS/" style="font-size: 11.43px;">CSS</a><a href="/tags/CompletableFuture/" style="font-size: 10.00px;">CompletableFuture</a><a href="/tags/Comsat/" style="font-size: 10.00px;">Comsat</a><a href="/tags/Curator/" style="font-size: 18.57px;">Curator</a><a href="/tags/DSL/" style="font-size: 10.00px;">DSL</a><a href="/tags/Disruptor/" style="font-size: 10.00px;">Disruptor</a><a href="/tags/Docker/" style="font-size: 11.43px;">Docker</a><a href="/tags/Ember/" style="font-size: 11.43px;">Ember</a><a href="/tags/FastJson/" style="font-size: 10.00px;">FastJson</a><a href="/tags/Fiber/" style="font-size: 10.00px;">Fiber</a><a href="/tags/GAE/" style="font-size: 10.00px;">GAE</a><a href="/tags/GC/" style="font-size: 12.86px;">GC</a><a href="/tags/Gnuplot/" style="font-size: 10.00px;">Gnuplot</a><a href="/tags/Go/" style="font-size: 14.29px;">Go</a><a href="/tags/Gradle/" style="font-size: 10.00px;">Gradle</a><a href="/tags/Grunt/" style="font-size: 10.00px;">Grunt</a><a href="/tags/Gulp/" style="font-size: 10.00px;">Gulp</a><a href="/tags/Hadoop/" style="font-size: 10.00px;">Hadoop</a><a href="/tags/Hazelcast/" style="font-size: 10.00px;">Hazelcast</a><a href="/tags/IPFS/" style="font-size: 10.00px;">IPFS</a><a href="/tags/Ignite/" style="font-size: 10.00px;">Ignite</a><a href="/tags/JVM/" style="font-size: 10.00px;">JVM</a><a href="/tags/Java/" style="font-size: 17.14px;">Java</a><a href="/tags/Kafka/" style="font-size: 20.00px;">Kafka</a><a href="/tags/Lambda/" style="font-size: 14.29px;">Lambda</a><a href="/tags/Linux/" style="font-size: 12.86px;">Linux</a><a href="/tags/LongAdder/" style="font-size: 10.00px;">LongAdder</a><a href="/tags/MathJax/" style="font-size: 10.00px;">MathJax</a><a href="/tags/Maven/" style="font-size: 11.43px;">Maven</a><a href="/tags/Memcached/" style="font-size: 10.00px;">Memcached</a><a href="/tags/Metrics/" style="font-size: 10.00px;">Metrics</a><a href="/tags/Mongo/" style="font-size: 12.86px;">Mongo</a><a href="/tags/Netty/" style="font-size: 15.71px;">Netty</a>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">归档</h3>
+    <div class="widget">
+      <ul class="archive-list"><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/10/">October 2021</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/08/">August 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/07/">July 2021</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/06/">June 2021</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/05/">May 2021</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/04/">April 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/03/">March 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/02/">February 2021</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/01/">January 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/12/">December 2020</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/11/">November 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/09/">September 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/08/">August 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/07/">July 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/06/">June 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/05/">May 2020</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/04/">April 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/03/">March 2020</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/02/">February 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/01/">January 2020</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/12/">December 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/11/">November 2019</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/10/">October 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/09/">September 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/08/">August 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/07/">July 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/06/">June 2019</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/05/">May 2019</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/04/">April 2019</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/03/">March 2019</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/02/">February 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/01/">January 2019</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/12/">December 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/11/">November 2018</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/10/">October 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/09/">September 2018</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/08/">August 2018</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/07/">July 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/06/">June 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/05/">May 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/04/">April 2018</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/03/">March 2018</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/02/">February 2018</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/01/">January 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/12/">December 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/11/">November 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/10/">October 2017</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/09/">September 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/08/">August 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/07/">July 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/06/">June 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/05/">May 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/04/">April 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/03/">March 2017</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/02/">February 2017</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/01/">January 2017</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/12/">December 2016</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/11/">November 2016</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/10/">October 2016</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/09/">September 2016</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/08/">August 2016</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/07/">July 2016</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/06/">June 2016</a><span class="archive-list-count">14</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/05/">May 2016</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/04/">April 2016</a><span class="archive-list-count">14</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/03/">March 2016</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/02/">February 2016</a><span class="archive-list-count">8</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/01/">January 2016</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/12/">December 2015</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/11/">November 2015</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/10/">October 2015</a><span class="archive-list-count">9</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/09/">September 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/08/">August 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/07/">July 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/06/">June 2015</a><span class="archive-list-count">8</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/05/">May 2015</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/04/">April 2015</a><span class="archive-list-count">15</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/03/">March 2015</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/02/">February 2015</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/01/">January 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/12/">December 2014</a><span class="archive-list-count">28</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/11/">November 2014</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/10/">October 2014</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/09/">September 2014</a><span class="archive-list-count">28</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/08/">August 2014</a><span class="archive-list-count">19</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/07/">July 2014</a><span class="archive-list-count">1</span></li></ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">近期文章</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+            <a href="/2021/10/06/replace-implementations-in-go-std-libs-at-runtime/">强制更改Go标准库的实现</a>
+          </li>
+        
+          <li>
+            <a href="/2021/08/30/how-is-go-generic-implemented/">Go泛型是怎么实现的?</a>
+          </li>
+        
+          <li>
+            <a href="/2021/08/01/benchmark-of-rpc-frameworks/">2021年Go生态圈rpc框架benchmark</a>
+          </li>
+        
+          <li>
+            <a href="/2021/07/13/Updating-the-Go-Memory-Model/">[译]更新Go内存模型</a>
+          </li>
+        
+          <li>
+            <a href="/2021/07/11/Programming-Language-Memory-Models/">[译]编程语言内存模型</a>
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">友情链接</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+			 
+            <a href="http://stackshare.io" target="_blank">技术栈</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://toutiao.io/" target="_blank">开发者头条</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://weekly.manong.io/issues/" target="_blank">码农周刊</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.tuicool.com/mags" target="_blank">编程狂人周刊</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.importnew.com/" target="_blank">importnew</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://ifeve.com/" target="_blank">并发编程网</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://github.com" target="_blank">github</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://stackoverflow.com/" target="_blank">stackoverflow</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.javacodegeeks.com/" target="_blank">javacodegeeks</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.infoq.com/" target="_blank">infoq</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.dzone.com/links/index.html" target="_blank">dzone</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://oj.leetcode.com/problems/" target="_blank">leetcode</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://tutorials.jenkov.com" target="_blank">jenkov</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://howtodoinjava.com" target="_blank">HowToDoInJava</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://java-design-patterns.com/patterns/" target="_blank">java design patterns</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://medium.com/netflix-techblog" target="_blank">Netflix技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://www.techiedelight.com" target="_blank">Techie Delight</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://engineering.linkedin.com/blog" target="_blank">Linkedin技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://blogs.dropbox.com/tech/" target="_blank">Dropbox技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://code.fb.com" target="_blank">Facebook技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://jm.taobao.org" target="_blank">淘宝中间件团队</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://tech.meituan.com" target="_blank">美团技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://blogs.360.cn" target="_blank">360技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://xiaomi-info.github.io" target="_blank">小米信息部技术团队</a>
+			
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+      
+
+  
+</aside>
+        
+      </div>
+      <footer id="footer">
+  
+  <div class="outer">
+    <div id="footer-info" class="inner">
+      &copy; 2021 smallnest<br>
+	  Powered by <a href="http://hexo.io/" target="_blank">Hexo</a>
+    </div>
+  </div>
+</footer>
+    </div>
+    <nav id="mobile-nav">
+  
+    
+      <a href="/" class="mobile-nav-link"><i class="fa fa-home">&nbsp;</i>首页</a>
+    
+  
+    
+      <a href="/archives" class="mobile-nav-link"><i class="fa fa-folder-o">&nbsp;</i>归档</a>
+    
+  
+    
+      <a href="https://github.com/smallnest" class="mobile-nav-link"><i class="fa fa-github">&nbsp;</i>github</a>
+    
+  
+    
+      <a class="mobile-nav-link" href="#"><i class="fa fa-bars">&nbsp;</i>网站群</a>
+    
+      
+            <a class="mobile-nav-link" href="/goasm">&nbsp;&nbsp;<i class="fa fa-language">&nbsp;</i>Go汇编示例</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="https://gowebexamples.com">&nbsp;&nbsp;<i class="fa fa-external-link">&nbsp;</i>Go Web开发示例</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://go-database-sql.org">&nbsp;&nbsp;<i class="fa fa-external-link">&nbsp;</i>Go 数据库开发教程</a>
+          
+          
+    
+      
+            
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://rpcx.io">&nbsp;&nbsp;<i class="fa undefined">&nbsp;</i>RPCX官网</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://cn.doc.rpcx.io">&nbsp;&nbsp;<i class="fa undefined">&nbsp;</i>RPC开发指南</a>
+          
+          
+    
+    
+  
+    
+      <a href="/ScalaCollectionsCookbook" class="mobile-nav-link"><i class="fa fa-book">&nbsp;</i>Scala集合技术手册</a>
+    
+  
+    
+      <a href="/about" class="mobile-nav-link"><i class="fa fa-lemon-o">&nbsp;</i>关于</a>
+    
+  
+</nav>
+    
+<script src="//cdn.staticfile.org/jquery/1.11.1/jquery.min.js"></script>
+<script src="//cdn.bootcss.com/jquery.lazyload/1.9.1/jquery.lazyload.min.js"></script>
+
+<script src="//cdnjs.cloudflare.com/ajax/libs/fancybox/3.2.5/jquery.fancybox.min.js"></script>
+
+
+<script src="/js/script.js" type="text/javascript"></script>
+
+<!-- mathjax config similar to math.stackexchange -->
+<script type="text/x-mathjax-config">
+  MathJax.Hub.Config({
+    tex2jax: {
+      inlineMath: [ ['$','$'], ["\\(","\\)"] ],
+      processEscapes: true,
+      skipTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code']
+    }
+  });
+  MathJax.Hub.Queue(function() {
+      var all = MathJax.Hub.getAllJax(), i;
+      for(i=0; i < all.length; i += 1) {
+        all[i].SourceElement().parentNode.className += ' has-jax';
+      }
+  });
+</script>
+<script type="text/javascript" src="//cdn.bootcss.com/mathjax/2.6.0-beta.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML">
+</script>
+
+<div id="totop" style="position:fixed;bottom:150px;right:10px;cursor: pointer;z-index: 2000;">
+	<a title="返回顶部"><img src="/images/scrollup.png"/></a>
+</div>
+<script src="/js/totop.js" type="text/javascript"></script>
+
+
+
+
+<script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "//hm.baidu.com/hm.js?e085d87993250aab11f3e0c15f1c2785";
+  var s = document.getElementsByTagName("script")[0]; 
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+
+
+  </div>
+</body>
+</html>

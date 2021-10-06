@@ -1,0 +1,892 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset="utf-8">
+  
+  <title>[译]编程语言内存模型</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+  <meta name="description" content="这是Russ Cox的第二篇Programming Language Memory Models。
+如果你已经阅读了前一篇硬件内存模型,以及如果有Java内存模型或者C++内存模型的经验，本文还好理解，如果你没有相关经验，可能阅读起来比较费劲，建议先阅读一下相关的材料。论文有些词句比较难以理解，本人才学疏浅，有翻译不当之处欢迎批评指正。">
+<meta property="og:type" content="article">
+<meta property="og:title" content="[译]编程语言内存模型">
+<meta property="og:url" content="https://colobu.com/2021/07/11/Programming-Language-Memory-Models/">
+<meta property="og:site_name" content="鸟窝">
+<meta property="og:description" content="这是Russ Cox的第二篇Programming Language Memory Models。
+如果你已经阅读了前一篇硬件内存模型,以及如果有Java内存模型或者C++内存模型的经验，本文还好理解，如果你没有相关经验，可能阅读起来比较费劲，建议先阅读一下相关的材料。论文有些词句比较难以理解，本人才学疏浅，有翻译不当之处欢迎批评指正。">
+<meta property="og:image" content="mem-adve-4.png">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="[译]编程语言内存模型">
+<meta name="twitter:description" content="这是Russ Cox的第二篇Programming Language Memory Models。
+如果你已经阅读了前一篇硬件内存模型,以及如果有Java内存模型或者C++内存模型的经验，本文还好理解，如果你没有相关经验，可能阅读起来比较费劲，建议先阅读一下相关的材料。论文有些词句比较难以理解，本人才学疏浅，有翻译不当之处欢迎批评指正。">
+
+  
+  <link rel="alternative" href="/atom.xml" title="鸟窝" type="application/atom+xml">
+  
+  
+  <link rel="icon" href="/favicon.png">
+  
+  <link rel="stylesheet" href="/css/style.css" type="text/css">
+
+  <link href="//cdn.staticfile.org/font-awesome/4.2.0/css/font-awesome.css" rel="stylesheet">
+  
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/fancybox/2.1.7/css/jquery.fancybox.min.css"
+    media="screen" type="text/css">
+  
+  <link rel="stylesheet" href="//cdnjs.cloudflare.com/ajax/libs/animate.css/3.1.1/animate.min.css" media="screen"
+    type="text/css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/tonsky/FiraCode@1.207/distr/fira_code.css">
+</head>
+<body>
+  <div id="container">
+    <div id="wrap">
+      <header id="header">
+  <div id="banner"></div>
+  <div id="header-outer" class="outer">
+    <div id="header-title" class="inner">
+      <h1 id="logo-wrap" class="animated bounceInLeft">
+        <a href="/" id="logo">鸟窝</a>
+      </h1>
+      
+        <h2 id="subtitle-wrap" class="animated bounceInLeft">
+          <a href="/" id="subtitle">大道至简 Simplicity is the ultimate form of sophistication</a>
+        </h2>
+      
+    </div>
+    <div id="header-inner" class="inner">
+      <nav id="main-nav">
+        <a id="main-nav-toggle" class="nav-icon"></a>
+        
+          
+            <a class="main-nav-link" href="/"><i class="fa fa-home">&nbsp;</i>首页</a>
+          
+          
+          
+            <a class="main-nav-link" href="/archives"><i class="fa fa-folder-o">&nbsp;</i>归档</a>
+          
+          
+          
+            <a class="main-nav-link" href="https://github.com/smallnest"><i class="fa fa-github">&nbsp;</i>github</a>
+          
+          
+          
+            <div class="dropdown main-nav-link"><a class="main-nav-link" href="#"><i class="fa fa-bars">&nbsp;</i>网站群</a>
+              <div class="dropdown-content">
+          
+            
+              <a href="/goasm"><i class="fa fa-language"></i>&nbsp;Go汇编示例</a>
+            
+                
+          
+            
+              <a href="https://gowebexamples.com"><i class="fa fa-external-link"></i>&nbsp;Go Web开发示例</a>
+            
+                
+          
+            
+              <a href="http://go-database-sql.org"><i class="fa fa-external-link"></i>&nbsp;Go 数据库开发教程</a>
+            
+                
+          
+            
+              <hr>
+            
+                
+          
+            
+              <a href="http://rpcx.io"><i class="fa undefined"></i>&nbsp;RPCX官网</a>
+            
+                
+          
+            
+              <a href="http://cn.doc.rpcx.io"><i class="fa undefined"></i>&nbsp;RPC开发指南</a>
+            
+                
+          
+          </div>
+        </div>
+          
+          
+          
+            <a class="main-nav-link" href="/ScalaCollectionsCookbook"><i class="fa fa-book">&nbsp;</i>Scala集合技术手册</a>
+          
+          
+          
+            <a class="main-nav-link" href="/about"><i class="fa fa-lemon-o">&nbsp;</i>关于</a>
+          
+          
+
+
+      </nav>
+      <nav id="sub-nav">
+        
+          <a id="nav-rss-link" class="nav-icon" href="/atom.xml" title="RSS Feed"></a>
+        
+        <a id="nav-search-btn" class="nav-icon" title="Search"></a>
+      </nav>
+      <div id="search-form-wrap">
+        <form action="http://www.baidu.com/baidu" method="get" accept-charset="utf-8" class="search-form">
+          <input type="search" name="word" maxlength="20" class="search-form-input" placeholder="Search">
+          <input type="submit" value="" class="search-form-submit">
+          <input name=tn type=hidden value="bds">
+          <input name=cl type=hidden value="3">
+          <input name=ct type=hidden value="2097152">
+          <input type="hidden" name="si" value="colobu.com">
+        </form>
+      </div>
+    </div>
+  </div>
+</header>
+      <div class="outer">
+        <section id="main"><script>function show_answer(btn, x) { if (btn.value === "显示答案") { btn.value = "隐藏答案" } else { btn.value = "显示答案" } var as = document.getElementById(x); if (as.style.display === "none") { as.style.display = "block" } else { as.style.display = "none" } }</script>
+
+<article id="post-Programming-Language-Memory-Models" class="article article-type-post" itemscope
+  itemprop="blogPost">
+  <div class="article-meta">
+    <a href="/2021/07/11/Programming-Language-Memory-Models/" class="article-date">
+  <time datetime="2021-07-11T12:53:32.000Z" itemprop="datePublished">2021年07月11日</time>
+</a>
+    
+  <div class="article-category">
+    <a class="article-category-link" href="/categories/Go/">Go</a>
+  </div>
+
+    
+  <div class="article-author"> by smallnest</div>
+
+  </div>
+  <div class="article-inner">
+    
+    
+    <header class="article-header">
+      
+  
+    <h1 class="article-title" itemprop="name">
+      [译]编程语言内存模型
+	  
+    </h1>
+  
+
+    </header>
+    
+    <div class="article-entry" itemprop="articleBody">
+      
+      
+      
+      <p>这是Russ Cox的第二篇<a href="https://research.swtch.com/plmm" target="_blank" rel="external">Programming Language Memory Models</a>。</p>
+<p>如果你已经阅读了前一篇<a href="https://colobu.com/2021/06/30/hwmm/#%E5%BC%B1%E6%8E%92%E5%BA%8F%E5%92%8C%E6%97%A0%E6%95%B0%E6%8D%AE%E7%AB%9E%E4%BA%89%E7%9A%84%E9%A1%BA%E5%BA%8F%E4%B8%80%E8%87%B4%E6%80%A7" target="_blank" rel="external">硬件内存模型</a>,以及如果有Java内存模型或者C++内存模型的经验，本文还好理解，如果你没有相关经验，可能阅读起来比较费劲，建议先阅读一下相关的材料。论文有些词句比较难以理解，本人才学疏浅，有翻译不当之处欢迎批评指正。</p>
+<a id="more"></a>
+<p>编程语言内存模型回答了并行程序可以依靠什么行为以便它们的线程之间可以共享内存的问题。例如，考虑下面这个类似C语言的程序，其中x和done都从零开始：</p>
+<figure class="highlight c"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line"><span class="comment">// Thread 1           // Thread 2</span></div><div class="line">x = <span class="number">1</span>;                <span class="keyword">while</span>(done == <span class="number">0</span>) { <span class="comment">/* loop */</span> }</div><div class="line">done = <span class="number">1</span>;             print(x);</div></pre></td></tr></table></figure>
+
+<p>程序试图通过变量x从线程1向线程2发送一条消息(x)，使用done作为信号，通知线程2消息已经准备好被接收。如果线程1和线程2都运行在自己的专用处理器上，并且都运行完成，那么这个程序是否保证能够按照预期完成并打印1？编程语言内存模型回答了这个问题，以及其它类似问题。</p>
+<p>Although each programming language differs in the details, a few general answers are true of essentially all modern multithreaded languages, including C, C++, Go, Java, JavaScript, Rust, and Swift:</p>
+<p>尽管每种编程语言在细节上有所不同，但是一些通用答案基本上适用于所有现代多线程语言，包括C、C++、Go、Java、JavaScript、Rust和Swift:</p>
+<ul>
+<li>首先，如果x和done是普通变量，那么线程2的循环可能永远不会停止。一种常见的编译器优化是在变量首次使用时将其加载到寄存器中，然后尽可能长时间地重用该寄存器，以便将来访问该变量。如果线程2在线程1执行之前将done复制到一个寄存器中，它可能会在整个循环中一直使用该寄存器，永远不会注意到线程1后来修改了done。</li>
+<li>其次，即使线程2的循环会停止，也就是观察到done == 1，它仍然可能打印x的值为0。编译器通常会根据优化试探法甚至是生成代码时使用哈希表或其他中间数据结构的方式，对程序读写进行重新排序。线程1的编译代码可能在done赋值之后而不是之前写入x，或者线程2的编译代码也可能在循环前读取x。</li>
+</ul>
+<p>既然这个程序有并发问题，那么问题是如何修复它。</p>
+<p>现代语言以原子变量(atomic variable)或原子操作(atomic operation)的形式提供特殊能力，允许程序同步其线程。如果我们使用一个原子变量实现done(或者用原子操作来操作它)，那么我们的程序保证会执行完成并打印1。使用原子变量或者原子操作会产生很多效果：</p>
+<ul>
+<li>线程1的编译代码必须确保对x的写入完成，并且在对done的写入可见之前对x的写入对其他线程可见。</li>
+<li>线程2的编译代码必须在循环的每次迭代中(重新)读取done。</li>
+<li>线程2的编译代码必须在读取done之后才读取x。</li>
+<li>编译后的代码必须做任何必要的事情来禁用可能会重新引入这些问题的硬件优化</li>
+<li></li>
+</ul>
+<p>使done原子化的最终结果是程序按照我们想要的方式运行，成功地将x的值从线程1传递到线程2。</p>
+<p>在最初始的程序中，在编译器的代码重新排序之后，线程1可能会在线程2读取x的同时写x。这是data race问题。在修改后的程序中，原子变量done用于同步对x的访问:线程1现在不可能在线程2读取x的同时写入x。这个程序没有数据竞争。一般来说，现代语言保证了无数据竞争的程序总是以顺序一致（sequentially consistent）的方式执行，就好像来自不同线程的操作被随意地但没有重新排序地转移到单个处理器上一样。这是硬件内存模型的<a href="https://colobu.com/2021/06/30/hwmm/#%E5%BC%B1%E6%8E%92%E5%BA%8F%E5%92%8C%E6%97%A0%E6%95%B0%E6%8D%AE%E7%AB%9E%E4%BA%89%E7%9A%84%E9%A1%BA%E5%BA%8F%E4%B8%80%E8%87%B4%E6%80%A7" target="_blank" rel="external">DRF-SC属性</a>，在编程语言环境中采用。</p>
+<p>另外，这些原子变量或原子操作更恰当应该称之为“同步原子”(synchronizing atomic)，在数据库的意义上，操作是原子的，允许同时进行读和写，就像以某种顺序按顺序运行一样:当使用原子时，普通变量上的竞争不是竞争。但更重要的是，atomic同步了程序的其余部分，提供了一种消除非原子数据竞争的方法。标准术语就是“atomic”，也就是这篇文章使用的属于。除非另有说明，请记住将“原子”理解为“同步原子”。</p>
+<p>编程语言内存模型规定了程序员和编译器所需的额外细节，作为他们之间的约定。上面谈到的通用特征基本上适用于所有现代语言，但直到最近，事情才收敛到一点:在21世纪初，有明显更多的变种。即使在今天，各种语言在更多的排序问题上也有显著的差异，包括:</p>
+<ul>
+<li>原子变量们本身的排序保证是什么？</li>
+<li>变量是否既可以原子访问，有可以非原子访问？</li>
+<li>除了原子之外是否还有其它同步机制？</li>
+<li>是否存在不同步的原子操作？</li>
+<li>有数据竞争的程序有什么保证？</li>
+</ul>
+<p>在做了一些准备之后，这篇文章的剩余部分将探讨不同的语言如何回答这些相关的问题，以及它们解决这些问题之道。这篇文章介绍探索路上的许多错误初始设计，强调我们仍然在学习啥是有效的方案，啥是无效的方案</p>
+<h2 id="硬件、Litmus_Tests、Happens_Before_和_DRF-SC">硬件、Litmus Tests、Happens Before 和 DRF-SC</h2>
+<p>在我们了解任何特定语言的细节之前，我们需要记住<a href="https://colobu.com/2021/06/30/hwmm/" target="_blank" rel="external">硬件内存模型</a>的简要经验总结。</p>
+<blockquote>
+<p>不同的CPU体系架构允许不同数量的指令重新排序，因此在多个处理器上并行运行的代码可以根据体系架构的不同有不同的结果。黄金标准是<a href="https://colobu.com/2021/06/30/hwmm/#%E9%A1%BA%E5%BA%8F%E4%B8%80%E8%87%B4%E6%80%A7" target="_blank" rel="external">顺序一致性</a>，即任何执行都必须表现得好像在不同处理器上执行的程序只是以某种顺序交替在单个处理器上执行。对于开发人员来说，这种模型更容易推理，但是今天没有重要的架构能够提供这种模型，因为提供较弱的并发保证能够足够的性能。</p>
+</blockquote>
+<p>很难对不同的内存模型做出完全通用的比较。反过来我们可以关注特定的测试用例，称为Litmus Test。如果两个内存模型通过Litmus Test有不同的行为，那么可以证明它们是不同的，并且通常可以帮助我们判断，至少对于那个测试用例，一个模型比另一个模型是弱还是强。例如，这是我们之前检查的程序的Litmus Test:</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div></pre></td><td class="code"><pre><div class="line">Litmus Test: <span class="keyword">Message</span> Passing</div><div class="line">Can this <span class="keyword">program</span> see r1 = <span class="number">1</span>, r2 = <span class="number">0</span>?</div><div class="line"></div><div class="line"><span class="comment">// Thread 1           // Thread 2</span></div><div class="line">x = <span class="number">1</span>                 r1 = y</div><div class="line">y = <span class="number">1</span>                 r2 = x</div><div class="line"><span class="keyword">On</span> sequentially consistent hardware: no.</div><div class="line"><span class="keyword">On</span> x86 (<span class="keyword">or</span> other TSO): no.</div><div class="line"><span class="keyword">On</span> ARM/POWER: yes!</div><div class="line"><span class="keyword">In</span> any modern compiled language using ordinary variables: yes!</div></pre></td></tr></table></figure>
+
+<p>和前一篇文章一样，我们假设每个例子一开始所有共享变量都为零。rN这个名字表示私有存储，如寄存器或函数变量；像x和y这样的名称是共享(全局)变量。我们问在执行结束时，寄存器的特定设置是否存在可能。在回答硬件的litmus test时，我们假设没有编译器对线程中发生的事情进行重新排序:清单中的指令被直接翻译成汇编指令，交给处理器执行。</p>
+<p>结果r1 = 1，r2 = 0代表原始程序的线程2完成了循环(这里简化了循环，而是简单的使用y进行赋值)，但随后打印0。这个结果在程序操作的任何顺序一致的交替执行中是不可能的。对于汇编语言版本，在x86上打印0是不可能的，尽管由于处理器本身的重新排序优化，在ARM和POWER等更宽松的架构上打印0是可能的。在现代语言中，编译期间可能发生的重新排序使得这种结果成为可能，不管底层硬件是什么。</p>
+<p>正如我们前面提到的，今天的处理器不保证顺序一致性，而是保证一种称为<a href="https://colobu.com/2021/06/30/hwmm/#%E5%BC%B1%E6%8E%92%E5%BA%8F%E5%92%8C%E6%97%A0%E6%95%B0%E6%8D%AE%E7%AB%9E%E4%BA%89%E7%9A%84%E9%A1%BA%E5%BA%8F%E4%B8%80%E8%87%B4%E6%80%A7" target="_blank" rel="external">“无数据竞争的顺序一致性”或DRF-DRF(有时也写成SC-DRF)</a>的属性。一个保证DRF-SC的系统必须提供被称为同步指令的特定指令，它提供了一种协调不同处理器(相当于线程)的方法。程序使用这些指令在一个处理器上运行的代码和另一个处理器上运行的代码之间创建一种“happens before”的关系。</p>
+<p>例如，这里描述了一个程序在两个线程上的短暂执行；像以前一样，假设每个处理器都有自己的专用处理器:</p>
+<p><img src="mem-adve-4.png" alt=""></p>
+<p>我们在之前的帖子里也看到了这个程序。线程1和线程2执行同步指令。在这个特定执行中，两条S(a)指令建立了从线程1到线程2的happens-before关系，因此线程1中的W(x)发生在线程2中的R(x)之前。</p>
+<p>不同处理器上的两个事件，如果不是按照happens-before的顺序排序，可能会同时发生:确切的顺序搞不清楚。我们说它们同时执行。数据竞争（data race）是指对一个变量的写操作与对同一变量的读操作或写操作同时执行。提供DRF-SC的处理器保证没有数据竞争的程序行为就像它们在一个顺序一致的架构上运行一样。这是在现代处理器上编写正确的多线程汇编程序的基本保证。</p>
+<p>正如我们前面所看到的，DRF-SC也是现代语言所采用的基本保证，使得用更高级别语言编写正确的多线程程序成为可能。</p>
+<h2 id="编译器和优化">编译器和优化</h2>
+<p>我们已经提到过几次，编译器可能会在生成最终可执行代码的过程中对输入程序中的操作重新排序。让我们仔细看看这个声明和其他可能导致问题的优化。</p>
+<p>人们普遍认为，编译器几乎可以任意地对普通的内存读写进行重新排序，前提是重新排序不能改变观察到的单线程代码执行的效果。例如，考虑这个程序:</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line"><span class="variable">w =</span> <span class="number">1</span></div><div class="line"><span class="variable">x =</span> <span class="number">2</span></div><div class="line"><span class="variable">r1 =</span> y</div><div class="line"><span class="variable">r2 =</span> z</div></pre></td></tr></table></figure>
+
+<p>由于w、x、y和z都是不同的变量，这四个语句可以以编译器认为最好的任何顺序执行。</p>
+<p>如上所述，如此自由地重新排序读写的能力使得普通编译程序的保证至少和ARM/POWER宽松内存模型一样弱，因为编译程序无法通过消息传递的litmus test。事实上，编译程序的保证更弱。</p>
+<p>在上一篇硬件内存模型的文章中，我们将一致性（coherence）看作是ARM/POWER架构所能保证的一个例子:</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div></pre></td><td class="code"><pre><div class="line">Litmus Test: Coherence</div><div class="line">Can this program see <span class="variable">r1 =</span> <span class="number">1</span>, <span class="variable">r2 =</span> <span class="number">2</span>, <span class="variable">r3 =</span> <span class="number">2</span>, <span class="variable">r4 =</span> <span class="number">1</span>?</div><div class="line">(Can Thread <span class="number">3</span> see <span class="variable">x =</span> <span class="number">1</span> before <span class="variable">x =</span> <span class="number">2</span> while Thread <span class="number">4</span> sees the reverse?)</div><div class="line"></div><div class="line">// Thread <span class="number">1</span>    // Thread <span class="number">2</span>    // Thread <span class="number">3</span>    // Thread <span class="number">4</span></div><div class="line"><span class="variable">x =</span> <span class="number">1</span>          <span class="variable">x =</span> <span class="number">2</span>          <span class="variable">r1 =</span> x         <span class="variable">r3 =</span> x</div><div class="line">                              <span class="variable">r2 =</span> x         <span class="variable">r4 =</span> x</div><div class="line">On sequentially consistent hardware: no.</div><div class="line">On x86 (<span class="constant">or</span> other TSO): no.</div><div class="line">On ARM/POWER: no.</div><div class="line">In any modern compiled language using ordinary variables: yes!</div></pre></td></tr></table></figure>
+
+<p>所有现代硬件都保证一致性，这也可以看作是对单个存储单元的操作的顺序一致性。在这个程序中，一个写操作必须覆盖另一个，并且整个系统必须就哪个是哪个达成一致。事实证明，由于编译过程中程序的重新排序，现代语言甚至不能提供一致性。</p>
+<p>假设编译器对线程4中的两次读取进行了重新排序，然后指令按照以下顺序交替运行:</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line">// Thread <span class="number">1</span>    // Thread <span class="number">2</span>    // Thread <span class="number">3</span>    // Thread <span class="number">4</span></div><div class="line">                                             // (reordered)</div><div class="line">(<span class="number">1</span>) <span class="variable">x =</span> <span class="number">1</span>                     (<span class="number">2</span>) <span class="variable">r1 =</span> x     (<span class="number">3</span>) <span class="variable">r4 =</span> x</div><div class="line">               (<span class="number">4</span>) <span class="variable">x =</span> <span class="number">2</span>      (<span class="number">5</span>) <span class="variable">r2 =</span> x     (<span class="number">6</span>) <span class="variable">r3 =</span> x</div></pre></td></tr></table></figure>
+
+<p>结果r1 = 1，r2 = 2，r3 = 2，r4 = 1 在汇编程序中是不可能的，但在高级语言中是可能的。从这个意义上说，编程语言内存模型都比最宽松的硬件内存模型都弱。</p>
+<p>但是有一些保证。每个人都同意需要提供DRF-SC，它不允许引入新的读或写的优化，即使这些优化在单线程代码中是有效的。</p>
+<p>例如，考虑下面的代码:</p>
+<figure class="highlight c"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">if</span>(c) {</div><div class="line">	x++;</div><div class="line">} <span class="keyword">else</span> {</div><div class="line">	... lots of code ...</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>有一个if语句，在else中有很多代码，在if主体中只有一个x++。拥有更少的分支并彻底消除if体可能更快。如果我们编写代码有问题，我们可以在if之前运行了x++,然后在else中用x--进行调整。也就是说，编译器可能会考虑将该代码重写为:</p>
+<figure class="highlight c"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div></pre></td><td class="code"><pre><div class="line">x++;</div><div class="line"><span class="keyword">if</span>(!c) {</div><div class="line">	x--;</div><div class="line">	... lots of code ...</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>这是安全的编译器优化吗？在单线程程序中，是的。在一个多线程程序中，当c为false时，x与另一个线程共享，答案是否: 优化会在x上引入一个原始程序中没有的数据</p>
+<p>这个例子来源于Hans Boehm 2004年的论文<a href="https://www.hpl.hp.com/techreports/2004/HPL-2004-209.pdf" target="_blank" rel="external">Threads Cannot Be Implemented As a Library</a>中的一个例子，它说明了语言不能对多线程执行的语义保持沉默。</p>
+<p>编程语言内存模型试图精确回答这些问题，即哪些优化是允许的，哪些是不允许的。通过研究过去几十年来尝试编写这些模型的历史，我们可以了解哪些可行，哪些不可行，并了解事情的发展方向。</p>
+<h2 id="原始的Java内存模型_(1996)">原始的Java内存模型 (1996)</h2>
+<p>Java是第一个试图写下多线程程序保证的主流语言。它包括互斥体(mutex)，并定义了它们隐含的内存排序要求。它还包括“volatile”原子变量: volatile变量的所有读和写都需要直接在主内存中按程序顺序执行，使得对volatile变量的操作以顺序一致的方式进行。最后，Java制定了(或者至少试图制定)具有数据竞争的程序的行为。其中的一部分是为普通变量规定一种一致性的形式，我们将在下面详细讨论。不幸的是，在Java语言规范(1996)的第一版中，这种尝试至少有两个严重的缺陷。凭借后见之明和我们已经做好的准备，它们很容易解释。当时，它们远没有那么明显被发现。</p>
+<h3 id="Atomic_需要同步">Atomic 需要同步</h3>
+<p>第一个缺陷是volatile原子变量是不同步的，所以它们无助于消除程序其余部分的竞争。我们在上面看到的消息传递程序的Java版本是:</p>
+<figure class="highlight java"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">int</span> x;</div><div class="line"><span class="keyword">volatile</span> <span class="keyword">int</span> done;</div><div class="line"></div><div class="line"><span class="comment">// Thread 1           // Thread 2</span></div><div class="line">x = <span class="number">1</span>;                <span class="keyword">while</span>(done == <span class="number">0</span>) { <span class="comment">/* loop */</span> }</div><div class="line">done = <span class="number">1</span>;             print(x);</div></pre></td></tr></table></figure>
+
+<p>因为done被声明为volatile，所以循环肯定会结束: 编译器不能将它缓存在寄存器中并导致无限循环。但是，程序不能保证打印1。编译器没有被禁止重新排序对x和done的访问，也没有被要求禁止硬件做同样的事情。</p>
+<p>因为Java volatile是非同步原子，所以您不能使用它们来构建新的同步原语。从这个意义上说，最初的Java内存模型太弱了。</p>
+<h3 id="一致性与编译器优化不兼容">一致性与编译器优化不兼容</h3>
+<p>初的Java内存模型也太强了: 强制一致性 —— 一旦线程读取了内存位置的新值，它就不能再读取旧值——不允许基本的编译器优化。前面我们讨论了重新排序读操作会如何破坏一致性，但是你可能会想，好吧，不要重新排序读操作。这里有一个更微妙的方法，可以通过另一个优化来打破一致性:公共子表达式消除。考虑一下这个Java程序:</p>
+<p>考虑一下这个Java程序:</p>
+<figure class="highlight java"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div></pre></td><td class="code"><pre><div class="line"><span class="comment">// p and q may or may not point at the same object.</span></div><div class="line"><span class="keyword">int</span> i = p.x;</div><div class="line"><span class="comment">// ... maybe another thread writes p.x at this point ...</span></div><div class="line"><span class="keyword">int</span> j = q.x;</div><div class="line"><span class="keyword">int</span> k = p.x;</div></pre></td></tr></table></figure>
+
+<p>在这个程序中，公共子表达式消除(common subexpression elimination)会注意到p.x被计算了两次，并将最后一行优化为k = i。但是，如果p和q指向同一个对象，并且另一个线程在读入I和j之间向p.x写入，那么为k重用旧值i违反了一致性:读入i看到了旧值，读入j看到了新值，但是读入k重用i会再次看到旧值。不能优化掉冗余读取会阻碍大多数编译器，使生成的代码变慢。</p>
+<p>硬件比编译器更容易提供一致性，因为硬件可以应用动态优化:它可以根据给定内存读写序列中涉及的确切地址来调整优化路径。相比之下，编译器只能应用静态优化:无论涉及什么地址和值，它们都必须提前写出正确的指令序列。在这个例子中，编译器不能根据p和q是否碰巧指向同一个对象来轻易改变发生的事情，至少在没有为这两种可能性写出代码的情况下不能，这导致了大量的时间和空间开销。编译器对内存位置之间可能存在的别名不完全了解意味着：实际上要实现一致性就需要放弃基本的优化。</p>
+<p>Bill Pugh在他1999年的论文<a href="http://citeseerx.ist.psu.edu/viewdoc/download?doi=10.1.1.17.7914&amp;rep=rep1&amp;type=pdf" target="_blank" rel="external">修复Java内存模型</a>中指出了这个问题和其他问题.</p>
+<h2 id="新的Java内存模型_(2004)">新的Java内存模型 (2004)</h2>
+<p>由于这些问题，并且因为最初的Java内存模型甚至对于专家来说都很难理解，Pugh和其他人开始努力为Java提供一个新的内存模型。该模型后来成为JSR-133，并在2004年发布的Java 5.0中被采用。规范参考是Jeremy Manson, Bill Pugh和Sarita Adve的<a href="http://rsim.cs.uiuc.edu/Pubs/popl05.pdf" target="_blank" rel="external">Java内存模型(2005)</a>，Jeremy Manson的博士论文中有更多细节。新模型遵循DRF-SC方法:保证无数据竞争的Java程序以顺序一致的方式执行。</p>
+<h3 id="同步原子和其它操作">同步原子和其它操作</h3>
+<p>正如我们前面看到的，要编写一个无数据竞争的程序，程序员需要同步操作，这些同步操作可以建立happens-before关系，以确保一个线程不会在另一个线程读取或写入非原子变量的同时写入该变量。在Java中，主要的同步操作有:</p>
+<ul>
+<li>线程的创建发生在(happen before)它的第一个动作之前</li>
+<li>mutex m的unlock发生在m的后续lock之前</li>
+<li>写volatile变量v发生在后续读取v之前</li>
+<li></li>
+</ul>
+<p>“subsequent”(“后续”)`是什么意思？Java定义了所有锁、解锁和volatile变量访问的行为，就好像它们发生在一些顺序一致的中断中，给出了整个程序中所有这些操作的总顺序。“后续”是指总顺序中的较晚执行。也就是说:锁、解锁和volatile变量访问的总顺序定义了后续的含义，然后后续定义了特定执行创建了happen before关系，然后happend before关系定义了该特定执行是否有数据竞争。如果没有数据竞争，那么执行就会以顺序一致的方式进行。</p>
+<p>事实上， volatile访问必须表现得好像在某种总排序中一样，这意味着在<a href="https://research.swtch.com/hwmm#x86" target="_blank" rel="external">存储缓冲区litmus test</a>中，不能出现r1 = 0和r2 = 0的结果:</p>
+<figure class="highlight java"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div></pre></td><td class="code"><pre><div class="line">Litmus Test: Store Buffering</div><div class="line">Can <span class="keyword">this</span> program see r1 = <span class="number">0</span>, r2 = <span class="number">0</span>?</div><div class="line"></div><div class="line"><span class="comment">// Thread 1           // Thread 2</span></div><div class="line">x = <span class="number">1</span>                 y = <span class="number">1</span></div><div class="line">r1 = y                r2 = x</div><div class="line">On sequentially consistent hardware: no.</div><div class="line">On x86 (or other TSO): yes!</div><div class="line">On ARM/POWER: yes!</div><div class="line">On Java using volatiles: no.</div></pre></td></tr></table></figure>
+
+<p>在Java中，对于volatile变量x和y，读取和写入不能被重新排序:一个写入必须排在第二位，第二个写入之后的读取必须看到第一个写入。如果我们没有顺序一致的要求——比如说，如果只要求volatile是一致的——两次读取可能会错过写入。</p>
+<p>这里有一个重要但微妙的点:所有同步操作的总顺序与happen-before关系是分开的。在程序中的每个锁、解锁或volatile变量访问之间，在一个方向或另一个方向上不存在happen-before关系:从写入到观察写入的读取，您只获得了happen-before的关系。例如，不同互斥体的锁定和解锁之间没有happen-before关系。</p>
+<h3 id="有数据竞争的程序的语义">有数据竞争的程序的语义</h3>
+<p>DRF-SC只保证没有数据竞争的程序的顺序一致行为。新的Java内存模型和最初的一样，定义了有数据竞争的程序的行为，原因有很多:</p>
+<ul>
+<li>支持Java的一般安全（security）和安全保障（safety guarantee）。</li>
+<li>让程序员更容易发现错误。</li>
+<li>使攻击者更难利用问题，因为由于数据竞争的原因可能造成的损失更有限。</li>
+<li>让程序员更清楚他们的程序是做什么的。</li>
+</ul>
+<p>新模型不再依赖于一致性，而是重新使用了happens-before关系(已经用来决定程序是否有竞争)来决定竞争读写的结果。</p>
+<p>Java的具体规则是，对于word大小或更小的变量，对变量(或字段)x的读取必须看到对x的某一次写入所存储的值。如果读取r观察到对x的写入w，那么r不发生在w之前。这意味着r可以观察发生在r之前的所有写入，并且它可以观察与r竞争的写入。</p>
+<p>使用happens-before，结合同步原子(volatile)就可以建立新的happen before关系，是对原始Java内存模型的重大改进。它为程序员提供了更多有用的保证，并使大量重要的编译器优化得到了明确的允许。这个模型至今仍然是Java的内存模型。也就是说，这仍然是不完全正确的:在试图定义竞争程序的语义时，使用before-before是有问题的。</p>
+<h3 id="happen-before不排除语无伦次(incoherence)">happen-before不排除语无伦次(incoherence)</h3>
+<p>定义程序语义的“happen-before”关系的第一个问题与一致性有关(有一次!).(以下例子摘自Jaroslav Ševčík 和 David Aspinall的论文<a href="http://citeseerx.ist.psu.edu/viewdoc/download?doi=10.1.1.112.1790&amp;rep=rep1&amp;type=pdf" target="_blank" rel="external">《论Java内存模型中程序转换的有效性》(2007年)</a>)。)</p>
+<p>这里有一个三线程的程序。让我们假设线程1和线程2已知在线程3开始之前完成。</p>
+<figure class="highlight java"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div></pre></td><td class="code"><pre><div class="line"><span class="comment">// Thread 1           // Thread 2           // Thread 3</span></div><div class="line">lock(m1)              lock(m2)</div><div class="line">x = <span class="number">1</span>                 x = <span class="number">2</span></div><div class="line">unlock(m1)            unlock(m2)</div><div class="line">                                            lock(m1)</div><div class="line">                                            lock(m2)</div><div class="line">                                            r1 = x</div><div class="line">                                            r2 = x</div><div class="line">                                            unlock(m2)</div><div class="line">                                            unlock(m1)</div></pre></td></tr></table></figure>
+
+<p>线程1在持有mutex m1时写入x = 1。线程2在持有 mutex m2时写入x = 2。这些是不同的mutex，所以两个写操作是竞争的。然而，只有线程3读取x，并且它是在获取两个mutex后读取的。对r1的读取可以是读也可以是写:两者都发生在它之前，并且都不会完全覆盖另一个。通过相同的参数，读入r2可以读或写。但是严格来说，Java内存模型中没有任何东西说两次读取必须一致：从技术上讲，r1和r2可以读取不同的x值。也就是说，这个程序可以以r1和r2持有不同的值结束。当然，没有真正的实现会产生不同的r1和r2。互斥意味着这两次读取之间没有写操作发生。他们必须得到相同的值。但是内存模型允许不同读取值的事实表明，从某种技术角度来说，它并没有精确地描述真实的Java实现。</p>
+<p>情况变得更糟。如果我们在两个读数之间再加一个指令，x = r1，会怎么样:</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div></pre></td><td class="code"><pre><div class="line">// Thread 1           // Thread 2           // Thread 3</div><div class="line"><span class="operator"><span class="keyword">lock</span>(m1)              <span class="keyword">lock</span>(m2)</span></div><div class="line">x = <span class="number">1</span>                 x = <span class="number">2</span></div><div class="line"><span class="keyword">unlock</span>(m1)            <span class="keyword">unlock</span>(m2)</div><div class="line">                                            <span class="keyword">lock</span>(m1)</div><div class="line">                                            <span class="keyword">lock</span>(m2)</div><div class="line">                                            r1 = x</div><div class="line">                                            x = r1   // !?</div><div class="line">                                            r2 = x</div><div class="line">                                            <span class="keyword">unlock</span>(m2)</div><div class="line">                                            <span class="keyword">unlock</span>(m1)</div></pre></td></tr></table></figure>
+
+<p>很明显，r2 = x读数必须使用x = r1写的值，因此程序必须在r1和r2中获得相同的值。两个值r1和r2现在保证相等。</p>
+<p>这两个程序之间的差异意味着我们在编译器方面有问题。看到r1 = x后跟着x = r1时编译器很可能想要删除第二个赋值，这“显然”是多余的。但这种“优化”将第二个程序(r1和r2的值必须相同)变成了第一个程序(从技术上讲，r1可能不同于r2)。因此，根据Java内存模型，这种优化在技术上是无效的:它改变了程序的含义。明确地说，这种优化不会改变在任何你能想象的真实JVM上执行的Java程序的意义。但不知何故，Java内存模型不允许这样做，这表明还有更多需要说的。</p>
+<p>有关这个例子和其他例子的更多信息，请参见evík和Aspinall的论文。</p>
+<h2 id="以前发生的事不排除无用性（acausality）">以前发生的事不排除无用性（acausality）</h2>
+<p>最后一个例子证明是个简单的问题。这里有一个更难的问题。考虑这个litmus test，使用普通的(非volatile)Java变量:</p>
+<figure class="highlight java"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div></pre></td><td class="code"><pre><div class="line">Litmus Test: Racy Out Of Thin Air Values</div><div class="line">Can <span class="keyword">this</span> program see r1 = <span class="number">42</span>, r2 = <span class="number">42</span>?</div><div class="line"></div><div class="line"><span class="comment">// Thread 1           // Thread 2</span></div><div class="line">r1 = x                r2 = y</div><div class="line">y = r1                x = r2</div><div class="line">(Obviously not!)</div></pre></td></tr></table></figure>
+
+<p>这个程序中的所有变量都像往常一样从零开始，然后这个程序在一个线程中有效地运行y = x，在另一个线程中运行x = y。x和y最终能变成42吗？在现实生活中，显然不能。但为什么不呢？内存模型并没有否定这个结果。</p>
+<p>假设“r1 = x”的读数是42。那么“y = r1”会将42写入y，然后竞争“r2 = y”会读取42，导致“x = r2”写入42到x，且write与原始“r1 = x”竞争(因此可被原始“r1 = x”观察到)，看起来证明原始假设是正确的。在这个例子中，42被称为无中生有的值，因为它看起来没有任何理由，但随后用循环逻辑证明了自己。如果内存在当前的0之前曾经持有42，而硬件错误地推测它仍然是42，会怎么样？这种猜测可能会成为一个自我实现的预言。(在Spectre和相关攻击显示出硬件是如何不断进步的之前，这个论点似乎更加牵强。即便如此，没有一种硬件是这样凭空创造值的。)</p>
+<p>很明显，这个程序不能以r1和r2设置为42结束，但是happens-before本身并不能解释为什么不能这样做。这再次表明存在某种不完整性。新的Java内存模型花费了大量时间来解决这种不完整性，稍后将对此进行更详细的描述。</p>
+<p>这个程序有一个竞争——x和y的读取与其他线程中的写入竞争——所以我们可能会继续认为它是一个不正确的程序。但是这里有一个没有数据竞争的版本:</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div></pre></td><td class="code"><pre><div class="line">Litmus <span class="keyword">Test</span>: Non-Racy <span class="keyword">Out</span> Of Thin Air Values</div><div class="line">Can this program see <span class="literal">r1</span> = <span class="number">42</span>, <span class="literal">r2</span> = <span class="number">42</span>?</div><div class="line"></div><div class="line">// Thread <span class="number">1</span>           // Thread <span class="number">2</span></div><div class="line"><span class="literal">r1</span> = x                <span class="literal">r2</span> = y</div><div class="line">if (<span class="literal">r1</span> == <span class="number">42</span>)         if (<span class="literal">r2</span> == <span class="number">42</span>)</div><div class="line">    y = <span class="literal">r1</span>                x = <span class="literal">r2</span></div><div class="line">(Obviously <span class="keyword">not</span>!)</div></pre></td></tr></table></figure>
+
+<p>由于x和y从零开始，任何顺序一致的执行都不执行写操作，所以这个程序没有写操作，所以没有竞争。不过，同样，仅happen-before并不排除这样的可能性，假设r1 = x看到竞争不是write，然后根据这个假设，两个条件最终都为真，x和y最终都是42。这是另一种无中生有的价值，但这一次是在没有竞争的程序中。任何保证DRF-SC的模型都必须保证这个程序只在末尾看到全零，然而happens-before并没有解释为什么。</p>
+<p>Java内存模型花了很多我不想赘述的话来试图排除这些类型的假设。不幸的是，五年后，Sarita Adve and Hans Boehm对这个内存模型有这样的评价:</p>
+<blockquote>
+<p>Prohibiting such causality violations in a way that does not also prohibit other desired optimizations turned out to be surprisingly difficult. … After many proposals and five years of spirited debate, the current model was approved as the best compromise. … Unfortunately, this model is very complex, was known to have some surprising behaviors, and has recently been shown to have a bug.</p>
+<p>以一种不妨碍其他期望的优化的方式来禁止这种因果关系冲突，结果令人惊讶地难以实现。……经过许多提议和五年的激烈辩论，目前的模式被认为是最好的折衷方案。……不幸的是，这个模型非常复杂，已知有一些令人惊讶的缺点，最近被证明有一个错误。</p>
+</blockquote>
+<p>(Adve 和 Boehm, <a href="https://cacm.acm.org/magazines/2010/8/96610-memory-models-a-case-for-rethinking-parallel-languages-and-hardware/fulltext" target="_blank" rel="external">“Memory Models: A Case For Rethinking Parallel Languages and Hardware,”</a> August 2010)</p>
+<h2 id="C++11_内存模型_(2011)">C++11 内存模型 (2011)</h2>
+<p>让我们把Java放在一边，研究C++。受Java新内存模型明显成功的启发，许多同样的人开始为C++定义一个类似的内存模型，最终在C++11中采用。与Java相比，C++在两个重要方面有所不同。首先，C++对具有数据竞争的程序不做任何保证，这似乎消除了对Java模型复杂性的需求。其次，C++提供了三种原子性:强同步(“顺序一致”)、弱同步(“acquire/release”,、coherence-only)和无同步(“relaxed”，用于隐藏竞争)。“relaxed”的原子性重新引入了Java关于定义什么是竞争程序的所有复杂性。结果是C++模型比Java更复杂，但对程序员的帮助更小。</p>
+<p>C++11还定义了原子栅栏作为原子变量的替代，但是它们并不常用，我不打算讨论它们。</p>
+<h3 id="DRF-SC_还是_着火(Catch_Fire）">DRF-SC 还是 着火(Catch Fire）</h3>
+<p>与Java不同，C++没有给有竞争的程序任何保证。任何有竞争的程序都属于<a href="https://blog.regehr.org/archives/213" target="_blank" rel="external">“未定义的行为”</a>。允许在程序执行的最初几微秒内进行竞争访问，从而在几小时或几天后导致任意的错误行为。这通常被称为“DRF-SC或着火”:如果程序没有数据竞争，它以顺序一致的方式运行，如果有数据竞争，它可以做任何事情，包括着火。</p>
+<p>关于DRF-SC或Catch Fire的论点的更详细的介绍，参见Boehm，<a href="http://open-std.org/jtc1/sc22/wg21/docs/papers/2007/n2176.html#undefined" target="_blank" rel="external">“内存模型原理”(2007)</a> 和Boehm和Adve，<a href="https://www.hpl.hp.com/techreports/2008/HPL-2008-56.pdf" target="_blank" rel="external">“C++并发内存模型的基础”(2008)</a>。</p>
+<p>简而言之，这中情况有四个正当理由:</p>
+<p>Briefly, there are four common justifications for this position:</p>
+<ul>
+<li>C和C++已经充斥着未定义的行为，这是编译器优化横行的语言小角落，用户最好不要迟疑。多一个未定义行为又有多大的坏处？</li>
+<li>现有的编译器和库编写时没有考虑线程，以任意方式破坏了有竞争的程序。找到并修复所有的问题太难了，或者这个争论没有了，尽管还不清楚那些不固定的编译器和库是如何应对宽松的原子的。</li>
+<li>真正知道自己在做什么并希望避免未定义行为的程序员可以使用relaxed的原子。</li>
+<li>不定义竞争语义允许实现检测和诊断竞争并停止执行。</li>
+</ul>
+<p>就我个人而言，最后一个理由是我认为唯一有说服力的，尽管我认为这个意思是说“允许使用竞争检测器”，而不是说“一个整数的竞争会使整个程序无效。”</p>
+<p>这里有一个来自“内存模型原理”的例子，我认为它抓住了C++方法的本质以及它的问题。考虑这个程序，它引用了一个全局变量x。</p>
+<figure class="highlight c++"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">unsigned</span> i = x;</div><div class="line"></div><div class="line"><span class="keyword">if</span> (i &lt; <span class="number">2</span>) {</div><div class="line">	foo: ...</div><div class="line">	<span class="keyword">switch</span> (i) {</div><div class="line">	<span class="keyword">case</span> <span class="number">0</span>:</div><div class="line">		...;</div><div class="line">		<span class="keyword">break</span>;</div><div class="line">	<span class="keyword">case</span> <span class="number">1</span>:</div><div class="line">		...;</div><div class="line">		<span class="keyword">break</span>;</div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>据称，C++编译器可能会将i保存在寄存器中，但如果标签foo处的代码很复杂，则需要重用这些寄存器。而不是转移i当前的值到栈上， 编译器可能会决定在到达switch语句时，再次从全局x加载i。结果是，在if体中，i &lt; 2可能不再为真。如果编译器使用由i索引的表将开关编译成计算跳转，那么代码将从表的末尾索引并跳转到一个意外的地址，这可能非常糟糕。</p>
+<p>从这个例子和其他类似的例子中，C++内存模型的作者得出结论，任何有竞争的访问都必须被允许对程序的未来执行造成无限的损害。我个人的结论是，在多线程程序中，编译器不应该认为它们可以通过重新执行初始化局部变量的内存读取来重新加载像i这样的局部变量。指望为单线程世界编写的现有C++编译器找到并修复像这样的代码生成问题可能是不切实际的，但是在新的语言中，我认为我们应该有更高的目标。</p>
+<h3 id="题外话,_C/C++的未定义行为">题外话, C/C++的未定义行为</h3>
+<p>另外，C和C++坚持编译器对程序中的错误行为进行任意的行为的能力导致了真正荒谬的结果。例如，考虑这个程序，这是2017在推特上讨论的话题：</p>
+<figure class="highlight c++"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div></pre></td><td class="code"><pre><div class="line"><span class="preprocessor">#<span class="keyword">include</span> &lt;cstdlib&gt;</span></div><div class="line"></div><div class="line"><span class="keyword">typedef</span> <span class="keyword">int</span> (*Function)();</div><div class="line"></div><div class="line"><span class="keyword">static</span> Function Do;</div><div class="line"></div><div class="line"><span class="keyword">static</span> <span class="keyword">int</span> EraseAll() {</div><div class="line">	<span class="keyword">return</span> system(<span class="string">"rm -rf slash"</span>);</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">void</span> NeverCalled() {</div><div class="line">	Do = EraseAll;</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">int</span> main() {</div><div class="line">	<span class="keyword">return</span> Do();</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>如果你是一个像Clang这样的现代C++编译器，你可能会想到这个程序如下：</p>
+<ul>
+<li>很明显，main函数中，Do要么为空，要么为EraseAll。</li>
+<li>如果Do是Erasell，那么Do()与Erasell()相同。</li>
+<li>如果Do 是null, 那么Do()是未定义行为。我可以随意实现，包括作为EraseAll()无条件实现。</li>
+<li>因此，我可以将间接调用Do()优化为直接调用EraseAll()。</li>
+<li>当我处理这里的时候，我可能直接内联EraseAll。</li>
+</ul>
+<p>最终结果是，Clang将程序优化为:</p>
+<figure class="highlight c++"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">int</span> main() {</div><div class="line">	<span class="keyword">return</span> system(<span class="string">"rm -rf slash"</span>);</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>你必须承认:前一个例子，局部变量i可能在if (i &lt; 2)体的中途突然停止小于2的可能性似乎并不合适。</p>
+<p>本质上，现代C和C++编译器假设没有程序员敢尝试未定义的行为。一个程序员写一个有bug的程序？不可思议！</p>
+<p>就像我说的，在新的语言中，我认为我们应该有更高的目标。</p>
+<h3 id="Acquire/release_atomic">Acquire/release atomic</h3>
+<p>C++采用了顺序一致的原子变量，很像(新的)Java的volatile变量(与C++ volatile没有关系)。在我们的消息传递示例中，我们可以将done声明为</p>
+<figure class="highlight c++"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">atomic&lt;<span class="keyword">int</span>&gt; done;</div></pre></td></tr></table></figure>
+
+<p>然后像使用普通变量一样使用done，就像在Java中一样。或者我们可以把一个普通的整型变量去掉。然后使用</p>
+<figure class="highlight c++"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">atomic_store(&done, <span class="number">1</span>);</div></pre></td></tr></table></figure>
+
+<p>和：</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">while</span>(atomic_load(&<span class="keyword">done</span>) == <span class="number">0</span>) { <span class="comment">/* loop */</span> }</div></pre></td></tr></table></figure>
+
+<p>去访问它。</p>
+<p>无论哪种方式，完成的操作都参与原子操作的顺序一致的总顺序，并同步程序的其余部分。</p>
+<p>C++还添加了较弱的原子，可以使用atomic_store_explicit和atomic_load_explicit以及附加的memory排序参数来访问这些原子。使用memory_order_seq_cst使显式调用等效于上面较短的调用。</p>
+<p>较弱的原子称为acquire/release原子，一个release如果被后来的acquire观察到，那么就创建了一个happen-before的关系(从release到acquire)。这个术语意在唤起mutex:release就像unlock mutex，acquire就像lock同一个mutex。release之前执行的写入必须对后续acquire之后执行的读取可见，就像unlock mutex之前执行的写入必须对后来unlock mutex之后执行的读取可见一样。</p>
+<p> The terminology is meant to evoke mutexes: release is like unlocking a mutex, and acquire is like locking that same mutex. The writes executed before the release must be visible to reads executed after the subsequent acquire, just as writes executed before unlocking a mutex must be visible to reads executed after later locking that same mutex.</p>
+<p>为了使用较弱的原子，我们可以将消息传递示例改为:</p>
+<figure class="highlight c++"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">atomic_store(&done, <span class="number">1</span>, memory_order_release);</div></pre></td></tr></table></figure>
+
+<p>和</p>
+<figure class="highlight c++"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">while</span>(atomic_load(&done, memory_order_acquire) == <span class="number">0</span>) { <span class="comment">/* loop */</span> }</div></pre></td></tr></table></figure>
+
+<p>它仍然是正确的。但不是所有的程序都会这样</p>
+<p>回想一下，顺序一致的原子要求程序中所有原子的行为与执行的一些全局交替执行(全局顺序)一致。acquire/release原子不会。它们只需要对单个内存位置的操作进行顺序一致的交替执行。也就是说，它们只需要一致性。结果是，一个使用具有多个存储位置的acquire/release原子的程序可能会观察到无法用程序中所有acquire/release原子的顺序一致的交替来解释的执行，这可以说是违反了DRF-SC！</p>
+<p>为了说明不同之处，这里再举一个存储缓冲区的例子:</p>
+<figure class="highlight c++"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div></pre></td><td class="code"><pre><div class="line">Litmus Test: Store Buffering</div><div class="line">Can <span class="keyword">this</span> program see r1 = <span class="number">0</span>, r2 = <span class="number">0</span>?</div><div class="line"></div><div class="line"><span class="comment">// Thread 1           // Thread 2</span></div><div class="line">x = <span class="number">1</span>                 y = <span class="number">1</span></div><div class="line">r1 = y                r2 = x</div><div class="line">On sequentially consistent hardware: no.</div><div class="line">On x86 (or other TSO): yes!</div><div class="line">On ARM/POWER: yes!</div><div class="line">On Java (<span class="keyword">using</span> volatiles): no.</div><div class="line">On C++<span class="number">11</span> (sequentially consistent atomics): no.</div><div class="line">On C++<span class="number">11</span> (acquire/release atomics): yes!</div></pre></td></tr></table></figure>
+
+<p>C++顺序一致的原子与Java的volatile相匹配。但是acquire-release原子在x的顺序和y的顺序之间没有强加任何关系。特别地，允许程序表现得好像r1 = y发生在y = 1之前，而同时r2 = x发生在x = 1之前，使得r1 = 0，r2 = 0与整个程序的顺序一致性相矛盾。为什么要引入这些较弱的获取/发布原子？可能是因为它们是x86上的普通内存操作。</p>
+<p>请注意，对于观察特定写入的一组给定的特定读取，C++顺序一致原子和C++ acquire/release原子创建相同的happen-before关系。它们之间的区别在于，顺序一致的原子不允许观察特定写入的某些特定读取集，但acuqire/release原子允许这些特定读取集。一个这样的例子是导致存储缓冲测试出现r1 = 0，r2 = 0的结果。</p>
+<p>acquire/release原子在实践中不如提供顺序一致性的原子有用。这里有一个例子。假设我们有一个新的同步原语，一个具有通知和等待两种方法的一次性条件变量。为了简单起见，只有一个线程会调用Notify，只有一个线程会调用Wait。我们想安排Notify在另一个线程还没有等待的时候是无锁的。我们可以用一对原子整数来实现:</p>
+<figure class="highlight c++"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">class</span> Cond {</div><div class="line">	atomic&lt;<span class="keyword">int</span>&gt; done;</div><div class="line">	atomic&lt;<span class="keyword">int</span>&gt; waiting;</div><div class="line">	...</div><div class="line">};</div><div class="line"></div><div class="line"><span class="keyword">void</span> Cond::notify() {</div><div class="line">	done = <span class="number">1</span>;</div><div class="line">	<span class="keyword">if</span> (!waiting)</div><div class="line">		<span class="keyword">return</span>;</div><div class="line">	<span class="comment">// ... wake up waiter ...</span></div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">void</span> Cond::wait() {</div><div class="line">	waiting = <span class="number">1</span>;</div><div class="line">	<span class="keyword">if</span>(done)</div><div class="line">		<span class="keyword">return</span>;</div><div class="line">	<span class="comment">// ... sleep ...</span></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>这段代码的重要部分是在检查waiting之前notify设置done为1, 为wait在检查done之前设置waiting为1,因此并发调用notify和wait不会导致notify立即返回并等待休眠。但是使用C++ acquire/release原子，它们可以。而且它们可能只需要很少的几率发生，使得这种错误很难重现和诊断。(更糟糕的是，在像64位ARM这样的一些架构上，实现acquire/release原子的最佳方式是顺序一致的原子，因此您可能会编写在64位ARM上运行良好的代码，但在移植到其他系统时才发现它是不正确的。)</p>
+<p>基于这种理解，“acquire/release”对于这些原子来说是一个不幸的名字，因为顺序一致的原子做同样的acquire和release。不同之处在于顺序一致性的丧失。称这些为“一致性”原子可能更好。太迟了。</p>
+<h3 id="Relaxed_atomic">Relaxed atomic</h3>
+<p>C++并没有仅仅停留在连贯的获取/发布原子上。它还引入了非同步原子，称为relaxed原子。这些原子根本没有同步效果——它们没有创建先发生的边——并且它们根本没有排序保证。事实上，宽松原子读/写和普通读/写没有区别，除了宽松原子上的竞争不被认为是竞争，不能着火。</p>
+<p>C++没有停止与仅仅提供一致性的acquire/release原子。它还引入了非同步原子，称为relaxed原子(memory_order_relaxed)。这些原子根本没有同步效果——它们没有创建happens-before关系——并且它们根本没有排序保证。事实上，relaxed原子读/写和普通读/写没有区别，除了relaxed原子上的竞争不被认为是竞争，不能着火。</p>
+<p>修改后的Java内存模型的大部分复杂性来自于定义具有数据竞争的程序的行为。如果C++采用DRF-SC或Catch Fire——实际上不允许有数据竞争的程序——意味着我们可以扔掉前面看到的所有奇怪的例子，那么C++语言规范将比Java语言规范更简单，那就太好了。不幸运的是，包括releaxed的原子最终保留了所有这些关注，这意味着C++11规范最终并不比Java简单。</p>
+<p>像Java的内存模型一样，C++11的内存模型最终也是不正确的。考虑之前的无数据竞争计划:</p>
+<figure class="highlight c++"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div></pre></td><td class="code"><pre><div class="line">Litmus Test: Non-Racy Out Of Thin Air Values</div><div class="line">Can <span class="keyword">this</span> program see r1 = <span class="number">42</span>, r2 = <span class="number">42</span>?</div><div class="line"></div><div class="line"><span class="comment">// Thread 1           // Thread 2</span></div><div class="line">r1 = x                r2 = y</div><div class="line"><span class="keyword">if</span> (r1 == <span class="number">42</span>)         <span class="keyword">if</span> (r2 == <span class="number">42</span>)</div><div class="line">    y = r1                x = r2</div><div class="line">(Obviously not!)</div><div class="line"></div><div class="line">C++<span class="number">11</span> (ordinary variables): no.</div><div class="line">C++<span class="number">11</span> (relaxed atomics): yes!</div></pre></td></tr></table></figure>
+
+<p>Viktor Vafeiadis和其他人在他们的论文<a href="https://fzn.fr/readings/c11comp.pdf" target="_blank" rel="external">“Common Compiler Optimisations are Invalid in the C11 Memory Model and what we can do about it” (2015)</a>中表明，C++11规范保证当x和y是普通变量时，该程序必须以x和y设置为零结束。但是如果x和y是relaxed的原子，那么，严格来说，C++11规范不排除r1和r2最终都可能达到42。(惊喜！)</p>
+<p>详情见论文，但在较高的层次上，C++11规范有一些正式规则，试图禁止无中生有的值，并结合了一些模糊的词语来阻止其他类型的有问题的值。这些正式的规则就是问题所在，因此C++14放弃了它们，只留下了模糊的词语。引用删除它们的基本原理，C++11公式证明是“既不充分的，因为它使人们基本上无法对内存顺序放松的程序进行推理，也严重有害，因为它可以说不允许在ARM和POWER等体系结构上对memory_order_relaxed的所有合理实现。”</p>
+<p>综上所述，Java试图正式排除所有不合法的执行，但失败了。然后，借助Java的后知后觉，C++11试图正式地只排除一些不合法的执行，也失败了。C++14然后说什么都不正式。这不是正确的方向。</p>
+<p>事实上，Mark Batty和其他人在2015年发表的一篇题为<a href="https://www.cl.cam.ac.uk/~jp622/the_problem_of_programming_language_concurrency_semantics.pdf" target="_blank" rel="external">“编程语言并发语义的问题”</a>的论文给出了这一发人深省的评估:</p>
+<blockquote>
+<p>Disturbingly, 40+ years after the first relaxed-memory hardware was introduced (the IBM 370/158MP), the field still does not have a credible proposal for the concurrency semantics of any general-purpose high-level language that includes high-performance shared-memory concurrency primitives.</p>
+<p>令人不安的是，在引入第一个relaxed内存硬件(IBM 370/158MP)40多年后，该领域仍然没有一个可信的提案来描述任何包含高性能共享内存并发原语的通用高级语言的并发语义。</p>
+</blockquote>
+<p>甚至定义弱有序硬件的语义(忽略软件和编译器优化的复杂性)也不太顺利。张思卓等人在2018年发表的一篇名为<a href="https://arxiv.org/abs/1805.07886" target="_blank" rel="external">《构建弱记忆模型》</a>的论文讲述了最近发生的一些事情:</p>
+<blockquote>
+<p>Sarkar et al. published an operational model for POWER in 2011, and Mador-Haim et al. published an axiomatic model that was proven to match the operational model in 2012. However, in 2014, Alglave et al. showed that the original operational model, as well as the corresponding axiomatic model, ruled out a newly observed behavior on POWER machines. For another instance, in 2016, Flur et al. gave an operational model for ARM, with no corresponding axiomatic model. One year later, ARM released a revision in their ISA manual explicitly forbidding behaviors allowed by Flur&#39;s model, and this resulted in another proposed ARM memory model. Clearly, formalizing weak memory models empirically is error-prone and challenging.</p>
+<p>Sarkar等人在2011年公布了POWER的运行模型，Mador-Haim等人在2012年公布了一个公理化模型，该模型被证明与运行模型相匹配。然而，在2014年，Alglave等人表明，最初的操作模型以及相应的公理模型排除了在POWER机器上新观察到的行为。再比如，2016年，Flur等人给出了一个ARM的操作模型，没有对应的公理模型。一年后，ARM在他们的ISA手册中发布了一个修订版，明确规定了Flur模型允许的行为，这导致了另一个提出的ARM内存模型。显然，根据经验形式化弱记忆模型是容易出错且具有挑战性的。</p>
+</blockquote>
+<p>在过去的十年里，致力于定义和形式化所有这些的研究人员非常聪明、有才华和坚持不懈，我并不想通过指出结果中的不足来贬低他们的努力和成就。我从这些简单的结论中得出结论，这个指定线程程序的确切行为的问题，即使没有竞争，也是难以置信的微妙和困难。如今，即使是最优秀、最聪明的研究人员似乎也无法理解这一点。即使不是，编程语言定义在日常开发人员可以理解的情况下效果最好，而不需要花费十年时间研究并发程序的语义。</p>
+<h2 id="C,_Rust_和_Swift_的内存模型">C, Rust 和 Swift 的内存模型</h2>
+<p>C11也采用了C++11内存模型，使其成为C/C++11内存模型。</p>
+<p>2015年的<a href="https://doc.rust-lang.org/std/sync/atomic/" target="_blank" rel="external">Rust 1.0.0</a>和2020年的<a href="https://github.com/apple/swift-evolution/blob/master/proposals/0282-atomics.md" target="_blank" rel="external">Swift 5.3</a>都整体采用了C/C++内存模型，拥有DRF-SC或Catch Fire以及所有的原子类型和原子栅栏。</p>
+<p>毫不奇怪，这两种语言都采用了C/C++ 模型，因为它们建立在C/C++编译器工具链(LLVM)上，并强调与C/C++代码的紧密集成。</p>
+<h3 id="硬件题外话：_有效的顺序一致性atomic">硬件题外话： 有效的顺序一致性atomic</h3>
+<p>早期的多处理器体系结构有多种同步机制和内存模型，具有不同程度的可用性。在这种多样性中，不同同步抽象的效率取决于它们如何映射到架构所提供的内容。为了构造顺序一致的原子变量的抽象，有时唯一的选择是使用比严格必要的要多得多、贵得多的内存栅栏barriers，特别是在ARM和POWER上。</p>
+<p>随着C、C++和Java都提供了这种顺序一致性同步原子的抽象，硬件设计者就应该让这种抽象变得高效。ARMv8架构(32位和64位)引入了ldar和stlr load和store指令，提供了直接的实现。在2017年的一次谈话中，赫伯·萨特声称，IBM已经批准了他的说法，他们希望未来的POWER实现对顺序一致的原子也有某种更有效的支持，这让程序员“更没有理由使用relaxed的原子。”我不知道是否发生了这种情况，尽管在2021年，POWER的相关性远不如ARMv8。</p>
+<p>这种融合的效果是顺序一致的原子现在被很好地理解，并且可以在所有主要的硬件平台上有效地实现，这使得它们成为编程语言内存模型的一个很好的目标。</p>
+<h2 id="JavaScript_内存模型_(2017)">JavaScript 内存模型 (2017)</h2>
+<p>你可能会认为JavaScript，一种众所周知的单线程语言，不需要担心内存模型，当代码在多个处理器上并行运行时会发生什么。我当然有。但是你和我都错了。</p>
+<p>JavaScript有web workers，它允许在另一个线程中运行代码。按照最初的设想，工作人员只通过显式的消息复制与主JavaScript线程进行通信。没有共享的可写内存，就没有必要考虑像数据竞争这样的问题。然而，ECMAScript 2017 (ES2017)增加了SharedArrayBuffer对象，它让主线程和工作线程共享一块可写内存。为什么要这样做？在提案的<a href="https://github.com/tc39/ecmascript_sharedmem/blob/master/historical/Spec_JavaScriptSharedMemoryAtomicsandLocks.pdf" target="_blank" rel="external">早期草稿</a>中，列出的第一个原因是将多线程C++代码编译成JavaScript。</p>
+<p>当然，共享可写内存还需要定义同步的原子操作和内存模型。JavaScript在三个重要方面偏离了C++:</p>
+<ul>
+<li>首先，它将原子操作限制在顺序一致的原子上。其他原子可以被编译成顺序一致的原子，可能会损失效率，但不会损失正确性，只有一种原子可以简化系统的其余部分。</li>
+<li>第二，JavaScript不采用“DRF-SC或着火。”相反，像Java一样，它仔细定义了竞争访问的可能结果。其原理与Java非常相似，尤其是安全性。允许竞争read返回任何值允许(可以说是鼓励)实现返回不相关的数据，这可能会导致运行时<a href="https://github.com/tc39/ecmascript_sharedmem/blob/master/DISCUSSION.md#races-leaking-private-data-at-run-time" target="_blank" rel="external">私有数据的泄漏</a>。</li>
+<li>第三，部分是因为JavaScript为竞争程序提供了语义，它定义了当原子和非原子操作在同一个内存位置使用时，以及当使用不同大小的访问访问同一个内存位置时会发生什么。</li>
+</ul>
+<p>精确定义racy程序的行为会导致relaxed内存语义的复杂性，以及如何禁止无中生有的读取和类似情况。除了这些与其他地方基本相同的挑战之外，ES2017定义还有两个有趣的错误，它们是由于与新的ARMv8原子指令的语义不匹配而引起的。这些例子改编自康拉德·瓦特等人2020年的论文<a href="https://www.cl.cam.ac.uk/~jp622/repairing_javascript.pdf" target="_blank" rel="external">“Repairing and Mechanising the JavaScript Relaxed Memory Model.”</a></p>
+<p>正如我们在上一节中提到的，ARMv8增加了ldar和stlr指令，提供顺序一致的原子加载和存储。这些是针对C++的，它没有定义任何具有数据竞争的程序的行为。因此，毫不奇怪，这些指令在竞争程序中的行为与ES2017作者的期望不符，尤其是它不符合ES2017对竞争程序行为的要求。</p>
+<figure class="highlight javascript"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div></pre></td><td class="code"><pre><div class="line">Litmus Test: ES2017 racy reads on ARMv8</div><div class="line">Can <span class="keyword">this</span> program (using atomics) see r1 = <span class="number">0</span>, r2 = <span class="number">1</span>?</div><div class="line"></div><div class="line"><span class="comment">// Thread 1           // Thread 2</span></div><div class="line">x = <span class="number">1</span>                 y = <span class="number">1</span></div><div class="line">r1 = y                x = <span class="number">2</span> (non-atomic)</div><div class="line">                      r2 = x</div><div class="line">C++: yes (data race, can <span class="keyword">do</span> anything at all).</div><div class="line">Java: the program cannot be written.</div><div class="line">ARMv8 using ldar/stlr: yes.</div><div class="line">ES2017: no! (contradicting ARMv8)</div></pre></td></tr></table></figure>
+
+<p>在这个程序中，所有的读和写都是顺序一致的原子，除了x = 2:线程1使用原子存储写x = 1，但是线程2使用非原子存储写x = 2。在C++中，这是一场数据竞争，所以所有的赌注都取消了。在Java中，这个程序是不能写的:x必须要么声明为volatile，要么不声明；它有时不能被原子访问。在ES2017中，内存模型不允许r1 = 0，r2 = 1。如果r1 = y读取0，线程1必须在线程2开始之前完成，在这种情况下，非原子x = 2似乎发生在x = 1之后并覆盖x = 1，导致原子r2 = x读取2。这个解释似乎完全合理，但这不是ARMv8处理器的工作方式。</p>
+<p>事实证明，对于ARMv8指令的等效序列，对x的非原子写可以在对y的原子写之前重新排序，因此该程序实际上产生r1 = 0，r2 = 1。这在C++中不是问题，因为竞争意味着程序可以做任何事情，但对于ES2017来说，这是一个问题，它将竞争行为限制在一组不包括r1 = 0、r2 = 1的结果上</p>
+<p>由于ES2017的明确目标是使用ARMv8指令来实现顺序一致的原子操作，Watt等人报告说，他们建议的修复(计划包含在标准的下一个修订版中)将削弱竞争行为约束，足以允许这种结果。(当时我不清楚“下一次修订”是指ES2020还是ES2021。)</p>
+<p>Watt等人提出的修改还包括对第二个bug的修复，第一个bug是由Watt、Andreas Rossberg和Jean Pichon-pharabad提出的，其中一个无数据竞争的程序没有按照ES2017规范给出顺序一致的语义。该程序由下式给出:</p>
+<figure class="highlight javascript"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div></pre></td><td class="code"><pre><div class="line">Litmus Test: ES2017 data-race-free program</div><div class="line">Can this program (using atomics) see r1 = 1, r2 = 2?</div><div class="line"></div><div class="line">// Thread 1           // Thread 2</div><div class="line">x = 1                 x = 2</div><div class="line">                      r1 = x</div><div class="line">                      if (r1 == 1) {</div><div class="line">                          r2 = x // non-atomic</div><div class="line">                      }</div><div class="line">On sequentially consistent hardware: no.</div><div class="line">C++: I'm not enough of a C++ expert to say for sure.</div><div class="line">Java: the program cannot be written.</div><div class="line">ES2017: yes! (violating DRF-SC).</div></pre></td></tr></table></figure>
+
+<p>在这个程序中，所有的读和写都是顺序一致的原子，除了r2 = x，标记为。这个程序是无数据竞争的:非原子读取必须参与任何数据竞争，只有当r1 = 1时才执行，这证明线程1的x = 1发生在r1 = x之前，因此也发生在r2 = x之前。DRF-SC意味着程序必须以顺序一致的方式执行，因此r1 = 1，r2 = 2是不可能的，但ES2017规范允许这样做。</p>
+<p>因此，ES2017程序行为规范同时太强(它不允许racy程序的真实ARMv8行为)和太弱(它允许无竞争程序的非顺序一致行为)。如前所述，这些错误已经改正。即便如此，这也再次提醒我们，精确地使用以前发生的事情来指定无数据竞争程序和活泼程序的语义是多么微妙，以及将语言内存模型与底层硬件内存模型相匹配是多么微妙。</p>
+<p>令人鼓舞的是，至少到目前为止，除了顺序一致的原子之外，JavaScript避免了添加任何其他原子，并抵制了“DRF-SC或着火”结果是内存模型作为C/C++编译目标是有效的，但更接近于Java。</p>
+<h2 id="结论">结论</h2>
+<p>看看C、C++、Java、JavaScript、Rust和Swift，我们可以得出以下结论:</p>
+<ul>
+<li>它们都提供顺序一致的同步原子，用于协调并行程序的非原子部分。</li>
+<li>它们的目的都是确保程序使用适当的同步来避免数据竞争，就像以顺序一致的方式执行一样。</li>
+<li>Java和JavaScript避免了引入弱(acquire/release)同步原子，这似乎是为x86量身定制的。</li>
+<li>它们都为程序提供了一种方式来执行“有意的”数据竞争，而不会使程序的其余部分无效。在C、C++、Rust和Swift中，这种机制是relaxed，非同步原子，一种特殊的内存访问形式。在Java和JavaScript中，这种机制就是普通的内存访问。</li>
+<li>没有一种语言找到了正式禁止悖论的方法，比如无中生有的值，但是所有语言都非正式地禁止它们。</li>
+</ul>
+<p>与此同时，处理器制造商似乎已经接受了顺序一致同步原子的抽象对于高效实现非常重要，并开始这样做：ARMv8和RISC-V都提供了直接支持。</p>
+<p>最后，真正大量的验证和形式分析工作已经进入了理解这些系统和精确陈述它们的行为。特别令人鼓舞的是，瓦特等人在2020年能够给出一个JavaScript重要子集的正式模型，并使用定理证明器来证明编译对ARM、POWER、RISC-V和x86-TSO的正确性。</p>
+<p>在第一个Java内存模型问世25年后，经过许多人世纪的研究努力，我们可能开始能够形式化整个内存模型。也许，有一天，我们也会完全理解他们。</p>
+<p>【本系列的下一篇文章，关于Go内存模型，计划在7月12日那一周发布。】</p>
+<h2 id="感谢">感谢</h2>
+<p>这一系列的帖子从我有幸在谷歌工作的一长串工程师的讨论和反馈中受益匪浅。我感谢他们。我对任何错误或不受欢迎的意见负全部责任。    </p>
+
+      
+    </div>
+    <footer class="article-footer">
+      
+
+      
+      <!-- <link rel="stylesheet" href="https://unpkg.com/gitalk/dist/gitalk.css">
+      <script src="https://unpkg.com/gitalk/dist/gitalk.min.js"></script> -->
+      <section id="comments">
+        <script src="https://utteranc.es/client.js"
+                repo="smallnest/gitalk"
+                issue-term="title"
+                theme="github-light"
+                crossorigin="anonymous"
+                async>
+        </script>
+        <!-- <div id="gitalk-container"></div>
+        <script type="text/javascript">
+          var gitalkOpts = {
+            id: '2021/07/11/Programming-Language-Memory-Models/',
+            owner: 'smallnest',
+            repo: 'gitalk',
+            title: '[译]编程语言内存模型',
+            body: 'https://colobu.com/2021/07/11/Programming-Language-Memory-Models/',
+            clientID: 'bc02724130ed5b7ee275',
+            clientSecret: '68cb0bae2f93a8b88b09e0eb9b08c844b06a9047',
+            admin: ['smallnest'],
+            distractionFreeMode: false
+          };
+
+          const gitalk = new Gitalk(gitalkOpts)
+          gitalk.render('gitalk-container')
+        </script> -->
+        <noscript> 为正常使用评论功能请激活JavaScript</noscript>
+      </section>
+
+      
+
+    </footer>
+  </div>
+  
+  
+<nav id="article-nav">
+  
+    <a href="/2021/07/13/Updating-the-Go-Memory-Model/" id="article-nav-newer" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">Newer</strong>
+      <div class="article-nav-title">
+        
+          [译]更新Go内存模型
+        
+      </div>
+    </a>
+  
+  
+    <a href="/2021/07/04/dive-into-go-module-3/" id="article-nav-older" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">Older</strong>
+      <div class="article-nav-title">深入Go Module之未说的秘密</div>
+    </a>
+  
+</nav>
+
+  
+</article></section>
+        
+          <aside id="sidebar">
+  
+      <div class="widget-wrap">
+    <h3 class="widget-title">原创图书</h3>
+    <div class="widget">
+      <a href="/ScalaCollectionsCookbook/">
+        <img width="100%" src="/ScalaCollectionsCookbook/scala_collections_cookbook.jpg">
+        <img width="100%" src="/ScalaCollectionsCookbook/scala_collections_cookbook_tw.png">
+      </a>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">分类</h3>
+    <div class="widget">
+      <ul class="category-list"><li class="category-list-item"><a class="category-list-link" href="/categories/Android/">Android</a><span class="category-list-count">12</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/C/">C++</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/DOTNET/">DOTNET</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Docker/">Docker</a><span class="category-list-count">5</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Go/">Go</a><span class="category-list-count">175</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Java/">Java</a><span class="category-list-count">64</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Linux/">Linux</a><span class="category-list-count">7</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Rust/">Rust</a><span class="category-list-count">12</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Scala/">Scala</a><span class="category-list-count">18</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/分享/">分享</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/前端开发/">前端开发</a><span class="category-list-count">18</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/区块链/">区块链</a><span class="category-list-count">8</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/大数据/">大数据</a><span class="category-list-count">60</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/工具/">工具</a><span class="category-list-count">28</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/数据库/">数据库</a><span class="category-list-count">3</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/架构/">架构</a><span class="category-list-count">26</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/算法/">算法</a><span class="category-list-count">4</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/管理/">管理</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/网络编程/">网络编程</a><span class="category-list-count">13</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/读书笔记/">读书笔记</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/运维/">运维</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/高并发编程/">高并发编程</a><span class="category-list-count">20</span></li></ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">标签云</h3>
+    <div class="widget tagcloud">
+      <a href="/tags/Android/" style="font-size: 15.71px;">Android</a><a href="/tags/ApacheBench/" style="font-size: 11.43px;">ApacheBench</a><a href="/tags/Bower/" style="font-size: 10.00px;">Bower</a><a href="/tags/C/" style="font-size: 10.00px;">C#</a><a href="/tags/CDN/" style="font-size: 10.00px;">CDN</a><a href="/tags/CQRS/" style="font-size: 10.00px;">CQRS</a><a href="/tags/CRC/" style="font-size: 10.00px;">CRC</a><a href="/tags/CSS/" style="font-size: 11.43px;">CSS</a><a href="/tags/CompletableFuture/" style="font-size: 10.00px;">CompletableFuture</a><a href="/tags/Comsat/" style="font-size: 10.00px;">Comsat</a><a href="/tags/Curator/" style="font-size: 18.57px;">Curator</a><a href="/tags/DSL/" style="font-size: 10.00px;">DSL</a><a href="/tags/Disruptor/" style="font-size: 10.00px;">Disruptor</a><a href="/tags/Docker/" style="font-size: 11.43px;">Docker</a><a href="/tags/Ember/" style="font-size: 11.43px;">Ember</a><a href="/tags/FastJson/" style="font-size: 10.00px;">FastJson</a><a href="/tags/Fiber/" style="font-size: 10.00px;">Fiber</a><a href="/tags/GAE/" style="font-size: 10.00px;">GAE</a><a href="/tags/GC/" style="font-size: 12.86px;">GC</a><a href="/tags/Gnuplot/" style="font-size: 10.00px;">Gnuplot</a><a href="/tags/Go/" style="font-size: 14.29px;">Go</a><a href="/tags/Gradle/" style="font-size: 10.00px;">Gradle</a><a href="/tags/Grunt/" style="font-size: 10.00px;">Grunt</a><a href="/tags/Gulp/" style="font-size: 10.00px;">Gulp</a><a href="/tags/Hadoop/" style="font-size: 10.00px;">Hadoop</a><a href="/tags/Hazelcast/" style="font-size: 10.00px;">Hazelcast</a><a href="/tags/IPFS/" style="font-size: 10.00px;">IPFS</a><a href="/tags/Ignite/" style="font-size: 10.00px;">Ignite</a><a href="/tags/JVM/" style="font-size: 10.00px;">JVM</a><a href="/tags/Java/" style="font-size: 17.14px;">Java</a><a href="/tags/Kafka/" style="font-size: 20.00px;">Kafka</a><a href="/tags/Lambda/" style="font-size: 14.29px;">Lambda</a><a href="/tags/Linux/" style="font-size: 12.86px;">Linux</a><a href="/tags/LongAdder/" style="font-size: 10.00px;">LongAdder</a><a href="/tags/MathJax/" style="font-size: 10.00px;">MathJax</a><a href="/tags/Maven/" style="font-size: 11.43px;">Maven</a><a href="/tags/Memcached/" style="font-size: 10.00px;">Memcached</a><a href="/tags/Metrics/" style="font-size: 10.00px;">Metrics</a><a href="/tags/Mongo/" style="font-size: 12.86px;">Mongo</a><a href="/tags/Netty/" style="font-size: 15.71px;">Netty</a>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">归档</h3>
+    <div class="widget">
+      <ul class="archive-list"><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/10/">October 2021</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/08/">August 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/07/">July 2021</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/06/">June 2021</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/05/">May 2021</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/04/">April 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/03/">March 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/02/">February 2021</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/01/">January 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/12/">December 2020</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/11/">November 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/09/">September 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/08/">August 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/07/">July 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/06/">June 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/05/">May 2020</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/04/">April 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/03/">March 2020</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/02/">February 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/01/">January 2020</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/12/">December 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/11/">November 2019</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/10/">October 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/09/">September 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/08/">August 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/07/">July 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/06/">June 2019</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/05/">May 2019</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/04/">April 2019</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/03/">March 2019</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/02/">February 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/01/">January 2019</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/12/">December 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/11/">November 2018</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/10/">October 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/09/">September 2018</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/08/">August 2018</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/07/">July 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/06/">June 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/05/">May 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/04/">April 2018</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/03/">March 2018</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/02/">February 2018</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/01/">January 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/12/">December 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/11/">November 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/10/">October 2017</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/09/">September 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/08/">August 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/07/">July 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/06/">June 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/05/">May 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/04/">April 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/03/">March 2017</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/02/">February 2017</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/01/">January 2017</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/12/">December 2016</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/11/">November 2016</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/10/">October 2016</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/09/">September 2016</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/08/">August 2016</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/07/">July 2016</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/06/">June 2016</a><span class="archive-list-count">14</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/05/">May 2016</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/04/">April 2016</a><span class="archive-list-count">14</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/03/">March 2016</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/02/">February 2016</a><span class="archive-list-count">8</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/01/">January 2016</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/12/">December 2015</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/11/">November 2015</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/10/">October 2015</a><span class="archive-list-count">9</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/09/">September 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/08/">August 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/07/">July 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/06/">June 2015</a><span class="archive-list-count">8</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/05/">May 2015</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/04/">April 2015</a><span class="archive-list-count">15</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/03/">March 2015</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/02/">February 2015</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/01/">January 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/12/">December 2014</a><span class="archive-list-count">28</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/11/">November 2014</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/10/">October 2014</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/09/">September 2014</a><span class="archive-list-count">28</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/08/">August 2014</a><span class="archive-list-count">19</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/07/">July 2014</a><span class="archive-list-count">1</span></li></ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">近期文章</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+            <a href="/2021/10/06/replace-implementations-in-go-std-libs-at-runtime/">强制更改Go标准库的实现</a>
+          </li>
+        
+          <li>
+            <a href="/2021/08/30/how-is-go-generic-implemented/">Go泛型是怎么实现的?</a>
+          </li>
+        
+          <li>
+            <a href="/2021/08/01/benchmark-of-rpc-frameworks/">2021年Go生态圈rpc框架benchmark</a>
+          </li>
+        
+          <li>
+            <a href="/2021/07/13/Updating-the-Go-Memory-Model/">[译]更新Go内存模型</a>
+          </li>
+        
+          <li>
+            <a href="/2021/07/11/Programming-Language-Memory-Models/">[译]编程语言内存模型</a>
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">友情链接</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+			 
+            <a href="http://stackshare.io" target="_blank">技术栈</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://toutiao.io/" target="_blank">开发者头条</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://weekly.manong.io/issues/" target="_blank">码农周刊</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.tuicool.com/mags" target="_blank">编程狂人周刊</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.importnew.com/" target="_blank">importnew</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://ifeve.com/" target="_blank">并发编程网</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://github.com" target="_blank">github</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://stackoverflow.com/" target="_blank">stackoverflow</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.javacodegeeks.com/" target="_blank">javacodegeeks</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.infoq.com/" target="_blank">infoq</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.dzone.com/links/index.html" target="_blank">dzone</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://oj.leetcode.com/problems/" target="_blank">leetcode</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://tutorials.jenkov.com" target="_blank">jenkov</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://howtodoinjava.com" target="_blank">HowToDoInJava</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://java-design-patterns.com/patterns/" target="_blank">java design patterns</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://medium.com/netflix-techblog" target="_blank">Netflix技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://www.techiedelight.com" target="_blank">Techie Delight</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://engineering.linkedin.com/blog" target="_blank">Linkedin技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://blogs.dropbox.com/tech/" target="_blank">Dropbox技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://code.fb.com" target="_blank">Facebook技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://jm.taobao.org" target="_blank">淘宝中间件团队</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://tech.meituan.com" target="_blank">美团技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://blogs.360.cn" target="_blank">360技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://xiaomi-info.github.io" target="_blank">小米信息部技术团队</a>
+			
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+      
+
+  
+</aside>
+        
+      </div>
+      <footer id="footer">
+  
+  <div class="outer">
+    <div id="footer-info" class="inner">
+      &copy; 2021 smallnest<br>
+	  Powered by <a href="http://hexo.io/" target="_blank">Hexo</a>
+    </div>
+  </div>
+</footer>
+    </div>
+    <nav id="mobile-nav">
+  
+    
+      <a href="/" class="mobile-nav-link"><i class="fa fa-home">&nbsp;</i>首页</a>
+    
+  
+    
+      <a href="/archives" class="mobile-nav-link"><i class="fa fa-folder-o">&nbsp;</i>归档</a>
+    
+  
+    
+      <a href="https://github.com/smallnest" class="mobile-nav-link"><i class="fa fa-github">&nbsp;</i>github</a>
+    
+  
+    
+      <a class="mobile-nav-link" href="#"><i class="fa fa-bars">&nbsp;</i>网站群</a>
+    
+      
+            <a class="mobile-nav-link" href="/goasm">&nbsp;&nbsp;<i class="fa fa-language">&nbsp;</i>Go汇编示例</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="https://gowebexamples.com">&nbsp;&nbsp;<i class="fa fa-external-link">&nbsp;</i>Go Web开发示例</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://go-database-sql.org">&nbsp;&nbsp;<i class="fa fa-external-link">&nbsp;</i>Go 数据库开发教程</a>
+          
+          
+    
+      
+            
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://rpcx.io">&nbsp;&nbsp;<i class="fa undefined">&nbsp;</i>RPCX官网</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://cn.doc.rpcx.io">&nbsp;&nbsp;<i class="fa undefined">&nbsp;</i>RPC开发指南</a>
+          
+          
+    
+    
+  
+    
+      <a href="/ScalaCollectionsCookbook" class="mobile-nav-link"><i class="fa fa-book">&nbsp;</i>Scala集合技术手册</a>
+    
+  
+    
+      <a href="/about" class="mobile-nav-link"><i class="fa fa-lemon-o">&nbsp;</i>关于</a>
+    
+  
+</nav>
+    
+<script src="//cdn.staticfile.org/jquery/1.11.1/jquery.min.js"></script>
+<script src="//cdn.bootcss.com/jquery.lazyload/1.9.1/jquery.lazyload.min.js"></script>
+
+<script src="//cdnjs.cloudflare.com/ajax/libs/fancybox/3.2.5/jquery.fancybox.min.js"></script>
+
+
+<script src="/js/script.js" type="text/javascript"></script>
+
+<!-- mathjax config similar to math.stackexchange -->
+<script type="text/x-mathjax-config">
+  MathJax.Hub.Config({
+    tex2jax: {
+      inlineMath: [ ['$','$'], ["\\(","\\)"] ],
+      processEscapes: true,
+      skipTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code']
+    }
+  });
+  MathJax.Hub.Queue(function() {
+      var all = MathJax.Hub.getAllJax(), i;
+      for(i=0; i < all.length; i += 1) {
+        all[i].SourceElement().parentNode.className += ' has-jax';
+      }
+  });
+</script>
+<script type="text/javascript" src="//cdn.bootcss.com/mathjax/2.6.0-beta.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML">
+</script>
+
+<div id="totop" style="position:fixed;bottom:150px;right:10px;cursor: pointer;z-index: 2000;">
+	<a title="返回顶部"><img src="/images/scrollup.png"/></a>
+</div>
+<script src="/js/totop.js" type="text/javascript"></script>
+
+
+
+
+<script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "//hm.baidu.com/hm.js?e085d87993250aab11f3e0c15f1c2785";
+  var s = document.getElementsByTagName("script")[0]; 
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+
+
+  </div>
+</body>
+</html>

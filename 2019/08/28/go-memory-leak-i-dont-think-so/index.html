@@ -1,0 +1,740 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset="utf-8">
+  
+  <title>Go内存泄漏？不是那么简单!</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+  <meta name="description" content="最近遇到一个Go内存不释放的问题，记录一下测试和调研的情况。我到不把它归为Go内存泄漏的问题，因为它和一般的内存泄漏的方式不同。">
+<meta property="og:type" content="article">
+<meta property="og:title" content="Go内存泄漏？不是那么简单!">
+<meta property="og:url" content="https://colobu.com/2019/08/28/go-memory-leak-i-dont-think-so/">
+<meta property="og:site_name" content="鸟窝">
+<meta property="og:description" content="最近遇到一个Go内存不释放的问题，记录一下测试和调研的情况。我到不把它归为Go内存泄漏的问题，因为它和一般的内存泄漏的方式不同。">
+<meta property="og:image" content="cache-usage.png">
+<meta property="og:image" content="cache-memory.png">
+<meta property="og:image" content="fixed-cache-mmeory.png">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="Go内存泄漏？不是那么简单!">
+<meta name="twitter:description" content="最近遇到一个Go内存不释放的问题，记录一下测试和调研的情况。我到不把它归为Go内存泄漏的问题，因为它和一般的内存泄漏的方式不同。">
+
+  
+  <link rel="alternative" href="/atom.xml" title="鸟窝" type="application/atom+xml">
+  
+  
+  <link rel="icon" href="/favicon.png">
+  
+  <link rel="stylesheet" href="/css/style.css" type="text/css">
+
+  <link href="//cdn.staticfile.org/font-awesome/4.2.0/css/font-awesome.css" rel="stylesheet">
+  
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/fancybox/2.1.7/css/jquery.fancybox.min.css"
+    media="screen" type="text/css">
+  
+  <link rel="stylesheet" href="//cdnjs.cloudflare.com/ajax/libs/animate.css/3.1.1/animate.min.css" media="screen"
+    type="text/css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/tonsky/FiraCode@1.207/distr/fira_code.css">
+</head>
+<body>
+  <div id="container">
+    <div id="wrap">
+      <header id="header">
+  <div id="banner"></div>
+  <div id="header-outer" class="outer">
+    <div id="header-title" class="inner">
+      <h1 id="logo-wrap" class="animated bounceInLeft">
+        <a href="/" id="logo">鸟窝</a>
+      </h1>
+      
+        <h2 id="subtitle-wrap" class="animated bounceInLeft">
+          <a href="/" id="subtitle">大道至简 Simplicity is the ultimate form of sophistication</a>
+        </h2>
+      
+    </div>
+    <div id="header-inner" class="inner">
+      <nav id="main-nav">
+        <a id="main-nav-toggle" class="nav-icon"></a>
+        
+          
+            <a class="main-nav-link" href="/"><i class="fa fa-home">&nbsp;</i>首页</a>
+          
+          
+          
+            <a class="main-nav-link" href="/archives"><i class="fa fa-folder-o">&nbsp;</i>归档</a>
+          
+          
+          
+            <a class="main-nav-link" href="https://github.com/smallnest"><i class="fa fa-github">&nbsp;</i>github</a>
+          
+          
+          
+            <div class="dropdown main-nav-link"><a class="main-nav-link" href="#"><i class="fa fa-bars">&nbsp;</i>网站群</a>
+              <div class="dropdown-content">
+          
+            
+              <a href="/goasm"><i class="fa fa-language"></i>&nbsp;Go汇编示例</a>
+            
+                
+          
+            
+              <a href="https://gowebexamples.com"><i class="fa fa-external-link"></i>&nbsp;Go Web开发示例</a>
+            
+                
+          
+            
+              <a href="http://go-database-sql.org"><i class="fa fa-external-link"></i>&nbsp;Go 数据库开发教程</a>
+            
+                
+          
+            
+              <hr>
+            
+                
+          
+            
+              <a href="http://rpcx.io"><i class="fa undefined"></i>&nbsp;RPCX官网</a>
+            
+                
+          
+            
+              <a href="http://cn.doc.rpcx.io"><i class="fa undefined"></i>&nbsp;RPC开发指南</a>
+            
+                
+          
+          </div>
+        </div>
+          
+          
+          
+            <a class="main-nav-link" href="/ScalaCollectionsCookbook"><i class="fa fa-book">&nbsp;</i>Scala集合技术手册</a>
+          
+          
+          
+            <a class="main-nav-link" href="/about"><i class="fa fa-lemon-o">&nbsp;</i>关于</a>
+          
+          
+
+
+      </nav>
+      <nav id="sub-nav">
+        
+          <a id="nav-rss-link" class="nav-icon" href="/atom.xml" title="RSS Feed"></a>
+        
+        <a id="nav-search-btn" class="nav-icon" title="Search"></a>
+      </nav>
+      <div id="search-form-wrap">
+        <form action="http://www.baidu.com/baidu" method="get" accept-charset="utf-8" class="search-form">
+          <input type="search" name="word" maxlength="20" class="search-form-input" placeholder="Search">
+          <input type="submit" value="" class="search-form-submit">
+          <input name=tn type=hidden value="bds">
+          <input name=cl type=hidden value="3">
+          <input name=ct type=hidden value="2097152">
+          <input type="hidden" name="si" value="colobu.com">
+        </form>
+      </div>
+    </div>
+  </div>
+</header>
+      <div class="outer">
+        <section id="main"><script>function show_answer(btn, x) { if (btn.value === "显示答案") { btn.value = "隐藏答案" } else { btn.value = "显示答案" } var as = document.getElementById(x); if (as.style.display === "none") { as.style.display = "block" } else { as.style.display = "none" } }</script>
+
+<article id="post-go-memory-leak-i-dont-think-so" class="article article-type-post" itemscope
+  itemprop="blogPost">
+  <div class="article-meta">
+    <a href="/2019/08/28/go-memory-leak-i-dont-think-so/" class="article-date">
+  <time datetime="2019-08-28T05:45:09.000Z" itemprop="datePublished">2019年08月28日</time>
+</a>
+    
+  <div class="article-category">
+    <a class="article-category-link" href="/categories/Go/">Go</a>
+  </div>
+
+    
+  <div class="article-author"> by smallnest</div>
+
+  </div>
+  <div class="article-inner">
+    
+    
+    <header class="article-header">
+      
+  
+    <h1 class="article-title" itemprop="name">
+      Go内存泄漏？不是那么简单!
+	  
+    </h1>
+  
+
+    </header>
+    
+    <div class="article-entry" itemprop="articleBody">
+      
+      
+      
+      <p>最近遇到一个Go内存不释放的问题，记录一下测试和调研的情况。我到不把它归为Go内存泄漏的问题，因为它和一般的内存泄漏的方式不同。</p>
+<a id="more"></a>
+<h2 id="Go_常见内存泄漏的情况">Go 常见内存泄漏的情况</h2>
+<p>Go程序可能会在一些情况下造成内存泄漏。<a href="https://go101.org/article/memory-leaking.html" target="_blank" rel="external">go101网站</a>总结了各种内存泄漏的情况，我在这里简单罗列一下：</p>
+<ul>
+<li>获取长字符串中的一段导致长字符串未释放</li>
+<li>同样，获取长slice中的一段导致长slice未释放</li>
+<li>在长slice新建slice导致泄漏</li>
+<li>goroutine泄漏</li>
+<li>time.Ticker未关闭导致泄漏</li>
+<li>Finalizer导致泄漏</li>
+<li>Deferring Function Call导致泄漏</li>
+</ul>
+<h2 id="内存回收分析">内存回收分析</h2>
+<h3 id="实际问题">实际问题</h3>
+<p>写这篇文章的初衷是我在实现一个新项目的时候遇到一个问题。这个项目使用了一个缓存组件对请求的结果进行缓存，以提高请求的耗时。这个缓存组件对使用的最大内存进行了限制，比如缓存占用的最大内存为<code>1GB</code>。运行过程中可以对这个最大值进行调整，比如我们可以调整到<code>100MB</code>。在调整的过程中发现虽然最大内存从<code>1GB</code>调整到<code>100MB</code>之后，程序的RSS依然占用很大，一直是1GB+ ~ 2GB的内存，感觉内存并没有降下去。</p>
+<p>可以看到缓存调小了它占用的内存确实降到几乎为0了:<br><img src="cache-usage.png" alt=""></p>
+<p>但是释放的内存并没有返回给操作系统（HeapReleased）<br><img src="cache-memory.png" alt=""></p>
+<p>当然经过相应的测试和调研之后，可以看到缓存的最大内存减少后占用内存和RSS也下降了：</p>
+<p><img src="fixed-cache-mmeory.png" alt=""></p>
+<blockquote>
+<p>仓促之间我只截取了很小一段时间的指标，实际观察很长时间也是这样。</p>
+</blockquote>
+<h3 id="测试程序">测试程序</h3>
+<p>我在这个项目中实现了一个 <code>LRU</code>的cache, 这个cache基于内存管理，一旦使用的内存超过了<code>MaxMemory</code>,就会自动进行内存清理工作，将最不常用的缓存项删除，具体实现太长就不贴出来了，基本上就是<code>map</code> + <code>container/list</code> + <code>sync.Mutex</code>的实现，实现的接口如下:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> Cache <span class="keyword">interface</span> {</div><div class="line">	AddValue(slot <span class="typename">uint32</span>, key <span class="typename">string</span>, value []<span class="typename">byte</span>)</div><div class="line">	GetAndValidate(key <span class="typename">string</span>, bizKey []<span class="typename">byte</span>) (value *CachedValue, ok <span class="typename">bool</span>)</div><div class="line">	SetMaxMemory(m <span class="typename">int64</span>)</div><div class="line">	Clear()</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>现在通过一个程序进行测试，分别测试<code>测试前</code>、<code>增加一千万条数据</code>、<code>将最大内存从1G减少到1B</code>、<code>强制垃圾回收</code>四个动作之后的内存的使用情况，代码如下:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div></pre></td><td class="code"><pre><div class="line"></div><div class="line"></div></pre></td></tr></table></figure>
+
+
+
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div></pre></td><td class="code"><pre><div class="line">➜  memoryleak git:(master) ✗ GODEBUG=gctrace<span class="number">=1</span> <span class="keyword">go</span> run leak.<span class="keyword">go</span></div><div class="line">gc<span class="number"> 1</span> <span class="number">@0.027</span>s<span class="number"> 0</span>%:<span class="number"> 0.009</span><span class="number">+0.43</span><span class="number">+0.009</span> ms clock,<span class="number"> 0.037</span><span class="number">+0.13</span><span class="number">/0.31</span><span class="number">/0.82</span><span class="number">+0.038</span> ms cpu,<span class="number"> 4</span>-<span class="number">&gt;4</span>-<span class="number">&gt;0</span> MB,<span class="number"> 5</span> MB goal,<span class="number"> 4</span> P</div><div class="line">gc<span class="number"> 2</span> <span class="number">@0.048</span>s<span class="number"> 0</span>%:<span class="number"> 0.005</span><span class="number">+0.40</span><span class="number">+0.003</span> ms clock,<span class="number"> 0.022</span><span class="number">+0.17</span><span class="number">/0.29</span><span class="number">/0.91</span><span class="number">+0.014</span> ms cpu,<span class="number"> 4</span>-<span class="number">&gt;4</span>-<span class="number">&gt;0</span> MB,<span class="number"> 5</span> MB goal,<span class="number"> 4</span> P</div><div class="line">……</div><div class="line">gc<span class="number"> 4</span> <span class="number">@0.063</span>s<span class="number"> 6</span>%:<span class="number"> 0.003</span><span class="number">+7.8</span><span class="number">+0.028</span> ms clock,<span class="number"> 0.012</span><span class="number">+0.12</span><span class="number">/6.1</span><span class="number">/15</span><span class="number">+0.11</span> ms cpu,<span class="number"> 23</span>-<span class="number">&gt;24</span>-<span class="number">&gt;22</span> MB,<span class="number"> 24</span> MB goal,<span class="number"> 4</span> P</div><div class="line">gc<span class="number"> 5</span> <span class="number">@0.121</span>s<span class="number"> 5</span>%:<span class="number"> 0.003</span><span class="number">+12</span><span class="number">+0.035</span> ms clock,<span class="number"> 0.013</span><span class="number">+1.3</span><span class="number">/11/27</span><span class="number">+0.14</span> ms cpu,<span class="number"> 42</span>-<span class="number">&gt;43</span>-<span class="number">&gt;40</span> MB,<span class="number"> 44</span> MB goal,<span class="number"> 4</span> P</div><div class="line">🍀 before: inuse:<span class="number"> 656</span> KB, idle:<span class="number"> 63</span> MB, released:<span class="number"> 0</span> B, heapsys:<span class="number"> 63</span> MB, sys:<span class="number"> 66</span> MB</div><div class="line"></div><div class="line">gc<span class="number"> 1</span> <span class="number">@0.007</span>s<span class="number"> 3</span>%:<span class="number"> 0.031</span><span class="number">+0.94</span><span class="number">+0.013</span> ms clock,<span class="number"> 0.12</span><span class="number">+0.10</span><span class="number">/0.84</span><span class="number">/0.18</span><span class="number">+0.052</span> ms cpu,<span class="number"> 4</span>-<span class="number">&gt;4</span>-<span class="number">&gt;4</span> MB,<span class="number"> 5</span> MB goal,<span class="number"> 4</span> P</div><div class="line">gc<span class="number"> 2</span> <span class="number">@0.013</span>s<span class="number"> 7</span>%:<span class="number"> 0.004</span><span class="number">+4.3</span><span class="number">+0.045</span> ms clock,<span class="number"> 0.017</span><span class="number">+0.078</span><span class="number">/3.9</span><span class="number">/0.85</span><span class="number">+0.18</span> ms cpu,<span class="number"> 7</span>-<span class="number">&gt;8</span>-<span class="number">&gt;8</span> MB,<span class="number"> 8</span> MB goal,<span class="number"> 4</span> P</div><div class="line">……</div><div class="line">gc<span class="number"> 17</span> <span class="number">@22.855</span>s<span class="number"> 6</span>%:<span class="number"> 0.018</span><span class="number">+517</span><span class="number">+0.011</span> ms clock,<span class="number"> 0.072</span><span class="number">+105/516</span><span class="number">/11</span><span class="number">+0.047</span> ms cpu,<span class="number"> 2441</span>-<span class="number">&gt;2644</span>-<span class="number">&gt;1368</span> MB,<span class="number"> 2553</span> MB goal,<span class="number"> 4</span> P</div><div class="line">🍀 added: inuse:<span class="number"> 1</span> GB, idle:<span class="number"> 942</span> MB, released:<span class="number"> 0</span> B, heapsys:<span class="number"> 2</span> GB, sys:<span class="number"> 2</span> GB, current:<span class="number"> 1023</span> MB</div><div class="line"></div><div class="line">gc<span class="number"> 18</span> <span class="number">@24.763</span>s<span class="number"> 6</span>%:<span class="number"> 0.015</span><span class="number">+87</span><span class="number">+0.009</span> ms clock,<span class="number"> 0.063</span><span class="number">+6.0</span><span class="number">/83/13</span><span class="number">+0.038</span> ms cpu,<span class="number"> 2568</span>-<span class="number">&gt;2622</span>-<span class="number">&gt;128</span> MB,<span class="number"> 2737</span> MB goal,<span class="number"> 4</span> P</div><div class="line">gc<span class="number"> 19</span> <span class="number">@25.295</span>s<span class="number"> 6</span>%:<span class="number"> 0.014</span><span class="number">+35</span><span class="number">+0.009</span> ms clock,<span class="number"> 0.056</span><span class="number">+0.41</span><span class="number">/35/64</span><span class="number">+0.037</span> ms cpu,<span class="number"> 247</span>-<span class="number">&gt;263</span>-<span class="number">&gt;90</span> MB,<span class="number"> 257</span> MB goal,<span class="number"> 4</span> P</div><div class="line">gc<span class="number"> 20</span> <span class="number">@25.397</span>s<span class="number"> 6</span>%:<span class="number"> 0.015</span><span class="number">+89</span><span class="number">+0.004</span> ms clock,<span class="number"> 0.061</span><span class="number">+14/50</span><span class="number">/0.60</span><span class="number">+0.019</span> ms cpu,<span class="number"> 173</span>-<span class="number">&gt;194</span>-<span class="number">&gt;95</span> MB,<span class="number"> 181</span> MB goal,<span class="number"> 4</span> P</div><div class="line">gc<span class="number"> 21</span> <span class="number">@25.551</span>s<span class="number"> 6</span>%:<span class="number"> 0.012</span><span class="number">+59</span><span class="number">+0.010</span> ms clock,<span class="number"> 0.050</span><span class="number">+17/59</span><span class="number">/0.46</span><span class="number">+0.043</span> ms cpu,<span class="number"> 175</span>-<span class="number">&gt;207</span>-<span class="number">&gt;105</span> MB,<span class="number"> 191</span> MB goal,<span class="number"> 4</span> P</div><div class="line">🍀 after decreased: inuse:<span class="number"> 156</span> MB, idle:<span class="number"> 2</span> GB, released:<span class="number"> 0</span> B, heapsys:<span class="number"> 2</span> GB, sys:<span class="number"> 2</span> GB, current:<span class="number"> 0</span> B</div><div class="line"></div><div class="line">gc<span class="number"> 22</span> <span class="number">@25.651</span>s<span class="number"> 6</span>%:<span class="number"> 0.003</span><span class="number">+67</span><span class="number">+0.003</span> ms clock,<span class="number"> 0.015</span><span class="number">+0/52</span><span class="number">/14</span><span class="number">+0.012</span> ms cpu,<span class="number"> 156</span>-<span class="number">&gt;156</span>-<span class="number">&gt;74</span> MB,<span class="number"> 211</span> MB goal,<span class="number"> 4</span> P (forced)</div><div class="line">scvg<span class="number">-1</span>:<span class="number"> 2740</span> MB released</div><div class="line">scvg<span class="number">-1</span>: inuse:<span class="number"> 75</span>, idle:<span class="number"> 2740</span>, sys:<span class="number"> 2815</span>, released:<span class="number"> 2740</span>, consumed:<span class="number"> 75</span> (MB)</div><div class="line">🍀 after gc: inuse:<span class="number"> 75</span> MB, idle:<span class="number"> 2</span> GB, released:<span class="number"> 2</span> GB, heapsys:<span class="number"> 2</span> GB, sys:<span class="number"> 2</span> GB, current:<span class="number"> 0</span> B</div></pre></td></tr></table></figure>
+
+<p>首先，我们复习一下Go垃圾回收的日志的意义，再进一步看各个阶段内存的变化。</p>
+<p>以这一条为例:</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">gc <span class="number">21</span> <span class="variable">@25</span><span class="number">.551</span>s <span class="number">6</span><span class="variable">%:</span> <span class="number">0.012</span>+<span class="number">59</span>+<span class="number">0.010</span> ms clock, <span class="number">0.050</span>+<span class="number">17</span>/<span class="number">59</span>/<span class="number">0.46</span>+<span class="number">0.043</span> ms cpu, <span class="number">175</span>-&gt;<span class="number">207</span>-&gt;<span class="number">105</span> MB, <span class="number">191</span> MB <span class="keyword">goal</span>, <span class="number">4</span> P</div></pre></td></tr></table></figure>
+
+<ul>
+<li><code>gc 21</code>: 21是垃圾回收的编号，逐步递增，可能会从1重新开始</li>
+<li><a href="mailto:`@25.551s" target="_blank" rel="external">`@25.551s</a>`: 自程序开始经历了多少时间,这里是25秒多</li>
+<li><code>6%</code>: 自程序启动花在GC上的CPU时间百分比, CPU 6%花在了GC上</li>
+<li><code>0.012+59+0.010 ms clock</code>: GC各阶段的墙上时间(wall-clock),各阶段包括<code>STW sweep termination</code>、<code>concurrent mark and scan</code>、<code>STW mark termination</code></li>
+<li><code>0.050+17/59/0.46+0.043 ms cpu</code>: 各阶段的CPU时间。各阶段同上，其中mark/scan阶段又分成了<code>assist time</code>、<code>background GC time</code>和<code>idle GC time</code>阶段</li>
+<li><code>175-&gt;207-&gt;105 MB</code>: GC开始时、GC结束的heap大小、存活(live)的heap大小</li>
+<li><code>191 MB goal</code>:下一次垃圾回收的目标值</li>
+<li><code>4 P</code>: 使用的处理器的数量</li>
+<li><code>(forced)</code>: 强制垃圾回收， 程序中调用<code>runtime.GC()</code>或者类似操作</li>
+<li><code>scvg-1: 2740 MB released</code>: gctrace的值大于0时，如果垃圾回收将内存返回给操作系统时，会打印一条summary,包括下一条数据</li>
+</ul>
+<p>通过对每一项的介绍，你应该了解了go gc日志的含义，接下来让我们看看我们的测试各阶段的内存占用情况，也就是标记🍀的日志：</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line">🍀 before: inuse: <span class="number">656</span> KB, idle: <span class="number">63</span> MB, released: <span class="number">0</span> B, heapsys: <span class="number">63</span> MB, sys: <span class="number">66</span> MB</div><div class="line">🍀 added: inuse: <span class="number">1</span> GB, idle: <span class="number">942</span> MB, released: <span class="number">0</span> B, heapsys: <span class="number">2</span> GB, sys: <span class="number">2</span> GB, <span class="literal">current</span>: <span class="number">1023</span> MB</div><div class="line">🍀 after decreased: inuse: <span class="number">156</span> MB, idle: <span class="number">2</span> GB, released: <span class="number">0</span> B, heapsys: <span class="number">2</span> GB, sys: <span class="number">2</span> GB, <span class="literal">current</span>: <span class="number">0</span> B</div><div class="line">🍀 after gc: inuse: <span class="number">75</span> MB, idle: <span class="number">2</span> GB, released: <span class="number">2</span> GB, heapsys: <span class="number">2</span> GB, sys: <span class="number">2</span> GB, <span class="literal">current</span>: <span class="number">0</span> B</div></pre></td></tr></table></figure>
+
+<ul>
+<li>在程序刚启动时，内存占用很小， 真正<code>inuse</code>不到1MB。</li>
+<li>我们增加了上万条数据，每条数据光数就<code>1KB</code>,如果加上key的大小，以及管理cache的一些数据结构的额外开销，占用就比较大了，粗略统计<code>inuse</code>的占用就达到了1GB以上，idle的span的字节数不到1GB,从操作系统获得了2GB的内存，没有内存返回。可以看到cache使用的内存粗算为1023MB。</li>
+<li>我们将cache的最大内存设置为1B,这会触发cache对象的清理工作，因为最大内存很小，导致后续的增加缓存操作实际并不会缓存对象，可以看到缓存的实际大小为0B。可以看到<code>inuse</code>讲到了156MB,我们可以把它看作额外的一些开销，实际上开始添加的对象都被回收掉了。idle span的字节数达到了2GB,但是并没有内存返还给操作系统。这会导致操作系统认为这个程序占用内存达到2GB,linux服务器上有可能会导致OOM killer杀掉这个程序。</li>
+<li>我们进行了一次强制垃圾回收(实际调用<code>debug.FreeOSMemory()</code>，它会进行一次强制垃圾回收)，可以看到虽然idle span的值还是2GB+,但是实际其中的2GB+的大小返还给操作系统了，如果这个时候你能够通过top观察程序的内存使用的话，可以看到这个程序的<code>RES</code>占用很小了。</li>
+</ul>
+<p>top命令中关于程序使用内存的项介绍：</p>
+<ul>
+<li><p>%MEM：Memory usage (RES) 内存占用<br>使用的物理内存</p>
+</li>
+<li><p>VIRT：Virtual Image (kb) 虚拟镜像<br>总虚拟内存的使用数量</p>
+</li>
+<li><p>SWAP：Swapped size (kb)<br>非驻留但是存在于程序中的内存，虚拟内存减去物理内存</p>
+</li>
+<li><p>RES：Resident size (kb)<br>非swap的物理内存</p>
+</li>
+<li><p>SHR：Shared Mem size (kb)<br>程序使用的共享内存，可以被其它进程所共享</p>
+</li>
+</ul>
+<p>可以看到，当对象释放的时候，释放出来的内存并没有立即返还给操作系统，而在我们进行了一次强制垃圾回收后才返还。 Go语言把返还的过程叫做<code>scavenging</code> (拾荒)。这个拾荒的算法一直在演化，可以查看<a href="https://github.com/golang/go/issues/16930" target="_blank" rel="external">issue #16930</a>，相关的优化提案可以参考:<a href="https://github.com/golang/go/issues/30333" target="_blank" rel="external">issue #30333</a>。</p>
+<p>原先的<code>scavenging</code>是每隔几分钟(5分钟)执行一次拾荒操作，保证程序使用的内存和RSS基本一致。后来在1.11、1.12的演化过程中，改成了&quot;智能&quot;的拾荒操作。目标是尽量避免全部返还给操作系统导致的很重的重获取的花销，但是这也带来了一个问题，那就是当前的拾荒设计对于偶尔一个尖峰，并不会将不用的大量内存返还给操作系统，也就是本文一开始我在项目中遇到的问题。这个问题在issue中也有讨论：</p>
+<blockquote>
+<blockquote>
+<blockquote>
+<p>Thus, I propose the following heuristic, borrowed from #16930: retain C*max(heap goal, max(heap goal over the last N GCs))</p>
+</blockquote>
+</blockquote>
+</blockquote>
+<blockquote>
+<blockquote>
+<p>What happens in an application that has a huge heap spike (say, an initial loading phase) and then the heap drops significantly? In particular, let&#39;s say this is drastic enough that the runtime doesn&#39;t even notice the drop until a 2 minute GC kicks in. At that scale, it could take a while for N GCs to pass, and we won&#39;t reclaim the heap spike until they do.</p>
+</blockquote>
+</blockquote>
+<blockquote>
+<p>This is something that came to my mind recently too. An alternative is to set a schedule to decrease the scavenge goal linearly, or according to a smoothstep function, which goes to zero over N GCs. If this schedule ever gets below C * the heap goal, we use that instead. We&#39;ll get smoother cliffs in general and still make progress in the case you describe. Smoothstep is preferred here since we won&#39;t over-fit to transient drops in heap size, but this also means we might be slower to react in the case you described. I prefer not to over-fit here because that carries a performance cost.</p>
+</blockquote>
+<p>这是一个坑，不幸踩到了。我们这个项目的需求就是运维人员有时候可以将缓存使用的最大内存设置一个比较小的数，设置之后，go运行时不触发拾荒事件，就会导致内存被大量占用而不返还给操作系统。</p>
+<p>目前我的修改是在cache的最大内存调小后执行一次<code>debug.FreeOSMemory()</code>,这样可以保证不用的一些内存返还给操作系统。当然执行这个操作也是有代价的：</p>
+<blockquote>
+<ul>
+<li>Returning all free memory back to the underlying system at once is expensive, and can lead to latency spikes as it holds the heap lock through the whole process.</li>
+<li>It’s an invasive solution: you need to modify your code to call it when you need it.</li>
+<li>Reusing free chunks of memory becomes more expensive. On UNIX-y systems that means an extra page fault (which is surprisingly expensive on some systems).</li>
+</ul>
+</blockquote>
+<p>Go 1.13中对拾荒的实现有进行了改进，而且Go 1.13也快发布了，发布之后我再做进一步的测试，尽量避免使用<code>debug.FreeOSMemory()</code>。</p>
+<h3 id="runtime-MemStats">runtime.MemStats</h3>
+<p>通过<code>runtime.MemStats</code>可以实时的获取Go运行时的内存统计信息，这个数据结构包含很多的字段。字段虽然很多，但是由于文档还是不够详细，如果没有深入理解Go语言内部的实现方式和相关的概念的话，不容易理解这个数据结构具体的含义，只根据字面值去理解很容易误用， 比如<code>HeapIdle</code>并不是Go占用的还没有释放的内存空间，其中的<code>HeapReleased</code>其实已经返还给操作系统了。</p>
+<p>我将各个字段的中文解释列在了这里，如果你要监控go运行时的内存，需要仔细阅读相关的字段的解释。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div><div class="line">35</div><div class="line">36</div><div class="line">37</div><div class="line">38</div><div class="line">39</div><div class="line">40</div><div class="line">41</div><div class="line">42</div><div class="line">43</div><div class="line">44</div><div class="line">45</div><div class="line">46</div><div class="line">47</div><div class="line">48</div><div class="line">49</div><div class="line">50</div><div class="line">51</div><div class="line">52</div><div class="line">53</div><div class="line">54</div><div class="line">55</div><div class="line">56</div><div class="line">57</div><div class="line">58</div><div class="line">59</div><div class="line">60</div><div class="line">61</div><div class="line">62</div><div class="line">63</div><div class="line">64</div><div class="line">65</div><div class="line">66</div><div class="line">67</div><div class="line">68</div><div class="line">69</div><div class="line">70</div><div class="line">71</div><div class="line">72</div><div class="line">73</div><div class="line">74</div><div class="line">75</div><div class="line">76</div><div class="line">77</div><div class="line">78</div><div class="line">79</div><div class="line">80</div><div class="line">81</div><div class="line">82</div><div class="line">83</div><div class="line">84</div><div class="line">85</div><div class="line">86</div><div class="line">87</div><div class="line">88</div><div class="line">89</div><div class="line">90</div><div class="line">91</div><div class="line">92</div><div class="line">93</div><div class="line">94</div><div class="line">95</div><div class="line">96</div><div class="line">97</div><div class="line">98</div><div class="line">99</div><div class="line">100</div><div class="line">101</div><div class="line">102</div><div class="line">103</div><div class="line">104</div><div class="line">105</div><div class="line">106</div><div class="line">107</div><div class="line">108</div><div class="line">109</div><div class="line">110</div><div class="line">111</div><div class="line">112</div><div class="line">113</div><div class="line">114</div><div class="line">115</div><div class="line">116</div><div class="line">117</div><div class="line">118</div><div class="line">119</div><div class="line">120</div><div class="line">121</div><div class="line">122</div><div class="line">123</div><div class="line">124</div><div class="line">125</div><div class="line">126</div><div class="line">127</div><div class="line">128</div><div class="line">129</div><div class="line">130</div><div class="line">131</div><div class="line">132</div><div class="line">133</div><div class="line">134</div><div class="line">135</div><div class="line">136</div><div class="line">137</div><div class="line">138</div><div class="line">139</div><div class="line">140</div><div class="line">141</div><div class="line">142</div><div class="line">143</div><div class="line">144</div><div class="line">145</div><div class="line">146</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> MemStats <span class="keyword">struct</span> {</div><div class="line">        <span class="comment">// 已分配的对象的字节数.</span></div><div class="line">        <span class="comment">//</span></div><div class="line">        <span class="comment">// 和HeapAlloc相同.</span></div><div class="line">        Alloc <span class="typename">uint64</span></div><div class="line"></div><div class="line">        <span class="comment">// 分配的字节数累积之和.</span></div><div class="line">        <span class="comment">//</span></div><div class="line">        <span class="comment">// 所以对象释放的时候这个值不会减少.</span></div><div class="line">        TotalAlloc <span class="typename">uint64</span></div><div class="line"></div><div class="line">        <span class="comment">// 从操作系统获得的内存总数.</span></div><div class="line">        <span class="comment">//</span></div><div class="line">        <span class="comment">// Sys是下面的XXXSys字段的数值的和, 是为堆、栈、其它内部数据保留的虚拟内存空间. </span></div><div class="line">        <span class="comment">// 注意虚拟内存空间和物理内存的区别.</span></div><div class="line">        Sys <span class="typename">uint64</span></div><div class="line"></div><div class="line">        <span class="comment">// 运行时地址查找的次数，主要用在运行时内部调试上.</span></div><div class="line">        Lookups <span class="typename">uint64</span></div><div class="line"></div><div class="line">        <span class="comment">// 堆对象分配的次数累积和.</span></div><div class="line">        <span class="comment">// 活动对象的数量等于`Mallocs - Frees`.</span></div><div class="line">        Mallocs <span class="typename">uint64</span></div><div class="line"></div><div class="line">        <span class="comment">// 释放的对象数.</span></div><div class="line">        Frees <span class="typename">uint64</span></div><div class="line"></div><div class="line">        <span class="comment">// 分配的堆对象的字节数.</span></div><div class="line">        <span class="comment">//</span></div><div class="line">        <span class="comment">// 包括所有可访问的对象以及还未被垃圾回收的不可访问的对象.</span></div><div class="line">        <span class="comment">// 所以这个值是变化的，分配对象时会增加，垃圾回收对象时会减少.</span></div><div class="line">        HeapAlloc <span class="typename">uint64</span></div><div class="line"></div><div class="line">        <span class="comment">// 从操作系统获得的堆内存大小.</span></div><div class="line">        <span class="comment">//</span></div><div class="line">        <span class="comment">// 虚拟内存空间为堆保留的大小，包括还没有被使用的.</span></div><div class="line">        <span class="comment">// HeapSys 可被估算为堆已有的最大尺寸.</span></div><div class="line">        HeapSys <span class="typename">uint64</span></div><div class="line"></div><div class="line">        <span class="comment">// HeapIdle是idle(未被使用的) span中的字节数.</span></div><div class="line">        <span class="comment">//</span></div><div class="line">        <span class="comment">// Idle span是指没有任何对象的span,这些span **可以**返还给操作系统，或者它们可以被重用,</span></div><div class="line">        <span class="comment">// 或者它们可以用做栈内存.</span></div><div class="line">        <span class="comment">//</span></div><div class="line">        <span class="comment">// HeapIdle 减去 HeapReleased 的值可以当作"可以返回到操作系统但由运行时保留的内存量".</span></div><div class="line">        <span class="comment">// 以便在不向操作系统请求更多内存的情况下增加堆，也就是运行时的"小金库".</span></div><div class="line">        <span class="comment">//</span></div><div class="line">        <span class="comment">// 如果这个差值明显比堆的大小大很多，说明最近在活动堆的上有一次尖峰.</span></div><div class="line">        HeapIdle <span class="typename">uint64</span></div><div class="line"></div><div class="line">        <span class="comment">// 正在使用的span的字节大小.</span></div><div class="line">        <span class="comment">//</span></div><div class="line">        <span class="comment">// 正在使用的span是值它至少包含一个对象在其中.</span></div><div class="line">        <span class="comment">// HeapInuse 减去 HeapAlloc的值是为特殊大小保留的内存，但是当前还没有被使用.</span></div><div class="line">        HeapInuse <span class="typename">uint64</span></div><div class="line"></div><div class="line">        <span class="comment">// HeapReleased 是返还给操作系统的物理内存的字节数.</span></div><div class="line">        <span class="comment">//</span></div><div class="line">        <span class="comment">// 它统计了从idle span中返还给操作系统，没有被重新获取的内存大小.</span></div><div class="line">        HeapReleased <span class="typename">uint64</span></div><div class="line"></div><div class="line"></div><div class="line">        <span class="comment">// HeapObjects 实时统计的分配的堆对象的数量,类似HeapAlloc.</span></div><div class="line">        HeapObjects <span class="typename">uint64</span></div><div class="line"></div><div class="line">        <span class="comment">// 栈span使用的字节数。</span></div><div class="line">        <span class="comment">// 正在使用的栈span是指至少有一个栈在其中.</span></div><div class="line">        <span class="comment">//</span></div><div class="line">        <span class="comment">// 注意并没有idle的栈span,因为未使用的栈span会被返还给堆(HeapIdle).</span></div><div class="line">        StackInuse <span class="typename">uint64</span></div><div class="line"></div><div class="line">        <span class="comment">// 从操作系统取得的栈内存大小.</span></div><div class="line">        <span class="comment">// 等于StackInuse 再加上为操作系统线程栈获得的内存.</span></div><div class="line">        StackSys <span class="typename">uint64</span></div><div class="line"></div><div class="line">        <span class="comment">// 分配的mspan数据结构的字节数.</span></div><div class="line">        MSpanInuse <span class="typename">uint64</span></div><div class="line"></div><div class="line">        <span class="comment">// 从操作系统为mspan获取的内存字节数.</span></div><div class="line">        MSpanSys <span class="typename">uint64</span></div><div class="line"></div><div class="line">        <span class="comment">// 分配的mcache数据结构的字节数.</span></div><div class="line">        MCacheInuse <span class="typename">uint64</span></div><div class="line"></div><div class="line">        <span class="comment">// 从操作系统为mcache获取的内存字节数.</span></div><div class="line">        MCacheSys <span class="typename">uint64</span></div><div class="line"></div><div class="line">        <span class="comment">// 在profiling bucket hash tables中的内存字节数.</span></div><div class="line">        BuckHashSys <span class="typename">uint64</span></div><div class="line"></div><div class="line">        <span class="comment">// 垃圾回收元数据使用的内存字节数.</span></div><div class="line">        GCSys <span class="typename">uint64</span> <span class="comment">// Go 1.2</span></div><div class="line"></div><div class="line">        <span class="comment">// off-heap的杂项内存字节数.</span></div><div class="line">        OtherSys <span class="typename">uint64</span> <span class="comment">// Go 1.2</span></div><div class="line"></div><div class="line">        <span class="comment">// 下一次垃圾回收的目标大小，保证 HeapAlloc ≤ NextGC.</span></div><div class="line">        <span class="comment">// 基于当前可访问的数据和GOGC的值计算而得.</span></div><div class="line">        NextGC <span class="typename">uint64</span></div><div class="line"></div><div class="line">        <span class="comment">// 上一次垃圾回收的时间.</span></div><div class="line">        LastGC <span class="typename">uint64</span></div><div class="line"></div><div class="line">        <span class="comment">// 自程序开始 STW 暂停的累积纳秒数.</span></div><div class="line">        <span class="comment">// STW的时候除了垃圾回收器之外所有的goroutine都会暂停.</span></div><div class="line">        PauseTotalNs <span class="typename">uint64</span></div><div class="line"></div><div class="line">        <span class="comment">// 一个循环buffer，用来记录最近的256个GC STW的暂停时间.</span></div><div class="line">        PauseNs <span class="number">[256</span>]<span class="typename">uint64</span></div><div class="line"></div><div class="line">        <span class="comment">// 最近256个GC暂停截止的时间.</span></div><div class="line">        PauseEnd <span class="number">[256</span>]<span class="typename">uint64</span> <span class="comment">// Go 1.4</span></div><div class="line"></div><div class="line">        <span class="comment">// GC的总次数.</span></div><div class="line">        NumGC <span class="typename">uint32</span></div><div class="line"></div><div class="line">        <span class="comment">// 强制GC的次数.</span></div><div class="line">        NumForcedGC <span class="typename">uint32</span> <span class="comment">// Go 1.8</span></div><div class="line"></div><div class="line">        <span class="comment">// 自程序启动后由GC占用的CPU可用时间，数值在 0 到 1 之间.</span></div><div class="line">        <span class="comment">// 0代表GC没有消耗程序的CPU. GOMAXPROCS * 程序运行时间等于程序的CPU可用时间.</span></div><div class="line">        GCCPUFraction <span class="typename">float64</span> <span class="comment">// Go 1.5</span></div><div class="line"></div><div class="line">        <span class="comment">// 是否允许GC.</span></div><div class="line">        EnableGC <span class="typename">bool</span></div><div class="line"></div><div class="line">        <span class="comment">// 未使用.</span></div><div class="line">        DebugGC <span class="typename">bool</span></div><div class="line"></div><div class="line">        <span class="comment">// 按照大小进行的内存分配的统计,具体可以看Go内存分配的文章介绍.</span></div><div class="line">        BySize <span class="number">[61</span>]<span class="keyword">struct</span> {</div><div class="line">                <span class="comment">// Size is the maximum byte size of an object in this</span></div><div class="line">                <span class="comment">// size class.</span></div><div class="line">                Size <span class="typename">uint32</span></div><div class="line"></div><div class="line">                <span class="comment">// Mallocs is the cumulative count of heap objects</span></div><div class="line">                <span class="comment">// allocated in this size class. The cumulative bytes</span></div><div class="line">                <span class="comment">// of allocation is Size*Mallocs. The number of live</span></div><div class="line">                <span class="comment">// objects in this size class is Mallocs - Frees.</span></div><div class="line">                Mallocs <span class="typename">uint64</span></div><div class="line"></div><div class="line">                <span class="comment">// Frees is the cumulative count of heap objects freed</span></div><div class="line">                <span class="comment">// in this size class.</span></div><div class="line">                Frees <span class="typename">uint64</span></div><div class="line">        }</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>Go运行时的内存分配算法可以查看文章: <a href="https://blog.learngoprogramming.com/a-visual-guide-to-golang-memory-allocator-from-ground-up-e132258453ed" target="_blank" rel="external">A visual guide to Go Memory Allocator from scratch (Golang)
+</a>, 或者中文翻译: <a href="https://github.com/coldnight/go-memory-allocator-visual-guide" target="_blank" rel="external">Go 内存分配器可视化指南</a>，这是目前第一篇全面介绍Go运行时内存管理的文章。</p>
+<h3 id="runtime-SetGCPercent">runtime.SetGCPercent</h3>
+<p><code>GOGC</code>设置垃圾回收的目标百分比。什么时候会触发Go运行时的垃圾回收操作呢，主要靠这个值。当这次新分配的数据和上一次垃圾回收后存活数据之比达到这个数值之后就会触发一次垃圾回收。</p>
+<p><code>GOGC</code>的默认值是100。设置<code>GOGC=off</code>会禁止垃圾回收。</p>
+<p>你也可以通过代码设置这个参数，调用<code>runtime.SetGCPercent</code>进行设置。</p>
+<h3 id="MADV">MADV</h3>
+<p>MADV是Linux的一个特性，，可以看相关的介绍：<a href="http://lkml.iu.edu/hypermail/linux/kernel/0704.3/3962.html" target="_blank" rel="external">MADV_FREE functionality</a></p>
+<p>一直以来 go 的 runtime 在释放内存返回到内核时，在 Linux 上使用的是 MADV_DONTNEED，虽然效率比较低，但是会让 RSS（resident set size 常驻内存集）数量下降得很快。不过在 go 1.12 里专门针对这个做了优化，runtime 在释放内存时，使用了更加高效的 MADV_FREE 而不是之前的 MADV_DONTNEED。这样带来的好处是，一次 GC 后的内存分配延迟得以改善，runtime 也会更加积极地将释放的内存归还给操作系统，以应对大块内存分配无法重用已存在的堆空间的问题。不过也会带来一个副作用：RSS 不会立刻下降，而是要等到系统有内存压力了，才会延迟下降。需要注意的是，<code>MADV_FREE</code> 需要 4.5 以及以上内核，否则 runtime 会继续使用原先的 <code>MADV_DONTNEED</code> 方式。当然 go 1.12 为了避免像这样一些靠判断 RSS 大小的自动化测试因此出问题，也提供了一个 GODEBUG=madvdontneed=1 参数可以强制 runtime 继续使用 <a href="https://github.com/golang/go/issues/28466" target="_blank" rel="external">MADV_DONTNEED：runtime: provide way to disable MADV_FREE</a>。</p>
+<h2 id="相关issue和资料">相关issue和资料</h2>
+<p>这里列出了Go官方库中的一些内存泄漏相关的issue,以及关于Go内存泄漏的一些文章，感兴趣的同学可以进一步阅读。</p>
+<ol start="0">
+<li><a href="https://golang.org/pkg/runtime/#MemStats" target="_blank" rel="external">https://golang.org/pkg/runtime/#MemStats</a></li>
+<li><a href="https://github.com/golang/go/issues/33684" target="_blank" rel="external">https://github.com/golang/go/issues/33684</a></li>
+<li><a href="https://github.com/golang/go/issues/33376" target="_blank" rel="external">https://github.com/golang/go/issues/33376</a></li>
+<li><a href="https://github.com/golang/go/issues/32284" target="_blank" rel="external">https://github.com/golang/go/issues/32284</a></li>
+<li><a href="https://github.com/golang/go/issues/16843" target="_blank" rel="external">https://github.com/golang/go/issues/16843</a></li>
+<li><a href="https://github.com/golang/go/issues/14521" target="_blank" rel="external">https://github.com/golang/go/issues/14521</a></li>
+<li><a href="https://go101.org/article/memory-leaking.html" target="_blank" rel="external">https://go101.org/article/memory-leaking.html</a></li>
+<li><a href="http://play.golang.org/p/Nb39COQgxr" target="_blank" rel="external">http://play.golang.org/p/Nb39COQgxr</a></li>
+<li><a href="https://www.freecodecamp.org/news/how-i-investigated-memory-leaks-in-go-using-pprof-on-a-large-codebase-4bec4325e192/" target="_blank" rel="external">https://www.freecodecamp.org/news/how-i-investigated-memory-leaks-in-go-using-pprof-on-a-large-codebase-4bec4325e192/</a></li>
+<li><a href="https://medium.com/dm03514-tech-blog/sre-debugging-simple-memory-leaks-in-go-e0a9e6d63d4d" target="_blank" rel="external">https://medium.com/dm03514-tech-blog/sre-debugging-simple-memory-leaks-in-go-e0a9e6d63d4d</a></li>
+<li><a href="https://github.com/golang/go/issues/16930" target="_blank" rel="external">https://github.com/golang/go/issues/16930</a></li>
+<li><a href="https://github.com/golang/go/issues/30333" target="_blank" rel="external">https://github.com/golang/go/issues/30333</a></li>
+<li><a href="https://go-review.googlesource.com/c/go/+/135395/" target="_blank" rel="external">https://go-review.googlesource.com/c/go/+/135395/</a></li>
+<li><a href="https://github.com/golang/go/issues/23687" target="_blank" rel="external">https://github.com/golang/go/issues/23687</a></li>
+<li><a href="https://ms2008.github.io/2019/06/30/golang-madvfree/" target="_blank" rel="external">https://ms2008.github.io/2019/06/30/golang-madvfree/</a></li>
+<li><a href="https://golang.org/doc/go1.12#runtime" target="_blank" rel="external">https://golang.org/doc/go1.12#runtime</a></li>
+</ol>
+
+      
+    </div>
+    <footer class="article-footer">
+      
+
+      
+      <!-- <link rel="stylesheet" href="https://unpkg.com/gitalk/dist/gitalk.css">
+      <script src="https://unpkg.com/gitalk/dist/gitalk.min.js"></script> -->
+      <section id="comments">
+        <script src="https://utteranc.es/client.js"
+                repo="smallnest/gitalk"
+                issue-term="title"
+                theme="github-light"
+                crossorigin="anonymous"
+                async>
+        </script>
+        <!-- <div id="gitalk-container"></div>
+        <script type="text/javascript">
+          var gitalkOpts = {
+            id: '2019/08/28/go-memory-leak-i-dont-think-so/',
+            owner: 'smallnest',
+            repo: 'gitalk',
+            title: 'Go内存泄漏？不是那么简单!',
+            body: 'https://colobu.com/2019/08/28/go-memory-leak-i-dont-think-so/',
+            clientID: 'bc02724130ed5b7ee275',
+            clientSecret: '68cb0bae2f93a8b88b09e0eb9b08c844b06a9047',
+            admin: ['smallnest'],
+            distractionFreeMode: false
+          };
+
+          const gitalk = new Gitalk(gitalkOpts)
+          gitalk.render('gitalk-container')
+        </script> -->
+        <noscript> 为正常使用评论功能请激活JavaScript</noscript>
+      </section>
+
+      
+
+    </footer>
+  </div>
+  
+  
+<nav id="article-nav">
+  
+    <a href="/2019/09/06/rust-lib-per-week-lru-rs/" id="article-nav-newer" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">Newer</strong>
+      <div class="article-nav-title">
+        
+          Rust每周一库: LRU
+        
+      </div>
+    </a>
+  
+  
+    <a href="/2019/08/21/decorator-pattern-pipeline-pattern-and-go-web-middlewares/" id="article-nav-older" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">Older</strong>
+      <div class="article-nav-title">明白了，原来Go web框架中的中间件都是这样实现的</div>
+    </a>
+  
+</nav>
+
+  
+</article></section>
+        
+          <aside id="sidebar">
+  
+      <div class="widget-wrap">
+    <h3 class="widget-title">原创图书</h3>
+    <div class="widget">
+      <a href="/ScalaCollectionsCookbook/">
+        <img width="100%" src="/ScalaCollectionsCookbook/scala_collections_cookbook.jpg">
+        <img width="100%" src="/ScalaCollectionsCookbook/scala_collections_cookbook_tw.png">
+      </a>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">分类</h3>
+    <div class="widget">
+      <ul class="category-list"><li class="category-list-item"><a class="category-list-link" href="/categories/Android/">Android</a><span class="category-list-count">12</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/C/">C++</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/DOTNET/">DOTNET</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Docker/">Docker</a><span class="category-list-count">5</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Go/">Go</a><span class="category-list-count">175</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Java/">Java</a><span class="category-list-count">64</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Linux/">Linux</a><span class="category-list-count">7</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Rust/">Rust</a><span class="category-list-count">12</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Scala/">Scala</a><span class="category-list-count">18</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/分享/">分享</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/前端开发/">前端开发</a><span class="category-list-count">18</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/区块链/">区块链</a><span class="category-list-count">8</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/大数据/">大数据</a><span class="category-list-count">60</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/工具/">工具</a><span class="category-list-count">28</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/数据库/">数据库</a><span class="category-list-count">3</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/架构/">架构</a><span class="category-list-count">26</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/算法/">算法</a><span class="category-list-count">4</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/管理/">管理</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/网络编程/">网络编程</a><span class="category-list-count">13</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/读书笔记/">读书笔记</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/运维/">运维</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/高并发编程/">高并发编程</a><span class="category-list-count">20</span></li></ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">标签云</h3>
+    <div class="widget tagcloud">
+      <a href="/tags/Android/" style="font-size: 15.71px;">Android</a><a href="/tags/ApacheBench/" style="font-size: 11.43px;">ApacheBench</a><a href="/tags/Bower/" style="font-size: 10.00px;">Bower</a><a href="/tags/C/" style="font-size: 10.00px;">C#</a><a href="/tags/CDN/" style="font-size: 10.00px;">CDN</a><a href="/tags/CQRS/" style="font-size: 10.00px;">CQRS</a><a href="/tags/CRC/" style="font-size: 10.00px;">CRC</a><a href="/tags/CSS/" style="font-size: 11.43px;">CSS</a><a href="/tags/CompletableFuture/" style="font-size: 10.00px;">CompletableFuture</a><a href="/tags/Comsat/" style="font-size: 10.00px;">Comsat</a><a href="/tags/Curator/" style="font-size: 18.57px;">Curator</a><a href="/tags/DSL/" style="font-size: 10.00px;">DSL</a><a href="/tags/Disruptor/" style="font-size: 10.00px;">Disruptor</a><a href="/tags/Docker/" style="font-size: 11.43px;">Docker</a><a href="/tags/Ember/" style="font-size: 11.43px;">Ember</a><a href="/tags/FastJson/" style="font-size: 10.00px;">FastJson</a><a href="/tags/Fiber/" style="font-size: 10.00px;">Fiber</a><a href="/tags/GAE/" style="font-size: 10.00px;">GAE</a><a href="/tags/GC/" style="font-size: 12.86px;">GC</a><a href="/tags/Gnuplot/" style="font-size: 10.00px;">Gnuplot</a><a href="/tags/Go/" style="font-size: 14.29px;">Go</a><a href="/tags/Gradle/" style="font-size: 10.00px;">Gradle</a><a href="/tags/Grunt/" style="font-size: 10.00px;">Grunt</a><a href="/tags/Gulp/" style="font-size: 10.00px;">Gulp</a><a href="/tags/Hadoop/" style="font-size: 10.00px;">Hadoop</a><a href="/tags/Hazelcast/" style="font-size: 10.00px;">Hazelcast</a><a href="/tags/IPFS/" style="font-size: 10.00px;">IPFS</a><a href="/tags/Ignite/" style="font-size: 10.00px;">Ignite</a><a href="/tags/JVM/" style="font-size: 10.00px;">JVM</a><a href="/tags/Java/" style="font-size: 17.14px;">Java</a><a href="/tags/Kafka/" style="font-size: 20.00px;">Kafka</a><a href="/tags/Lambda/" style="font-size: 14.29px;">Lambda</a><a href="/tags/Linux/" style="font-size: 12.86px;">Linux</a><a href="/tags/LongAdder/" style="font-size: 10.00px;">LongAdder</a><a href="/tags/MathJax/" style="font-size: 10.00px;">MathJax</a><a href="/tags/Maven/" style="font-size: 11.43px;">Maven</a><a href="/tags/Memcached/" style="font-size: 10.00px;">Memcached</a><a href="/tags/Metrics/" style="font-size: 10.00px;">Metrics</a><a href="/tags/Mongo/" style="font-size: 12.86px;">Mongo</a><a href="/tags/Netty/" style="font-size: 15.71px;">Netty</a>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">归档</h3>
+    <div class="widget">
+      <ul class="archive-list"><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/10/">October 2021</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/08/">August 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/07/">July 2021</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/06/">June 2021</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/05/">May 2021</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/04/">April 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/03/">March 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/02/">February 2021</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/01/">January 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/12/">December 2020</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/11/">November 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/09/">September 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/08/">August 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/07/">July 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/06/">June 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/05/">May 2020</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/04/">April 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/03/">March 2020</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/02/">February 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/01/">January 2020</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/12/">December 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/11/">November 2019</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/10/">October 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/09/">September 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/08/">August 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/07/">July 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/06/">June 2019</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/05/">May 2019</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/04/">April 2019</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/03/">March 2019</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/02/">February 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/01/">January 2019</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/12/">December 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/11/">November 2018</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/10/">October 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/09/">September 2018</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/08/">August 2018</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/07/">July 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/06/">June 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/05/">May 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/04/">April 2018</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/03/">March 2018</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/02/">February 2018</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/01/">January 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/12/">December 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/11/">November 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/10/">October 2017</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/09/">September 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/08/">August 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/07/">July 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/06/">June 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/05/">May 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/04/">April 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/03/">March 2017</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/02/">February 2017</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/01/">January 2017</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/12/">December 2016</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/11/">November 2016</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/10/">October 2016</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/09/">September 2016</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/08/">August 2016</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/07/">July 2016</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/06/">June 2016</a><span class="archive-list-count">14</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/05/">May 2016</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/04/">April 2016</a><span class="archive-list-count">14</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/03/">March 2016</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/02/">February 2016</a><span class="archive-list-count">8</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/01/">January 2016</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/12/">December 2015</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/11/">November 2015</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/10/">October 2015</a><span class="archive-list-count">9</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/09/">September 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/08/">August 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/07/">July 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/06/">June 2015</a><span class="archive-list-count">8</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/05/">May 2015</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/04/">April 2015</a><span class="archive-list-count">15</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/03/">March 2015</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/02/">February 2015</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/01/">January 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/12/">December 2014</a><span class="archive-list-count">28</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/11/">November 2014</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/10/">October 2014</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/09/">September 2014</a><span class="archive-list-count">28</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/08/">August 2014</a><span class="archive-list-count">19</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/07/">July 2014</a><span class="archive-list-count">1</span></li></ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">近期文章</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+            <a href="/2021/10/06/replace-implementations-in-go-std-libs-at-runtime/">强制更改Go标准库的实现</a>
+          </li>
+        
+          <li>
+            <a href="/2021/08/30/how-is-go-generic-implemented/">Go泛型是怎么实现的?</a>
+          </li>
+        
+          <li>
+            <a href="/2021/08/01/benchmark-of-rpc-frameworks/">2021年Go生态圈rpc框架benchmark</a>
+          </li>
+        
+          <li>
+            <a href="/2021/07/13/Updating-the-Go-Memory-Model/">[译]更新Go内存模型</a>
+          </li>
+        
+          <li>
+            <a href="/2021/07/11/Programming-Language-Memory-Models/">[译]编程语言内存模型</a>
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">友情链接</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+			 
+            <a href="http://stackshare.io" target="_blank">技术栈</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://toutiao.io/" target="_blank">开发者头条</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://weekly.manong.io/issues/" target="_blank">码农周刊</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.tuicool.com/mags" target="_blank">编程狂人周刊</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.importnew.com/" target="_blank">importnew</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://ifeve.com/" target="_blank">并发编程网</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://github.com" target="_blank">github</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://stackoverflow.com/" target="_blank">stackoverflow</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.javacodegeeks.com/" target="_blank">javacodegeeks</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.infoq.com/" target="_blank">infoq</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.dzone.com/links/index.html" target="_blank">dzone</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://oj.leetcode.com/problems/" target="_blank">leetcode</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://tutorials.jenkov.com" target="_blank">jenkov</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://howtodoinjava.com" target="_blank">HowToDoInJava</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://java-design-patterns.com/patterns/" target="_blank">java design patterns</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://medium.com/netflix-techblog" target="_blank">Netflix技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://www.techiedelight.com" target="_blank">Techie Delight</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://engineering.linkedin.com/blog" target="_blank">Linkedin技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://blogs.dropbox.com/tech/" target="_blank">Dropbox技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://code.fb.com" target="_blank">Facebook技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://jm.taobao.org" target="_blank">淘宝中间件团队</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://tech.meituan.com" target="_blank">美团技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://blogs.360.cn" target="_blank">360技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://xiaomi-info.github.io" target="_blank">小米信息部技术团队</a>
+			
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+      
+
+  
+</aside>
+        
+      </div>
+      <footer id="footer">
+  
+  <div class="outer">
+    <div id="footer-info" class="inner">
+      &copy; 2021 smallnest<br>
+	  Powered by <a href="http://hexo.io/" target="_blank">Hexo</a>
+    </div>
+  </div>
+</footer>
+    </div>
+    <nav id="mobile-nav">
+  
+    
+      <a href="/" class="mobile-nav-link"><i class="fa fa-home">&nbsp;</i>首页</a>
+    
+  
+    
+      <a href="/archives" class="mobile-nav-link"><i class="fa fa-folder-o">&nbsp;</i>归档</a>
+    
+  
+    
+      <a href="https://github.com/smallnest" class="mobile-nav-link"><i class="fa fa-github">&nbsp;</i>github</a>
+    
+  
+    
+      <a class="mobile-nav-link" href="#"><i class="fa fa-bars">&nbsp;</i>网站群</a>
+    
+      
+            <a class="mobile-nav-link" href="/goasm">&nbsp;&nbsp;<i class="fa fa-language">&nbsp;</i>Go汇编示例</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="https://gowebexamples.com">&nbsp;&nbsp;<i class="fa fa-external-link">&nbsp;</i>Go Web开发示例</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://go-database-sql.org">&nbsp;&nbsp;<i class="fa fa-external-link">&nbsp;</i>Go 数据库开发教程</a>
+          
+          
+    
+      
+            
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://rpcx.io">&nbsp;&nbsp;<i class="fa undefined">&nbsp;</i>RPCX官网</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://cn.doc.rpcx.io">&nbsp;&nbsp;<i class="fa undefined">&nbsp;</i>RPC开发指南</a>
+          
+          
+    
+    
+  
+    
+      <a href="/ScalaCollectionsCookbook" class="mobile-nav-link"><i class="fa fa-book">&nbsp;</i>Scala集合技术手册</a>
+    
+  
+    
+      <a href="/about" class="mobile-nav-link"><i class="fa fa-lemon-o">&nbsp;</i>关于</a>
+    
+  
+</nav>
+    
+<script src="//cdn.staticfile.org/jquery/1.11.1/jquery.min.js"></script>
+<script src="//cdn.bootcss.com/jquery.lazyload/1.9.1/jquery.lazyload.min.js"></script>
+
+<script src="//cdnjs.cloudflare.com/ajax/libs/fancybox/3.2.5/jquery.fancybox.min.js"></script>
+
+
+<script src="/js/script.js" type="text/javascript"></script>
+
+<!-- mathjax config similar to math.stackexchange -->
+<script type="text/x-mathjax-config">
+  MathJax.Hub.Config({
+    tex2jax: {
+      inlineMath: [ ['$','$'], ["\\(","\\)"] ],
+      processEscapes: true,
+      skipTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code']
+    }
+  });
+  MathJax.Hub.Queue(function() {
+      var all = MathJax.Hub.getAllJax(), i;
+      for(i=0; i < all.length; i += 1) {
+        all[i].SourceElement().parentNode.className += ' has-jax';
+      }
+  });
+</script>
+<script type="text/javascript" src="//cdn.bootcss.com/mathjax/2.6.0-beta.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML">
+</script>
+
+<div id="totop" style="position:fixed;bottom:150px;right:10px;cursor: pointer;z-index: 2000;">
+	<a title="返回顶部"><img src="/images/scrollup.png"/></a>
+</div>
+<script src="/js/totop.js" type="text/javascript"></script>
+
+
+
+
+<script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "//hm.baidu.com/hm.js?e085d87993250aab11f3e0c15f1c2785";
+  var s = document.getElementsByTagName("script")[0]; 
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+
+
+  </div>
+</body>
+</html>

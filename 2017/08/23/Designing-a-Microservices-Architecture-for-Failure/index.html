@@ -1,0 +1,695 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset="utf-8">
+  
+  <title>[转]设计一个容错的微服务架构</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+  <meta name="description" content="原文: Designing a Microservices Architecture for Failure翻译: 设计一个容错的微服务架构 by Jason Geng
+微服务架构使得可以通过明确定义的服务边界来隔离故障。但是像在每个分布式系统中一样，发生网络、硬件、应用级别的错误都是很常见的。由于服务依赖关系，任何组件可能暂时无法提供服务。为了尽量减少部分中断的影响，我们需要构建容错服务，来优雅">
+<meta property="og:type" content="article">
+<meta property="og:title" content="[转]设计一个容错的微服务架构">
+<meta property="og:url" content="https://colobu.com/2017/08/23/Designing-a-Microservices-Architecture-for-Failure/">
+<meta property="og:site_name" content="鸟窝">
+<meta property="og:description" content="原文: Designing a Microservices Architecture for Failure翻译: 设计一个容错的微服务架构 by Jason Geng
+微服务架构使得可以通过明确定义的服务边界来隔离故障。但是像在每个分布式系统中一样，发生网络、硬件、应用级别的错误都是很常见的。由于服务依赖关系，任何组件可能暂时无法提供服务。为了尽量减少部分中断的影响，我们需要构建容错服务，来优雅">
+<meta property="og:image" content="microservices-fail-separately-in-theory.png">
+<meta property="og:image" content="Microservices-depend-on-each-other.png">
+<meta property="og:image" content="microservices-change-management.png">
+<meta property="og:image" content="microservices-failover-caching.png">
+<meta property="og:image" content="microservices-rate-limiter.png">
+<meta property="og:image" content="titanic-bulkhead-microservices.png">
+<meta property="og:image" content="microservices-circuit-breakers.png">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="[转]设计一个容错的微服务架构">
+<meta name="twitter:description" content="原文: Designing a Microservices Architecture for Failure翻译: 设计一个容错的微服务架构 by Jason Geng
+微服务架构使得可以通过明确定义的服务边界来隔离故障。但是像在每个分布式系统中一样，发生网络、硬件、应用级别的错误都是很常见的。由于服务依赖关系，任何组件可能暂时无法提供服务。为了尽量减少部分中断的影响，我们需要构建容错服务，来优雅">
+
+  
+  <link rel="alternative" href="/atom.xml" title="鸟窝" type="application/atom+xml">
+  
+  
+  <link rel="icon" href="/favicon.png">
+  
+  <link rel="stylesheet" href="/css/style.css" type="text/css">
+
+  <link href="//cdn.staticfile.org/font-awesome/4.2.0/css/font-awesome.css" rel="stylesheet">
+  
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/fancybox/2.1.7/css/jquery.fancybox.min.css"
+    media="screen" type="text/css">
+  
+  <link rel="stylesheet" href="//cdnjs.cloudflare.com/ajax/libs/animate.css/3.1.1/animate.min.css" media="screen"
+    type="text/css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/tonsky/FiraCode@1.207/distr/fira_code.css">
+</head>
+<body>
+  <div id="container">
+    <div id="wrap">
+      <header id="header">
+  <div id="banner"></div>
+  <div id="header-outer" class="outer">
+    <div id="header-title" class="inner">
+      <h1 id="logo-wrap" class="animated bounceInLeft">
+        <a href="/" id="logo">鸟窝</a>
+      </h1>
+      
+        <h2 id="subtitle-wrap" class="animated bounceInLeft">
+          <a href="/" id="subtitle">大道至简 Simplicity is the ultimate form of sophistication</a>
+        </h2>
+      
+    </div>
+    <div id="header-inner" class="inner">
+      <nav id="main-nav">
+        <a id="main-nav-toggle" class="nav-icon"></a>
+        
+          
+            <a class="main-nav-link" href="/"><i class="fa fa-home">&nbsp;</i>首页</a>
+          
+          
+          
+            <a class="main-nav-link" href="/archives"><i class="fa fa-folder-o">&nbsp;</i>归档</a>
+          
+          
+          
+            <a class="main-nav-link" href="https://github.com/smallnest"><i class="fa fa-github">&nbsp;</i>github</a>
+          
+          
+          
+            <div class="dropdown main-nav-link"><a class="main-nav-link" href="#"><i class="fa fa-bars">&nbsp;</i>网站群</a>
+              <div class="dropdown-content">
+          
+            
+              <a href="/goasm"><i class="fa fa-language"></i>&nbsp;Go汇编示例</a>
+            
+                
+          
+            
+              <a href="https://gowebexamples.com"><i class="fa fa-external-link"></i>&nbsp;Go Web开发示例</a>
+            
+                
+          
+            
+              <a href="http://go-database-sql.org"><i class="fa fa-external-link"></i>&nbsp;Go 数据库开发教程</a>
+            
+                
+          
+            
+              <hr>
+            
+                
+          
+            
+              <a href="http://rpcx.io"><i class="fa undefined"></i>&nbsp;RPCX官网</a>
+            
+                
+          
+            
+              <a href="http://cn.doc.rpcx.io"><i class="fa undefined"></i>&nbsp;RPC开发指南</a>
+            
+                
+          
+          </div>
+        </div>
+          
+          
+          
+            <a class="main-nav-link" href="/ScalaCollectionsCookbook"><i class="fa fa-book">&nbsp;</i>Scala集合技术手册</a>
+          
+          
+          
+            <a class="main-nav-link" href="/about"><i class="fa fa-lemon-o">&nbsp;</i>关于</a>
+          
+          
+
+
+      </nav>
+      <nav id="sub-nav">
+        
+          <a id="nav-rss-link" class="nav-icon" href="/atom.xml" title="RSS Feed"></a>
+        
+        <a id="nav-search-btn" class="nav-icon" title="Search"></a>
+      </nav>
+      <div id="search-form-wrap">
+        <form action="http://www.baidu.com/baidu" method="get" accept-charset="utf-8" class="search-form">
+          <input type="search" name="word" maxlength="20" class="search-form-input" placeholder="Search">
+          <input type="submit" value="" class="search-form-submit">
+          <input name=tn type=hidden value="bds">
+          <input name=cl type=hidden value="3">
+          <input name=ct type=hidden value="2097152">
+          <input type="hidden" name="si" value="colobu.com">
+        </form>
+      </div>
+    </div>
+  </div>
+</header>
+      <div class="outer">
+        <section id="main"><script>function show_answer(btn, x) { if (btn.value === "显示答案") { btn.value = "隐藏答案" } else { btn.value = "显示答案" } var as = document.getElementById(x); if (as.style.display === "none") { as.style.display = "block" } else { as.style.display = "none" } }</script>
+
+<article id="post-Designing-a-Microservices-Architecture-for-Failure" class="article article-type-post" itemscope
+  itemprop="blogPost">
+  <div class="article-meta">
+    <a href="/2017/08/23/Designing-a-Microservices-Architecture-for-Failure/" class="article-date">
+  <time datetime="2017-08-23T05:31:10.000Z" itemprop="datePublished">2017年08月23日</time>
+</a>
+    
+  <div class="article-category">
+    <a class="article-category-link" href="/categories/架构/">架构</a>
+  </div>
+
+    
+  <div class="article-author"> by Péter Márton</div>
+
+  </div>
+  <div class="article-inner">
+    
+    
+    <header class="article-header">
+      
+  
+    <h1 class="article-title" itemprop="name">
+      [转]设计一个容错的微服务架构
+	  
+    </h1>
+  
+
+    </header>
+    
+    <div class="article-entry" itemprop="articleBody">
+      
+      
+      
+      <p>原文: <a href="https://blog.risingstack.com/designing-microservices-architecture-for-failure/" target="_blank" rel="external">Designing a Microservices Architecture for Failure</a><br>翻译: <a href="https://github.com/jasonGeng88/blog" target="_blank" rel="external">设计一个容错的微服务架构</a> by Jason Geng</p>
+<p>微服务架构使得可以通过明确定义的服务边界来隔离故障。但是像在每个分布式系统中一样，发生网络、硬件、应用级别的错误都是很常见的。由于服务依赖关系，任何组件可能暂时无法提供服务。为了尽量减少部分中断的影响，我们需要构建容错服务，来优雅地处理这些中断的响应结果。</p>
+<p>本文介绍了基于<a href="https://risingstack.com/" target="_blank" rel="external">RisingStack 的 Node.js 咨询和开发经验</a>构建和操作高可用性微服务系统的最常见技术和架构模式。</p>
+<p>如果你不熟悉本文中的模式，那并不一定意味着你做错了。建立可靠的系统总是会带来额外的成本。</p>
+<a id="more"></a>
+<h2 id="微服务架构的风险">微服务架构的风险</h2>
+<p>微服务架构将应用程序逻辑移动到服务，并使用网络层在它们之间进行通信。这种通过网络间通信代替单应用程序内调用的做法，会带来额外的延迟，以及需要协调多个物理和逻辑组件的系统复杂度。分布式系统的复杂性增加也将导致更高的网络故障率。</p>
+<blockquote>
+<p>microservices allow you to achieve graceful service degradation as components can be set up to fail separately.</p>
+</blockquote>
+<p>微服务体系结构的最大优势之一是，团队可以独立设计，开发和部署他们的服务。他们对服务的生命周期拥有完全的所有权。这也意味着团队无法控制他们依赖的服务，因为它更有可能由不同的团队管理。使用微服务架构，我们需要记住，提供者服务可能会临时不可用，由于其他人员发行的错误版本，配置以及其他更改等。</p>
+<h2 id="优雅的服务降级">优雅的服务降级</h2>
+<p>微服务架构的最大优点之一是您可以隔离故障，并在当组件单独故障时，进行优雅的服务降级。 例如，在中断期间，照片共享应用程序中的客户可能无法上传新图片，但仍可以浏览，编辑和共享其现有照片。</p>
+<p><img src="microservices-fail-separately-in-theory.png" alt="微服务容错隔离"></p>
+<p>在大多数情况下，由于分布式系统中的应用程序相互依赖，因此很难实现这种优雅的服务降级，您需要应用几种故障转移的逻辑（其中一些将在本文后面介绍），以为暂时的故障和中断做准备。</p>
+<p><img src="Microservices-depend-on-each-other.png" alt="服务间彼此依赖，再没有故障转移逻辑下，服务全部失败。"></p>
+<h2 id="变更管理">变更管理</h2>
+<p>Google的网站可靠性小组发现，<strong>大约70％的中断是由现有系统的变化引起的</strong>。当您更改服务中的某些内容时，您将部署新版本的代码或更改某些配置 - 这总有可能会造成故障，或者引入新的bug。</p>
+<p>在微服务架构中，服务依赖于彼此。这就是为什么你应该尽量减少故障并限制它的负面影响。要处理变更中的问题，您可以实施变更管理策略和<strong>自动回滚</strong>机制。</p>
+<p>例如，当您部署新代码或更改某些配置时，您应该先小范围的进行部分的替换，以渐进式的方式替换服务的全部实例。在这期间，需要监视它们，如果您发现它们对您的关键指标有负面影响，应立即进行服务回滚，这称为“金丝雀部署”。</p>
+<p><img src="microservices-change-management.png" alt="变更管理 - 回滚部署"></p>
+<p>另一个解决方案可能是您运行两个生产环境。您始终只能部署其中一个，并且在验证新版本是否符合预期之后才，将负载均衡器指向新的。这称为蓝绿或红黑部署。</p>
+<p><strong>回滚代码不是坏事</strong>。你不应该在生产中遗留错误的代码，然后考虑出了什么问题。如果必要，越早回滚你的代码越好。</p>
+<h2 id="健康检查与负载均衡">健康检查与负载均衡</h2>
+<p>实例由于出现故障、部署或自动缩放的情况，会进行持续启动、重新启动或停止操作。它可能导致它们暂时或永久不可用。为避免问题，您的负载均衡器应该从路由中<strong>跳过不健康的实例</strong>，因为它们当前无法为客户或子系统提供服务。</p>
+<p>应用实例健康状况可以通过外部观察来确定。您可以通过重复调用<strong>GET /health</strong>端点或通过自我报告来实现。现在主流的<strong>服务发现</strong>解决方案，会持续从实例中收集健康信息，并配置负载均衡器，将流量仅路由到健康的组件上。</p>
+<h2 id="自我修复">自我修复</h2>
+<p>自我修复可以帮助应用程序从错误中恢复过来。当应用程序可以<strong>采取必要步骤</strong>从故障状态恢复时，我们就可以说它是可以实现自我修复的。在大多数情况下，它由外部系统实现，该系统会监视实例运行状况，并在较长时间内处于故障状态时重新启动它们。自我修复在大多数情况下是非常有用的。但是在某些情况下，持续地重启应用程序可能会<strong>导致麻烦</strong>。 当您的应用程序由于超负荷或其数据库连接超时而无法给出健康的运行状况时，这种情况下的频繁的重启就可能就不太合适了。</p>
+<p>对于这种特殊的场景（如丢失的数据库连接），要实现满足它的高级自我修复的解决方案可能很棘手。在这种情况下，您需要为应用程序添加额外的逻辑来处理边缘情况，并让外部系统知道实例不需要立即重新启动。</p>
+<h2 id="故障转移缓存">故障转移缓存</h2>
+<p>由于网络问题和我们系统的变化，服务经常会失败。然而，由于自我修复和负载均衡的保障，它们中的大多数中断是临时的，我们应该找到一个解决方案，使我们的服务在这些故障时服务仍就可以工作。这就是<strong>故障转移缓存</strong> (failover caching)的作用，它可以帮助并为我们的应用程序在服务故障时提供必要的数据。</p>
+<p>故障转移缓存通常使用<strong>两个不同的过期日期</strong>; 较短的时间告诉您在正常情况下缓存可以使用的过期时间，而较长的时间可以在服务故障时缓存依旧可用的过期时间。</p>
+<p><img src="microservices-failover-caching.png" alt="故障转移缓存"></p>
+<p>请务必提及，只有当服务使用过时的数据比没有数据更好时，才能使用故障转移缓存。</p>
+<p>要设置缓存和故障转移缓存，可以在 HTTP 中使用标准响应头。</p>
+<p>例如，使用 <code>max-age</code> 属性可以指定资源被视为有效的最大时间。使用 <code>stale-if-error</code> 属性，您可以明确在出现故障的情况下，依旧可以从缓存中获取资源的最大时间。</p>
+<p>现代的 CDN 和负载均衡器都提供各种缓存和故障转移行为，但您也可以为拥有标准可靠性解决方案的公司创建一个共享库。</p>
+<h2 id="重试逻辑">重试逻辑</h2>
+<p>在某些情况下，我们无法缓存数据，或者我们想对其进行更改，但是我们的操作最终都失败了。对于此，我们可以重试我们的操作，因为我们可以预期资源将在一段时间后恢复，或者我们的负载均衡器将请求发送到了健康的实例上。</p>
+<p>您应该小心地为您的应用程序和客户端添加重试逻辑，因为大量的<strong>重试可能会使事情更糟</strong>，甚至阻止应用程序恢复，如当服务超载时，大量的重试只能使状况更糟。</p>
+<p>在分布式系统中，微服务系统重试可以触发多个其他请求或重试，并启动<strong>级联效应</strong>。为了最小化重试的影响，您应该限制它们的数量，并使用指数退避算法来持续增加重试之间的延迟，直到达到最大限制。</p>
+<p>当客户端（浏览器，其他微服务等）发起重试，并且客户端不知道在处理请求之前或之后操作失败时，您应该为你的应用程序做好<strong>幂等处理</strong>的准备。例如，当您重试购买操作时，您不应该再次向客户收取费用。为每个交易使用唯一的<strong>幂等值键</strong>可以帮助处理重试。</p>
+<h2 id="限流器和负载降级">限流器和负载降级</h2>
+<p>流量限制是在一段时间内定义特定客户或应用程序可以接收或处理多少个请求的技术。例如，通过流量限制，您可以过滤掉造成流量峰值的客户和服务，或者您可以确保您的应用程序在自动缩放无法满足时，依然不会超载。</p>
+<p>您还可以阻止较低优先级的流量，为关键事务提供足够的资源。</p>
+<p><img src="microservices-rate-limiter.png" alt="限流器可以阻止流量峰值产生"></p>
+<p>有一个不同类型的限流器，叫做并发请求限制器。当您有重要的端点，您不应该被调用超过指定的次数，而您仍然想要能提供服务时，这将是有用的。</p>
+<p>负载降级的一系列使用，可以确保总是有足够的资源来提供关键交易。它为高优先级请求保留一些资源，不允许低优先级的事务使用它们。负载降级开关是根据系统的整体状态做出决定，而不是基于单个用户的请求量大小。负载降级有助于您的系统恢复，因为当你有一个偶发事件时（可能是一个热点事件），您仍能保持核心功能的正常工作。</p>
+<p>要了解有关限流器和负载降级的更多信息，我建议查看这篇<a href="https://stripe.com/blog/rate-limiters" target="_blank" rel="external">Stripe的文章</a>。</p>
+<h2 id="快速失败原则与独立性">快速失败原则与独立性</h2>
+<p>在微服务架构中，我们想要做到让我们的服务具备快速失败与相互独立的能力。为了在服务级别上进行故障隔离，我们可以使用舱壁模式。你可以在本文的后面阅读更多有关舱壁的内容。</p>
+<p>我们也希望我们的组件能够快速失败，因为我们不希望对于有故障的服务，在请求超时后才断开。没有什么比挂起的请求和无响应的 UI 更令人失望。这不仅浪费资源，而且还会影响用户体验。我们的服务在调用链中是相互调用的，所以在这些延迟累加之前，我们应该特别注意防止挂起操作。</p>
+<p>你想到的第一个想法是对每个服务调用都设置明确的超时等级。这种方法的问题是，您不能知道真正合理的超时值是多少，因为网络故障和其他问题发生的某些情况只会影响一两次操作。在这种情况下，如果只有其中一些超时，您可能不想拒绝这些请求。</p>
+<p>我们可以说，在微服务种通过使用超时来达到快速失败的效果是一种反模式的，你应该避免使用它。取而代之，您可以应用断路器模式，依据操作的成功与失败统计数据决定。</p>
+<h2 id="舱壁模式">舱壁模式</h2>
+<p>工业中使用舱壁将船舶划分为几个部分，以便在船体破坏的情况下，可以将船舶各个部件密封起来。</p>
+<p>舱壁的概念在软件开发中可以被应用在隔离资源上。</p>
+<p>通过应用舱壁模式，我们可以保护有限的资源不被耗尽。例如，对于一个有连接数限制的数据库实例来说，如果我们有两种连接它的操作，我们采用可以采用两个连接池的方式进行连接，来代替仅采用一个共享连接池的方式。由于这种客户端与资源进行了隔离，超时或过度使用池的操作页不会使其他操作失败。</p>
+<p>泰坦尼克号沉没的主要原因之一是其舱壁设计失败，水可以通过上面的甲板倒在舱壁的顶部，导致整个船体淹没。</p>
+<p><img src="titanic-bulkhead-microservices.png" alt="泰坦尼克号舱壁设计（无效的设计）"></p>
+<h2 id="断路器">断路器</h2>
+<p>为了限制操作的持续时间，我们可以使用超时。超时可以防止挂起操作并保持系统响应。然而，在微服务中使用静态、精细的超时是一种反模式，因为我们处于高度动态的环境中，几乎不可能提出在每种情况下都能正常工作的正确的时间限制。</p>
+<p>替代这种静态超时的手段是，我们可以使用断路器来处理错误。断路器以现实世界的电子元件命名，因为它们的作用是相同的。您可以保护资源，并帮助他们使用断路器进行恢复。它们在分布式系统中非常有用，因为在分布式系统中，重复故障可能导致雪球效应并使整个系统瘫痪。</p>
+<p>当特定类型的错误在短时间内多次发生时，断路器会被断开。开路的断路器可以防止进一步的请求 - 就像我们平时所说的电路跳闸一样。断路器通常在一定时间后关闭，在这期间可以为底层服务提供足够的空间来恢复。</p>
+<p>请记住，并不是所有的错误都应该触发断路器。例如，您可能希望跳过客户端问题，例如具有4xx响应代码的请求，但不包括5xx服务器端故障。一些断路器也具有半开状态。在这种状态下，服务发送第一个请求以检查系统可用性，同时让其他请求失败。如果这个第一个请求成功，它将使断路器恢复到关闭状态并使流量流动。否则，它保持打开。</p>
+<p><img src="microservices-circuit-breakers.png" alt="断路器"></p>
+<h2 id="测试故障">测试故障</h2>
+<p>您应该不断测试您系统的常见问题，以确保您的服务可以抵抗各种故障。您应经常测试故障，让您的团队具备故障处理的能力。</p>
+<p>对于测试，您可以使用外部服务来标识实例组，并随机终止此组中的一个实例。这样，您可以准备单个实例故障，但您甚至可以关闭整个区域来模拟云提供商的故障。</p>
+<p>最流行的测试解决方案之一是 Netflix 的 <a href="https://github.com/Netflix/chaosmonkey" target="_blank" rel="external">ChaosMonkey 弹性工具</a>。</p>
+<h2 id="结尾">结尾</h2>
+<p>实施和运行可靠的服务并不容易。 您需要付出很多努力，同时公司也要有相应的财力投入。</p>
+<p>可靠性有很多层次和方面，因此找到最适合您团队的解决方案很重要。您应该使可靠性成为您的业务决策流程中的一个因素，并为其分配足够的预算和时间。</p>
+<h2 id="关键点">关键点</h2>
+<ul>
+<li>动态环境和分布式系统（如微服务）会导致更高的故障机率；</li>
+<li>服务应该做到故障隔离，到达优雅降级，来提升用户体验；</li>
+<li>70％的中断是由变化引起的，代码回滚不是一件坏事；</li>
+<li>做到服务快速失败与独立性。团队是无法控制他们所依赖的服务情况；</li>
+<li>缓存、舱壁、断路器和限流器等架构模式与技术有助于构建可靠的微服务架构。</li>
+</ul>
+
+      
+    </div>
+    <footer class="article-footer">
+      
+
+      
+      <!-- <link rel="stylesheet" href="https://unpkg.com/gitalk/dist/gitalk.css">
+      <script src="https://unpkg.com/gitalk/dist/gitalk.min.js"></script> -->
+      <section id="comments">
+        <script src="https://utteranc.es/client.js"
+                repo="smallnest/gitalk"
+                issue-term="title"
+                theme="github-light"
+                crossorigin="anonymous"
+                async>
+        </script>
+        <!-- <div id="gitalk-container"></div>
+        <script type="text/javascript">
+          var gitalkOpts = {
+            id: '2017/08/23/Designing-a-Microservices-Architectur',
+            owner: 'smallnest',
+            repo: 'gitalk',
+            title: '[转]设计一个容错的微服务架构',
+            body: 'https://colobu.com/2017/08/23/Designing-a-Microservices-Architecture-for-Failure/',
+            clientID: 'bc02724130ed5b7ee275',
+            clientSecret: '68cb0bae2f93a8b88b09e0eb9b08c844b06a9047',
+            admin: ['smallnest'],
+            distractionFreeMode: false
+          };
+
+          const gitalk = new Gitalk(gitalkOpts)
+          gitalk.render('gitalk-container')
+        </script> -->
+        <noscript> 为正常使用评论功能请激活JavaScript</noscript>
+      </section>
+
+      
+
+    </footer>
+  </div>
+  
+  
+<nav id="article-nav">
+  
+    <a href="/2017/08/26/panic-on-go-plugin-Open-for-different-plugins/" id="article-nav-newer" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">Newer</strong>
+      <div class="article-nav-title">
+        
+          Go Plugin的一个bug
+        
+      </div>
+    </a>
+  
+  
+    <a href="/2017/08/04/talk-about-getting-goroutine-id-again/" id="article-nav-older" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">Older</strong>
+      <div class="article-nav-title">再谈谈获取 goroutine id 的方法</div>
+    </a>
+  
+</nav>
+
+  
+</article></section>
+        
+          <aside id="sidebar">
+  
+      <div class="widget-wrap">
+    <h3 class="widget-title">原创图书</h3>
+    <div class="widget">
+      <a href="/ScalaCollectionsCookbook/">
+        <img width="100%" src="/ScalaCollectionsCookbook/scala_collections_cookbook.jpg">
+        <img width="100%" src="/ScalaCollectionsCookbook/scala_collections_cookbook_tw.png">
+      </a>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">分类</h3>
+    <div class="widget">
+      <ul class="category-list"><li class="category-list-item"><a class="category-list-link" href="/categories/Android/">Android</a><span class="category-list-count">12</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/C/">C++</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/DOTNET/">DOTNET</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Docker/">Docker</a><span class="category-list-count">5</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Go/">Go</a><span class="category-list-count">175</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Java/">Java</a><span class="category-list-count">64</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Linux/">Linux</a><span class="category-list-count">7</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Rust/">Rust</a><span class="category-list-count">12</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Scala/">Scala</a><span class="category-list-count">18</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/分享/">分享</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/前端开发/">前端开发</a><span class="category-list-count">18</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/区块链/">区块链</a><span class="category-list-count">8</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/大数据/">大数据</a><span class="category-list-count">60</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/工具/">工具</a><span class="category-list-count">28</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/数据库/">数据库</a><span class="category-list-count">3</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/架构/">架构</a><span class="category-list-count">26</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/算法/">算法</a><span class="category-list-count">4</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/管理/">管理</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/网络编程/">网络编程</a><span class="category-list-count">13</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/读书笔记/">读书笔记</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/运维/">运维</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/高并发编程/">高并发编程</a><span class="category-list-count">20</span></li></ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">标签云</h3>
+    <div class="widget tagcloud">
+      <a href="/tags/Android/" style="font-size: 15.71px;">Android</a><a href="/tags/ApacheBench/" style="font-size: 11.43px;">ApacheBench</a><a href="/tags/Bower/" style="font-size: 10.00px;">Bower</a><a href="/tags/C/" style="font-size: 10.00px;">C#</a><a href="/tags/CDN/" style="font-size: 10.00px;">CDN</a><a href="/tags/CQRS/" style="font-size: 10.00px;">CQRS</a><a href="/tags/CRC/" style="font-size: 10.00px;">CRC</a><a href="/tags/CSS/" style="font-size: 11.43px;">CSS</a><a href="/tags/CompletableFuture/" style="font-size: 10.00px;">CompletableFuture</a><a href="/tags/Comsat/" style="font-size: 10.00px;">Comsat</a><a href="/tags/Curator/" style="font-size: 18.57px;">Curator</a><a href="/tags/DSL/" style="font-size: 10.00px;">DSL</a><a href="/tags/Disruptor/" style="font-size: 10.00px;">Disruptor</a><a href="/tags/Docker/" style="font-size: 11.43px;">Docker</a><a href="/tags/Ember/" style="font-size: 11.43px;">Ember</a><a href="/tags/FastJson/" style="font-size: 10.00px;">FastJson</a><a href="/tags/Fiber/" style="font-size: 10.00px;">Fiber</a><a href="/tags/GAE/" style="font-size: 10.00px;">GAE</a><a href="/tags/GC/" style="font-size: 12.86px;">GC</a><a href="/tags/Gnuplot/" style="font-size: 10.00px;">Gnuplot</a><a href="/tags/Go/" style="font-size: 14.29px;">Go</a><a href="/tags/Gradle/" style="font-size: 10.00px;">Gradle</a><a href="/tags/Grunt/" style="font-size: 10.00px;">Grunt</a><a href="/tags/Gulp/" style="font-size: 10.00px;">Gulp</a><a href="/tags/Hadoop/" style="font-size: 10.00px;">Hadoop</a><a href="/tags/Hazelcast/" style="font-size: 10.00px;">Hazelcast</a><a href="/tags/IPFS/" style="font-size: 10.00px;">IPFS</a><a href="/tags/Ignite/" style="font-size: 10.00px;">Ignite</a><a href="/tags/JVM/" style="font-size: 10.00px;">JVM</a><a href="/tags/Java/" style="font-size: 17.14px;">Java</a><a href="/tags/Kafka/" style="font-size: 20.00px;">Kafka</a><a href="/tags/Lambda/" style="font-size: 14.29px;">Lambda</a><a href="/tags/Linux/" style="font-size: 12.86px;">Linux</a><a href="/tags/LongAdder/" style="font-size: 10.00px;">LongAdder</a><a href="/tags/MathJax/" style="font-size: 10.00px;">MathJax</a><a href="/tags/Maven/" style="font-size: 11.43px;">Maven</a><a href="/tags/Memcached/" style="font-size: 10.00px;">Memcached</a><a href="/tags/Metrics/" style="font-size: 10.00px;">Metrics</a><a href="/tags/Mongo/" style="font-size: 12.86px;">Mongo</a><a href="/tags/Netty/" style="font-size: 15.71px;">Netty</a>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">归档</h3>
+    <div class="widget">
+      <ul class="archive-list"><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/10/">October 2021</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/08/">August 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/07/">July 2021</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/06/">June 2021</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/05/">May 2021</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/04/">April 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/03/">March 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/02/">February 2021</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/01/">January 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/12/">December 2020</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/11/">November 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/09/">September 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/08/">August 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/07/">July 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/06/">June 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/05/">May 2020</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/04/">April 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/03/">March 2020</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/02/">February 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/01/">January 2020</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/12/">December 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/11/">November 2019</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/10/">October 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/09/">September 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/08/">August 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/07/">July 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/06/">June 2019</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/05/">May 2019</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/04/">April 2019</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/03/">March 2019</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/02/">February 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/01/">January 2019</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/12/">December 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/11/">November 2018</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/10/">October 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/09/">September 2018</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/08/">August 2018</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/07/">July 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/06/">June 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/05/">May 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/04/">April 2018</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/03/">March 2018</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/02/">February 2018</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/01/">January 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/12/">December 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/11/">November 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/10/">October 2017</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/09/">September 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/08/">August 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/07/">July 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/06/">June 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/05/">May 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/04/">April 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/03/">March 2017</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/02/">February 2017</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/01/">January 2017</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/12/">December 2016</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/11/">November 2016</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/10/">October 2016</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/09/">September 2016</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/08/">August 2016</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/07/">July 2016</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/06/">June 2016</a><span class="archive-list-count">14</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/05/">May 2016</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/04/">April 2016</a><span class="archive-list-count">14</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/03/">March 2016</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/02/">February 2016</a><span class="archive-list-count">8</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/01/">January 2016</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/12/">December 2015</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/11/">November 2015</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/10/">October 2015</a><span class="archive-list-count">9</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/09/">September 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/08/">August 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/07/">July 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/06/">June 2015</a><span class="archive-list-count">8</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/05/">May 2015</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/04/">April 2015</a><span class="archive-list-count">15</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/03/">March 2015</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/02/">February 2015</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/01/">January 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/12/">December 2014</a><span class="archive-list-count">28</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/11/">November 2014</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/10/">October 2014</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/09/">September 2014</a><span class="archive-list-count">28</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/08/">August 2014</a><span class="archive-list-count">19</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/07/">July 2014</a><span class="archive-list-count">1</span></li></ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">近期文章</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+            <a href="/2021/10/06/replace-implementations-in-go-std-libs-at-runtime/">强制更改Go标准库的实现</a>
+          </li>
+        
+          <li>
+            <a href="/2021/08/30/how-is-go-generic-implemented/">Go泛型是怎么实现的?</a>
+          </li>
+        
+          <li>
+            <a href="/2021/08/01/benchmark-of-rpc-frameworks/">2021年Go生态圈rpc框架benchmark</a>
+          </li>
+        
+          <li>
+            <a href="/2021/07/13/Updating-the-Go-Memory-Model/">[译]更新Go内存模型</a>
+          </li>
+        
+          <li>
+            <a href="/2021/07/11/Programming-Language-Memory-Models/">[译]编程语言内存模型</a>
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">友情链接</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+			 
+            <a href="http://stackshare.io" target="_blank">技术栈</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://toutiao.io/" target="_blank">开发者头条</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://weekly.manong.io/issues/" target="_blank">码农周刊</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.tuicool.com/mags" target="_blank">编程狂人周刊</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.importnew.com/" target="_blank">importnew</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://ifeve.com/" target="_blank">并发编程网</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://github.com" target="_blank">github</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://stackoverflow.com/" target="_blank">stackoverflow</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.javacodegeeks.com/" target="_blank">javacodegeeks</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.infoq.com/" target="_blank">infoq</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.dzone.com/links/index.html" target="_blank">dzone</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://oj.leetcode.com/problems/" target="_blank">leetcode</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://tutorials.jenkov.com" target="_blank">jenkov</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://howtodoinjava.com" target="_blank">HowToDoInJava</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://java-design-patterns.com/patterns/" target="_blank">java design patterns</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://medium.com/netflix-techblog" target="_blank">Netflix技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://www.techiedelight.com" target="_blank">Techie Delight</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://engineering.linkedin.com/blog" target="_blank">Linkedin技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://blogs.dropbox.com/tech/" target="_blank">Dropbox技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://code.fb.com" target="_blank">Facebook技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://jm.taobao.org" target="_blank">淘宝中间件团队</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://tech.meituan.com" target="_blank">美团技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://blogs.360.cn" target="_blank">360技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://xiaomi-info.github.io" target="_blank">小米信息部技术团队</a>
+			
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+      
+
+  
+</aside>
+        
+      </div>
+      <footer id="footer">
+  
+  <div class="outer">
+    <div id="footer-info" class="inner">
+      &copy; 2021 smallnest<br>
+	  Powered by <a href="http://hexo.io/" target="_blank">Hexo</a>
+    </div>
+  </div>
+</footer>
+    </div>
+    <nav id="mobile-nav">
+  
+    
+      <a href="/" class="mobile-nav-link"><i class="fa fa-home">&nbsp;</i>首页</a>
+    
+  
+    
+      <a href="/archives" class="mobile-nav-link"><i class="fa fa-folder-o">&nbsp;</i>归档</a>
+    
+  
+    
+      <a href="https://github.com/smallnest" class="mobile-nav-link"><i class="fa fa-github">&nbsp;</i>github</a>
+    
+  
+    
+      <a class="mobile-nav-link" href="#"><i class="fa fa-bars">&nbsp;</i>网站群</a>
+    
+      
+            <a class="mobile-nav-link" href="/goasm">&nbsp;&nbsp;<i class="fa fa-language">&nbsp;</i>Go汇编示例</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="https://gowebexamples.com">&nbsp;&nbsp;<i class="fa fa-external-link">&nbsp;</i>Go Web开发示例</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://go-database-sql.org">&nbsp;&nbsp;<i class="fa fa-external-link">&nbsp;</i>Go 数据库开发教程</a>
+          
+          
+    
+      
+            
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://rpcx.io">&nbsp;&nbsp;<i class="fa undefined">&nbsp;</i>RPCX官网</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://cn.doc.rpcx.io">&nbsp;&nbsp;<i class="fa undefined">&nbsp;</i>RPC开发指南</a>
+          
+          
+    
+    
+  
+    
+      <a href="/ScalaCollectionsCookbook" class="mobile-nav-link"><i class="fa fa-book">&nbsp;</i>Scala集合技术手册</a>
+    
+  
+    
+      <a href="/about" class="mobile-nav-link"><i class="fa fa-lemon-o">&nbsp;</i>关于</a>
+    
+  
+</nav>
+    
+<script src="//cdn.staticfile.org/jquery/1.11.1/jquery.min.js"></script>
+<script src="//cdn.bootcss.com/jquery.lazyload/1.9.1/jquery.lazyload.min.js"></script>
+
+<script src="//cdnjs.cloudflare.com/ajax/libs/fancybox/3.2.5/jquery.fancybox.min.js"></script>
+
+
+<script src="/js/script.js" type="text/javascript"></script>
+
+<!-- mathjax config similar to math.stackexchange -->
+<script type="text/x-mathjax-config">
+  MathJax.Hub.Config({
+    tex2jax: {
+      inlineMath: [ ['$','$'], ["\\(","\\)"] ],
+      processEscapes: true,
+      skipTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code']
+    }
+  });
+  MathJax.Hub.Queue(function() {
+      var all = MathJax.Hub.getAllJax(), i;
+      for(i=0; i < all.length; i += 1) {
+        all[i].SourceElement().parentNode.className += ' has-jax';
+      }
+  });
+</script>
+<script type="text/javascript" src="//cdn.bootcss.com/mathjax/2.6.0-beta.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML">
+</script>
+
+<div id="totop" style="position:fixed;bottom:150px;right:10px;cursor: pointer;z-index: 2000;">
+	<a title="返回顶部"><img src="/images/scrollup.png"/></a>
+</div>
+<script src="/js/totop.js" type="text/javascript"></script>
+
+
+
+
+<script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "//hm.baidu.com/hm.js?e085d87993250aab11f3e0c15f1c2785";
+  var s = document.getElementsByTagName("script")[0]; 
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+
+
+  </div>
+</body>
+</html>

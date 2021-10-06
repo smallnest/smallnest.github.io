@@ -1,0 +1,758 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset="utf-8">
+  
+  <title>[译]更新Go内存模型</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+  <meta name="description" content="这是Russ Cox的系列论文的第三篇，也是最后一篇: Updating the Go Memory Model。
+文章对 官方的Go内存模型做了一些补充和思考。">
+<meta property="og:type" content="article">
+<meta property="og:title" content="[译]更新Go内存模型">
+<meta property="og:url" content="https://colobu.com/2021/07/13/Updating-the-Go-Memory-Model/">
+<meta property="og:site_name" content="鸟窝">
+<meta property="og:description" content="这是Russ Cox的系列论文的第三篇，也是最后一篇: Updating the Go Memory Model。
+文章对 官方的Go内存模型做了一些补充和思考。">
+<meta property="og:image" content="gophers-racing.jpeg">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="[译]更新Go内存模型">
+<meta name="twitter:description" content="这是Russ Cox的系列论文的第三篇，也是最后一篇: Updating the Go Memory Model。
+文章对 官方的Go内存模型做了一些补充和思考。">
+
+  
+  <link rel="alternative" href="/atom.xml" title="鸟窝" type="application/atom+xml">
+  
+  
+  <link rel="icon" href="/favicon.png">
+  
+  <link rel="stylesheet" href="/css/style.css" type="text/css">
+
+  <link href="//cdn.staticfile.org/font-awesome/4.2.0/css/font-awesome.css" rel="stylesheet">
+  
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/fancybox/2.1.7/css/jquery.fancybox.min.css"
+    media="screen" type="text/css">
+  
+  <link rel="stylesheet" href="//cdnjs.cloudflare.com/ajax/libs/animate.css/3.1.1/animate.min.css" media="screen"
+    type="text/css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/tonsky/FiraCode@1.207/distr/fira_code.css">
+</head>
+<body>
+  <div id="container">
+    <div id="wrap">
+      <header id="header">
+  <div id="banner"></div>
+  <div id="header-outer" class="outer">
+    <div id="header-title" class="inner">
+      <h1 id="logo-wrap" class="animated bounceInLeft">
+        <a href="/" id="logo">鸟窝</a>
+      </h1>
+      
+        <h2 id="subtitle-wrap" class="animated bounceInLeft">
+          <a href="/" id="subtitle">大道至简 Simplicity is the ultimate form of sophistication</a>
+        </h2>
+      
+    </div>
+    <div id="header-inner" class="inner">
+      <nav id="main-nav">
+        <a id="main-nav-toggle" class="nav-icon"></a>
+        
+          
+            <a class="main-nav-link" href="/"><i class="fa fa-home">&nbsp;</i>首页</a>
+          
+          
+          
+            <a class="main-nav-link" href="/archives"><i class="fa fa-folder-o">&nbsp;</i>归档</a>
+          
+          
+          
+            <a class="main-nav-link" href="https://github.com/smallnest"><i class="fa fa-github">&nbsp;</i>github</a>
+          
+          
+          
+            <div class="dropdown main-nav-link"><a class="main-nav-link" href="#"><i class="fa fa-bars">&nbsp;</i>网站群</a>
+              <div class="dropdown-content">
+          
+            
+              <a href="/goasm"><i class="fa fa-language"></i>&nbsp;Go汇编示例</a>
+            
+                
+          
+            
+              <a href="https://gowebexamples.com"><i class="fa fa-external-link"></i>&nbsp;Go Web开发示例</a>
+            
+                
+          
+            
+              <a href="http://go-database-sql.org"><i class="fa fa-external-link"></i>&nbsp;Go 数据库开发教程</a>
+            
+                
+          
+            
+              <hr>
+            
+                
+          
+            
+              <a href="http://rpcx.io"><i class="fa undefined"></i>&nbsp;RPCX官网</a>
+            
+                
+          
+            
+              <a href="http://cn.doc.rpcx.io"><i class="fa undefined"></i>&nbsp;RPC开发指南</a>
+            
+                
+          
+          </div>
+        </div>
+          
+          
+          
+            <a class="main-nav-link" href="/ScalaCollectionsCookbook"><i class="fa fa-book">&nbsp;</i>Scala集合技术手册</a>
+          
+          
+          
+            <a class="main-nav-link" href="/about"><i class="fa fa-lemon-o">&nbsp;</i>关于</a>
+          
+          
+
+
+      </nav>
+      <nav id="sub-nav">
+        
+          <a id="nav-rss-link" class="nav-icon" href="/atom.xml" title="RSS Feed"></a>
+        
+        <a id="nav-search-btn" class="nav-icon" title="Search"></a>
+      </nav>
+      <div id="search-form-wrap">
+        <form action="http://www.baidu.com/baidu" method="get" accept-charset="utf-8" class="search-form">
+          <input type="search" name="word" maxlength="20" class="search-form-input" placeholder="Search">
+          <input type="submit" value="" class="search-form-submit">
+          <input name=tn type=hidden value="bds">
+          <input name=cl type=hidden value="3">
+          <input name=ct type=hidden value="2097152">
+          <input type="hidden" name="si" value="colobu.com">
+        </form>
+      </div>
+    </div>
+  </div>
+</header>
+      <div class="outer">
+        <section id="main"><script>function show_answer(btn, x) { if (btn.value === "显示答案") { btn.value = "隐藏答案" } else { btn.value = "显示答案" } var as = document.getElementById(x); if (as.style.display === "none") { as.style.display = "block" } else { as.style.display = "none" } }</script>
+
+<article id="post-Updating-the-Go-Memory-Model" class="article article-type-post" itemscope
+  itemprop="blogPost">
+  <div class="article-meta">
+    <a href="/2021/07/13/Updating-the-Go-Memory-Model/" class="article-date">
+  <time datetime="2021-07-13T09:53:00.000Z" itemprop="datePublished">2021年07月13日</time>
+</a>
+    
+  <div class="article-category">
+    <a class="article-category-link" href="/categories/Go/">Go</a>
+  </div>
+
+    
+  <div class="article-author"> by smallnest</div>
+
+  </div>
+  <div class="article-inner">
+    
+    
+    <header class="article-header">
+      
+  
+    <h1 class="article-title" itemprop="name">
+      [译]更新Go内存模型
+	  
+    </h1>
+  
+
+    </header>
+    
+    <div class="article-entry" itemprop="articleBody">
+      
+      
+      
+      <p>这是Russ Cox的系列论文的第三篇，也是最后一篇: <a href="https://research.swtch.com/gomm" target="_blank" rel="external">Updating the Go Memory Model</a>。</p>
+<p>文章对 官方的Go内存模型做了一些补充和思考。</p>
+<a id="more"></a>
+<p><img src="gophers-racing.jpeg" alt=""></p>
+<p>当前的Go语言内存模型是在2009年编写的，从那以后略有更新。很明显，至少有一些细节我们应该添加到当前的内存这个内存模型中，其中包括对竞态检测器的明确认可，以及关于sync/atomic中的API是如何同步程序的清晰声明。</p>
+<p>这篇文章重申了Go的总体哲学和当前的内存模型，然后概述了我认为我们应该对Go内存模型进行的相对较小的调整。假定你已经了解了前两篇文章<a href="https://colobu.com/2021/06/30/hwmm/" target="_blank" rel="external">“硬件内存模型”</a>和<a href="https://colobu.com/2021/07/11/Programming-Language-Memory-Models/" target="_blank" rel="external">“编程语言内存模型”</a>中的背景知识。</p>
+<p>我已经开启了一个<a href="https://golang.org/s/mm-discuss" target="_blank" rel="external">GitHub讨论项目</a>来收集对反馈。根据这些反馈，我打算在本月晚些时候准备一份正式的Go提案。使用GitHub讨论本身就是一个实验，我还会继续尝试<a href="https://research.swtch.com/proposals-discuss" target="_blank" rel="external">找到一个合理的方法来扩大这些重要变化的讨论</a>。</p>
+<h2 id="Go_设计哲学">Go 设计哲学</h2>
+<p>Go旨在成为构建实用、高效系统的编程环境。它的目标是为小型项目的轻量级开发语言，但也可以优雅地扩展到大型项目和大型工程团队。</p>
+<p>Go鼓励在高层次上处理并发，特别是通过通信。第一句Go箴言(<a href="https://go-proverbs.github.io/" target="_blank" rel="external">Go proverb</a>)就是“不要通过共享内存来通信，而是通过通信共享内存。”另一个流行的谚语是“清晰胜于聪明。”换句话说，Go鼓励通过避免使用巧妙的代码来避免狡猾的bug。</p>
+<p>Go的目标不仅仅是可以理解的程序，还包括可以理解的语言和可以理解的package API。复杂或巧妙的语言特征或API与这一目标相矛盾。正如Tony Hoare在1980年<a href="https://www.cs.fsu.edu/~engelen/courses/COP4610/hoare.pdf" target="_blank" rel="external">图灵奖演讲</a>中所说:</p>
+<blockquote>
+<p>I conclude that there are two ways of constructing a software design: One way is to make it so simple that there are obviously no deficiencies and the other way is to make it so complicated that there are no obvious deficiencies.</p>
+<p>我的结论是，构建软件设计有两种方法:一种方法是简单实现，以至于明显没有缺陷；另一种方法是异常复杂，以至于没有明显缺陷。</p>
+</blockquote>
+<p>第一种方法要困难得多。它需要同样的技巧、奉献、洞察力，甚至是灵感，就像发现构成复杂自然现象基础的简单物理定律一样。它还要求愿意接受受物理、逻辑和技术限制的目标，并在冲突的目标无法实现时接受妥协。</p>
+<p>这与Go的设计API的理念非常吻合。我们通常在设计过程中花很长时间来确保一个应用编程接口是正确的，并努力将其简化为最基本、最有用的精华。</p>
+<p>Go作为一个有用的编程环境的另一方面是为最常见编程错误有定义明确的语义，这有助于理解和调试。这个想法并不新鲜。再次引用Tony Hoare的话，这是来自他1972年的“软件质量”检查单:</p>
+<blockquote>
+<p>As well as being very simple to use, a software program must be very difficult to misuse; it must be kind to programming errors, giving clear indication of their occurrence, and never becoming unpredictable in its effects.</p>
+<p>一个软件程序不仅使用起来非常简单，而且很难被误用；它必须友好对待编程错误，给出它们发生的明确指示，并且其影响永远不会变得不可预测。</p>
+</blockquote>
+<p>为有问题的程序定义良好的语义，这种常识并不像人们预期的那样普遍。在C/C++中，未定义的行为已经演变成一种编译器作者的全权委托，以越来越有趣的方式将有轻微问题的程序转换成有大问题的程序。Go不采用这种方法:不存在“未定义的行为”。特别是，像空指针取消引用、整数溢出和无意的无限循环这样的错误都在Go中定义了语义。</p>
+<h2 id="当前的_Go内存模型">当前的 Go内存模型</h2>
+<p>Go的内存模型始于以下建议，符合Go的总体哲学:</p>
+<ul>
+<li>修改由多个goroutines同时访问的数据的程序必须串行化这些访问。</li>
+<li>为了实现串行访问, 需要使用channel操作或其他同步原语(如sync和sync/atomic包中的原语)来保护数据。</li>
+<li>如果你必须阅读本文的其余部分才能理解你的程序的行为，那你太聪明了。</li>
+<li>别自作聪明。</li>
+</ul>
+<p>这仍然是个好建议。该建议也与其他语言对DRF-SC的鼓励使用一致:同步以消除数据竞争，然后程序将表现得好像顺序一致，不需要理解内存模型的其余部分。</p>
+<p>根据这个建议，Go内存模型定义了一个传统的基于happens-before对读写竞争的定义。像在Java和JavaScript中一样，在Go中的读操作可以观察到任何更早但尚未被覆盖的写操作，或者任何竞争的写操作；仅安排一个这样的写入会强制产生指定的结果。</p>
+<p>然后，内存模型继续定义同步操作，这些操作建立交替执行的goroutine的happen-before关系。操作尽管稀松平常，但是还是带有一些Go特有的风格:</p>
+<ul>
+<li>如果package <strong>p</strong>引入了package <strong>q</strong>,那么<strong>q</strong>的init函数的执行完成一定happen-before <strong>p</strong>的所有init函数(之前)</li>
+<li><strong>main.main</strong> 函数一定 happen after 所有的init函数完成(之后)</li>
+<li>go语句创建一个goroutine一定happen before goroutine执行(之前)</li>
+<li>往一个channel中send happen before 从这个channel receive这个数据完成(之前)</li>
+<li>一个channel的close一定happen before 从这个channel receive到零值数据(这里指因为close而返回的零值数据)</li>
+<li>从一个unbuffered channel的receive一定happen before 往这个channel send完成(之前)</li>
+<li>从容量为C的channel receive第k个数据一定happen before第k+C次send完成(之前)</li>
+<li>对于任意的<strong>sync.Mutex</strong>或者<strong>sync.RWMutex</strong>类型的变量l以及n &lt; m, 调用第n次l.UnLock()一定happen before 第m次的l.Lock()返回(之前)</li>
+<li>once.Do(f)中的对f的单次调用一定happen before 任意次的对once.Do(f)调用返回(之前)</li>
+</ul>
+<p>值得注意的是，这个列表忽略了package sync中新加的API以及sync/atomic的API。</p>
+<p>Go内存模型规范以一些不正确同步的例子结束。它没有包含错误编译的例子。</p>
+<h2 id="对Go内存模型做的改变">对Go内存模型做的改变</h2>
+<p>2009年，当我们着手编写Go的内存模型时，Java内存模型进行了新的修订，C/C++11内存模型正在定稿。一些人强烈鼓励我们采用C/C++11模型，并充分利用了其已经完成的所有工作。对我们来说这似乎很冒险。相反，我们决定采用一种更保守的方法来保证我们要做的，这一决定得到了随后十年详细描述Java/C/C++内存模型中非常狡猾问题的论文的证实。是的，定义足够充分的内存模型来指导程序员和编译器作者是很重要的，但是完全正式地定义一个正确的内存模型似乎仍然超出了最有才华的研究人员的能力范围。Go定义一个最小的需求就足够了。</p>
+<p>下面这一部分列出了我认为我们应该做的调整。如前所述，我已经开启了一个<a href="https://golang.org/s/mm-discuss" target="_blank" rel="external">GitHub讨论项</a>来收集反馈。根据这些反馈，我计划在本月晚些时候准备一份正式的Go提案。</p>
+<h3 id="文档化Go的整体方法">文档化Go的整体方法</h3>
+<p>“不要聪明”的建议很重要，应该坚持下去，但我们也需要在深入研究happen before细节之前，对Go的整体方法更多的谈一谈。我看到过很多关于Go方法的不正确总结，比如宣称Go的模型是C/C++的“DRF-SC或Catch Fire”。 这种误会是可以理解的: Go内存模型规范没有说它的方法是什么，而且它是如此之短(材料又如此微妙)，以至于人们看到了他们期望看到的东西，而不是那里有什么或没有什么。</p>
+<p>拟在Go内存模型规范中增加的文档大致如下:</p>
+<blockquote>
+<h2 id="概观">概观</h2>
+<p>Go以与本语言其余部分几乎相同的方式处理其内存模型，旨在保持语义简单、可理解和有用。</p>
+<p>数据竞争被定义为对存储器位置的写入与对同一位置的另一次读取或写入同时发生，除非所有访问都是由sync/atomic package提供的原子数据访问提供。如前所述，强烈建议程序员使用适当的同步来避免数据竞争。在没有数据竞争的情况下，Go程序表现得好像所有的gorouitine都被多路复用到一个处理器上。这个属性有时被称为DRF-SC:无数据竞争的程序以顺序一致的方式执行。</p>
+<p>其他编程语言通常采用两种方法之一来处理包含数据竞争的程序。第一，以C和C++为例，带有数据竞争的程序是无效的:编译器可能会以任意令人惊讶的方式中断它们。第二，以Java和JavaScript为例，具有数据竞争的程序定义了语义，通过限制竞争的可能影响，使程序更加可靠和易于调试。Go的方法介于这两者之间。具有数据竞争的程序是无效的，因为语言实现可能会报告竞争并终止程序。但另一方面，具有数据竞争的程序定义了具有有限数量结果的语义，使得错误的程序更可靠，更容易调试。</p>
+</blockquote>
+<p>这些文字应该阐明Go和其他语言有什么不同，纠正读者先前的任何期望。</p>
+<p>在“happen before”一节的最后，我们还应该澄清某些竞争仍然会导致内存损坏。当前它以下面的句子结束：</p>
+<blockquote>
+<p>Reads and writes of values larger than a single machine word behave as multiple machine-word-sized operations in an unspecified order.</p>
+</blockquote>
+<p>我们应该加上一点:</p>
+<blockquote>
+<p>请注意，这意味着多word数据结构上的竞争可能导致单次写入产生不一致值。当值依赖于内部(指针、长度)或(指针、类型)pair的一致性时，就像大多数Go实现中的接口、map、切片和字符串的情况一样，这种竞争又会导致内存损坏。</p>
+</blockquote>
+<p>这将更清楚地说明保证对具有数据竞争的程序的限制。</p>
+<h3 id="文档化_sync库的happen_before">文档化 sync库的happen before</h3>
+<p>自从Go内存模型发布以来，一些新的API已经被添加到sync包中。我们需要将它们添加到内存模型中(<a href="https://golang.org/issue/7948" target="_blank" rel="external">issue#7948</a>)。谢天谢地谢广坤，增加的内容看起来很简单。我相信它们应该如下：</p>
+<ul>
+<li>对于sync.Cond, <strong>Broadcast</strong> 和 <strong>Signal</strong> 一定happen before 它解锁的Wait方法调用完成(之前)</li>
+<li>对于sync.Map, Load, LoadAndDelete 和 LoadOrStore 都是读操作， Delete、LoadAndDelete和 Store都是写操作。LoadOrStore当它的loaded返回false时是写操作。一个写操作happen before 能观察到这个写操作的读操作(之前)</li>
+<li>对于sync.Pool,对Put(x)的调用一定happen before Get方法返回这个x(之前)。同样的，返回x的New方法一定happen before Get方法返回这个x(之前)</li>
+<li>对于sync.EWaitGroup, Done方法的调用一定happen before 它解锁的Wait方法调用返回(之前)</li>
+</ul>
+<p>这些API的用户需要知道保证，以便有效地使用它们。因此，虽然我们应该将这些文字保留在内存模型中以供介绍，但我们也应该将其包含在package sync的文档注释中。这也将有助于为第三方同步原语树立一个榜样，说明记录由API建立的顺序保证的重要性。</p>
+<h3 id="文档话_sync/atomic的happen_before">文档话 sync/atomic的happen before</h3>
+<p>Atomic operations are missing from the memory model. We need to add them (issue #5045). I believe we should say:</p>
+<p>内存模型中缺少原子操作的保证。我们需要添加它们(<a href="https://golang.org/issue/5045" target="_blank" rel="external">issue #5045</a>)。我认为我们应该说:</p>
+<blockquote>
+<p>sync/atomic package中的API统称为“原子操作”，可用于同步各种goroutine执行。如果原子操作A的效果被原子操作B观察到，那么A发生在B之前(happen before)。在一个程序中执行的所有原子操作表现得好像是以某种顺序一致的顺序执行的。</p>
+</blockquote>
+<p>这是Dmitri Vyukov在2013年提出的建议，也是我在2016年非正式承诺的。它还与Java的volatiles和C++的默认原子具有相同的语义。</p>
+<p>就C/C++而言，同步原子只有两种选择:顺序一致或acquire/release(Relaxed原子不会创建happen before，因此没有同步效果). 对这两者的决策归结为，第一，能够推理出多个位置上原子操作的相对顺序有多重要，第二，顺序一致的原子与acquire/release原子相比要多昂贵(慢)。</p>
+<p>首先要考虑的是，关于多个位置上原子操作的相对顺序的推理非常重要。在之前的一篇文章中，我举了一个使用两个原子变量实现的无锁快速路径的条件变量的<a href="https://research.swtch.com/plmm#cond" target="_blank" rel="external">例子</a>，这两个原子变量被使用acuqire/release原子打破了。这种模式反复出现。例如，sync.WaitGroup曾经的实现使用了一对<a href="https://go.googlesource.com/go/+/ee6e1a3ff77a41eff5a606a5aa8c46bf8b571a13/src/pkg/sync/waitgroup.go#54" target="_blank" rel="external">原子uint32值</a>：wg.counter和wg.waiters。<a href="https://go.googlesource.com/go/+/cf148f3d468f4d0648e7fc6d2858d2afdc37f70d/src/runtime/sema.go#134" target="_blank" rel="external">Go运行时中的信号量的实现</a>也依赖于两个独立的原子word，即信号量值*addr和相应的waiter count root.nwait。还有更多。在缺乏顺序一致的语义的情况下(也就是说，如果我们改为采用acquire/release语义)，人们仍然会像这样错误地编写代码；它会神秘地失败，而且只在特定的情况下。</p>
+<p>根本的问题是，使用acuqire/release原子使无数据竞争的程序不会导致程序以顺序一致的方式运行，因为原子本身不会提供保证。也就是说，这样的程序不提供DRF-SC。这使得这种程序很难推理，因此很难正确编写。</p>
+<p>关于第二个考虑，正如在之前的文章中提到的，硬件设计人员开始为顺序一致的原子提供直接支持。例如，ARMv8添加了ldar和stlr指令来实现顺序一致的原子，它们也是acquire/release原子的推荐实现。如果我们为sync/atomic采用acquire/release语义，那么写在ARMv8上的程序无论如何都会获得顺序一致性。这无疑会导致依赖更强顺序的程序意外地在更弱的平台上崩溃。，如果由于竞争窗口很小, acquire/release和结果一致的原子之间的差异在实践中很难观察到，这甚至可能发生在单个架构上。</p>
+<p>这两种考虑都强烈建议我们应该采用顺序一致的原子而不是acquire/release原子:顺序一致的原子更有用，一些芯片已经完全缩小了这两个级别之间的差距。如果差距很大，想必其他人也会这么做。</p>
+<p>同样的考虑，以及Go拥有小型、易于理解的API的总体哲学，所有这一切都反对将acuqire/release作为一套额外的并行API来提供。似乎最好只提供最容易理解的，最有用的，很难被误用的原子操作。</p>
+<p>另一种可能性是提供原始屏障，而不是原子操作(当然，C++两者都提供)。屏障的缺点是使期望变得不那么清晰，并且在某种程度上更加局限于特定的体系结构。Hans Boehm文章<a href="http://www.hboehm.info/c++mm/ordering_integrated.html" target="_blank" rel="external">“Why atomics have integrated ordering constraints”</a>给出了提供原子而不是屏障的论点(他使用术语栅栏fence)。一般来说，原子比栅栏更容易理解，而且由于我们现在已经提供了原子操作，所以我们不能轻易移除它们。一个机制要比提供两个好。</p>
+<h3 id="可能的改变：_为sync/atomic提供类型化的API">可能的改变： 为sync/atomic提供类型化的API</h3>
+<p>上面的定义说，当一个特定的内存块必须由多个线程同时访问而没有其他同步时，消除争用的唯一方法是让所有的访问都使用原子。仅仅让一些访问使用原子是不够的。例如，与原子读或写并发的非原子写仍然是s数据竞争，与非原子读或写并发的原子写也是数据竞争。</p>
+<p>因此，一个特定的值是否应该用atomic访问是该值的属性，而不是特定的访问。正因为如此，大多数语言将这些信息放在类型系统中，比如Java的volatile int和C++的atomic<int>。Go当前的API没有，这意味着正确的使用需要仔细标注结构或全局变量的哪些字段预计只能使用原子API来访问。</int></p>
+<blockquote>
+<p>译者按: uber提供了类似的库<a href="https://github.com/uber-go/atomic" target="_blank" rel="external">uber-go/atomic</a>。</p>
+</blockquote>
+<p>为了提高程序的正确性，我开始认为Go应该定义一组类型化的原子值，类似于当前的原子值。值:Bool、Int、Uint、Int32、Uint32、Int64、Uint64和Uintptr。像Value一样，它们也有CompareAndSwap、Load、Store和Swap方法。例如:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> Int32 <span class="keyword">struct</span> { v <span class="typename">int32</span> }</div><div class="line"></div><div class="line"><span class="keyword">func</span> (i *Int32) Add(delta <span class="typename">int32</span>) <span class="typename">int32</span> {</div><div class="line">	<span class="keyword">return</span> AddInt32(&i.v, delta)</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> (i *Int32) CompareAndSwap(old, <span class="built_in">new</span> <span class="typename">int32</span>) (swapped <span class="typename">bool</span>) {</div><div class="line">	<span class="keyword">return</span> CompareAndSwapInt32(&i.v, old, <span class="built_in">new</span>)</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> (i *Int32) Load() <span class="typename">int32</span> {</div><div class="line">	<span class="keyword">return</span> LoadInt32(&i.v)</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> (i *Int32) Store(v <span class="typename">int32</span>) {</div><div class="line">	<span class="keyword">return</span> StoreInt32(&i.v, v)</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> (i *Int32) Swap(<span class="built_in">new</span> <span class="typename">int32</span>) (old <span class="typename">int32</span>) {</div><div class="line">	<span class="keyword">return</span> SwapInt32(&i.v, <span class="built_in">new</span>)</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>我将Bool包括在列表中，因为我们在Go标准库中多次用原子整数构造了原子Bool(在未暴露的API中)。显然是有需要的。</p>
+<p>我们还可以利用即将到来的泛型支持，并为原子指针定义一个API，该API是类型化的，并且在其API中没有包不安全:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> Pointer[T any] <span class="keyword">struct</span> { v *T }</div><div class="line"></div><div class="line"><span class="keyword">func</span> (p *Pointer[T]) CompareAndSwap(old, <span class="built_in">new</span> *T) (swapped <span class="typename">bool</span>) {</div><div class="line">	<span class="keyword">return</span> CompareAndSwapPointer(... lots of unsafe ...)</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>(以此类推),你可能会想到不能使用泛型定义一个类型吗？我没有看到一个干净的方法使用泛型来实现atomic.Atomic[T]，避免我们引入Bool、Int等作为单独的类型。走走看吧。</p>
+<h3 id="可能的改变:_增加非同步的atomic">可能的改变: 增加非同步的atomic</h3>
+<p>所有其他现代编程语言都提供了一种方法来进行并发内存读写，这种方法不会使程序同步，但也不会使程序无效(不会算作数据竞争)。C、C++、Rust和Swift都有relaxed原子。Java有VarHandle的“普通”模式。JavaScript对共享内存缓冲区(唯一的共享内存)有非原子的访问权限。Go没有办法做到这一点。或许应该有，我不知道。</p>
+<p>如果我们想添加非同步的原子读写，我们可以向类型化的原子添加UnsyncAdd、UnsyncCompareAndSwap、UnsyncLoad、UnsyncStore和 UnsyncSwap方法。将它们命名为“unsync”避免了一些“relaxed”名称的问题。首先，有些人用relaxed作为相对的比较，如“acquire/release是比顺序一致性更宽松的内存顺序。”你可以说这不是这个术语的恰当用法，但它确实发生了。其次，也是更重要的，这些操作的关键细节不是操作本身的内存排序，而是它们对程序其余部分的同步没有影响。对于不是内存模型专家的人来说，看到UnsyncLoad应该清楚没有同步，而RelaxedLoad可能不会。在人群中喵一眼Unsync也知道它是不安全的。</p>
+<p>有了API，真正的问题是到底要不要添加这些。对提供非同步原子的争论是，它确实对某些数据结构中快速路径的性能有影响。我的总体印象是，它在非x86架构上最重要，尽管我没有数据来支持这一点。不提供不同步的原子可以被认为是对那些架构的惩罚。</p>
+<p>反对提供非同步原子的一个可能的争论是，在x86上，忽略了潜在的编译器重组的影响，非同步原子与acquire/release原子是无法区分的。因此，他们可能会被滥用来编写只适用于x86的代码。反驳的理由是，这样的花招不会通过race检测器，它实现的是实际的内存模型，而不是x86内存模型。</p>
+<p>由于缺乏证据，我们没有理由添加这个API。如果有人强烈认为我们应该添加它，那么证明这一点的方法是收集两方面的证据:(1)程序员需要编写的代码的普遍适用性，以及(2)使用非同步原子对广泛使用的系统产生的显著性能改进。(使用Go以外的语言的程序来显示这一点是很好的。)</p>
+<h3 id="文档化对编译器优化的禁止项">文档化对编译器优化的禁止项</h3>
+<p>当前的内存模型最后给出了无效程序的例子。由于内存模型是程序员和编译器作者之间的契约，我们应该添加无效编译器优化的例子。例如，我们可以添加:</p>
+<h4 id="不正确的编译">不正确的编译</h4>
+<p>Go内存模型和Go程序一样限制编译器优化。一些在单线程程序中有效的编译器优化在Go程序中是无效。特别是，编译器不能在无竞争程序中引入数据竞争。它不能允许单次读取观察到多个值。并且它不能允许一个写操作写入多个值。</p>
+<p>Not introducing data races into race-free programs means not moving reads or writes out of conditional statements in which they appear. For example, a compiler must not invert the conditional in this program:</p>
+<p>不在无竞争程序中引入数据竞争意味着不移动出现条件语句的读或写。例如，编译器不得反转该程序中的条件:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line">i :=<span class="number"> 0</span></div><div class="line"><span class="keyword">if</span> cond {</div><div class="line">	i = *p</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>也就是说，编译器不能将程序重写为这个:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line">i := *p</div><div class="line"><span class="keyword">if</span> !cond {</div><div class="line">	i =<span class="number"> 0</span></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>如果cond为false，另一个goroutine正在写*p，那么原始程序是无竞争的，但是重写的程序包含竞争。</p>
+<p>不引入数据竞争也意味着不假设循环终止。例如，在这个程序中，编译器不能将对<em>p或</em>q访问移动到循环前面:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div></pre></td><td class="code"><pre><div class="line">n :=<span class="number"> 0</span></div><div class="line"><span class="keyword">for</span> e := list; e != <span class="constant">nil</span>; e = e.next {</div><div class="line">	n++</div><div class="line">}</div><div class="line">i := *p</div><div class="line">*q =<span class="number"> 1</span></div></pre></td></tr></table></figure>
+
+<p>如果列表指向循环列表，那么原始程序永远不会访问<em>p或</em>q，但是重写的程序会。</p>
+<p>不引入数据竞争也意味着不假设被调用的函数总是返回或者没有同步操作。例如，在这个程序中，编译器不能移动对<em>p或</em>q访问到函数调用之前:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line">f()</div><div class="line">i := *p</div><div class="line">*q =<span class="number"> 1</span></div></pre></td></tr></table></figure>
+
+<p>如果调用从未返回，那么原始程序将不会再访问<em>p或</em>q，但是重写的程序会。如果调用包含同步操作，那么原始程序可以建立f和<em>p/</em>q的happen before关系，但是重写的程序就破坏了这个关系。</p>
+<p>不允许单次读取观察多个值,意味着不从共享内存中重新加载局部变量。例如，在这个程序中，编译器不能扔掉(spill)i,并重新加载它:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div></pre></td><td class="code"><pre><div class="line">i := *p</div><div class="line"><span class="keyword">if</span> i &lt;<span class="number"> 0</span> || i &gt;= <span class="built_in">len</span>(funcs) {</div><div class="line">	<span class="built_in">panic</span>(<span class="string">"invalid function index"</span>)</div><div class="line">}</div><div class="line">... <span class="built_in">complex</span> code ...</div><div class="line"><span class="comment">// compiler must NOT reload i = *p here</span></div><div class="line">funcs[i]()</div></pre></td></tr></table></figure>
+
+<p>如果复杂的代码需要许多寄存器，单线程程序的编译器可以在不保存副本的情况下丢弃i，然后在funcs<a href="">i</a>之前重新加载i = <em>p。Go编译器不能，因为</em>p的值可能已经更改。(相反，编译器可能会将i移动到栈上)。</p>
+<p>不允许一次写操作写入多个值也意味着不使用在写入之前将本地变量作为临时存储写入的内存。例如，编译器不得在此程序中使用*p作为临时存储:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">*p = i + *p<span class="number">/2</span></div></pre></td></tr></table></figure>
+
+<p>也就是说，它绝不能把程序改写成这样:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div></pre></td><td class="code"><pre><div class="line">*p /=<span class="number"> 2</span></div><div class="line">*p += i</div></pre></td></tr></table></figure>
+
+<p>如果i和<em>p开始等于2，则原始代码最终</em>p = 3，但是一个竞争线程只能从<em>p读取2或3。重写后的代码最终</em>p = 1，然后*p = 3，这也允许竞争线程读取1。</p>
+<p>请注意，所有这些优化在C/C++编译器中都是允许的:与C/C++编译器共享后端的Go编译器必须注意禁用对Go无效的优化。</p>
+<p>这些分类和示例涵盖了最常见的C/C++编译器优化，这些优化与为竞争数据访问定义的语义不兼容。他们明确规定Go和C/C++有不同的要求。</p>
+<h2 id="结论">结论</h2>
+<p>Go在其内存模型中保守的方法很好地服务了我们，应该继续下去。然而，有一些早该做的更改，包括定义sync和sync/package package中新API的同步行为。特别是atomic的内存模型应该被文档化，其以提供顺序一致的行为，这种行为创建了与它们左右的非原子代码同步的happen before关系。这与所有其他现代系统语言提供的默认原子相匹配。</p>
+<p>也许更新中最独特的部分是清楚地声明具有数据竞争的程序可能会被停止以报告竞争，但是在其他方面具有明确定义的语义。这约束了程序员和编译器，它优先考虑并发程序的可调试性和正确性，而不是编译器编写者的便利性。</p>
+<h2 id="感谢">感谢</h2>
+<p>这一系列的帖子从我有幸在谷歌工作的一长串工程师的讨论和反馈中受益匪浅。我感谢他们。我对任何错误或不受欢迎的意见负全部责任。</p>
+
+      
+    </div>
+    <footer class="article-footer">
+      
+
+      
+      <!-- <link rel="stylesheet" href="https://unpkg.com/gitalk/dist/gitalk.css">
+      <script src="https://unpkg.com/gitalk/dist/gitalk.min.js"></script> -->
+      <section id="comments">
+        <script src="https://utteranc.es/client.js"
+                repo="smallnest/gitalk"
+                issue-term="title"
+                theme="github-light"
+                crossorigin="anonymous"
+                async>
+        </script>
+        <!-- <div id="gitalk-container"></div>
+        <script type="text/javascript">
+          var gitalkOpts = {
+            id: '2021/07/13/Updating-the-Go-Memory-Model/',
+            owner: 'smallnest',
+            repo: 'gitalk',
+            title: '[译]更新Go内存模型',
+            body: 'https://colobu.com/2021/07/13/Updating-the-Go-Memory-Model/',
+            clientID: 'bc02724130ed5b7ee275',
+            clientSecret: '68cb0bae2f93a8b88b09e0eb9b08c844b06a9047',
+            admin: ['smallnest'],
+            distractionFreeMode: false
+          };
+
+          const gitalk = new Gitalk(gitalkOpts)
+          gitalk.render('gitalk-container')
+        </script> -->
+        <noscript> 为正常使用评论功能请激活JavaScript</noscript>
+      </section>
+
+      
+
+    </footer>
+  </div>
+  
+  
+<nav id="article-nav">
+  
+    <a href="/2021/08/01/benchmark-of-rpc-frameworks/" id="article-nav-newer" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">Newer</strong>
+      <div class="article-nav-title">
+        
+          2021年Go生态圈rpc框架benchmark
+        
+      </div>
+    </a>
+  
+  
+    <a href="/2021/07/11/Programming-Language-Memory-Models/" id="article-nav-older" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">Older</strong>
+      <div class="article-nav-title">[译]编程语言内存模型</div>
+    </a>
+  
+</nav>
+
+  
+</article></section>
+        
+          <aside id="sidebar">
+  
+      <div class="widget-wrap">
+    <h3 class="widget-title">原创图书</h3>
+    <div class="widget">
+      <a href="/ScalaCollectionsCookbook/">
+        <img width="100%" src="/ScalaCollectionsCookbook/scala_collections_cookbook.jpg">
+        <img width="100%" src="/ScalaCollectionsCookbook/scala_collections_cookbook_tw.png">
+      </a>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">分类</h3>
+    <div class="widget">
+      <ul class="category-list"><li class="category-list-item"><a class="category-list-link" href="/categories/Android/">Android</a><span class="category-list-count">12</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/C/">C++</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/DOTNET/">DOTNET</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Docker/">Docker</a><span class="category-list-count">5</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Go/">Go</a><span class="category-list-count">175</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Java/">Java</a><span class="category-list-count">64</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Linux/">Linux</a><span class="category-list-count">7</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Rust/">Rust</a><span class="category-list-count">12</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Scala/">Scala</a><span class="category-list-count">18</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/分享/">分享</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/前端开发/">前端开发</a><span class="category-list-count">18</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/区块链/">区块链</a><span class="category-list-count">8</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/大数据/">大数据</a><span class="category-list-count">60</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/工具/">工具</a><span class="category-list-count">28</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/数据库/">数据库</a><span class="category-list-count">3</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/架构/">架构</a><span class="category-list-count">26</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/算法/">算法</a><span class="category-list-count">4</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/管理/">管理</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/网络编程/">网络编程</a><span class="category-list-count">13</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/读书笔记/">读书笔记</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/运维/">运维</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/高并发编程/">高并发编程</a><span class="category-list-count">20</span></li></ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">标签云</h3>
+    <div class="widget tagcloud">
+      <a href="/tags/Android/" style="font-size: 15.71px;">Android</a><a href="/tags/ApacheBench/" style="font-size: 11.43px;">ApacheBench</a><a href="/tags/Bower/" style="font-size: 10.00px;">Bower</a><a href="/tags/C/" style="font-size: 10.00px;">C#</a><a href="/tags/CDN/" style="font-size: 10.00px;">CDN</a><a href="/tags/CQRS/" style="font-size: 10.00px;">CQRS</a><a href="/tags/CRC/" style="font-size: 10.00px;">CRC</a><a href="/tags/CSS/" style="font-size: 11.43px;">CSS</a><a href="/tags/CompletableFuture/" style="font-size: 10.00px;">CompletableFuture</a><a href="/tags/Comsat/" style="font-size: 10.00px;">Comsat</a><a href="/tags/Curator/" style="font-size: 18.57px;">Curator</a><a href="/tags/DSL/" style="font-size: 10.00px;">DSL</a><a href="/tags/Disruptor/" style="font-size: 10.00px;">Disruptor</a><a href="/tags/Docker/" style="font-size: 11.43px;">Docker</a><a href="/tags/Ember/" style="font-size: 11.43px;">Ember</a><a href="/tags/FastJson/" style="font-size: 10.00px;">FastJson</a><a href="/tags/Fiber/" style="font-size: 10.00px;">Fiber</a><a href="/tags/GAE/" style="font-size: 10.00px;">GAE</a><a href="/tags/GC/" style="font-size: 12.86px;">GC</a><a href="/tags/Gnuplot/" style="font-size: 10.00px;">Gnuplot</a><a href="/tags/Go/" style="font-size: 14.29px;">Go</a><a href="/tags/Gradle/" style="font-size: 10.00px;">Gradle</a><a href="/tags/Grunt/" style="font-size: 10.00px;">Grunt</a><a href="/tags/Gulp/" style="font-size: 10.00px;">Gulp</a><a href="/tags/Hadoop/" style="font-size: 10.00px;">Hadoop</a><a href="/tags/Hazelcast/" style="font-size: 10.00px;">Hazelcast</a><a href="/tags/IPFS/" style="font-size: 10.00px;">IPFS</a><a href="/tags/Ignite/" style="font-size: 10.00px;">Ignite</a><a href="/tags/JVM/" style="font-size: 10.00px;">JVM</a><a href="/tags/Java/" style="font-size: 17.14px;">Java</a><a href="/tags/Kafka/" style="font-size: 20.00px;">Kafka</a><a href="/tags/Lambda/" style="font-size: 14.29px;">Lambda</a><a href="/tags/Linux/" style="font-size: 12.86px;">Linux</a><a href="/tags/LongAdder/" style="font-size: 10.00px;">LongAdder</a><a href="/tags/MathJax/" style="font-size: 10.00px;">MathJax</a><a href="/tags/Maven/" style="font-size: 11.43px;">Maven</a><a href="/tags/Memcached/" style="font-size: 10.00px;">Memcached</a><a href="/tags/Metrics/" style="font-size: 10.00px;">Metrics</a><a href="/tags/Mongo/" style="font-size: 12.86px;">Mongo</a><a href="/tags/Netty/" style="font-size: 15.71px;">Netty</a>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">归档</h3>
+    <div class="widget">
+      <ul class="archive-list"><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/10/">October 2021</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/08/">August 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/07/">July 2021</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/06/">June 2021</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/05/">May 2021</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/04/">April 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/03/">March 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/02/">February 2021</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/01/">January 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/12/">December 2020</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/11/">November 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/09/">September 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/08/">August 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/07/">July 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/06/">June 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/05/">May 2020</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/04/">April 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/03/">March 2020</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/02/">February 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/01/">January 2020</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/12/">December 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/11/">November 2019</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/10/">October 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/09/">September 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/08/">August 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/07/">July 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/06/">June 2019</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/05/">May 2019</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/04/">April 2019</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/03/">March 2019</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/02/">February 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/01/">January 2019</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/12/">December 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/11/">November 2018</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/10/">October 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/09/">September 2018</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/08/">August 2018</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/07/">July 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/06/">June 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/05/">May 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/04/">April 2018</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/03/">March 2018</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/02/">February 2018</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/01/">January 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/12/">December 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/11/">November 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/10/">October 2017</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/09/">September 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/08/">August 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/07/">July 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/06/">June 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/05/">May 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/04/">April 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/03/">March 2017</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/02/">February 2017</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/01/">January 2017</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/12/">December 2016</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/11/">November 2016</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/10/">October 2016</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/09/">September 2016</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/08/">August 2016</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/07/">July 2016</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/06/">June 2016</a><span class="archive-list-count">14</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/05/">May 2016</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/04/">April 2016</a><span class="archive-list-count">14</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/03/">March 2016</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/02/">February 2016</a><span class="archive-list-count">8</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/01/">January 2016</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/12/">December 2015</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/11/">November 2015</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/10/">October 2015</a><span class="archive-list-count">9</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/09/">September 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/08/">August 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/07/">July 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/06/">June 2015</a><span class="archive-list-count">8</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/05/">May 2015</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/04/">April 2015</a><span class="archive-list-count">15</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/03/">March 2015</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/02/">February 2015</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/01/">January 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/12/">December 2014</a><span class="archive-list-count">28</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/11/">November 2014</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/10/">October 2014</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/09/">September 2014</a><span class="archive-list-count">28</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/08/">August 2014</a><span class="archive-list-count">19</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/07/">July 2014</a><span class="archive-list-count">1</span></li></ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">近期文章</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+            <a href="/2021/10/06/replace-implementations-in-go-std-libs-at-runtime/">强制更改Go标准库的实现</a>
+          </li>
+        
+          <li>
+            <a href="/2021/08/30/how-is-go-generic-implemented/">Go泛型是怎么实现的?</a>
+          </li>
+        
+          <li>
+            <a href="/2021/08/01/benchmark-of-rpc-frameworks/">2021年Go生态圈rpc框架benchmark</a>
+          </li>
+        
+          <li>
+            <a href="/2021/07/13/Updating-the-Go-Memory-Model/">[译]更新Go内存模型</a>
+          </li>
+        
+          <li>
+            <a href="/2021/07/11/Programming-Language-Memory-Models/">[译]编程语言内存模型</a>
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">友情链接</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+			 
+            <a href="http://stackshare.io" target="_blank">技术栈</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://toutiao.io/" target="_blank">开发者头条</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://weekly.manong.io/issues/" target="_blank">码农周刊</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.tuicool.com/mags" target="_blank">编程狂人周刊</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.importnew.com/" target="_blank">importnew</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://ifeve.com/" target="_blank">并发编程网</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://github.com" target="_blank">github</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://stackoverflow.com/" target="_blank">stackoverflow</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.javacodegeeks.com/" target="_blank">javacodegeeks</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.infoq.com/" target="_blank">infoq</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.dzone.com/links/index.html" target="_blank">dzone</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://oj.leetcode.com/problems/" target="_blank">leetcode</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://tutorials.jenkov.com" target="_blank">jenkov</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://howtodoinjava.com" target="_blank">HowToDoInJava</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://java-design-patterns.com/patterns/" target="_blank">java design patterns</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://medium.com/netflix-techblog" target="_blank">Netflix技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://www.techiedelight.com" target="_blank">Techie Delight</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://engineering.linkedin.com/blog" target="_blank">Linkedin技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://blogs.dropbox.com/tech/" target="_blank">Dropbox技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://code.fb.com" target="_blank">Facebook技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://jm.taobao.org" target="_blank">淘宝中间件团队</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://tech.meituan.com" target="_blank">美团技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://blogs.360.cn" target="_blank">360技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://xiaomi-info.github.io" target="_blank">小米信息部技术团队</a>
+			
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+      
+
+  
+</aside>
+        
+      </div>
+      <footer id="footer">
+  
+  <div class="outer">
+    <div id="footer-info" class="inner">
+      &copy; 2021 smallnest<br>
+	  Powered by <a href="http://hexo.io/" target="_blank">Hexo</a>
+    </div>
+  </div>
+</footer>
+    </div>
+    <nav id="mobile-nav">
+  
+    
+      <a href="/" class="mobile-nav-link"><i class="fa fa-home">&nbsp;</i>首页</a>
+    
+  
+    
+      <a href="/archives" class="mobile-nav-link"><i class="fa fa-folder-o">&nbsp;</i>归档</a>
+    
+  
+    
+      <a href="https://github.com/smallnest" class="mobile-nav-link"><i class="fa fa-github">&nbsp;</i>github</a>
+    
+  
+    
+      <a class="mobile-nav-link" href="#"><i class="fa fa-bars">&nbsp;</i>网站群</a>
+    
+      
+            <a class="mobile-nav-link" href="/goasm">&nbsp;&nbsp;<i class="fa fa-language">&nbsp;</i>Go汇编示例</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="https://gowebexamples.com">&nbsp;&nbsp;<i class="fa fa-external-link">&nbsp;</i>Go Web开发示例</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://go-database-sql.org">&nbsp;&nbsp;<i class="fa fa-external-link">&nbsp;</i>Go 数据库开发教程</a>
+          
+          
+    
+      
+            
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://rpcx.io">&nbsp;&nbsp;<i class="fa undefined">&nbsp;</i>RPCX官网</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://cn.doc.rpcx.io">&nbsp;&nbsp;<i class="fa undefined">&nbsp;</i>RPC开发指南</a>
+          
+          
+    
+    
+  
+    
+      <a href="/ScalaCollectionsCookbook" class="mobile-nav-link"><i class="fa fa-book">&nbsp;</i>Scala集合技术手册</a>
+    
+  
+    
+      <a href="/about" class="mobile-nav-link"><i class="fa fa-lemon-o">&nbsp;</i>关于</a>
+    
+  
+</nav>
+    
+<script src="//cdn.staticfile.org/jquery/1.11.1/jquery.min.js"></script>
+<script src="//cdn.bootcss.com/jquery.lazyload/1.9.1/jquery.lazyload.min.js"></script>
+
+<script src="//cdnjs.cloudflare.com/ajax/libs/fancybox/3.2.5/jquery.fancybox.min.js"></script>
+
+
+<script src="/js/script.js" type="text/javascript"></script>
+
+<!-- mathjax config similar to math.stackexchange -->
+<script type="text/x-mathjax-config">
+  MathJax.Hub.Config({
+    tex2jax: {
+      inlineMath: [ ['$','$'], ["\\(","\\)"] ],
+      processEscapes: true,
+      skipTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code']
+    }
+  });
+  MathJax.Hub.Queue(function() {
+      var all = MathJax.Hub.getAllJax(), i;
+      for(i=0; i < all.length; i += 1) {
+        all[i].SourceElement().parentNode.className += ' has-jax';
+      }
+  });
+</script>
+<script type="text/javascript" src="//cdn.bootcss.com/mathjax/2.6.0-beta.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML">
+</script>
+
+<div id="totop" style="position:fixed;bottom:150px;right:10px;cursor: pointer;z-index: 2000;">
+	<a title="返回顶部"><img src="/images/scrollup.png"/></a>
+</div>
+<script src="/js/totop.js" type="text/javascript"></script>
+
+
+
+
+<script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "//hm.baidu.com/hm.js?e085d87993250aab11f3e0c15f1c2785";
+  var s = document.getElementsByTagName("script")[0]; 
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+
+
+  </div>
+</body>
+</html>

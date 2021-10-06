@@ -1,0 +1,658 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset="utf-8">
+  
+  <title>cacheline 对 Go 程序的影响</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+  <meta name="description" content="首先来了解一下来自维基百科上关于CPU缓存的介绍。
+
+在计算机系统中，CPU高速缓存（英语：CPU Cache，在本文中简称缓存）是用于减少处理器访问内存所需平均时间的部件。在金字塔式存储体系中它位于自顶向下的第二层，仅次于CPU寄存器。其容量远小于内存，但速度却可以接近处理器的频率。
+当处理器发出内存访问请求时，会先查看缓存内是否有请求数据。如果存在（命中），则不经访问内存直接返回该数据；如果不">
+<meta property="og:type" content="article">
+<meta property="og:title" content="cacheline 对 Go 程序的影响">
+<meta property="og:url" content="https://colobu.com/2019/01/24/cacheline-affects-performance-in-go/">
+<meta property="og:site_name" content="鸟窝">
+<meta property="og:description" content="首先来了解一下来自维基百科上关于CPU缓存的介绍。
+
+在计算机系统中，CPU高速缓存（英语：CPU Cache，在本文中简称缓存）是用于减少处理器访问内存所需平均时间的部件。在金字塔式存储体系中它位于自顶向下的第二层，仅次于CPU寄存器。其容量远小于内存，但速度却可以接近处理器的频率。
+当处理器发出内存访问请求时，会先查看缓存内是否有请求数据。如果存在（命中），则不经访问内存直接返回该数据；如果不">
+<meta property="og:image" content="cpu_cache.png">
+<meta property="og:image" content="cacheline.png">
+<meta property="og:image" content="programming-latency-numbers.jpg">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="cacheline 对 Go 程序的影响">
+<meta name="twitter:description" content="首先来了解一下来自维基百科上关于CPU缓存的介绍。
+
+在计算机系统中，CPU高速缓存（英语：CPU Cache，在本文中简称缓存）是用于减少处理器访问内存所需平均时间的部件。在金字塔式存储体系中它位于自顶向下的第二层，仅次于CPU寄存器。其容量远小于内存，但速度却可以接近处理器的频率。
+当处理器发出内存访问请求时，会先查看缓存内是否有请求数据。如果存在（命中），则不经访问内存直接返回该数据；如果不">
+
+  
+  <link rel="alternative" href="/atom.xml" title="鸟窝" type="application/atom+xml">
+  
+  
+  <link rel="icon" href="/favicon.png">
+  
+  <link rel="stylesheet" href="/css/style.css" type="text/css">
+
+  <link href="//cdn.staticfile.org/font-awesome/4.2.0/css/font-awesome.css" rel="stylesheet">
+  
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/fancybox/2.1.7/css/jquery.fancybox.min.css"
+    media="screen" type="text/css">
+  
+  <link rel="stylesheet" href="//cdnjs.cloudflare.com/ajax/libs/animate.css/3.1.1/animate.min.css" media="screen"
+    type="text/css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/tonsky/FiraCode@1.207/distr/fira_code.css">
+</head>
+<body>
+  <div id="container">
+    <div id="wrap">
+      <header id="header">
+  <div id="banner"></div>
+  <div id="header-outer" class="outer">
+    <div id="header-title" class="inner">
+      <h1 id="logo-wrap" class="animated bounceInLeft">
+        <a href="/" id="logo">鸟窝</a>
+      </h1>
+      
+        <h2 id="subtitle-wrap" class="animated bounceInLeft">
+          <a href="/" id="subtitle">大道至简 Simplicity is the ultimate form of sophistication</a>
+        </h2>
+      
+    </div>
+    <div id="header-inner" class="inner">
+      <nav id="main-nav">
+        <a id="main-nav-toggle" class="nav-icon"></a>
+        
+          
+            <a class="main-nav-link" href="/"><i class="fa fa-home">&nbsp;</i>首页</a>
+          
+          
+          
+            <a class="main-nav-link" href="/archives"><i class="fa fa-folder-o">&nbsp;</i>归档</a>
+          
+          
+          
+            <a class="main-nav-link" href="https://github.com/smallnest"><i class="fa fa-github">&nbsp;</i>github</a>
+          
+          
+          
+            <div class="dropdown main-nav-link"><a class="main-nav-link" href="#"><i class="fa fa-bars">&nbsp;</i>网站群</a>
+              <div class="dropdown-content">
+          
+            
+              <a href="/goasm"><i class="fa fa-language"></i>&nbsp;Go汇编示例</a>
+            
+                
+          
+            
+              <a href="https://gowebexamples.com"><i class="fa fa-external-link"></i>&nbsp;Go Web开发示例</a>
+            
+                
+          
+            
+              <a href="http://go-database-sql.org"><i class="fa fa-external-link"></i>&nbsp;Go 数据库开发教程</a>
+            
+                
+          
+            
+              <hr>
+            
+                
+          
+            
+              <a href="http://rpcx.io"><i class="fa undefined"></i>&nbsp;RPCX官网</a>
+            
+                
+          
+            
+              <a href="http://cn.doc.rpcx.io"><i class="fa undefined"></i>&nbsp;RPC开发指南</a>
+            
+                
+          
+          </div>
+        </div>
+          
+          
+          
+            <a class="main-nav-link" href="/ScalaCollectionsCookbook"><i class="fa fa-book">&nbsp;</i>Scala集合技术手册</a>
+          
+          
+          
+            <a class="main-nav-link" href="/about"><i class="fa fa-lemon-o">&nbsp;</i>关于</a>
+          
+          
+
+
+      </nav>
+      <nav id="sub-nav">
+        
+          <a id="nav-rss-link" class="nav-icon" href="/atom.xml" title="RSS Feed"></a>
+        
+        <a id="nav-search-btn" class="nav-icon" title="Search"></a>
+      </nav>
+      <div id="search-form-wrap">
+        <form action="http://www.baidu.com/baidu" method="get" accept-charset="utf-8" class="search-form">
+          <input type="search" name="word" maxlength="20" class="search-form-input" placeholder="Search">
+          <input type="submit" value="" class="search-form-submit">
+          <input name=tn type=hidden value="bds">
+          <input name=cl type=hidden value="3">
+          <input name=ct type=hidden value="2097152">
+          <input type="hidden" name="si" value="colobu.com">
+        </form>
+      </div>
+    </div>
+  </div>
+</header>
+      <div class="outer">
+        <section id="main"><script>function show_answer(btn, x) { if (btn.value === "显示答案") { btn.value = "隐藏答案" } else { btn.value = "显示答案" } var as = document.getElementById(x); if (as.style.display === "none") { as.style.display = "block" } else { as.style.display = "none" } }</script>
+
+<article id="post-cacheline-affects-performance-in-go" class="article article-type-post" itemscope
+  itemprop="blogPost">
+  <div class="article-meta">
+    <a href="/2019/01/24/cacheline-affects-performance-in-go/" class="article-date">
+  <time datetime="2019-01-24T09:13:44.000Z" itemprop="datePublished">2019年01月24日</time>
+</a>
+    
+  <div class="article-category">
+    <a class="article-category-link" href="/categories/Go/">Go</a>
+  </div>
+
+    
+  <div class="article-author"> by smallnest</div>
+
+  </div>
+  <div class="article-inner">
+    
+    
+    <header class="article-header">
+      
+  
+    <h1 class="article-title" itemprop="name">
+      cacheline 对 Go 程序的影响
+	  
+    </h1>
+  
+
+    </header>
+    
+    <div class="article-entry" itemprop="articleBody">
+      
+      
+      
+      <p>首先来了解一下来自维基百科上关于CPU缓存的介绍。</p>
+<blockquote>
+<p>在计算机系统中，CPU高速缓存（英语：CPU Cache，在本文中简称缓存）是用于减少处理器访问内存所需平均时间的部件。在金字塔式存储体系中它位于自顶向下的第二层，仅次于CPU寄存器。其容量远小于内存，但速度却可以接近处理器的频率。</p>
+<p>当处理器发出内存访问请求时，会先查看缓存内是否有请求数据。如果存在（命中），则不经访问内存直接返回该数据；如果不存在（失效），则要先把内存中的相应数据载入缓存，再将其返回处理器。<br>缓存之所以有效，主要是因为程序运行时对内存的访问呈现局部性（Locality）特征。这种局部性既包括空间局部性（Spatial Locality），也包括时间局部性（Temporal Locality）。有效利用这种局部性，缓存可以达到极高的命中率。<br>在处理器看来，缓存是一个透明部件。因此，程序员通常无法直接干预对缓存的操作。但是，确实可以根据缓存的特点对程序代码实施特定优化，从而更好地利用缓存。</p>
+<p>结构上，一个直接映射（Direct Mapped）缓存由若干缓存块（Cache Block，或Cache Line）构成。每个缓存块存储具有连续内存地址的若干个存储单元。在32位计算机上这通常是一个双字（dword），即四个字节。因此，每个双字具有唯一的块内偏移量。每个缓存块还可对应若干标志位，包括有效位（valid bit）、脏位（dirty bit）、使用位（use bit）等。这些位在保证正确性、排除冲突、优化性能等方面起着重要作用。</p>
+<p><img src="cpu_cache.png" alt="来自维基百科"></p>
+<p>Intel的x86架构CPU从386开始引入使用SRAM技术的主板缓存，大小从16KB到64KB不等。486引入两级缓存。其中8KBL1缓存和CPU同片，而L2缓存仍然位于主板上，大小可达268KB。将二级缓存置于主板上在此后十余年间一直设计主流。但是由于SDRAM技术的引入，以及CPU主频和主板总线频率的差异不断拉大，主板缓存在速度上的对内存优势不断缩水。因此，从Pentium Pro起，二级缓存开始和处理器一起封装，频率亦与CPU相同（称为全速二级缓存）或为CPU主频的一半（称为半速二级缓存）。<br>AMD则从K6-III开始引入三级缓存。基于Socket 7接口的K6-III拥有64KB和256KB的同片封装两级缓存，以及可达2MB的三级主板缓存。<br>今天的CPU将三级缓存全部集成到CPU芯片上。多核CPU通常为每个核配有独享的一级和二级缓存，以及各核之间共享的三级缓存。</p>
+</blockquote>
+<a id="more"></a>
+<p>当从内存中取单元到cache中时，会一次取一个cacheline大小的内存区域到cache中，然后存进相应的cacheline中, 所以当你读取一个变量的时候，可能会把它相邻的变量也读取到CPU的缓存中(如果正好在一个cacheline中)，因为有很大的几率你回继续访问相邻的变量，这样CPU利用缓存就可以加速对内存的访问。</p>
+<p>在多核的情况下，如果两个CPU同时访问某个变量，可能两个CPU都会把变量以及相邻的变量都读入到自己的缓存中：</p>
+<p><img src="cacheline.png" alt="图片来自 genchilu"></p>
+<p>这会带来一个问题：当第一个CPU更新一个变量a的时候，它会导致第二个CPU读取变量b cachemiss, 即使变量b的值实际并没有变化。因为CPU的最小读取单元是cacheline,所以你可以看作a和b是一个整体，这就是伪共享：**一个核对缓存中的变量的更新会强制其它核也更新变量。</p>
+<p>伪共享带来了性能的损失，因为从CPU缓存中读取变量要比从内存中读取变量快的多, 这里有一个很经典的图：</p>
+<p><img src="programming-latency-numbers.jpg" alt="latency numbers every programmer should know"></p>
+<p>在并发编程中，经常会有共享数据被多个goroutine同时访问， 所以如何有效的进行数据的设计，就是一个相当有技巧的操作。最常用的技巧就是<code>Padding</code>。现在大部分的CPU的cahceline是64字节，将变量补足为64字节可以保证它正好可以填充一个cacheline。</p>
+<p>台湾的<a href="https://github.com/genchilu/concurrencyPractice/tree/master/golang/pad" target="_blank" rel="external">盧俊錡 Genchi Lu</a>提供了一个很好的例子来比较pad和没有padding的性能(我稍微改了一下)。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div><div class="line">35</div><div class="line">36</div><div class="line">37</div><div class="line">38</div><div class="line">39</div><div class="line">40</div><div class="line">41</div><div class="line">42</div><div class="line">43</div><div class="line">44</div><div class="line">45</div><div class="line">46</div><div class="line">47</div><div class="line">48</div><div class="line">49</div><div class="line">50</div><div class="line">51</div><div class="line">52</div><div class="line">53</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> test</div><div class="line"></div><div class="line"><span class="keyword">import</span> (</div><div class="line">	<span class="string">"sync/atomic"</span></div><div class="line">	<span class="string">"testing"</span></div><div class="line">)</div><div class="line"></div><div class="line"><span class="keyword">type</span> NoPad <span class="keyword">struct</span> {</div><div class="line">	a <span class="typename">uint64</span></div><div class="line">	b <span class="typename">uint64</span></div><div class="line">	c <span class="typename">uint64</span></div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> (np *NoPad) Increase() {</div><div class="line">	atomic.AddUint64(&np.a,<span class="number"> 1</span>)</div><div class="line">	atomic.AddUint64(&np.b,<span class="number"> 1</span>)</div><div class="line">	atomic.AddUint64(&np.c,<span class="number"> 1</span>)</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">type</span> Pad <span class="keyword">struct</span> {</div><div class="line">	a   <span class="typename">uint64</span></div><div class="line">	_p1 <span class="number">[8</span>]<span class="typename">uint64</span></div><div class="line">	b   <span class="typename">uint64</span></div><div class="line">	_p2 <span class="number">[8</span>]<span class="typename">uint64</span></div><div class="line">	c   <span class="typename">uint64</span></div><div class="line">	_p3 <span class="number">[8</span>]<span class="typename">uint64</span></div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> (p *Pad) Increase() {</div><div class="line">	atomic.AddUint64(&p.a,<span class="number"> 1</span>)</div><div class="line">	atomic.AddUint64(&p.b,<span class="number"> 1</span>)</div><div class="line">	atomic.AddUint64(&p.c,<span class="number"> 1</span>)</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> BenchmarkPad_Increase(b *testing.B) {</div><div class="line">	pad := &Pad{}</div><div class="line"></div><div class="line">	b.RunParallel(<span class="keyword">func</span>(pb *testing.PB) {</div><div class="line">		<span class="keyword">for</span> pb.Next() {</div><div class="line">			pad.Increase()</div><div class="line">		}</div><div class="line">	})</div><div class="line"></div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> BenchmarkNoPad_Increase(b *testing.B) {</div><div class="line">	nopad := &NoPad{}</div><div class="line">	b.RunParallel(<span class="keyword">func</span>(pb *testing.PB) {</div><div class="line">		<span class="keyword">for</span> pb.Next() {</div><div class="line">			nopad.Increase()</div><div class="line">		}</div><div class="line">	})</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>运行结果:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">go</span> test -gcflags <span class="string">"-N -l"</span> -bench .</div><div class="line">goos: darwin</div><div class="line">goarch: amd64</div><div class="line">BenchmarkPad_Increase<span class="number">-4</span>     <span class="number">	30000000</span>	       <span class="number"> 56.4</span> ns/op</div><div class="line">BenchmarkNoPad_Increase<span class="number">-4</span>   <span class="number">	20000000</span>	       <span class="number"> 91.4</span> ns/op</div></pre></td></tr></table></figure>
+
+<p>可能每次运行的结果不相同，但是基本上Padding后的数据结构要比没有padding的数据结构要好的多。</p>
+<p>Java中知名的高性能的<a href="https://github.com/LMAX-Exchange/disruptor/blob/master/src/main/java/com/lmax/disruptor/RingBuffer.java#L24" target="_blank" rel="external">disruptor库</a>中的设计中也采用了padding的方式避免伪共享。</p>
+<p>你可以使用<a href="https://github.com/intel-go/cpuid" target="_blank" rel="external">intel-go/cpuid</a>获取CPU的cacheline的大小， 官方库<a href="https://github.com/golang/sys/blob/master/cpu/cpu.go" target="_blank" rel="external">x/sys/cpu</a>也提供了一个<code>CacheLinePad</code> struct用来padding,你只需要在你的struct定义的第一行增加<code>_            CacheLinePad</code>这么一行即可：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">var</span> X86 <span class="keyword">struct</span> {</div><div class="line">	_            CacheLinePad</div><div class="line">	HasAES       <span class="typename">bool</span> <span class="comment">// AES hardware implementation (AES NI)</span></div><div class="line">    HasADX       <span class="typename">bool</span> <span class="comment">// Multi-precision add-carry instruction extensions</span></div><div class="line">    ......</div></pre></td></tr></table></figure>
+
+<p>一个完整的<a href="https://play.golang.org/p/hp_MXQWEJvB" target="_blank" rel="external">测试</a>, 相关讨论<a href="https://github.com/golang/go/issues/25203" target="_blank" rel="external">#25203</a>:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div><div class="line">35</div><div class="line">36</div><div class="line">37</div><div class="line">38</div><div class="line">39</div><div class="line">40</div><div class="line">41</div><div class="line">42</div><div class="line">43</div><div class="line">44</div><div class="line">45</div><div class="line">46</div><div class="line">47</div><div class="line">48</div><div class="line">49</div><div class="line">50</div><div class="line">51</div><div class="line">52</div><div class="line">53</div><div class="line">54</div><div class="line">55</div><div class="line">56</div><div class="line">57</div><div class="line">58</div><div class="line">59</div><div class="line">60</div><div class="line">61</div><div class="line">62</div><div class="line">63</div><div class="line">64</div><div class="line">65</div><div class="line">66</div><div class="line">67</div><div class="line">68</div><div class="line">69</div><div class="line">70</div><div class="line">71</div><div class="line">72</div><div class="line">73</div><div class="line">74</div><div class="line">75</div><div class="line">76</div><div class="line">77</div><div class="line">78</div><div class="line">79</div><div class="line">80</div><div class="line">81</div><div class="line">82</div><div class="line">83</div><div class="line">84</div><div class="line">85</div><div class="line">86</div><div class="line">87</div><div class="line">88</div><div class="line">89</div><div class="line">90</div><div class="line">91</div><div class="line">92</div><div class="line">93</div><div class="line">94</div><div class="line">95</div><div class="line">96</div><div class="line">97</div><div class="line">98</div><div class="line">99</div><div class="line">100</div><div class="line">101</div><div class="line">102</div><div class="line">103</div><div class="line">104</div><div class="line">105</div><div class="line">106</div><div class="line">107</div><div class="line">108</div><div class="line">109</div><div class="line">110</div><div class="line">111</div><div class="line">112</div><div class="line">113</div><div class="line">114</div><div class="line">115</div><div class="line">116</div><div class="line">117</div><div class="line">118</div><div class="line">119</div><div class="line">120</div><div class="line">121</div><div class="line">122</div><div class="line">123</div><div class="line">124</div><div class="line">125</div><div class="line">126</div><div class="line">127</div><div class="line">128</div><div class="line">129</div><div class="line">130</div><div class="line">131</div><div class="line">132</div><div class="line">133</div><div class="line">134</div><div class="line">135</div><div class="line">136</div><div class="line">137</div><div class="line">138</div><div class="line">139</div><div class="line">140</div><div class="line">141</div><div class="line">142</div><div class="line">143</div><div class="line">144</div><div class="line">145</div><div class="line">146</div><div class="line">147</div><div class="line">148</div><div class="line">149</div><div class="line">150</div><div class="line">151</div><div class="line">152</div><div class="line">153</div><div class="line">154</div><div class="line">155</div><div class="line">156</div><div class="line">157</div><div class="line">158</div><div class="line">159</div><div class="line">160</div><div class="line">161</div><div class="line">162</div><div class="line">163</div><div class="line">164</div><div class="line">165</div><div class="line">166</div><div class="line">167</div><div class="line">168</div><div class="line">169</div><div class="line">170</div><div class="line">171</div><div class="line">172</div><div class="line">173</div><div class="line">174</div><div class="line">175</div><div class="line">176</div><div class="line">177</div><div class="line">178</div><div class="line">179</div><div class="line">180</div><div class="line">181</div><div class="line">182</div><div class="line">183</div><div class="line">184</div><div class="line">185</div><div class="line">186</div><div class="line">187</div><div class="line">188</div><div class="line">189</div><div class="line">190</div><div class="line">191</div><div class="line">192</div><div class="line">193</div><div class="line">194</div><div class="line">195</div><div class="line">196</div><div class="line">197</div><div class="line">198</div><div class="line">199</div><div class="line">200</div><div class="line">201</div><div class="line">202</div><div class="line">203</div><div class="line">204</div><div class="line">205</div><div class="line">206</div><div class="line">207</div><div class="line">208</div><div class="line">209</div><div class="line">210</div><div class="line">211</div><div class="line">212</div><div class="line">213</div><div class="line">214</div><div class="line">215</div><div class="line">216</div><div class="line">217</div><div class="line">218</div><div class="line">219</div><div class="line">220</div><div class="line">221</div><div class="line">222</div><div class="line">223</div><div class="line">224</div><div class="line">225</div><div class="line">226</div><div class="line">227</div><div class="line">228</div><div class="line">229</div><div class="line">230</div><div class="line">231</div><div class="line">232</div><div class="line">233</div><div class="line">234</div><div class="line">235</div><div class="line">236</div><div class="line">237</div><div class="line">238</div><div class="line">239</div><div class="line">240</div><div class="line">241</div><div class="line">242</div><div class="line">243</div><div class="line">244</div><div class="line">245</div><div class="line">246</div><div class="line">247</div><div class="line">248</div><div class="line">249</div><div class="line">250</div><div class="line">251</div><div class="line">252</div><div class="line">253</div><div class="line">254</div><div class="line">255</div><div class="line">256</div><div class="line">257</div><div class="line">258</div><div class="line">259</div><div class="line">260</div><div class="line">261</div><div class="line">262</div><div class="line">263</div><div class="line">264</div><div class="line">265</div><div class="line">266</div><div class="line">267</div><div class="line">268</div><div class="line">269</div><div class="line">270</div><div class="line">271</div><div class="line">272</div><div class="line">273</div><div class="line">274</div><div class="line">275</div><div class="line">276</div><div class="line">277</div><div class="line">278</div><div class="line">279</div><div class="line">280</div><div class="line">281</div><div class="line">282</div><div class="line">283</div><div class="line">284</div><div class="line">285</div><div class="line">286</div><div class="line">287</div><div class="line">288</div><div class="line">289</div><div class="line">290</div><div class="line">291</div><div class="line">292</div><div class="line">293</div><div class="line">294</div><div class="line">295</div><div class="line">296</div><div class="line">297</div><div class="line">298</div><div class="line">299</div><div class="line">300</div><div class="line">301</div><div class="line">302</div><div class="line">303</div><div class="line">304</div><div class="line">305</div><div class="line">306</div><div class="line">307</div><div class="line">308</div><div class="line">309</div><div class="line">310</div><div class="line">311</div><div class="line">312</div><div class="line">313</div><div class="line">314</div><div class="line">315</div><div class="line">316</div><div class="line">317</div><div class="line">318</div><div class="line">319</div><div class="line">320</div><div class="line">321</div><div class="line">322</div><div class="line">323</div><div class="line">324</div><div class="line">325</div><div class="line">326</div><div class="line">327</div><div class="line">328</div><div class="line">329</div><div class="line">330</div><div class="line">331</div><div class="line">332</div><div class="line">333</div><div class="line">334</div><div class="line">335</div><div class="line">336</div><div class="line">337</div><div class="line">338</div><div class="line">339</div><div class="line">340</div><div class="line">341</div><div class="line">342</div><div class="line">343</div><div class="line">344</div><div class="line">345</div><div class="line">346</div><div class="line">347</div><div class="line">348</div><div class="line">349</div><div class="line">350</div><div class="line">351</div><div class="line">352</div><div class="line">353</div><div class="line">354</div><div class="line">355</div><div class="line">356</div><div class="line">357</div><div class="line">358</div><div class="line">359</div><div class="line">360</div><div class="line">361</div><div class="line">362</div><div class="line">363</div><div class="line">364</div><div class="line">365</div><div class="line">366</div><div class="line">367</div><div class="line">368</div><div class="line">369</div><div class="line">370</div><div class="line">371</div><div class="line">372</div><div class="line">373</div><div class="line">374</div><div class="line">375</div><div class="line">376</div><div class="line">377</div><div class="line">378</div><div class="line">379</div><div class="line">380</div><div class="line">381</div><div class="line">382</div><div class="line">383</div><div class="line">384</div><div class="line">385</div><div class="line">386</div><div class="line">387</div><div class="line">388</div><div class="line">389</div><div class="line">390</div><div class="line">391</div><div class="line">392</div><div class="line">393</div><div class="line">394</div><div class="line">395</div><div class="line">396</div><div class="line">397</div><div class="line">398</div><div class="line">399</div><div class="line">400</div><div class="line">401</div><div class="line">402</div><div class="line">403</div><div class="line">404</div><div class="line">405</div><div class="line">406</div><div class="line">407</div><div class="line">408</div><div class="line">409</div><div class="line">410</div><div class="line">411</div><div class="line">412</div><div class="line">413</div><div class="line">414</div><div class="line">415</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> test</div><div class="line"></div><div class="line"><span class="keyword">import</span> (</div><div class="line">	<span class="string">"runtime"</span></div><div class="line">	<span class="string">"sync"</span></div><div class="line">	<span class="string">"testing"</span></div><div class="line">)</div><div class="line"></div><div class="line"><span class="keyword">type</span> foo <span class="keyword">struct</span> {</div><div class="line">	x, y, z <span class="typename">int64</span></div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">type</span> foo64Start <span class="keyword">struct</span> {</div><div class="line">	_       <span class="number">[64</span>]<span class="typename">byte</span></div><div class="line">	x, y, z <span class="typename">int64</span></div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">type</span> foo64StartEnd <span class="keyword">struct</span> {</div><div class="line">	_       <span class="number">[64</span>]<span class="typename">byte</span></div><div class="line">	x, y, z <span class="typename">int64</span></div><div class="line">	_       <span class="number">[64</span>]<span class="typename">byte</span></div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">type</span> foo128Start <span class="keyword">struct</span> {</div><div class="line">	_       <span class="number">[128</span>]<span class="typename">byte</span></div><div class="line">	x, y, z <span class="typename">int64</span></div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">type</span> foo128StartEnd <span class="keyword">struct</span> {</div><div class="line">	_       <span class="number">[128</span>]<span class="typename">byte</span></div><div class="line">	x, y, z <span class="typename">int64</span></div><div class="line">	_       <span class="number">[128</span>]<span class="typename">byte</span></div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">type</span> foo64StartEndAligned <span class="keyword">struct</span> {</div><div class="line">	_       <span class="number">[64</span>]<span class="typename">byte</span></div><div class="line">	x, y, z <span class="typename">int64</span></div><div class="line">	_       <span class="number">[64</span> -<span class="number"> 24</span>]<span class="typename">byte</span></div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">type</span> foo128StartEndAligned <span class="keyword">struct</span> {</div><div class="line">	_       <span class="number">[128</span>]<span class="typename">byte</span></div><div class="line">	x, y, z <span class="typename">int64</span></div><div class="line">	_       <span class="number">[128</span> -<span class="number"> 24</span>]<span class="typename">byte</span></div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">const</span> iter = <span class="number">(1</span> &lt;&lt;<span class="number"> 16</span>)</div><div class="line"></div><div class="line"><span class="keyword">func</span> BenchmarkFalseSharing(b *testing.B) {</div><div class="line">	<span class="keyword">var</span> wg sync.WaitGroup</div><div class="line"></div><div class="line">	b.Run(<span class="string">"NoPad"</span>, <span class="keyword">func</span>(b *testing.B) {</div><div class="line">		arr := <span class="built_in">make</span>([]foo, runtime.GOMAXPROCS<span class="number">(0</span>))</div><div class="line">		arrChan := <span class="built_in">make</span>([]<span class="keyword">chan</span> <span class="keyword">struct</span>{}, runtime.GOMAXPROCS<span class="number">(0</span>))</div><div class="line">		<span class="keyword">for</span> i := <span class="keyword">range</span> arrChan {</div><div class="line">			arrChan[i] = <span class="built_in">make</span>(<span class="keyword">chan</span> <span class="keyword">struct</span>{})</div><div class="line">		}</div><div class="line"></div><div class="line">		<span class="keyword">for</span> i := <span class="keyword">range</span> arr {</div><div class="line">			<span class="keyword">go</span> <span class="keyword">func</span>(i <span class="typename">int</span>) {</div><div class="line">				<span class="keyword">for</span> <span class="keyword">range</span> arrChan[i] {</div><div class="line">					<span class="keyword">for</span> j :=<span class="number"> 0</span>; j &lt; iter; j++ {</div><div class="line">						arr[i].x++</div><div class="line">					}</div><div class="line">					wg.Done()</div><div class="line">				}</div><div class="line"></div><div class="line">			}(i)</div><div class="line">		}</div><div class="line"></div><div class="line">		b.ResetTimer()</div><div class="line"></div><div class="line">		<span class="keyword">for</span> i :=<span class="number"> 0</span>; i &lt; b.N; i++ {</div><div class="line">			wg.Add(runtime.GOMAXPROCS<span class="number">(0</span>))</div><div class="line">			<span class="keyword">for</span> j := <span class="keyword">range</span> arrChan {</div><div class="line">				arrChan[j] &lt;- <span class="keyword">struct</span>{}{}</div><div class="line">			}</div><div class="line">			wg.Wait()</div><div class="line">		}</div><div class="line"></div><div class="line">		b.StopTimer()</div><div class="line"></div><div class="line">		<span class="keyword">for</span> i := <span class="keyword">range</span> arrChan {</div><div class="line">			<span class="built_in">close</span>(arrChan[i])</div><div class="line">		}</div><div class="line">	})</div><div class="line"></div><div class="line">	b.Run(<span class="string">"Pad64Start"</span>, <span class="keyword">func</span>(b *testing.B) {</div><div class="line">		arr := <span class="built_in">make</span>([]foo64Start, runtime.GOMAXPROCS<span class="number">(0</span>))</div><div class="line">		arrChan := <span class="built_in">make</span>([]<span class="keyword">chan</span> <span class="keyword">struct</span>{}, runtime.GOMAXPROCS<span class="number">(0</span>))</div><div class="line">		<span class="keyword">for</span> i := <span class="keyword">range</span> arrChan {</div><div class="line">			arrChan[i] = <span class="built_in">make</span>(<span class="keyword">chan</span> <span class="keyword">struct</span>{})</div><div class="line">		}</div><div class="line"></div><div class="line">		<span class="keyword">for</span> i := <span class="keyword">range</span> arr {</div><div class="line">			<span class="keyword">go</span> <span class="keyword">func</span>(i <span class="typename">int</span>) {</div><div class="line">				<span class="keyword">for</span> <span class="keyword">range</span> arrChan[i] {</div><div class="line">					<span class="keyword">for</span> j :=<span class="number"> 0</span>; j &lt; iter; j++ {</div><div class="line">						arr[i].x++</div><div class="line">					}</div><div class="line">					wg.Done()</div><div class="line">				}</div><div class="line"></div><div class="line">			}(i)</div><div class="line">		}</div><div class="line"></div><div class="line">		b.ResetTimer()</div><div class="line"></div><div class="line">		<span class="keyword">for</span> i :=<span class="number"> 0</span>; i &lt; b.N; i++ {</div><div class="line">			wg.Add(runtime.GOMAXPROCS<span class="number">(0</span>))</div><div class="line">			<span class="keyword">for</span> j := <span class="keyword">range</span> arrChan {</div><div class="line">				arrChan[j] &lt;- <span class="keyword">struct</span>{}{}</div><div class="line">			}</div><div class="line">			wg.Wait()</div><div class="line">		}</div><div class="line"></div><div class="line">		b.StopTimer()</div><div class="line"></div><div class="line">		<span class="keyword">for</span> i := <span class="keyword">range</span> arrChan {</div><div class="line">			<span class="built_in">close</span>(arrChan[i])</div><div class="line">		}</div><div class="line">	})</div><div class="line"></div><div class="line">	b.Run(<span class="string">"Pad64StartEnd"</span>, <span class="keyword">func</span>(b *testing.B) {</div><div class="line">		arr := <span class="built_in">make</span>([]foo64StartEnd, runtime.GOMAXPROCS<span class="number">(0</span>))</div><div class="line">		arrChan := <span class="built_in">make</span>([]<span class="keyword">chan</span> <span class="keyword">struct</span>{}, runtime.GOMAXPROCS<span class="number">(0</span>))</div><div class="line">		<span class="keyword">for</span> i := <span class="keyword">range</span> arrChan {</div><div class="line">			arrChan[i] = <span class="built_in">make</span>(<span class="keyword">chan</span> <span class="keyword">struct</span>{})</div><div class="line">		}</div><div class="line"></div><div class="line">		<span class="keyword">for</span> i := <span class="keyword">range</span> arr {</div><div class="line">			<span class="keyword">go</span> <span class="keyword">func</span>(i <span class="typename">int</span>) {</div><div class="line">				<span class="keyword">for</span> <span class="keyword">range</span> arrChan[i] {</div><div class="line">					<span class="keyword">for</span> j :=<span class="number"> 0</span>; j &lt; iter; j++ {</div><div class="line">						arr[i].x++</div><div class="line">					}</div><div class="line">					wg.Done()</div><div class="line">				}</div><div class="line"></div><div class="line">			}(i)</div><div class="line">		}</div><div class="line"></div><div class="line">		b.ResetTimer()</div><div class="line"></div><div class="line">		<span class="keyword">for</span> i :=<span class="number"> 0</span>; i &lt; b.N; i++ {</div><div class="line">			wg.Add(runtime.GOMAXPROCS<span class="number">(0</span>))</div><div class="line">			<span class="keyword">for</span> j := <span class="keyword">range</span> arrChan {</div><div class="line">				arrChan[j] &lt;- <span class="keyword">struct</span>{}{}</div><div class="line">			}</div><div class="line">			wg.Wait()</div><div class="line">		}</div><div class="line"></div><div class="line">		b.StopTimer()</div><div class="line"></div><div class="line">		<span class="keyword">for</span> i := <span class="keyword">range</span> arrChan {</div><div class="line">			<span class="built_in">close</span>(arrChan[i])</div><div class="line">		}</div><div class="line">	})</div><div class="line"></div><div class="line">	b.Run(<span class="string">"Pad128Start"</span>, <span class="keyword">func</span>(b *testing.B) {</div><div class="line">		arr := <span class="built_in">make</span>([]foo128Start, runtime.GOMAXPROCS<span class="number">(0</span>))</div><div class="line">		arrChan := <span class="built_in">make</span>([]<span class="keyword">chan</span> <span class="keyword">struct</span>{}, runtime.GOMAXPROCS<span class="number">(0</span>))</div><div class="line">		<span class="keyword">for</span> i := <span class="keyword">range</span> arrChan {</div><div class="line">			arrChan[i] = <span class="built_in">make</span>(<span class="keyword">chan</span> <span class="keyword">struct</span>{})</div><div class="line">		}</div><div class="line"></div><div class="line">		<span class="keyword">for</span> i := <span class="keyword">range</span> arr {</div><div class="line">			<span class="keyword">go</span> <span class="keyword">func</span>(i <span class="typename">int</span>) {</div><div class="line">				<span class="keyword">for</span> <span class="keyword">range</span> arrChan[i] {</div><div class="line">					<span class="keyword">for</span> j :=<span class="number"> 0</span>; j &lt; iter; j++ {</div><div class="line">						arr[i].x++</div><div class="line">					}</div><div class="line">					wg.Done()</div><div class="line">				}</div><div class="line"></div><div class="line">			}(i)</div><div class="line">		}</div><div class="line"></div><div class="line">		b.ResetTimer()</div><div class="line"></div><div class="line">		<span class="keyword">for</span> i :=<span class="number"> 0</span>; i &lt; b.N; i++ {</div><div class="line">			wg.Add(runtime.GOMAXPROCS<span class="number">(0</span>))</div><div class="line">			<span class="keyword">for</span> j := <span class="keyword">range</span> arrChan {</div><div class="line">				arrChan[j] &lt;- <span class="keyword">struct</span>{}{}</div><div class="line">			}</div><div class="line">			wg.Wait()</div><div class="line">		}</div><div class="line"></div><div class="line">		b.StopTimer()</div><div class="line"></div><div class="line">		<span class="keyword">for</span> i := <span class="keyword">range</span> arrChan {</div><div class="line">			<span class="built_in">close</span>(arrChan[i])</div><div class="line">		}</div><div class="line">	})</div><div class="line"></div><div class="line">	b.Run(<span class="string">"Pad128StartEnd"</span>, <span class="keyword">func</span>(b *testing.B) {</div><div class="line">		arr := <span class="built_in">make</span>([]foo128StartEnd, runtime.GOMAXPROCS<span class="number">(0</span>))</div><div class="line">		arrChan := <span class="built_in">make</span>([]<span class="keyword">chan</span> <span class="keyword">struct</span>{}, runtime.GOMAXPROCS<span class="number">(0</span>))</div><div class="line">		<span class="keyword">for</span> i := <span class="keyword">range</span> arrChan {</div><div class="line">			arrChan[i] = <span class="built_in">make</span>(<span class="keyword">chan</span> <span class="keyword">struct</span>{})</div><div class="line">		}</div><div class="line"></div><div class="line">		<span class="keyword">for</span> i := <span class="keyword">range</span> arr {</div><div class="line">			<span class="keyword">go</span> <span class="keyword">func</span>(i <span class="typename">int</span>) {</div><div class="line">				<span class="keyword">for</span> <span class="keyword">range</span> arrChan[i] {</div><div class="line">					<span class="keyword">for</span> j :=<span class="number"> 0</span>; j &lt; iter; j++ {</div><div class="line">						arr[i].x++</div><div class="line">					}</div><div class="line">					wg.Done()</div><div class="line">				}</div><div class="line"></div><div class="line">			}(i)</div><div class="line">		}</div><div class="line"></div><div class="line">		b.ResetTimer()</div><div class="line"></div><div class="line">		<span class="keyword">for</span> i :=<span class="number"> 0</span>; i &lt; b.N; i++ {</div><div class="line">			wg.Add(runtime.GOMAXPROCS<span class="number">(0</span>))</div><div class="line">			<span class="keyword">for</span> j := <span class="keyword">range</span> arrChan {</div><div class="line">				arrChan[j] &lt;- <span class="keyword">struct</span>{}{}</div><div class="line">			}</div><div class="line">			wg.Wait()</div><div class="line">		}</div><div class="line"></div><div class="line">		b.StopTimer()</div><div class="line"></div><div class="line">		<span class="keyword">for</span> i := <span class="keyword">range</span> arrChan {</div><div class="line">			<span class="built_in">close</span>(arrChan[i])</div><div class="line">		}</div><div class="line">	})</div><div class="line"></div><div class="line">	b.Run(<span class="string">"Pad64StartEndAligned"</span>, <span class="keyword">func</span>(b *testing.B) {</div><div class="line">		arr := <span class="built_in">make</span>([]foo64StartEndAligned, runtime.GOMAXPROCS<span class="number">(0</span>))</div><div class="line">		arrChan := <span class="built_in">make</span>([]<span class="keyword">chan</span> <span class="keyword">struct</span>{}, runtime.GOMAXPROCS<span class="number">(0</span>))</div><div class="line">		<span class="keyword">for</span> i := <span class="keyword">range</span> arrChan {</div><div class="line">			arrChan[i] = <span class="built_in">make</span>(<span class="keyword">chan</span> <span class="keyword">struct</span>{})</div><div class="line">		}</div><div class="line"></div><div class="line">		<span class="keyword">for</span> i := <span class="keyword">range</span> arr {</div><div class="line">			<span class="keyword">go</span> <span class="keyword">func</span>(i <span class="typename">int</span>) {</div><div class="line">				<span class="keyword">for</span> <span class="keyword">range</span> arrChan[i] {</div><div class="line">					<span class="keyword">for</span> j :=<span class="number"> 0</span>; j &lt; iter; j++ {</div><div class="line">						arr[i].x++</div><div class="line">					}</div><div class="line">					wg.Done()</div><div class="line">				}</div><div class="line"></div><div class="line">			}(i)</div><div class="line">		}</div><div class="line"></div><div class="line">		b.ResetTimer()</div><div class="line"></div><div class="line">		<span class="keyword">for</span> i :=<span class="number"> 0</span>; i &lt; b.N; i++ {</div><div class="line">			wg.Add(runtime.GOMAXPROCS<span class="number">(0</span>))</div><div class="line">			<span class="keyword">for</span> j := <span class="keyword">range</span> arrChan {</div><div class="line">				arrChan[j] &lt;- <span class="keyword">struct</span>{}{}</div><div class="line">			}</div><div class="line">			wg.Wait()</div><div class="line">		}</div><div class="line"></div><div class="line">		b.StopTimer()</div><div class="line"></div><div class="line">		<span class="keyword">for</span> i := <span class="keyword">range</span> arrChan {</div><div class="line">			<span class="built_in">close</span>(arrChan[i])</div><div class="line">		}</div><div class="line">	})</div><div class="line"></div><div class="line">	b.Run(<span class="string">"Pad128StartEndAligned"</span>, <span class="keyword">func</span>(b *testing.B) {</div><div class="line">		arr := <span class="built_in">make</span>([]foo128StartEndAligned, runtime.GOMAXPROCS<span class="number">(0</span>))</div><div class="line">		arrChan := <span class="built_in">make</span>([]<span class="keyword">chan</span> <span class="keyword">struct</span>{}, runtime.GOMAXPROCS<span class="number">(0</span>))</div><div class="line">		<span class="keyword">for</span> i := <span class="keyword">range</span> arrChan {</div><div class="line">			arrChan[i] = <span class="built_in">make</span>(<span class="keyword">chan</span> <span class="keyword">struct</span>{})</div><div class="line">		}</div><div class="line"></div><div class="line">		<span class="keyword">for</span> i := <span class="keyword">range</span> arr {</div><div class="line">			<span class="keyword">go</span> <span class="keyword">func</span>(i <span class="typename">int</span>) {</div><div class="line">				<span class="keyword">for</span> <span class="keyword">range</span> arrChan[i] {</div><div class="line">					<span class="keyword">for</span> j :=<span class="number"> 0</span>; j &lt; iter; j++ {</div><div class="line">						arr[i].x++</div><div class="line">					}</div><div class="line">					wg.Done()</div><div class="line">				}</div><div class="line"></div><div class="line">			}(i)</div><div class="line">		}</div><div class="line"></div><div class="line">		b.ResetTimer()</div><div class="line"></div><div class="line">		<span class="keyword">for</span> i :=<span class="number"> 0</span>; i &lt; b.N; i++ {</div><div class="line">			wg.Add(runtime.GOMAXPROCS<span class="number">(0</span>))</div><div class="line">			<span class="keyword">for</span> j := <span class="keyword">range</span> arrChan {</div><div class="line">				arrChan[j] &lt;- <span class="keyword">struct</span>{}{}</div><div class="line">			}</div><div class="line">			wg.Wait()</div><div class="line">		}</div><div class="line"></div><div class="line">		b.StopTimer()</div><div class="line"></div><div class="line">		<span class="keyword">for</span> i := <span class="keyword">range</span> arrChan {</div><div class="line">			<span class="built_in">close</span>(arrChan[i])</div><div class="line">		}</div><div class="line">	})</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> BenchmarkTrueSharing(b *testing.B) {</div><div class="line">	<span class="keyword">var</span> wg sync.WaitGroup</div><div class="line"></div><div class="line">	b.Run(<span class="string">"&lt;64"</span>, <span class="keyword">func</span>(b *testing.B) {</div><div class="line">		arr := <span class="built_in">make</span>([]foo, runtime.GOMAXPROCS<span class="number">(0</span>)*iter)</div><div class="line">		arrChan := <span class="built_in">make</span>([]<span class="keyword">chan</span> <span class="keyword">struct</span>{}, runtime.GOMAXPROCS<span class="number">(0</span>))</div><div class="line">		<span class="keyword">for</span> i := <span class="keyword">range</span> arrChan {</div><div class="line">			arrChan[i] = <span class="built_in">make</span>(<span class="keyword">chan</span> <span class="keyword">struct</span>{})</div><div class="line">		}</div><div class="line"></div><div class="line">		<span class="keyword">for</span> i := <span class="keyword">range</span> arrChan {</div><div class="line">			<span class="keyword">go</span> <span class="keyword">func</span>(i <span class="typename">int</span>) {</div><div class="line">				<span class="keyword">for</span> <span class="keyword">range</span> arrChan[i] {</div><div class="line">					<span class="keyword">for</span> j :=<span class="number"> 0</span>; j &lt; iter; j++ {</div><div class="line">						arr[(i*iter)+j].x++</div><div class="line">					}</div><div class="line">					wg.Done()</div><div class="line">				}</div><div class="line"></div><div class="line">			}(i)</div><div class="line">		}</div><div class="line"></div><div class="line">		b.ResetTimer()</div><div class="line"></div><div class="line">		<span class="keyword">for</span> i :=<span class="number"> 0</span>; i &lt; b.N; i++ {</div><div class="line">			wg.Add(runtime.GOMAXPROCS<span class="number">(0</span>))</div><div class="line">			<span class="keyword">for</span> j := <span class="keyword">range</span> arrChan {</div><div class="line">				arrChan[j] &lt;- <span class="keyword">struct</span>{}{}</div><div class="line">			}</div><div class="line">			wg.Wait()</div><div class="line">		}</div><div class="line"></div><div class="line">		b.StopTimer()</div><div class="line"></div><div class="line">		<span class="keyword">for</span> i := <span class="keyword">range</span> arrChan {</div><div class="line">			<span class="built_in">close</span>(arrChan[i])</div><div class="line">		}</div><div class="line">	})</div><div class="line"></div><div class="line">	b.Run(<span class="string">"&gt;64"</span>, <span class="keyword">func</span>(b *testing.B) {</div><div class="line">		arr := <span class="built_in">make</span>([]foo64Start, runtime.GOMAXPROCS<span class="number">(0</span>)*iter)</div><div class="line">		arrChan := <span class="built_in">make</span>([]<span class="keyword">chan</span> <span class="keyword">struct</span>{}, runtime.GOMAXPROCS<span class="number">(0</span>))</div><div class="line">		<span class="keyword">for</span> i := <span class="keyword">range</span> arrChan {</div><div class="line">			arrChan[i] = <span class="built_in">make</span>(<span class="keyword">chan</span> <span class="keyword">struct</span>{})</div><div class="line">		}</div><div class="line"></div><div class="line">		<span class="keyword">for</span> i := <span class="keyword">range</span> arrChan {</div><div class="line">			<span class="keyword">go</span> <span class="keyword">func</span>(i <span class="typename">int</span>) {</div><div class="line">				<span class="keyword">for</span> <span class="keyword">range</span> arrChan[i] {</div><div class="line">					<span class="keyword">for</span> j :=<span class="number"> 0</span>; j &lt; iter; j++ {</div><div class="line">						arr[(i*iter)+j].x++</div><div class="line">					}</div><div class="line">					wg.Done()</div><div class="line">				}</div><div class="line"></div><div class="line">			}(i)</div><div class="line">		}</div><div class="line"></div><div class="line">		b.ResetTimer()</div><div class="line"></div><div class="line">		<span class="keyword">for</span> i :=<span class="number"> 0</span>; i &lt; b.N; i++ {</div><div class="line">			wg.Add(runtime.GOMAXPROCS<span class="number">(0</span>))</div><div class="line">			<span class="keyword">for</span> j := <span class="keyword">range</span> arrChan {</div><div class="line">				arrChan[j] &lt;- <span class="keyword">struct</span>{}{}</div><div class="line">			}</div><div class="line">			wg.Wait()</div><div class="line">		}</div><div class="line"></div><div class="line">		b.StopTimer()</div><div class="line"></div><div class="line">		<span class="keyword">for</span> i := <span class="keyword">range</span> arrChan {</div><div class="line">			<span class="built_in">close</span>(arrChan[i])</div><div class="line">		}</div><div class="line">	})</div><div class="line"></div><div class="line">	b.Run(<span class="string">"&gt;128"</span>, <span class="keyword">func</span>(b *testing.B) {</div><div class="line">		arr := <span class="built_in">make</span>([]foo128Start, runtime.GOMAXPROCS<span class="number">(0</span>)*iter)</div><div class="line">		arrChan := <span class="built_in">make</span>([]<span class="keyword">chan</span> <span class="keyword">struct</span>{}, runtime.GOMAXPROCS<span class="number">(0</span>))</div><div class="line">		<span class="keyword">for</span> i := <span class="keyword">range</span> arrChan {</div><div class="line">			arrChan[i] = <span class="built_in">make</span>(<span class="keyword">chan</span> <span class="keyword">struct</span>{})</div><div class="line">		}</div><div class="line"></div><div class="line">		<span class="keyword">for</span> i := <span class="keyword">range</span> arrChan {</div><div class="line">			<span class="keyword">go</span> <span class="keyword">func</span>(i <span class="typename">int</span>) {</div><div class="line">				<span class="keyword">for</span> <span class="keyword">range</span> arrChan[i] {</div><div class="line">					<span class="keyword">for</span> j :=<span class="number"> 0</span>; j &lt; iter; j++ {</div><div class="line">						arr[(i*iter)+j].x++</div><div class="line">					}</div><div class="line">					wg.Done()</div><div class="line">				}</div><div class="line"></div><div class="line">			}(i)</div><div class="line">		}</div><div class="line"></div><div class="line">		b.ResetTimer()</div><div class="line"></div><div class="line">		<span class="keyword">for</span> i :=<span class="number"> 0</span>; i &lt; b.N; i++ {</div><div class="line">			wg.Add(runtime.GOMAXPROCS<span class="number">(0</span>))</div><div class="line">			<span class="keyword">for</span> j := <span class="keyword">range</span> arrChan {</div><div class="line">				arrChan[j] &lt;- <span class="keyword">struct</span>{}{}</div><div class="line">			}</div><div class="line">			wg.Wait()</div><div class="line">		}</div><div class="line"></div><div class="line">		b.StopTimer()</div><div class="line"></div><div class="line">		<span class="keyword">for</span> i := <span class="keyword">range</span> arrChan {</div><div class="line">			<span class="built_in">close</span>(arrChan[i])</div><div class="line">		}</div><div class="line">	})</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<h2 id="参考资料">参考资料</h2>
+<ol start="0">
+<li><a href="https://zh.wikipedia.org/wiki/CPU缓存" target="_blank" rel="external">https://zh.wikipedia.org/wiki/CPU缓存</a></li>
+<li><a href="https://medium.com/@genchilu/whats-false-sharing-and-how-to-solve-it-using-golang-as-example-ef978a305e10" target="_blank" rel="external">https://medium.com/@genchilu/whats-false-sharing-and-how-to-solve-it-using-golang-as-example-ef978a305e10</a></li>
+<li><a href="https://github.com/golang/go/issues/14980" target="_blank" rel="external">https://github.com/golang/go/issues/14980</a></li>
+<li><a href="https://github.com/klauspost/cpuid" target="_blank" rel="external">https://github.com/klauspost/cpuid</a></li>
+<li><a href="https://segment.com/blog/allocation-efficiency-in-high-performance-go-services/" target="_blank" rel="external">https://segment.com/blog/allocation-efficiency-in-high-performance-go-services/</a></li>
+<li><a href="https://luciotato.svbtle.com/golangs-duffs-devices" target="_blank" rel="external">https://luciotato.svbtle.com/golangs-duffs-devices</a></li>
+<li><a href="https://stackoverflow.com/questions/14707803/line-size-of-l1-and-l2-caches" target="_blank" rel="external">https://stackoverflow.com/questions/14707803/line-size-of-l1-and-l2-caches</a></li>
+<li><a href="https://luciotato.svbtle.com/golangs-duffs-devices" target="_blank" rel="external">https://luciotato.svbtle.com/golangs-duffs-devices</a></li>
+<li><a href="https://github.com/golang/go/issues/25203" target="_blank" rel="external">https://github.com/golang/go/issues/25203</a></li>
+</ol>
+
+      
+    </div>
+    <footer class="article-footer">
+      
+
+      
+      <!-- <link rel="stylesheet" href="https://unpkg.com/gitalk/dist/gitalk.css">
+      <script src="https://unpkg.com/gitalk/dist/gitalk.min.js"></script> -->
+      <section id="comments">
+        <script src="https://utteranc.es/client.js"
+                repo="smallnest/gitalk"
+                issue-term="title"
+                theme="github-light"
+                crossorigin="anonymous"
+                async>
+        </script>
+        <!-- <div id="gitalk-container"></div>
+        <script type="text/javascript">
+          var gitalkOpts = {
+            id: '2019/01/24/cacheline-affects-performance-in-go/',
+            owner: 'smallnest',
+            repo: 'gitalk',
+            title: 'cacheline 对 Go 程序的影响',
+            body: 'https://colobu.com/2019/01/24/cacheline-affects-performance-in-go/',
+            clientID: 'bc02724130ed5b7ee275',
+            clientSecret: '68cb0bae2f93a8b88b09e0eb9b08c844b06a9047',
+            admin: ['smallnest'],
+            distractionFreeMode: false
+          };
+
+          const gitalk = new Gitalk(gitalkOpts)
+          gitalk.render('gitalk-container')
+        </script> -->
+        <noscript> 为正常使用评论功能请激活JavaScript</noscript>
+      </section>
+
+      
+
+    </footer>
+  </div>
+  
+  
+<nav id="article-nav">
+  
+    <a href="/2019/01/29/go-reflect-performance/" id="article-nav-newer" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">Newer</strong>
+      <div class="article-nav-title">
+        
+          Go Reflect 性能
+        
+      </div>
+    </a>
+  
+  
+    <a href="/2019/01/22/Runtime-overhead-of-using-defer-in-go/" id="article-nav-older" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">Older</strong>
+      <div class="article-nav-title">使用 defer 还是不使用 defer?</div>
+    </a>
+  
+</nav>
+
+  
+</article></section>
+        
+          <aside id="sidebar">
+  
+      <div class="widget-wrap">
+    <h3 class="widget-title">原创图书</h3>
+    <div class="widget">
+      <a href="/ScalaCollectionsCookbook/">
+        <img width="100%" src="/ScalaCollectionsCookbook/scala_collections_cookbook.jpg">
+        <img width="100%" src="/ScalaCollectionsCookbook/scala_collections_cookbook_tw.png">
+      </a>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">分类</h3>
+    <div class="widget">
+      <ul class="category-list"><li class="category-list-item"><a class="category-list-link" href="/categories/Android/">Android</a><span class="category-list-count">12</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/C/">C++</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/DOTNET/">DOTNET</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Docker/">Docker</a><span class="category-list-count">5</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Go/">Go</a><span class="category-list-count">175</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Java/">Java</a><span class="category-list-count">64</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Linux/">Linux</a><span class="category-list-count">7</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Rust/">Rust</a><span class="category-list-count">12</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Scala/">Scala</a><span class="category-list-count">18</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/分享/">分享</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/前端开发/">前端开发</a><span class="category-list-count">18</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/区块链/">区块链</a><span class="category-list-count">8</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/大数据/">大数据</a><span class="category-list-count">60</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/工具/">工具</a><span class="category-list-count">28</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/数据库/">数据库</a><span class="category-list-count">3</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/架构/">架构</a><span class="category-list-count">26</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/算法/">算法</a><span class="category-list-count">4</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/管理/">管理</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/网络编程/">网络编程</a><span class="category-list-count">13</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/读书笔记/">读书笔记</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/运维/">运维</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/高并发编程/">高并发编程</a><span class="category-list-count">20</span></li></ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">标签云</h3>
+    <div class="widget tagcloud">
+      <a href="/tags/Android/" style="font-size: 15.71px;">Android</a><a href="/tags/ApacheBench/" style="font-size: 11.43px;">ApacheBench</a><a href="/tags/Bower/" style="font-size: 10.00px;">Bower</a><a href="/tags/C/" style="font-size: 10.00px;">C#</a><a href="/tags/CDN/" style="font-size: 10.00px;">CDN</a><a href="/tags/CQRS/" style="font-size: 10.00px;">CQRS</a><a href="/tags/CRC/" style="font-size: 10.00px;">CRC</a><a href="/tags/CSS/" style="font-size: 11.43px;">CSS</a><a href="/tags/CompletableFuture/" style="font-size: 10.00px;">CompletableFuture</a><a href="/tags/Comsat/" style="font-size: 10.00px;">Comsat</a><a href="/tags/Curator/" style="font-size: 18.57px;">Curator</a><a href="/tags/DSL/" style="font-size: 10.00px;">DSL</a><a href="/tags/Disruptor/" style="font-size: 10.00px;">Disruptor</a><a href="/tags/Docker/" style="font-size: 11.43px;">Docker</a><a href="/tags/Ember/" style="font-size: 11.43px;">Ember</a><a href="/tags/FastJson/" style="font-size: 10.00px;">FastJson</a><a href="/tags/Fiber/" style="font-size: 10.00px;">Fiber</a><a href="/tags/GAE/" style="font-size: 10.00px;">GAE</a><a href="/tags/GC/" style="font-size: 12.86px;">GC</a><a href="/tags/Gnuplot/" style="font-size: 10.00px;">Gnuplot</a><a href="/tags/Go/" style="font-size: 14.29px;">Go</a><a href="/tags/Gradle/" style="font-size: 10.00px;">Gradle</a><a href="/tags/Grunt/" style="font-size: 10.00px;">Grunt</a><a href="/tags/Gulp/" style="font-size: 10.00px;">Gulp</a><a href="/tags/Hadoop/" style="font-size: 10.00px;">Hadoop</a><a href="/tags/Hazelcast/" style="font-size: 10.00px;">Hazelcast</a><a href="/tags/IPFS/" style="font-size: 10.00px;">IPFS</a><a href="/tags/Ignite/" style="font-size: 10.00px;">Ignite</a><a href="/tags/JVM/" style="font-size: 10.00px;">JVM</a><a href="/tags/Java/" style="font-size: 17.14px;">Java</a><a href="/tags/Kafka/" style="font-size: 20.00px;">Kafka</a><a href="/tags/Lambda/" style="font-size: 14.29px;">Lambda</a><a href="/tags/Linux/" style="font-size: 12.86px;">Linux</a><a href="/tags/LongAdder/" style="font-size: 10.00px;">LongAdder</a><a href="/tags/MathJax/" style="font-size: 10.00px;">MathJax</a><a href="/tags/Maven/" style="font-size: 11.43px;">Maven</a><a href="/tags/Memcached/" style="font-size: 10.00px;">Memcached</a><a href="/tags/Metrics/" style="font-size: 10.00px;">Metrics</a><a href="/tags/Mongo/" style="font-size: 12.86px;">Mongo</a><a href="/tags/Netty/" style="font-size: 15.71px;">Netty</a>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">归档</h3>
+    <div class="widget">
+      <ul class="archive-list"><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/10/">October 2021</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/08/">August 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/07/">July 2021</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/06/">June 2021</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/05/">May 2021</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/04/">April 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/03/">March 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/02/">February 2021</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/01/">January 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/12/">December 2020</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/11/">November 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/09/">September 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/08/">August 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/07/">July 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/06/">June 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/05/">May 2020</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/04/">April 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/03/">March 2020</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/02/">February 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/01/">January 2020</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/12/">December 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/11/">November 2019</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/10/">October 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/09/">September 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/08/">August 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/07/">July 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/06/">June 2019</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/05/">May 2019</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/04/">April 2019</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/03/">March 2019</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/02/">February 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/01/">January 2019</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/12/">December 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/11/">November 2018</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/10/">October 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/09/">September 2018</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/08/">August 2018</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/07/">July 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/06/">June 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/05/">May 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/04/">April 2018</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/03/">March 2018</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/02/">February 2018</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/01/">January 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/12/">December 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/11/">November 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/10/">October 2017</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/09/">September 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/08/">August 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/07/">July 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/06/">June 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/05/">May 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/04/">April 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/03/">March 2017</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/02/">February 2017</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/01/">January 2017</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/12/">December 2016</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/11/">November 2016</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/10/">October 2016</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/09/">September 2016</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/08/">August 2016</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/07/">July 2016</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/06/">June 2016</a><span class="archive-list-count">14</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/05/">May 2016</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/04/">April 2016</a><span class="archive-list-count">14</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/03/">March 2016</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/02/">February 2016</a><span class="archive-list-count">8</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/01/">January 2016</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/12/">December 2015</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/11/">November 2015</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/10/">October 2015</a><span class="archive-list-count">9</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/09/">September 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/08/">August 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/07/">July 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/06/">June 2015</a><span class="archive-list-count">8</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/05/">May 2015</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/04/">April 2015</a><span class="archive-list-count">15</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/03/">March 2015</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/02/">February 2015</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/01/">January 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/12/">December 2014</a><span class="archive-list-count">28</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/11/">November 2014</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/10/">October 2014</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/09/">September 2014</a><span class="archive-list-count">28</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/08/">August 2014</a><span class="archive-list-count">19</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/07/">July 2014</a><span class="archive-list-count">1</span></li></ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">近期文章</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+            <a href="/2021/10/06/replace-implementations-in-go-std-libs-at-runtime/">强制更改Go标准库的实现</a>
+          </li>
+        
+          <li>
+            <a href="/2021/08/30/how-is-go-generic-implemented/">Go泛型是怎么实现的?</a>
+          </li>
+        
+          <li>
+            <a href="/2021/08/01/benchmark-of-rpc-frameworks/">2021年Go生态圈rpc框架benchmark</a>
+          </li>
+        
+          <li>
+            <a href="/2021/07/13/Updating-the-Go-Memory-Model/">[译]更新Go内存模型</a>
+          </li>
+        
+          <li>
+            <a href="/2021/07/11/Programming-Language-Memory-Models/">[译]编程语言内存模型</a>
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">友情链接</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+			 
+            <a href="http://stackshare.io" target="_blank">技术栈</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://toutiao.io/" target="_blank">开发者头条</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://weekly.manong.io/issues/" target="_blank">码农周刊</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.tuicool.com/mags" target="_blank">编程狂人周刊</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.importnew.com/" target="_blank">importnew</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://ifeve.com/" target="_blank">并发编程网</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://github.com" target="_blank">github</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://stackoverflow.com/" target="_blank">stackoverflow</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.javacodegeeks.com/" target="_blank">javacodegeeks</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.infoq.com/" target="_blank">infoq</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.dzone.com/links/index.html" target="_blank">dzone</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://oj.leetcode.com/problems/" target="_blank">leetcode</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://tutorials.jenkov.com" target="_blank">jenkov</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://howtodoinjava.com" target="_blank">HowToDoInJava</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://java-design-patterns.com/patterns/" target="_blank">java design patterns</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://medium.com/netflix-techblog" target="_blank">Netflix技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://www.techiedelight.com" target="_blank">Techie Delight</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://engineering.linkedin.com/blog" target="_blank">Linkedin技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://blogs.dropbox.com/tech/" target="_blank">Dropbox技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://code.fb.com" target="_blank">Facebook技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://jm.taobao.org" target="_blank">淘宝中间件团队</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://tech.meituan.com" target="_blank">美团技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://blogs.360.cn" target="_blank">360技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://xiaomi-info.github.io" target="_blank">小米信息部技术团队</a>
+			
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+      
+
+  
+</aside>
+        
+      </div>
+      <footer id="footer">
+  
+  <div class="outer">
+    <div id="footer-info" class="inner">
+      &copy; 2021 smallnest<br>
+	  Powered by <a href="http://hexo.io/" target="_blank">Hexo</a>
+    </div>
+  </div>
+</footer>
+    </div>
+    <nav id="mobile-nav">
+  
+    
+      <a href="/" class="mobile-nav-link"><i class="fa fa-home">&nbsp;</i>首页</a>
+    
+  
+    
+      <a href="/archives" class="mobile-nav-link"><i class="fa fa-folder-o">&nbsp;</i>归档</a>
+    
+  
+    
+      <a href="https://github.com/smallnest" class="mobile-nav-link"><i class="fa fa-github">&nbsp;</i>github</a>
+    
+  
+    
+      <a class="mobile-nav-link" href="#"><i class="fa fa-bars">&nbsp;</i>网站群</a>
+    
+      
+            <a class="mobile-nav-link" href="/goasm">&nbsp;&nbsp;<i class="fa fa-language">&nbsp;</i>Go汇编示例</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="https://gowebexamples.com">&nbsp;&nbsp;<i class="fa fa-external-link">&nbsp;</i>Go Web开发示例</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://go-database-sql.org">&nbsp;&nbsp;<i class="fa fa-external-link">&nbsp;</i>Go 数据库开发教程</a>
+          
+          
+    
+      
+            
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://rpcx.io">&nbsp;&nbsp;<i class="fa undefined">&nbsp;</i>RPCX官网</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://cn.doc.rpcx.io">&nbsp;&nbsp;<i class="fa undefined">&nbsp;</i>RPC开发指南</a>
+          
+          
+    
+    
+  
+    
+      <a href="/ScalaCollectionsCookbook" class="mobile-nav-link"><i class="fa fa-book">&nbsp;</i>Scala集合技术手册</a>
+    
+  
+    
+      <a href="/about" class="mobile-nav-link"><i class="fa fa-lemon-o">&nbsp;</i>关于</a>
+    
+  
+</nav>
+    
+<script src="//cdn.staticfile.org/jquery/1.11.1/jquery.min.js"></script>
+<script src="//cdn.bootcss.com/jquery.lazyload/1.9.1/jquery.lazyload.min.js"></script>
+
+<script src="//cdnjs.cloudflare.com/ajax/libs/fancybox/3.2.5/jquery.fancybox.min.js"></script>
+
+
+<script src="/js/script.js" type="text/javascript"></script>
+
+<!-- mathjax config similar to math.stackexchange -->
+<script type="text/x-mathjax-config">
+  MathJax.Hub.Config({
+    tex2jax: {
+      inlineMath: [ ['$','$'], ["\\(","\\)"] ],
+      processEscapes: true,
+      skipTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code']
+    }
+  });
+  MathJax.Hub.Queue(function() {
+      var all = MathJax.Hub.getAllJax(), i;
+      for(i=0; i < all.length; i += 1) {
+        all[i].SourceElement().parentNode.className += ' has-jax';
+      }
+  });
+</script>
+<script type="text/javascript" src="//cdn.bootcss.com/mathjax/2.6.0-beta.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML">
+</script>
+
+<div id="totop" style="position:fixed;bottom:150px;right:10px;cursor: pointer;z-index: 2000;">
+	<a title="返回顶部"><img src="/images/scrollup.png"/></a>
+</div>
+<script src="/js/totop.js" type="text/javascript"></script>
+
+
+
+
+<script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "//hm.baidu.com/hm.js?e085d87993250aab11f3e0c15f1c2785";
+  var s = document.getElementsByTagName("script")[0]; 
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+
+
+  </div>
+</body>
+</html>

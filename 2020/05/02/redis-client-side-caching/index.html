@@ -1,0 +1,788 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset="utf-8">
+  
+  <title>Redis 6.0 客户端缓存特性及实践</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+  <meta name="description" content="Redis 6.0 发布了。
+Redis 6.0的新特性也是在一步步的讨论和优化中确定的。
+很多的特性已经在之前的RC等版本中介绍过了。
+但是正式GA版中也有一些新的变化:
+
+SSL
+ACL: 更好，命令支持
+RESP3
+Client side caching:重新设计
+Threaded I/O
+Diskless replication on replicas
+Cluster support in">
+<meta property="og:type" content="article">
+<meta property="og:title" content="Redis 6.0 客户端缓存特性及实践">
+<meta property="og:url" content="https://colobu.com/2020/05/02/redis-client-side-caching/">
+<meta property="og:site_name" content="鸟窝">
+<meta property="og:description" content="Redis 6.0 发布了。
+Redis 6.0的新特性也是在一步步的讨论和优化中确定的。
+很多的特性已经在之前的RC等版本中介绍过了。
+但是正式GA版中也有一些新的变化:
+
+SSL
+ACL: 更好，命令支持
+RESP3
+Client side caching:重新设计
+Threaded I/O
+Diskless replication on replicas
+Cluster support in">
+<meta property="og:image" content="redis-server.png">
+<meta property="og:image" content="redis-cli.png">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="Redis 6.0 客户端缓存特性及实践">
+<meta name="twitter:description" content="Redis 6.0 发布了。
+Redis 6.0的新特性也是在一步步的讨论和优化中确定的。
+很多的特性已经在之前的RC等版本中介绍过了。
+但是正式GA版中也有一些新的变化:
+
+SSL
+ACL: 更好，命令支持
+RESP3
+Client side caching:重新设计
+Threaded I/O
+Diskless replication on replicas
+Cluster support in">
+
+  
+  <link rel="alternative" href="/atom.xml" title="鸟窝" type="application/atom+xml">
+  
+  
+  <link rel="icon" href="/favicon.png">
+  
+  <link rel="stylesheet" href="/css/style.css" type="text/css">
+
+  <link href="//cdn.staticfile.org/font-awesome/4.2.0/css/font-awesome.css" rel="stylesheet">
+  
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/fancybox/2.1.7/css/jquery.fancybox.min.css"
+    media="screen" type="text/css">
+  
+  <link rel="stylesheet" href="//cdnjs.cloudflare.com/ajax/libs/animate.css/3.1.1/animate.min.css" media="screen"
+    type="text/css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/tonsky/FiraCode@1.207/distr/fira_code.css">
+</head>
+<body>
+  <div id="container">
+    <div id="wrap">
+      <header id="header">
+  <div id="banner"></div>
+  <div id="header-outer" class="outer">
+    <div id="header-title" class="inner">
+      <h1 id="logo-wrap" class="animated bounceInLeft">
+        <a href="/" id="logo">鸟窝</a>
+      </h1>
+      
+        <h2 id="subtitle-wrap" class="animated bounceInLeft">
+          <a href="/" id="subtitle">大道至简 Simplicity is the ultimate form of sophistication</a>
+        </h2>
+      
+    </div>
+    <div id="header-inner" class="inner">
+      <nav id="main-nav">
+        <a id="main-nav-toggle" class="nav-icon"></a>
+        
+          
+            <a class="main-nav-link" href="/"><i class="fa fa-home">&nbsp;</i>首页</a>
+          
+          
+          
+            <a class="main-nav-link" href="/archives"><i class="fa fa-folder-o">&nbsp;</i>归档</a>
+          
+          
+          
+            <a class="main-nav-link" href="https://github.com/smallnest"><i class="fa fa-github">&nbsp;</i>github</a>
+          
+          
+          
+            <div class="dropdown main-nav-link"><a class="main-nav-link" href="#"><i class="fa fa-bars">&nbsp;</i>网站群</a>
+              <div class="dropdown-content">
+          
+            
+              <a href="/goasm"><i class="fa fa-language"></i>&nbsp;Go汇编示例</a>
+            
+                
+          
+            
+              <a href="https://gowebexamples.com"><i class="fa fa-external-link"></i>&nbsp;Go Web开发示例</a>
+            
+                
+          
+            
+              <a href="http://go-database-sql.org"><i class="fa fa-external-link"></i>&nbsp;Go 数据库开发教程</a>
+            
+                
+          
+            
+              <hr>
+            
+                
+          
+            
+              <a href="http://rpcx.io"><i class="fa undefined"></i>&nbsp;RPCX官网</a>
+            
+                
+          
+            
+              <a href="http://cn.doc.rpcx.io"><i class="fa undefined"></i>&nbsp;RPC开发指南</a>
+            
+                
+          
+          </div>
+        </div>
+          
+          
+          
+            <a class="main-nav-link" href="/ScalaCollectionsCookbook"><i class="fa fa-book">&nbsp;</i>Scala集合技术手册</a>
+          
+          
+          
+            <a class="main-nav-link" href="/about"><i class="fa fa-lemon-o">&nbsp;</i>关于</a>
+          
+          
+
+
+      </nav>
+      <nav id="sub-nav">
+        
+          <a id="nav-rss-link" class="nav-icon" href="/atom.xml" title="RSS Feed"></a>
+        
+        <a id="nav-search-btn" class="nav-icon" title="Search"></a>
+      </nav>
+      <div id="search-form-wrap">
+        <form action="http://www.baidu.com/baidu" method="get" accept-charset="utf-8" class="search-form">
+          <input type="search" name="word" maxlength="20" class="search-form-input" placeholder="Search">
+          <input type="submit" value="" class="search-form-submit">
+          <input name=tn type=hidden value="bds">
+          <input name=cl type=hidden value="3">
+          <input name=ct type=hidden value="2097152">
+          <input type="hidden" name="si" value="colobu.com">
+        </form>
+      </div>
+    </div>
+  </div>
+</header>
+      <div class="outer">
+        <section id="main"><script>function show_answer(btn, x) { if (btn.value === "显示答案") { btn.value = "隐藏答案" } else { btn.value = "显示答案" } var as = document.getElementById(x); if (as.style.display === "none") { as.style.display = "block" } else { as.style.display = "none" } }</script>
+
+<article id="post-redis-client-side-caching" class="article article-type-post" itemscope
+  itemprop="blogPost">
+  <div class="article-meta">
+    <a href="/2020/05/02/redis-client-side-caching/" class="article-date">
+  <time datetime="2020-05-02T14:18:41.000Z" itemprop="datePublished">2020年05月02日</time>
+</a>
+    
+  <div class="article-category">
+    <a class="article-category-link" href="/categories/数据库/">数据库</a>
+  </div>
+
+    
+  <div class="article-author"> by smallnest</div>
+
+  </div>
+  <div class="article-inner">
+    
+    
+    <header class="article-header">
+      
+  
+    <h1 class="article-title" itemprop="name">
+      Redis 6.0 客户端缓存特性及实践
+	  
+    </h1>
+  
+
+    </header>
+    
+    <div class="article-entry" itemprop="articleBody">
+      
+      
+      
+      <p>Redis 6.0 <a href="http://antirez.com/news/132" target="_blank" rel="external">发布</a>了。</p>
+<p>Redis 6.0的新特性也是在一步步的讨论和优化中确定的。</p>
+<p>很多的特性已经在之前的RC等版本中介绍过了。</p>
+<p>但是正式GA版中也有一些新的变化:</p>
+<ul>
+<li><a href="https://redis.io/topics/encryption" target="_blank" rel="external">SSL</a></li>
+<li><a href="https://redis.io/topics/acl" target="_blank" rel="external">ACL</a>: 更好，命令支持</li>
+<li><a href="https://github.com/antirez/RESP3/blob/master/spec.md" target="_blank" rel="external">RESP3</a></li>
+<li><a href="https://redis.io/topics/client-side-caching" target="_blank" rel="external">Client side caching</a>:重新设计</li>
+<li>Threaded I/O</li>
+<li><a href="https://redis.io/topics/replication" target="_blank" rel="external">Diskless replication on replicas</a></li>
+<li>Cluster support in Redis-benchmark and improved redis-cli cluster support</li>
+<li><a href="https://github.com/antirez/disque-module" target="_blank" rel="external">Disque in beta as a module of Redis</a>: 开始侵入消息队列领域</li>
+<li><a href="https://github.com/RedisLabs/redis-cluster-proxy" target="_blank" rel="external">Redis Cluster Proxy</a></li>
+<li>支持RDB不再使用时可立即删除，针对不落盘的场景</li>
+<li>PSYNC2: 优化的复制协议</li>
+<li>超时设置支持更友好</li>
+<li>更快的RDB加载，20% ~ 30%的提升</li>
+<li>STRALGO，新的字符串命令，目前只有一个实现LCS (longest common subsequence)</li>
+</ul>
+<p>@antirez 提到只是Redis历史上最大的一次版本更新，所以谨慎建议在应用的产品中还是多多测试评估，并且承诺一旦遇到大的bug就会紧急发布6.0.1版。果不其然，一天后就发布了 6.0.1版，修复了一个allocator的bug，这个bug是为了优化而引入的，现在暂时去掉了。</p>
+<blockquote>
+<p>I just released Redis 6.0.1. Unfortunately there was a bug in Redis 6.0.0 introduced just a few days before the release, that only happens when using the non-default allocator (libc malloc in this case triggers it). Optimization reverted, 6.0.1 released. Sorry for the issue.</p>
+</blockquote>
+<p>本文主要关注<strong>Client side caching</strong>(客户端缓存)这一特性。</p>
+<blockquote>
+<p><a href="https://github.com/smallnest/resp3" target="_blank" rel="external">smallnest/RESP3</a> 是Redis RESP3协议的解析库，你可以使用它和Redis底层通讯，或者包装它实现新版的Redis client库或者Redis Server端。</p>
+</blockquote>
+<a id="more"></a>
+<p>一年前，当 @antirez 参加完纽约Redis大会后，5:30就在旅店中醒来了，面对曼哈顿街头的美丽景色，在芸芸众生中思索Redis的未来。包括客户端缓存。</p>
+<p>其实，客户端缓存特性是收到Redis Conf 2018的Ben Malec的影响，一下子打开了 @antirez 思路。 我们知道， 很多公司使用Redis做缓存系统，并且很好的提高了数据访问的性能，但是很多企业为了进一步应对热点数据，还是会在redis的client端缓存一部分热点数据，用来应对吃瓜事件。比如在微博我们经常遇到的是明星出轨、明星分分合合、突发事件等等，每年都会有几次突发的事件，微博除了使用Redis做缓存避免直接访问数据库，还会在前面加更多的cache层，比如<code>L1 cache</code>等，采用memcached等产品作为热数据的缓存。那么就有一个问题，如何能够<strong>及时</strong>的同步这些cache和redis的数据呢？Ben提供了非常有意思的想法。</p>
+<p>伫立在曼哈顿的街头,@antirez 陷入了沉思，后来回到旅馆他开始实现初版的客户端的缓存。当然，最终Redis 6.0中实现和这个初版的实现差别很大，但是很是显然，从客户端的演化过程中我们还是能看到@antirez对这个特性所在的权衡(trade off)。关于这个历史本文不做太多的介绍，因为我们更关注于这个特性最终是什么样子的。</p>
+<p>Redis实现的是一个服务端协助的客户端缓存，叫做<code>tracking</code>。客户端缓存的命令是:</p>
+<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">CLIENT TRACKING ON|OFF [REDIRECT client-id] [PREFIX prefix] [BCAST] [OPTIN] [OPTOUT] [NOLOOP]</div></pre></td></tr></table></figure>
+
+<p>当<code>tracking</code>开启时， Redis会&quot;记住&quot;每个客户端请求的key，当key的值发现变化时会发送失效信息给客户端(invalidation message)。失效信息可以通过RESP3协议发送给请求的客户端，或者转发给一个不同的连接(支持RESP2+ Pub/Sub)。<br>当广播模式(broadcasting)开启时，参与<code>tracking</code>的客户端会收到它通过前缀订阅的key的相关的通知，即使它没请求过对应的key。同时还提供了<code>OPTIN</code>、<code>OPTOUT</code>等模式。</p>
+<blockquote>
+<p>失效消息：当一个key的数据有修改的时候，需要告诉客户端它以前缓存的数据失效了，这时redis会主动发送一条失效消息</p>
+</blockquote>
+<ul>
+<li><strong>REDIRECT <id></id></strong>: 将失效消息转发给另外一个客户端。当我们不使用RESP3而是使用老的RESP2和Redis通讯时，client本身不支持处理失效消息，所以可以开启一个支持Pub/Sub客户端处理失效消息。当然如果客户端支持RESP3也可以将失效消息转发给另外一个客户端。这个cace我们放在最后演示。</li>
+<li><strong>BCAST</strong>: 使用广播模式开始<code>tracking</code>。在这种模式下客户端需要设置将track的key的前缀，这些key的失效消息会广播给所有参与的客户端，不管这些客户端是否请求/缓存额这些key。不开始广播模式时，Redis只会track那些只读命令请求的key，并且只会报告一次失效消息。</li>
+<li><strong>PREFIX <prefix></prefix></strong>: 只应用了广播模式，注册一个key的前缀。所有以这个前缀开始的key有修改时，都会发送失效消息。可以注册多个前缀。如果不设置前缀，那么广播模式会track每一个key。</li>
+<li><strong>OPTIN</strong>: 当广播模式没有激活时，正常<strong>不会</strong>track只读命令的key，除非它们在<code>CLIENT CACHING yes</code>之后被调用。</li>
+<li><strong>OPTOUT</strong>: 当广播模式没有激活时，正常<strong>会</strong>track只读命令的key，除非它们在<code>CLIENT CACHING off</code>之后被调用。</li>
+<li><strong>NOLOOP</strong>: 不发送client自己修改的key。</li>
+</ul>
+<p>下面让我们一一介绍每个选项。</p>
+<h2 id="测试环境搭建">测试环境搭建</h2>
+<p>首先让我们介绍RESP3协议相关的选项，<code>REDIRECT &lt;id&gt;</code>放在最后介绍。</p>
+<p>在尝试之前，你首先需要安装一个redis 6.x的版本，目前时6.0.1。在官方网站上有源代码的下载，编译安装也很简单：</p>
+<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line">make distclean</div><div class="line">make</div><div class="line">make test</div><div class="line"><span class="built_in">sudo</span> make install</div></pre></td></tr></table></figure>
+
+<p>相信很快就有编译好的二进制包可以下载。</p>
+<p>启动server, 它会在6379端口启动一个服务:</p>
+<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">redis-server</div></pre></td></tr></table></figure>
+
+<p>使用<code>redis-cli</code>访问,默认访问本机的6379实例:</p>
+<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">redis-cli</div></pre></td></tr></table></figure>
+
+<p>当然你可以通过<code>-h</code>查看额外的参数配置，比如使用其它端口等等，这里我们使用最简单的例子，重点是了解客户端缓存的特性。</p>
+<p>有时候为了更好的观察redis的返回结果，我们使用<code>telnet</code>而不是<code>redis-cli</code>作为client连接redis，因为redis-cli对结果做了处理，尤其是失效消息，你可能无法观测到。</p>
+<h2 id="BCAST_广播模式_(client_tracking_on)">BCAST 广播模式 (<code>client tracking on</code>)</h2>
+<p>启动redis server:<br><img src="redis-server.png" alt=""></p>
+<p>启动redis-cli:<br><img src="redis-cli.png" alt=""></p>
+<p>当然，我们使用telnet来测试，方便观察redis的返回结果，刚才redis-cli用来更新key值，辅助测试。<br>连接上之后发送<code>hello 3</code>开启RESP3协议：</p>
+<figure class="highlight sh"><figcaption><span>telnet client</span></figcaption><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div></pre></td><td class="code"><pre><div class="line">➜  ~ telnet localhost <span class="number">6379</span></div><div class="line">Trying ::<span class="number">1</span>...</div><div class="line">Connected to localhost.</div><div class="line">Escape character is <span class="string">'^]'</span>.</div><div class="line">hello <span class="number">3</span></div><div class="line">%<span class="number">7</span></div><div class="line"><span class="variable">$6</span></div><div class="line">server</div><div class="line"><span class="variable">$5</span></div><div class="line">redis</div><div class="line"><span class="variable">$7</span></div><div class="line">version</div><div class="line"><span class="variable">$5</span></div><div class="line"><span class="number">6.0</span>.<span class="number">1</span></div><div class="line">......</div></pre></td></tr></table></figure>
+
+<p>之后尝试开启<code>tracking</code>并读取<code>a</code>的值:</p>
+<figure class="highlight sh"><figcaption><span>telnet client</span></figcaption><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div></pre></td><td class="code"><pre><div class="line">client tracking on</div><div class="line">+OK</div><div class="line"><span class="keyword">set</span> a <span class="number">1</span></div><div class="line">+OK</div><div class="line">get a</div><div class="line"><span class="variable">$1</span></div><div class="line"><span class="number">1</span></div></pre></td></tr></table></figure>
+
+<p>这个时候如果使用redis-cli作为另外一个client更新<code>a</code>的值，telnet这个client应该能获得通知:</p>
+<figure class="highlight sh"><figcaption><span>redis-cli client</span></figcaption><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div></pre></td><td class="code"><pre><div class="line"><span class="number">127.0</span>.<span class="number">0.1</span>:<span class="number">6379</span>&gt; <span class="keyword">set</span> a <span class="number">2</span></div><div class="line">OK</div></pre></td></tr></table></figure>
+
+<p>观察telnet，它收到了一个失效消息：</p>
+<figure class="highlight sh"><figcaption><span>telnet client</span></figcaption><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div></pre></td><td class="code"><pre><div class="line">&gt;<span class="number">2</span></div><div class="line"><span class="variable">$10</span></div><div class="line">invalidate</div><div class="line">*<span class="number">1</span></div><div class="line"><span class="variable">$1</span></div><div class="line">a</div></pre></td></tr></table></figure>
+
+<p>注意它采用RESP3中的PUSH类型(<code>&gt;</code>)。</p>
+<p>如果这个使用你再使用redis-cli更新<code>a</code>的值，telnet不会再收到失效消息。 除非telnet client再<code>get a</code>一次，重新<code>tracking</code> a的值。</p>
+<p>可以随时取消<code>tracking</code>:</p>
+<figure class="highlight sh"><figcaption><span>telnet client</span></figcaption><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">client tracking off</div></pre></td></tr></table></figure>
+
+<h2 id="tracking特定前缀的key_(client_tracking_on)">tracking特定前缀的key (<code>client tracking on</code>)</h2>
+<p>上面的方式会tracking所有的key，如果你只想跟踪特定的key, 目前redis提供了一种方式，也就是前缀匹配的方式。你可以只tracking特定前缀的key。<br>它值应用了广播模式。</p>
+<p>使用telnet client设定前缀和开启tracking：</p>
+<figure class="highlight sh"><figcaption><span>telnet client</span></figcaption><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div></pre></td><td class="code"><pre><div class="line">hello <span class="number">3</span></div><div class="line">.......</div><div class="line"></div><div class="line">client tracking on prefix a bcast</div><div class="line">+OK</div><div class="line">client tracking on prefix user bcast</div><div class="line">+OK</div></pre></td></tr></table></figure>
+
+<p>我们tracking两个前缀，以<code>a</code>开头的所有的key和以<code>user</code>开头的所有的key,所有<code>a</code>开头的所有的key和以<code>user</code>开头的所有的key(包括<code>a</code>和<code>user</code>)的key变动时它应该都收到消息。</p>
+<p>然后我们使用redis-cli更新三个key: <code>abc</code>、<code>user:32432723213</code>和<code>feed:6532343243432</code>:</p>
+<figure class="highlight sh"><figcaption><span>redis-cli</span></figcaption><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div></pre></td><td class="code"><pre><div class="line"><span class="number">127.0</span>.<span class="number">0.1</span>:<span class="number">6379</span>&gt; <span class="keyword">set</span> abc <span class="number">100</span></div><div class="line">OK</div><div class="line"><span class="number">127.0</span>.<span class="number">0.1</span>:<span class="number">6379</span>&gt; <span class="keyword">set</span> user:<span class="number">32432723213</span> good</div><div class="line">OK</div><div class="line"><span class="number">127.0</span>.<span class="number">0.1</span>:<span class="number">6379</span>&gt; <span class="keyword">set</span> feed:<span class="number">6532343243432</span> abc</div><div class="line">OK</div></pre></td></tr></table></figure>
+
+<p>telnet client收到<code>abc</code>和<code>user:32432723213</code>的失效消息,而不会收到<code>feed:6532343243432</code>的失效消息：</p>
+<figure class="highlight sh"><figcaption><span>telnet client</span></figcaption><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div></pre></td><td class="code"><pre><div class="line">&gt;<span class="number">2</span></div><div class="line"><span class="variable">$10</span></div><div class="line">invalidate</div><div class="line">*<span class="number">1</span></div><div class="line"><span class="variable">$3</span></div><div class="line">abc</div><div class="line">&gt;<span class="number">2</span></div><div class="line"><span class="variable">$10</span></div><div class="line">invalidate</div><div class="line">*<span class="number">1</span></div><div class="line"><span class="variable">$16</span></div><div class="line">user:<span class="number">32432723213</span></div></pre></td></tr></table></figure>
+
+<p>你可以通过<code>client tracking off</code>停止客户端缓存。目前貌似不能只停止对单个的前缀的<code>tracking</code>。 即使你使用<code>client tracking off prefix user</code>也是取消对所有的key的<code>tracking</code>。</p>
+<figure class="highlight c"><figcaption><span>src/networking.c</span></figcaption><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div></pre></td><td class="code"><pre><div class="line">......</div><div class="line">} <span class="keyword">else</span> <span class="keyword">if</span> (!strcasecmp(c-&gt;argv[<span class="number">2</span>]-&gt;ptr,<span class="string">"off"</span>)) {</div><div class="line">    disableTracking(c);</div><div class="line">} <span class="keyword">else</span> {</div><div class="line">......</div></pre></td></tr></table></figure>
+
+<h2 id="选择加入">选择加入</h2>
+<p>如果使用<code>OPTIN</code>,可以有选择的开启<code>tracking</code>。 只有你发送<code>client caching yes</code>之后的下一条的只读命令的key才会<code>tracking</code>, 否则<strong>其它的只读命令中的key不会tracking</strong>。</p>
+<p>首先我们开始<code>optin</code>，读取a的指，这个时候使用redis-cli client修改a的值为1000，我们并没有收到<code>a</code>的失效消息。</p>
+<figure class="highlight sh"><figcaption><span>telnet client</span></figcaption><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div></pre></td><td class="code"><pre><div class="line">client tracking on optin</div><div class="line">+OK</div><div class="line"></div><div class="line">get a</div><div class="line"><span class="variable">$1</span></div><div class="line"><span class="number">2</span></div></pre></td></tr></table></figure>
+
+<p>接下来我们发送<code>client caching yes</code>，紧接着获取a的值，这个时候如果再修改a的值，你就可以收到一条a的失效消息:</p>
+<figure class="highlight sh"><figcaption><span>telnet client</span></figcaption><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div></pre></td><td class="code"><pre><div class="line">client caching yes</div><div class="line">+OK</div><div class="line">get a</div><div class="line"><span class="variable">$4</span></div><div class="line"><span class="number">1000</span></div><div class="line"></div><div class="line">&gt;<span class="number">2</span></div><div class="line"><span class="variable">$10</span></div><div class="line">invalidate</div><div class="line">*<span class="number">1</span></div><div class="line"><span class="variable">$1</span></div><div class="line">a</div></pre></td></tr></table></figure>
+
+<p>必须是紧跟着<code>client caching yes</code>吗?是的，比如发送下面的命令，只会<code>tracking</code> b,而不是a:</p>
+<figure class="highlight sh"><figcaption><span>telnet client</span></figcaption><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div></pre></td><td class="code"><pre><div class="line">client caching yes</div><div class="line">+OK</div><div class="line">get b</div><div class="line">_</div><div class="line">get a</div><div class="line"><span class="variable">$4</span></div><div class="line"><span class="number">2000</span></div></pre></td></tr></table></figure>
+
+<h2 id="选择退出">选择退出</h2>
+<p>如果使用<code>OPTOUT</code>,你也可以有选择的退出<code>tracking</code>。 只有你发送<code>client caching off</code>之后的下一条的只读命令的key才会停止<code>tracking</code>, 否则<strong>其它的只读命令中的key都会被tracking</strong>。</p>
+<p>可以看到它和<code>OPTIN</code>正好相反，你可以根据你的场景来选择。 </p>
+<p>比如下面的例子，开启<code>OPTOUT</code>之后，对任意的key的变动都收到失效消息：</p>
+<figure class="highlight sh"><figcaption><span>telnet client</span></figcaption><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div></pre></td><td class="code"><pre><div class="line">client tracking on optout</div><div class="line">+OK</div><div class="line"></div><div class="line">get a</div><div class="line"><span class="variable">$4</span></div><div class="line"><span class="number">3000</span></div><div class="line">&gt;<span class="number">2</span></div><div class="line"><span class="variable">$10</span></div><div class="line">invalidate</div><div class="line">*<span class="number">1</span></div><div class="line"><span class="variable">$1</span></div><div class="line">a</div></pre></td></tr></table></figure>
+
+<p>这个时候如果我们想排除<code>b</code>这个key，可以只针对它进行设置:</p>
+<figure class="highlight sh"><figcaption><span>telnet client</span></figcaption><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div></pre></td><td class="code"><pre><div class="line">client caching no</div><div class="line">+OK</div><div class="line">get b</div><div class="line"><span class="variable">$1</span></div><div class="line"><span class="number">3</span></div></pre></td></tr></table></figure>
+
+<p>之后对b的变动并不会收到b的失效消息。</p>
+<p><strong>注意</strong>: <code>OPTIN</code>和<code>OPTOUT</code>是针对的非BCAST场景，也就是只有你发送了key的只读命令后，才会跟踪相应的key。而广播模式是无论你是否发送过key的只读命令，只要redis修改了key，都会发送相应key(或者匹配前缀的key)的失效消息。</p>
+<h2 id="NOLOOP">NOLOOP</h2>
+<p>正常设置时，失效消息是发给所有参与的client，但是如果设置了<code>NOLOOP</code>,则不会发送给更新这个key的client。</p>
+<figure class="highlight sh"><figcaption><span>telnet client</span></figcaption><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div></pre></td><td class="code"><pre><div class="line">client tracking on bcast noloop</div><div class="line">+OK</div><div class="line"><span class="keyword">set</span> a <span class="number">1</span></div><div class="line">+OK</div><div class="line"></div><div class="line">client tracking off</div><div class="line">+OK</div><div class="line">client tracking on bcast</div><div class="line">+OK</div><div class="line"></div><div class="line"><span class="keyword">set</span> a <span class="number">1</span></div><div class="line">+OK</div><div class="line">&gt;<span class="number">2</span></div><div class="line"><span class="variable">$10</span></div><div class="line">invalidate</div><div class="line">*<span class="number">1</span></div><div class="line"><span class="variable">$1</span></div><div class="line">a</div></pre></td></tr></table></figure>
+
+<p>注意，取消tracking只需调用<code>client tracking off</code>即可。</p>
+<h2 id="REDIRECT_">REDIRECT <id></id></h2>
+<p>最后，让我们看一下转发消息的处理。这是为了兼容RESP2协议一个处理方式，将失效消息转发给另外一个client。</p>
+<p>首先我们查看redis-cli的client id:</p>
+<figure class="highlight sh"><figcaption><span>redis-cli</span></figcaption><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div></pre></td><td class="code"><pre><div class="line"><span class="number">127.0</span>.<span class="number">0.1</span>:<span class="number">6379</span>&gt; client list</div><div class="line">id=<span class="number">4</span> addr=<span class="number">127.0</span>.<span class="number">0.1</span>:<span class="number">61017</span> fd=<span class="number">8</span> name= age=<span class="number">33103</span> idle=<span class="number">0</span> flags=N db=<span class="number">0</span> sub=<span class="number">0</span> psub=<span class="number">0</span> multi=-<span class="number">1</span> qbuf=<span class="number">26</span> qbuf-free=<span class="number">32742</span> obl=<span class="number">0</span> oll=<span class="number">0</span> omem=<span class="number">0</span> events=r cmd=client user=default</div></pre></td></tr></table></figure>
+
+<p>使用telnet连接redis,查看client id:</p>
+<figure class="highlight sh"><figcaption><span>telnet client</span></figcaption><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div></pre></td><td class="code"><pre><div class="line">client id</div><div class="line">:<span class="number">12</span></div></pre></td></tr></table></figure>
+
+<p>telnet 客户端开启订阅失效消息：</p>
+<figure class="highlight sh"><figcaption><span>telnet client</span></figcaption><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div></pre></td><td class="code"><pre><div class="line">SUBSCRIBE __redis__:invalidate</div><div class="line">*<span class="number">3</span></div><div class="line"><span class="variable">$9</span></div><div class="line">subscribe</div><div class="line"><span class="variable">$20</span></div><div class="line">__redis__:invalidate</div><div class="line">:<span class="number">1</span></div></pre></td></tr></table></figure>
+
+<p>然后我们就可以将redis-cli的失效消息转发给telnet client:</p>
+<figure class="highlight sh"><figcaption><span>redis-cli</span></figcaption><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line">client tracking on bcast redirect <span class="number">12</span></div><div class="line"></div><div class="line"><span class="number">127.0</span>.<span class="number">0.1</span>:<span class="number">6379</span>&gt; <span class="keyword">set</span> a <span class="number">1000</span></div><div class="line">OK</div></pre></td></tr></table></figure>
+
+<p>可以看到telnet客户端收到了失效消息：</p>
+<figure class="highlight sh"><figcaption><span>telnet client</span></figcaption><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div></pre></td><td class="code"><pre><div class="line">*<span class="number">3</span></div><div class="line"><span class="variable">$7</span></div><div class="line">message</div><div class="line"><span class="variable">$20</span></div><div class="line">__redis__:invalidate</div><div class="line">*<span class="number">1</span></div><div class="line"><span class="variable">$1</span></div><div class="line">a</div></pre></td></tr></table></figure>
+
+<p>如果你要转发的目的client开启了RESP3协议，你就不需要RESP3 Pub/Sub了，因为RESP3原生支持Push消息。</p>
+<p>redis的tracking feature的实现代码在:<a href="https://github.com/antirez/redis/blob/unstable/src/tracking.c" target="_blank" rel="external">tracking.c</a>。</p>
+<h2 id="参考文档">参考文档</h2>
+<ol>
+<li><a href="https://www.youtube.com/watch?v=kliQLwSikO4" target="_blank" rel="external">https://www.youtube.com/watch?v=kliQLwSikO4</a></li>
+<li><a href="http://antirez.com/news/130" target="_blank" rel="external">http://antirez.com/news/130</a></li>
+<li><a href="https://groups.google.com/d/msg/redis-db/xfcnYkbutDw/kTwCozpBBwAJ" target="_blank" rel="external">https://groups.google.com/d/msg/redis-db/xfcnYkbutDw/kTwCozpBBwAJ</a></li>
+</ol>
+
+      
+    </div>
+    <footer class="article-footer">
+      
+
+      
+      <!-- <link rel="stylesheet" href="https://unpkg.com/gitalk/dist/gitalk.css">
+      <script src="https://unpkg.com/gitalk/dist/gitalk.min.js"></script> -->
+      <section id="comments">
+        <script src="https://utteranc.es/client.js"
+                repo="smallnest/gitalk"
+                issue-term="title"
+                theme="github-light"
+                crossorigin="anonymous"
+                async>
+        </script>
+        <!-- <div id="gitalk-container"></div>
+        <script type="text/javascript">
+          var gitalkOpts = {
+            id: '2020/05/02/redis-client-side-caching/',
+            owner: 'smallnest',
+            repo: 'gitalk',
+            title: 'Redis 6.0 客户端缓存特性及实践',
+            body: 'https://colobu.com/2020/05/02/redis-client-side-caching/',
+            clientID: 'bc02724130ed5b7ee275',
+            clientSecret: '68cb0bae2f93a8b88b09e0eb9b08c844b06a9047',
+            admin: ['smallnest'],
+            distractionFreeMode: false
+          };
+
+          const gitalk = new Gitalk(gitalkOpts)
+          gitalk.render('gitalk-container')
+        </script> -->
+        <noscript> 为正常使用评论功能请激活JavaScript</noscript>
+      </section>
+
+      
+
+    </footer>
+  </div>
+  
+  
+<nav id="article-nav">
+  
+    <a href="/2020/05/10/generate-rpcx-code-from-protobuf-files/" id="article-nav-newer" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">Newer</strong>
+      <div class="article-nav-title">
+        
+          基于protobuf快速生成服务治理的RPC代码
+        
+      </div>
+    </a>
+  
+  
+    <a href="/2020/04/09/accidents-of-etcd-and-go-module/" id="article-nav-older" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">Older</strong>
+      <div class="article-nav-title">Etcd使用go module的灾难</div>
+    </a>
+  
+</nav>
+
+  
+</article></section>
+        
+          <aside id="sidebar">
+  
+      <div class="widget-wrap">
+    <h3 class="widget-title">原创图书</h3>
+    <div class="widget">
+      <a href="/ScalaCollectionsCookbook/">
+        <img width="100%" src="/ScalaCollectionsCookbook/scala_collections_cookbook.jpg">
+        <img width="100%" src="/ScalaCollectionsCookbook/scala_collections_cookbook_tw.png">
+      </a>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">分类</h3>
+    <div class="widget">
+      <ul class="category-list"><li class="category-list-item"><a class="category-list-link" href="/categories/Android/">Android</a><span class="category-list-count">12</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/C/">C++</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/DOTNET/">DOTNET</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Docker/">Docker</a><span class="category-list-count">5</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Go/">Go</a><span class="category-list-count">175</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Java/">Java</a><span class="category-list-count">64</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Linux/">Linux</a><span class="category-list-count">7</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Rust/">Rust</a><span class="category-list-count">12</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Scala/">Scala</a><span class="category-list-count">18</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/分享/">分享</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/前端开发/">前端开发</a><span class="category-list-count">18</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/区块链/">区块链</a><span class="category-list-count">8</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/大数据/">大数据</a><span class="category-list-count">60</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/工具/">工具</a><span class="category-list-count">28</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/数据库/">数据库</a><span class="category-list-count">3</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/架构/">架构</a><span class="category-list-count">26</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/算法/">算法</a><span class="category-list-count">4</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/管理/">管理</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/网络编程/">网络编程</a><span class="category-list-count">13</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/读书笔记/">读书笔记</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/运维/">运维</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/高并发编程/">高并发编程</a><span class="category-list-count">20</span></li></ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">标签云</h3>
+    <div class="widget tagcloud">
+      <a href="/tags/Android/" style="font-size: 15.71px;">Android</a><a href="/tags/ApacheBench/" style="font-size: 11.43px;">ApacheBench</a><a href="/tags/Bower/" style="font-size: 10.00px;">Bower</a><a href="/tags/C/" style="font-size: 10.00px;">C#</a><a href="/tags/CDN/" style="font-size: 10.00px;">CDN</a><a href="/tags/CQRS/" style="font-size: 10.00px;">CQRS</a><a href="/tags/CRC/" style="font-size: 10.00px;">CRC</a><a href="/tags/CSS/" style="font-size: 11.43px;">CSS</a><a href="/tags/CompletableFuture/" style="font-size: 10.00px;">CompletableFuture</a><a href="/tags/Comsat/" style="font-size: 10.00px;">Comsat</a><a href="/tags/Curator/" style="font-size: 18.57px;">Curator</a><a href="/tags/DSL/" style="font-size: 10.00px;">DSL</a><a href="/tags/Disruptor/" style="font-size: 10.00px;">Disruptor</a><a href="/tags/Docker/" style="font-size: 11.43px;">Docker</a><a href="/tags/Ember/" style="font-size: 11.43px;">Ember</a><a href="/tags/FastJson/" style="font-size: 10.00px;">FastJson</a><a href="/tags/Fiber/" style="font-size: 10.00px;">Fiber</a><a href="/tags/GAE/" style="font-size: 10.00px;">GAE</a><a href="/tags/GC/" style="font-size: 12.86px;">GC</a><a href="/tags/Gnuplot/" style="font-size: 10.00px;">Gnuplot</a><a href="/tags/Go/" style="font-size: 14.29px;">Go</a><a href="/tags/Gradle/" style="font-size: 10.00px;">Gradle</a><a href="/tags/Grunt/" style="font-size: 10.00px;">Grunt</a><a href="/tags/Gulp/" style="font-size: 10.00px;">Gulp</a><a href="/tags/Hadoop/" style="font-size: 10.00px;">Hadoop</a><a href="/tags/Hazelcast/" style="font-size: 10.00px;">Hazelcast</a><a href="/tags/IPFS/" style="font-size: 10.00px;">IPFS</a><a href="/tags/Ignite/" style="font-size: 10.00px;">Ignite</a><a href="/tags/JVM/" style="font-size: 10.00px;">JVM</a><a href="/tags/Java/" style="font-size: 17.14px;">Java</a><a href="/tags/Kafka/" style="font-size: 20.00px;">Kafka</a><a href="/tags/Lambda/" style="font-size: 14.29px;">Lambda</a><a href="/tags/Linux/" style="font-size: 12.86px;">Linux</a><a href="/tags/LongAdder/" style="font-size: 10.00px;">LongAdder</a><a href="/tags/MathJax/" style="font-size: 10.00px;">MathJax</a><a href="/tags/Maven/" style="font-size: 11.43px;">Maven</a><a href="/tags/Memcached/" style="font-size: 10.00px;">Memcached</a><a href="/tags/Metrics/" style="font-size: 10.00px;">Metrics</a><a href="/tags/Mongo/" style="font-size: 12.86px;">Mongo</a><a href="/tags/Netty/" style="font-size: 15.71px;">Netty</a>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">归档</h3>
+    <div class="widget">
+      <ul class="archive-list"><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/10/">October 2021</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/08/">August 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/07/">July 2021</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/06/">June 2021</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/05/">May 2021</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/04/">April 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/03/">March 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/02/">February 2021</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/01/">January 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/12/">December 2020</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/11/">November 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/09/">September 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/08/">August 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/07/">July 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/06/">June 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/05/">May 2020</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/04/">April 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/03/">March 2020</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/02/">February 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/01/">January 2020</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/12/">December 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/11/">November 2019</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/10/">October 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/09/">September 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/08/">August 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/07/">July 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/06/">June 2019</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/05/">May 2019</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/04/">April 2019</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/03/">March 2019</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/02/">February 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/01/">January 2019</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/12/">December 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/11/">November 2018</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/10/">October 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/09/">September 2018</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/08/">August 2018</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/07/">July 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/06/">June 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/05/">May 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/04/">April 2018</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/03/">March 2018</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/02/">February 2018</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/01/">January 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/12/">December 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/11/">November 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/10/">October 2017</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/09/">September 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/08/">August 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/07/">July 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/06/">June 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/05/">May 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/04/">April 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/03/">March 2017</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/02/">February 2017</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/01/">January 2017</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/12/">December 2016</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/11/">November 2016</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/10/">October 2016</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/09/">September 2016</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/08/">August 2016</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/07/">July 2016</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/06/">June 2016</a><span class="archive-list-count">14</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/05/">May 2016</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/04/">April 2016</a><span class="archive-list-count">14</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/03/">March 2016</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/02/">February 2016</a><span class="archive-list-count">8</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/01/">January 2016</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/12/">December 2015</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/11/">November 2015</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/10/">October 2015</a><span class="archive-list-count">9</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/09/">September 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/08/">August 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/07/">July 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/06/">June 2015</a><span class="archive-list-count">8</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/05/">May 2015</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/04/">April 2015</a><span class="archive-list-count">15</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/03/">March 2015</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/02/">February 2015</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/01/">January 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/12/">December 2014</a><span class="archive-list-count">28</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/11/">November 2014</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/10/">October 2014</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/09/">September 2014</a><span class="archive-list-count">28</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/08/">August 2014</a><span class="archive-list-count">19</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/07/">July 2014</a><span class="archive-list-count">1</span></li></ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">近期文章</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+            <a href="/2021/10/06/replace-implementations-in-go-std-libs-at-runtime/">强制更改Go标准库的实现</a>
+          </li>
+        
+          <li>
+            <a href="/2021/08/30/how-is-go-generic-implemented/">Go泛型是怎么实现的?</a>
+          </li>
+        
+          <li>
+            <a href="/2021/08/01/benchmark-of-rpc-frameworks/">2021年Go生态圈rpc框架benchmark</a>
+          </li>
+        
+          <li>
+            <a href="/2021/07/13/Updating-the-Go-Memory-Model/">[译]更新Go内存模型</a>
+          </li>
+        
+          <li>
+            <a href="/2021/07/11/Programming-Language-Memory-Models/">[译]编程语言内存模型</a>
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">友情链接</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+			 
+            <a href="http://stackshare.io" target="_blank">技术栈</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://toutiao.io/" target="_blank">开发者头条</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://weekly.manong.io/issues/" target="_blank">码农周刊</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.tuicool.com/mags" target="_blank">编程狂人周刊</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.importnew.com/" target="_blank">importnew</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://ifeve.com/" target="_blank">并发编程网</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://github.com" target="_blank">github</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://stackoverflow.com/" target="_blank">stackoverflow</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.javacodegeeks.com/" target="_blank">javacodegeeks</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.infoq.com/" target="_blank">infoq</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.dzone.com/links/index.html" target="_blank">dzone</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://oj.leetcode.com/problems/" target="_blank">leetcode</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://tutorials.jenkov.com" target="_blank">jenkov</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://howtodoinjava.com" target="_blank">HowToDoInJava</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://java-design-patterns.com/patterns/" target="_blank">java design patterns</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://medium.com/netflix-techblog" target="_blank">Netflix技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://www.techiedelight.com" target="_blank">Techie Delight</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://engineering.linkedin.com/blog" target="_blank">Linkedin技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://blogs.dropbox.com/tech/" target="_blank">Dropbox技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://code.fb.com" target="_blank">Facebook技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://jm.taobao.org" target="_blank">淘宝中间件团队</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://tech.meituan.com" target="_blank">美团技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://blogs.360.cn" target="_blank">360技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://xiaomi-info.github.io" target="_blank">小米信息部技术团队</a>
+			
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+      
+
+  
+</aside>
+        
+      </div>
+      <footer id="footer">
+  
+  <div class="outer">
+    <div id="footer-info" class="inner">
+      &copy; 2021 smallnest<br>
+	  Powered by <a href="http://hexo.io/" target="_blank">Hexo</a>
+    </div>
+  </div>
+</footer>
+    </div>
+    <nav id="mobile-nav">
+  
+    
+      <a href="/" class="mobile-nav-link"><i class="fa fa-home">&nbsp;</i>首页</a>
+    
+  
+    
+      <a href="/archives" class="mobile-nav-link"><i class="fa fa-folder-o">&nbsp;</i>归档</a>
+    
+  
+    
+      <a href="https://github.com/smallnest" class="mobile-nav-link"><i class="fa fa-github">&nbsp;</i>github</a>
+    
+  
+    
+      <a class="mobile-nav-link" href="#"><i class="fa fa-bars">&nbsp;</i>网站群</a>
+    
+      
+            <a class="mobile-nav-link" href="/goasm">&nbsp;&nbsp;<i class="fa fa-language">&nbsp;</i>Go汇编示例</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="https://gowebexamples.com">&nbsp;&nbsp;<i class="fa fa-external-link">&nbsp;</i>Go Web开发示例</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://go-database-sql.org">&nbsp;&nbsp;<i class="fa fa-external-link">&nbsp;</i>Go 数据库开发教程</a>
+          
+          
+    
+      
+            
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://rpcx.io">&nbsp;&nbsp;<i class="fa undefined">&nbsp;</i>RPCX官网</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://cn.doc.rpcx.io">&nbsp;&nbsp;<i class="fa undefined">&nbsp;</i>RPC开发指南</a>
+          
+          
+    
+    
+  
+    
+      <a href="/ScalaCollectionsCookbook" class="mobile-nav-link"><i class="fa fa-book">&nbsp;</i>Scala集合技术手册</a>
+    
+  
+    
+      <a href="/about" class="mobile-nav-link"><i class="fa fa-lemon-o">&nbsp;</i>关于</a>
+    
+  
+</nav>
+    
+<script src="//cdn.staticfile.org/jquery/1.11.1/jquery.min.js"></script>
+<script src="//cdn.bootcss.com/jquery.lazyload/1.9.1/jquery.lazyload.min.js"></script>
+
+<script src="//cdnjs.cloudflare.com/ajax/libs/fancybox/3.2.5/jquery.fancybox.min.js"></script>
+
+
+<script src="/js/script.js" type="text/javascript"></script>
+
+<!-- mathjax config similar to math.stackexchange -->
+<script type="text/x-mathjax-config">
+  MathJax.Hub.Config({
+    tex2jax: {
+      inlineMath: [ ['$','$'], ["\\(","\\)"] ],
+      processEscapes: true,
+      skipTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code']
+    }
+  });
+  MathJax.Hub.Queue(function() {
+      var all = MathJax.Hub.getAllJax(), i;
+      for(i=0; i < all.length; i += 1) {
+        all[i].SourceElement().parentNode.className += ' has-jax';
+      }
+  });
+</script>
+<script type="text/javascript" src="//cdn.bootcss.com/mathjax/2.6.0-beta.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML">
+</script>
+
+<div id="totop" style="position:fixed;bottom:150px;right:10px;cursor: pointer;z-index: 2000;">
+	<a title="返回顶部"><img src="/images/scrollup.png"/></a>
+</div>
+<script src="/js/totop.js" type="text/javascript"></script>
+
+
+
+
+<script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "//hm.baidu.com/hm.js?e085d87993250aab11f3e0c15f1c2785";
+  var s = document.getElementsByTagName("script")[0]; 
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+
+
+  </div>
+</body>
+</html>

@@ -1,0 +1,665 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset="utf-8">
+  
+  <title>调试利器：dump goroutine 的 stacktrace</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+  <meta name="description" content="Stack trace是指堆栈回溯信息，在当前时间，以当前方法的执行点开始，回溯调用它的方法的方法的执行点，然后继续回溯，这样就可以跟踪整个方法的调用,大家比较熟悉的是JDK所带的jstack工具，可以把Java的所有线程的stack trace都打印出来。
+它有什么用呢？用处非常的大，当应用出现一些状况的时候，比如某个模块不执行， 锁竞争、CPU占用非常高等问题， 又没有足够的log信息可以分析">
+<meta property="og:type" content="article">
+<meta property="og:title" content="调试利器：dump goroutine 的 stacktrace">
+<meta property="og:url" content="https://colobu.com/2016/12/21/how-to-dump-goroutine-stack-traces/">
+<meta property="og:site_name" content="鸟窝">
+<meta property="og:description" content="Stack trace是指堆栈回溯信息，在当前时间，以当前方法的执行点开始，回溯调用它的方法的方法的执行点，然后继续回溯，这样就可以跟踪整个方法的调用,大家比较熟悉的是JDK所带的jstack工具，可以把Java的所有线程的stack trace都打印出来。
+它有什么用呢？用处非常的大，当应用出现一些状况的时候，比如某个模块不执行， 锁竞争、CPU占用非常高等问题， 又没有足够的log信息可以分析">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="调试利器：dump goroutine 的 stacktrace">
+<meta name="twitter:description" content="Stack trace是指堆栈回溯信息，在当前时间，以当前方法的执行点开始，回溯调用它的方法的方法的执行点，然后继续回溯，这样就可以跟踪整个方法的调用,大家比较熟悉的是JDK所带的jstack工具，可以把Java的所有线程的stack trace都打印出来。
+它有什么用呢？用处非常的大，当应用出现一些状况的时候，比如某个模块不执行， 锁竞争、CPU占用非常高等问题， 又没有足够的log信息可以分析">
+
+  
+  <link rel="alternative" href="/atom.xml" title="鸟窝" type="application/atom+xml">
+  
+  
+  <link rel="icon" href="/favicon.png">
+  
+  <link rel="stylesheet" href="/css/style.css" type="text/css">
+
+  <link href="//cdn.staticfile.org/font-awesome/4.2.0/css/font-awesome.css" rel="stylesheet">
+  
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/fancybox/2.1.7/css/jquery.fancybox.min.css"
+    media="screen" type="text/css">
+  
+  <link rel="stylesheet" href="//cdnjs.cloudflare.com/ajax/libs/animate.css/3.1.1/animate.min.css" media="screen"
+    type="text/css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/tonsky/FiraCode@1.207/distr/fira_code.css">
+</head>
+<body>
+  <div id="container">
+    <div id="wrap">
+      <header id="header">
+  <div id="banner"></div>
+  <div id="header-outer" class="outer">
+    <div id="header-title" class="inner">
+      <h1 id="logo-wrap" class="animated bounceInLeft">
+        <a href="/" id="logo">鸟窝</a>
+      </h1>
+      
+        <h2 id="subtitle-wrap" class="animated bounceInLeft">
+          <a href="/" id="subtitle">大道至简 Simplicity is the ultimate form of sophistication</a>
+        </h2>
+      
+    </div>
+    <div id="header-inner" class="inner">
+      <nav id="main-nav">
+        <a id="main-nav-toggle" class="nav-icon"></a>
+        
+          
+            <a class="main-nav-link" href="/"><i class="fa fa-home">&nbsp;</i>首页</a>
+          
+          
+          
+            <a class="main-nav-link" href="/archives"><i class="fa fa-folder-o">&nbsp;</i>归档</a>
+          
+          
+          
+            <a class="main-nav-link" href="https://github.com/smallnest"><i class="fa fa-github">&nbsp;</i>github</a>
+          
+          
+          
+            <div class="dropdown main-nav-link"><a class="main-nav-link" href="#"><i class="fa fa-bars">&nbsp;</i>网站群</a>
+              <div class="dropdown-content">
+          
+            
+              <a href="/goasm"><i class="fa fa-language"></i>&nbsp;Go汇编示例</a>
+            
+                
+          
+            
+              <a href="https://gowebexamples.com"><i class="fa fa-external-link"></i>&nbsp;Go Web开发示例</a>
+            
+                
+          
+            
+              <a href="http://go-database-sql.org"><i class="fa fa-external-link"></i>&nbsp;Go 数据库开发教程</a>
+            
+                
+          
+            
+              <hr>
+            
+                
+          
+            
+              <a href="http://rpcx.io"><i class="fa undefined"></i>&nbsp;RPCX官网</a>
+            
+                
+          
+            
+              <a href="http://cn.doc.rpcx.io"><i class="fa undefined"></i>&nbsp;RPC开发指南</a>
+            
+                
+          
+          </div>
+        </div>
+          
+          
+          
+            <a class="main-nav-link" href="/ScalaCollectionsCookbook"><i class="fa fa-book">&nbsp;</i>Scala集合技术手册</a>
+          
+          
+          
+            <a class="main-nav-link" href="/about"><i class="fa fa-lemon-o">&nbsp;</i>关于</a>
+          
+          
+
+
+      </nav>
+      <nav id="sub-nav">
+        
+          <a id="nav-rss-link" class="nav-icon" href="/atom.xml" title="RSS Feed"></a>
+        
+        <a id="nav-search-btn" class="nav-icon" title="Search"></a>
+      </nav>
+      <div id="search-form-wrap">
+        <form action="http://www.baidu.com/baidu" method="get" accept-charset="utf-8" class="search-form">
+          <input type="search" name="word" maxlength="20" class="search-form-input" placeholder="Search">
+          <input type="submit" value="" class="search-form-submit">
+          <input name=tn type=hidden value="bds">
+          <input name=cl type=hidden value="3">
+          <input name=ct type=hidden value="2097152">
+          <input type="hidden" name="si" value="colobu.com">
+        </form>
+      </div>
+    </div>
+  </div>
+</header>
+      <div class="outer">
+        <section id="main"><script>function show_answer(btn, x) { if (btn.value === "显示答案") { btn.value = "隐藏答案" } else { btn.value = "显示答案" } var as = document.getElementById(x); if (as.style.display === "none") { as.style.display = "block" } else { as.style.display = "none" } }</script>
+
+<article id="post-how-to-dump-goroutine-stack-traces" class="article article-type-post" itemscope
+  itemprop="blogPost">
+  <div class="article-meta">
+    <a href="/2016/12/21/how-to-dump-goroutine-stack-traces/" class="article-date">
+  <time datetime="2016-12-21T05:33:37.000Z" itemprop="datePublished">2016年12月21日</time>
+</a>
+    
+  <div class="article-category">
+    <a class="article-category-link" href="/categories/Go/">Go</a>
+  </div>
+
+    
+  <div class="article-author"> by smallnest</div>
+
+  </div>
+  <div class="article-inner">
+    
+    
+    <header class="article-header">
+      
+  
+    <h1 class="article-title" itemprop="name">
+      调试利器：dump goroutine 的 stacktrace
+	  
+    </h1>
+  
+
+    </header>
+    
+    <div class="article-entry" itemprop="articleBody">
+      
+      
+      
+      <p>Stack trace是指堆栈回溯信息，在当前时间，以当前方法的执行点开始，回溯调用它的方法的方法的执行点，然后继续回溯，这样就可以跟踪整个方法的调用,大家比较熟悉的是JDK所带的<code>jstack</code>工具，可以把Java的所有线程的stack trace都打印出来。</p>
+<p>它有什么用呢？用处非常的大，当应用出现一些状况的时候，比如某个模块不执行， 锁竞争、CPU占用非常高等问题， 又没有足够的log信息可以分析，那么可以查看stack trace信息，看看线程都被阻塞或者运行在那些代码上，然后定位问题所在。</p>
+<p>对于Go开发的程序，有没有类似<code>jstack</code>这样的利器呢，目前我还没有看到，但是我们可以通过其它途径也很方便的输出goroutine的stack trace信息。</p>
+<p>本文介绍了几种方法，尤其是最后介绍的方法比较有用。</p>
+<a id="more"></a>
+<h2 id="异常退出情况下输出stacktrace">异常退出情况下输出stacktrace</h2>
+<h3 id="通过panic">通过panic</h3>
+<p>如果应用中有没recover的panic,或者应用在运行的时候出现运行时的异常，那么程序自动会将当前的goroutine的stack trace打印出来。</p>
+<p>比如下面的程序，如果你运行会抛出一个panic。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> main</div><div class="line"></div><div class="line"><span class="keyword">import</span> (</div><div class="line">	<span class="string">"time"</span></div><div class="line">)</div><div class="line"></div><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	<span class="keyword">go</span> a()</div><div class="line">	m1()</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> m1() {</div><div class="line">	m2()</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> m2() {</div><div class="line">	m3()</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> m3() {</div><div class="line">	<span class="built_in">panic</span>(<span class="string">"panic from m3"</span>)</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> a() {</div><div class="line">	time.Sleep(time.Hour)</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>输出下面的stack trace:</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div></pre></td><td class="code"><pre><div class="line">dump <span class="keyword">go</span> run p.<span class="keyword">go</span></div><div class="line"><span class="built_in">panic</span>: <span class="built_in">panic</span> from m3</div><div class="line"></div><div class="line">goroutine<span class="number"> 1</span> [running]:</div><div class="line"><span class="built_in">panic</span><span class="number">(0</span>x596a0,<span class="number"> 0</span>xc42000a1a0)</div><div class="line">	/usr/local/Cellar/<span class="keyword">go</span><span class="number">/1.7</span><span class="number">.4</span>/libexec/src/runtime/<span class="built_in">panic</span>.<span class="keyword">go</span><span class="number">:500</span><span class="number"> +0</span>x1a1</div><div class="line">main.m3()</div><div class="line">	/Users/yuepan/<span class="keyword">go</span>/src/github.com/smallnest/dump/p.<span class="keyword">go</span><span class="number">:21</span><span class="number"> +0</span>x6d</div><div class="line">main.m2()</div><div class="line">	/Users/yuepan/<span class="keyword">go</span>/src/github.com/smallnest/dump/p.<span class="keyword">go</span><span class="number">:17</span><span class="number"> +0</span>x14</div><div class="line">main.m1()</div><div class="line">	/Users/yuepan/<span class="keyword">go</span>/src/github.com/smallnest/dump/p.<span class="keyword">go</span><span class="number">:13</span><span class="number"> +0</span>x14</div><div class="line">main.main()</div><div class="line">	/Users/yuepan/<span class="keyword">go</span>/src/github.com/smallnest/dump/p.<span class="keyword">go</span><span class="number">:9</span><span class="number"> +0</span>x3a</div><div class="line">exit status<span class="number"> 2</span></div></pre></td></tr></table></figure>
+
+<p>从这个信息中我们可以看到p.go的第9行是main方法，它在这一行调用m1方法，m1方法在第13行调用m2方法，m2方法在第17行调用m3方法，m3方法在第21出现panic， 它们运行在goroutine 1中，当前goroutine 1的状态是running状态。</p>
+<p>如果想让它把所有的goroutine信息都输出出来，可以设置 <code>GOTRACEBACK=1</code>:</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div></pre></td><td class="code"><pre><div class="line">GOTRACEBACK<span class="number">=1</span> <span class="keyword">go</span> run p.<span class="keyword">go</span></div><div class="line"><span class="built_in">panic</span>: <span class="built_in">panic</span> from m3</div><div class="line"></div><div class="line">goroutine<span class="number"> 1</span> [running]:</div><div class="line"><span class="built_in">panic</span><span class="number">(0</span>x596a0,<span class="number"> 0</span>xc42000a1b0)</div><div class="line">	/usr/local/Cellar/<span class="keyword">go</span><span class="number">/1.7</span><span class="number">.4</span>/libexec/src/runtime/<span class="built_in">panic</span>.<span class="keyword">go</span><span class="number">:500</span><span class="number"> +0</span>x1a1</div><div class="line">main.m3()</div><div class="line">	/Users/yuepan/<span class="keyword">go</span>/src/github.com/smallnest/dump/p.<span class="keyword">go</span><span class="number">:21</span><span class="number"> +0</span>x6d</div><div class="line">main.m2()</div><div class="line">	/Users/yuepan/<span class="keyword">go</span>/src/github.com/smallnest/dump/p.<span class="keyword">go</span><span class="number">:17</span><span class="number"> +0</span>x14</div><div class="line">main.m1()</div><div class="line">	/Users/yuepan/<span class="keyword">go</span>/src/github.com/smallnest/dump/p.<span class="keyword">go</span><span class="number">:13</span><span class="number"> +0</span>x14</div><div class="line">main.main()</div><div class="line">	/Users/yuepan/<span class="keyword">go</span>/src/github.com/smallnest/dump/p.<span class="keyword">go</span><span class="number">:9</span><span class="number"> +0</span>x3a</div><div class="line"></div><div class="line">goroutine<span class="number"> 4</span> [sleep]:</div><div class="line">time.Sleep<span class="number">(0</span>x34630b8a000)</div><div class="line">	/usr/local/Cellar/<span class="keyword">go</span><span class="number">/1.7</span><span class="number">.4</span>/libexec/src/runtime/time.<span class="keyword">go</span><span class="number">:59</span><span class="number"> +0</span>xe1</div><div class="line">main.a()</div><div class="line">	/Users/yuepan/<span class="keyword">go</span>/src/github.com/smallnest/dump/p.<span class="keyword">go</span><span class="number">:25</span><span class="number"> +0</span>x30</div><div class="line">created by main.main</div><div class="line">	/Users/yuepan/<span class="keyword">go</span>/src/github.com/smallnest/dump/p.<span class="keyword">go</span><span class="number">:8</span><span class="number"> +0</span>x35</div><div class="line">exit status<span class="number"> 2</span></div></pre></td></tr></table></figure>
+
+<p>同样你也可以分析这个stack trace的信息，得到方法调用点的情况，同时这个信息将两个goroutine的stack trace都打印出来了，而且goroutine 4的状态是sleep状态。</p>
+<p>Go官方文档对这个环境变量有<a href="https://golang.org/pkg/runtime/" target="_blank" rel="external">介绍</a>：</p>
+<blockquote>
+<p>The GOTRACEBACK variable controls the amount of output generated when a Go program fails due to an unrecovered panic or an unexpected runtime condition. By default, a failure prints a stack trace for the current goroutine, eliding functions internal to the run-time system, and then exits with exit code 2. The failure prints stack traces for all goroutines if there is no current goroutine or the failure is internal to the run-time. GOTRACEBACK=none omits the goroutine stack traces entirely. GOTRACEBACK=single (the default) behaves as described above. GOTRACEBACK=all adds stack traces for all user-created goroutines. GOTRACEBACK=system is like “all” but adds stack frames for run-time functions and shows goroutines created internally by the run-time. GOTRACEBACK=crash is like “system” but crashes in an operating system-specific manner instead of exiting. For example, on Unix systems, the crash raises SIGABRT to trigger a core dump. For historical reasons, the GOTRACEBACK settings 0, 1, and 2 are synonyms for none, all, and system, respectively. The runtime/debug package&#39;s SetTraceback function allows increasing the amount of output at run time, but it cannot reduce the amount below that specified by the environment variable. See <a href="https://golang.org/pkg/runtime/debug/#SetTraceback" target="_blank" rel="external">https://golang.org/pkg/runtime/debug/#SetTraceback</a>.</p>
+</blockquote>
+<p>你可以设置 <code>none</code>、<code>all</code>、<code>system</code>、<code>single</code>、<code>crash</code>，历史原因， 你可以可是设置数字<code>0</code>、<code>1</code>、<code>2</code>，分别代表<code>none</code>、<code>all</code>、<code>system</code>。</p>
+<h3 id="通过SIGQUIT信号">通过SIGQUIT信号</h3>
+<p>如果程序没有发生panic,但是程序有问题，&quot;假死“不工作，我们想看看哪儿出现了问题，可以给程序发送<code>SIGQUIT</code>信号，也可以输出stack trace信息。<br>比如下面的程序:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> main</div><div class="line"></div><div class="line"><span class="keyword">import</span> (</div><div class="line">	<span class="string">"time"</span></div><div class="line">)</div><div class="line"></div><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	<span class="keyword">go</span> a()</div><div class="line">	m1()</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> m1() {</div><div class="line">	m2()</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> m2() {</div><div class="line">	m3()</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> m3() {</div><div class="line">	time.Sleep(time.Hour)</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> a() {</div><div class="line">	time.Sleep(time.Hour)</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>你可以运行<code>kill -SIGQUIT &lt;pid&gt;</code> 杀死这个程序，程序在退出的时候输出strack trace。</p>
+<h2 id="正常情况下输出stacktrace">正常情况下输出stacktrace</h2>
+<p>上面的情况是必须要求程序退出才能打印出stack trace信息，但是有时候我们只是需要跟踪分析一下程序的问题，而不希望程序中断运行。所以我们需要其它的方法来执行。</p>
+<p>你可以暴漏一个命令、一个API或者监听一个信号，然后调用相应的方法把stack trace打印出来。</p>
+<h3 id="打印出当前goroutine的_stacktrace">打印出当前goroutine的 stacktrace</h3>
+<p>通过<code>debug.PrintStack()</code>方法可以将当前所在的goroutine的stack trace打印出来，如下面的程序。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> main</div><div class="line"></div><div class="line"><span class="keyword">import</span> (</div><div class="line">	<span class="string">"runtime/debug"</span></div><div class="line">	<span class="string">"time"</span></div><div class="line">)</div><div class="line"></div><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	<span class="keyword">go</span> a()</div><div class="line">	m1()</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> m1() {</div><div class="line">	m2()</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> m2() {</div><div class="line">	m3()</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> m3() {</div><div class="line">	debug.PrintStack()</div><div class="line">	time.Sleep(time.Hour)</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> a() {</div><div class="line">	time.Sleep(time.Hour)</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<h3 id="打印出所有goroutine的_stacktrace">打印出所有goroutine的 stacktrace</h3>
+<p>可以通过<code>pprof.Lookup(&quot;goroutine&quot;).WriteTo</code>将所有的goroutine的stack trace都打印出来，如下面的程序：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> main</div><div class="line"></div><div class="line"><span class="keyword">import</span> (</div><div class="line">	<span class="string">"os"</span></div><div class="line">	<span class="string">"runtime/pprof"</span></div><div class="line">	<span class="string">"time"</span></div><div class="line">)</div><div class="line"></div><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	<span class="keyword">go</span> a()</div><div class="line">	m1()</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> m1() {</div><div class="line">	m2()</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> m2() {</div><div class="line">	m3()</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> m3() {</div><div class="line">	pprof.Lookup(<span class="string">"goroutine"</span>).WriteTo(os.Stdout,<span class="number"> 1</span>)</div><div class="line">	time.Sleep(time.Hour)</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> a() {</div><div class="line">	time.Sleep(time.Hour)</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<h3 id="较完美的输出_stacktrace">较完美的输出 stacktrace</h3>
+<p>你可以使用<code>runtime.Stack</code>得到所有的goroutine的stack trace信息，事实上前面<code>debug.PrintStack()</code>也是通过这个方法获得的。</p>
+<p>为了更方便的随时的得到应用所有的goroutine的stack trace信息，我们可以监听<code>SIGUSER1</code>信号，当收到这个信号的时候就将stack trace打印出来。发送信号也很简单，通过<code>kill -SIGUSER1 &lt;pid&gt;</code>就可以，不必担心<code>kill</code>会将程序杀死，它只是发了一个信号而已。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div><div class="line">35</div><div class="line">36</div><div class="line">37</div><div class="line">38</div><div class="line">39</div><div class="line">40</div><div class="line">41</div><div class="line">42</div><div class="line">43</div><div class="line">44</div><div class="line">45</div><div class="line">46</div><div class="line">47</div><div class="line">48</div><div class="line">49</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> main</div><div class="line"></div><div class="line"><span class="keyword">import</span> (</div><div class="line">	<span class="string">"fmt"</span></div><div class="line">	<span class="string">"os"</span></div><div class="line">	<span class="string">"os/signal"</span></div><div class="line">	<span class="string">"runtime"</span></div><div class="line">	<span class="string">"syscall"</span></div><div class="line">	<span class="string">"time"</span></div><div class="line">)</div><div class="line"></div><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	setupSigusr1Trap()</div><div class="line"></div><div class="line">	<span class="keyword">go</span> a()</div><div class="line">	m1()</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> m1() {</div><div class="line">	m2()</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> m2() {</div><div class="line">	m3()</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> m3() {</div><div class="line">	time.Sleep(time.Hour)</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> a() {</div><div class="line">	time.Sleep(time.Hour)</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> setupSigusr1Trap() {</div><div class="line">	c := <span class="built_in">make</span>(<span class="keyword">chan</span> os.Signal,<span class="number"> 1</span>)</div><div class="line">	signal.Notify(c, syscall.SIGUSR1)</div><div class="line">	<span class="keyword">go</span> <span class="keyword">func</span>() {</div><div class="line">		<span class="keyword">for</span> <span class="keyword">range</span> c {</div><div class="line">			DumpStacks()</div><div class="line">		}</div><div class="line">	}()</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> DumpStacks() {</div><div class="line">	buf := <span class="built_in">make</span>([]<span class="typename">byte</span>,<span class="number"> 16384</span>)</div><div class="line">	buf = buf[:runtime.Stack(buf, <span class="constant">true</span>)]</div><div class="line">	fmt.Printf(<span class="string">"=== BEGIN goroutine stack dump ===\n%s\n=== END goroutine stack dump ==="</span>, buf)</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>输出结果很直观，方便检查。</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div><div class="line">35</div><div class="line">36</div><div class="line">37</div><div class="line">38</div><div class="line">39</div><div class="line">40</div><div class="line">41</div><div class="line">42</div><div class="line">43</div><div class="line">44</div><div class="line">45</div><div class="line">46</div><div class="line">47</div><div class="line">48</div><div class="line">49</div><div class="line">50</div></pre></td><td class="code"><pre><div class="line">=== <span class="operator"><span class="keyword">BEGIN</span> goroutine stack dump ===</span></div><div class="line">goroutine <span class="number">36</span> [running]:</div><div class="line">main.DumpStacks()</div><div class="line">	/Users/yuepan/<span class="keyword">go</span>/src/github.com/smallnest/dump/d3.<span class="keyword">go</span>:<span class="number">47</span> +<span class="number">0x77</span></div><div class="line">main.setupSigusr1Trap.func1(<span class="number">0xc420070060</span>)</div><div class="line">	/Users/yuepan/<span class="keyword">go</span>/src/github.com/smallnest/dump/d3.<span class="keyword">go</span>:<span class="number">40</span> +<span class="number">0x73</span></div><div class="line">created <span class="keyword">by</span> main.setupSigusr1Trap</div><div class="line">	/Users/yuepan/<span class="keyword">go</span>/src/github.com/smallnest/dump/d3.<span class="keyword">go</span>:<span class="number">42</span> +<span class="number">0xec</span></div><div class="line"></div><div class="line">goroutine <span class="number">1</span> [<span class="keyword">sleep</span>]:</div><div class="line"><span class="keyword">time</span>.<span class="keyword">Sleep</span>(<span class="number">0x34630b8a000</span>)</div><div class="line">	/usr/<span class="keyword">local</span>/Cellar/<span class="keyword">go</span>/<span class="number">1.7</span><span class="number">.4</span>/libexec/src/runtime/<span class="keyword">time</span>.<span class="keyword">go</span>:<span class="number">59</span> +<span class="number">0xe1</span></div><div class="line">main.m3()</div><div class="line">	/Users/yuepan/<span class="keyword">go</span>/src/github.com/smallnest/dump/d3.<span class="keyword">go</span>:<span class="number">28</span> +<span class="number">0x30</span></div><div class="line">main.m2()</div><div class="line">	/Users/yuepan/<span class="keyword">go</span>/src/github.com/smallnest/dump/d3.<span class="keyword">go</span>:<span class="number">24</span> +<span class="number">0x14</span></div><div class="line">main.m1()</div><div class="line">	/Users/yuepan/<span class="keyword">go</span>/src/github.com/smallnest/dump/d3.<span class="keyword">go</span>:<span class="number">20</span> +<span class="number">0x14</span></div><div class="line">main.main()</div><div class="line">	/Users/yuepan/<span class="keyword">go</span>/src/github.com/smallnest/dump/d3.<span class="keyword">go</span>:<span class="number">16</span> +<span class="number">0x3f</span></div><div class="line"></div><div class="line">goroutine <span class="number">34</span> [syscall]:</div><div class="line">os/signal.signal_recv(<span class="number">0xff280</span>)</div><div class="line">	/usr/<span class="keyword">local</span>/Cellar/<span class="keyword">go</span>/<span class="number">1.7</span><span class="number">.4</span>/libexec/src/runtime/sigqueue.<span class="keyword">go</span>:<span class="number">116</span> +<span class="number">0x157</span></div><div class="line">os/signal.loop()</div><div class="line">	/usr/<span class="keyword">local</span>/Cellar/<span class="keyword">go</span>/<span class="number">1.7</span><span class="number">.4</span>/libexec/src/os/signal/signal_unix.<span class="keyword">go</span>:<span class="number">22</span> +<span class="number">0x22</span></div><div class="line">created <span class="keyword">by</span> os/signal.init<span class="number">.1</span></div><div class="line">	/usr/<span class="keyword">local</span>/Cellar/<span class="keyword">go</span>/<span class="number">1.7</span><span class="number">.4</span>/libexec/src/os/signal/signal_unix.<span class="keyword">go</span>:<span class="number">28</span> +<span class="number">0x41</span></div><div class="line"></div><div class="line">goroutine <span class="number">35</span> [<span class="keyword">select</span>, locked <span class="keyword">to</span> thread]:</div><div class="line">runtime.gopark(<span class="number">0xb5cc8</span>, <span class="number">0x0</span>, <span class="number">0xab3ef</span>, <span class="number">0x6</span>, <span class="number">0x18</span>, <span class="number">0x2</span>)</div><div class="line">	/usr/<span class="keyword">local</span>/Cellar/<span class="keyword">go</span>/<span class="number">1.7</span><span class="number">.4</span>/libexec/src/runtime/proc.<span class="keyword">go</span>:<span class="number">259</span> +<span class="number">0x13a</span></div><div class="line">runtime.selectgoImpl(<span class="number">0xc42008d730</span>, <span class="number">0x0</span>, <span class="number">0x18</span>)</div><div class="line">	/usr/<span class="keyword">local</span>/Cellar/<span class="keyword">go</span>/<span class="number">1.7</span><span class="number">.4</span>/libexec/src/runtime/<span class="keyword">select</span>.<span class="keyword">go</span>:<span class="number">423</span> +<span class="number">0x11d9</span></div><div class="line">runtime.selectgo(<span class="number">0xc42008d730</span>)</div><div class="line">	/usr/<span class="keyword">local</span>/Cellar/<span class="keyword">go</span>/<span class="number">1.7</span><span class="number">.4</span>/libexec/src/runtime/<span class="keyword">select</span>.<span class="keyword">go</span>:<span class="number">238</span> +<span class="number">0x1c</span></div><div class="line">runtime.ensureSigM.func1()</div><div class="line">	/usr/<span class="keyword">local</span>/Cellar/<span class="keyword">go</span>/<span class="number">1.7</span><span class="number">.4</span>/libexec/src/runtime/signal1_unix.<span class="keyword">go</span>:<span class="number">304</span> +<span class="number">0x2d1</span></div><div class="line">runtime.goexit()</div><div class="line">	/usr/<span class="keyword">local</span>/Cellar/<span class="keyword">go</span>/<span class="number">1.7</span><span class="number">.4</span>/libexec/src/runtime/asm_amd64.s:<span class="number">2086</span> +<span class="number">0x1</span></div><div class="line"></div><div class="line">goroutine <span class="number">37</span> [<span class="keyword">sleep</span>]:</div><div class="line"><span class="keyword">time</span>.<span class="keyword">Sleep</span>(<span class="number">0x34630b8a000</span>)</div><div class="line">	/usr/<span class="keyword">local</span>/Cellar/<span class="keyword">go</span>/<span class="number">1.7</span><span class="number">.4</span>/libexec/src/runtime/<span class="keyword">time</span>.<span class="keyword">go</span>:<span class="number">59</span> +<span class="number">0xe1</span></div><div class="line">main.a()</div><div class="line">	/Users/yuepan/<span class="keyword">go</span>/src/github.com/smallnest/dump/d3.<span class="keyword">go</span>:<span class="number">32</span> +<span class="number">0x30</span></div><div class="line">created <span class="keyword">by</span> main.main</div><div class="line">	/Users/yuepan/<span class="keyword">go</span>/src/github.com/smallnest/dump/d3.<span class="keyword">go</span>:<span class="number">15</span> +<span class="number">0x3a</span></div><div class="line"></div><div class="line">=== <span class="keyword">END</span> goroutine stack dump ===</div></pre></td></tr></table></figure>
+
+<p>当然，这段代码也不是我原创的，这是docker代码库中的一段<a href="https://github.com/docker/docker/blob/95fcf76cc64a4acf95c168e8d8607e3acf405c13/pkg/signal/trap.go" target="_blank" rel="external">代码</a>，很简单，也很强大。</p>
+<h2 id="配置_http/pprof">配置 http/pprof</h2>
+<p>如果你的代码中配置了 <code>http/pprof</code>,你可以通过下面的地址访问所有的groutine的堆栈：</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line"><span class="symbol">http:</span>/<span class="regexp">/localhost:8888/debug</span><span class="regexp">/pprof/goroutine</span>?debug=<span class="number">2</span>.</div></pre></td></tr></table></figure>
+
+<h2 id="参考文档">参考文档</h2>
+<ol>
+<li><a href="http://stackoverflow.com/questions/19094099/how-to-dump-goroutine-stacktraces" target="_blank" rel="external">http://stackoverflow.com/questions/19094099/how-to-dump-goroutine-stacktraces</a></li>
+<li><a href="https://golang.org/pkg/runtime/" target="_blank" rel="external">https://golang.org/pkg/runtime/</a></li>
+</ol>
+
+      
+    </div>
+    <footer class="article-footer">
+      
+
+      
+      <!-- <link rel="stylesheet" href="https://unpkg.com/gitalk/dist/gitalk.css">
+      <script src="https://unpkg.com/gitalk/dist/gitalk.min.js"></script> -->
+      <section id="comments">
+        <script src="https://utteranc.es/client.js"
+                repo="smallnest/gitalk"
+                issue-term="title"
+                theme="github-light"
+                crossorigin="anonymous"
+                async>
+        </script>
+        <!-- <div id="gitalk-container"></div>
+        <script type="text/javascript">
+          var gitalkOpts = {
+            id: '2016/12/21/how-to-dump-goroutine-stack-traces/',
+            owner: 'smallnest',
+            repo: 'gitalk',
+            title: '调试利器：dump goroutine 的 stacktrace',
+            body: 'https://colobu.com/2016/12/21/how-to-dump-goroutine-stack-traces/',
+            clientID: 'bc02724130ed5b7ee275',
+            clientSecret: '68cb0bae2f93a8b88b09e0eb9b08c844b06a9047',
+            admin: ['smallnest'],
+            distractionFreeMode: false
+          };
+
+          const gitalk = new Gitalk(gitalkOpts)
+          gitalk.render('gitalk-container')
+        </script> -->
+        <noscript> 为正常使用评论功能请激活JavaScript</noscript>
+      </section>
+
+      
+
+    </footer>
+  </div>
+  
+  
+<nav id="article-nav">
+  
+    <a href="/2016/12/24/a-featured-fsm/" id="article-nav-newer" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">Newer</strong>
+      <div class="article-nav-title">
+        
+          一个有特色的有限状态机
+        
+      </div>
+    </a>
+  
+  
+    <a href="/2016/12/20/detect-and-link-references-in-github/" id="article-nav-older" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">Older</strong>
+      <div class="article-nav-title">Github和gitlab的自动连接</div>
+    </a>
+  
+</nav>
+
+  
+</article></section>
+        
+          <aside id="sidebar">
+  
+      <div class="widget-wrap">
+    <h3 class="widget-title">原创图书</h3>
+    <div class="widget">
+      <a href="/ScalaCollectionsCookbook/">
+        <img width="100%" src="/ScalaCollectionsCookbook/scala_collections_cookbook.jpg">
+        <img width="100%" src="/ScalaCollectionsCookbook/scala_collections_cookbook_tw.png">
+      </a>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">分类</h3>
+    <div class="widget">
+      <ul class="category-list"><li class="category-list-item"><a class="category-list-link" href="/categories/Android/">Android</a><span class="category-list-count">12</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/C/">C++</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/DOTNET/">DOTNET</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Docker/">Docker</a><span class="category-list-count">5</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Go/">Go</a><span class="category-list-count">175</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Java/">Java</a><span class="category-list-count">64</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Linux/">Linux</a><span class="category-list-count">7</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Rust/">Rust</a><span class="category-list-count">12</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Scala/">Scala</a><span class="category-list-count">18</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/分享/">分享</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/前端开发/">前端开发</a><span class="category-list-count">18</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/区块链/">区块链</a><span class="category-list-count">8</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/大数据/">大数据</a><span class="category-list-count">60</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/工具/">工具</a><span class="category-list-count">28</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/数据库/">数据库</a><span class="category-list-count">3</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/架构/">架构</a><span class="category-list-count">26</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/算法/">算法</a><span class="category-list-count">4</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/管理/">管理</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/网络编程/">网络编程</a><span class="category-list-count">13</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/读书笔记/">读书笔记</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/运维/">运维</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/高并发编程/">高并发编程</a><span class="category-list-count">20</span></li></ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">标签云</h3>
+    <div class="widget tagcloud">
+      <a href="/tags/Android/" style="font-size: 15.71px;">Android</a><a href="/tags/ApacheBench/" style="font-size: 11.43px;">ApacheBench</a><a href="/tags/Bower/" style="font-size: 10.00px;">Bower</a><a href="/tags/C/" style="font-size: 10.00px;">C#</a><a href="/tags/CDN/" style="font-size: 10.00px;">CDN</a><a href="/tags/CQRS/" style="font-size: 10.00px;">CQRS</a><a href="/tags/CRC/" style="font-size: 10.00px;">CRC</a><a href="/tags/CSS/" style="font-size: 11.43px;">CSS</a><a href="/tags/CompletableFuture/" style="font-size: 10.00px;">CompletableFuture</a><a href="/tags/Comsat/" style="font-size: 10.00px;">Comsat</a><a href="/tags/Curator/" style="font-size: 18.57px;">Curator</a><a href="/tags/DSL/" style="font-size: 10.00px;">DSL</a><a href="/tags/Disruptor/" style="font-size: 10.00px;">Disruptor</a><a href="/tags/Docker/" style="font-size: 11.43px;">Docker</a><a href="/tags/Ember/" style="font-size: 11.43px;">Ember</a><a href="/tags/FastJson/" style="font-size: 10.00px;">FastJson</a><a href="/tags/Fiber/" style="font-size: 10.00px;">Fiber</a><a href="/tags/GAE/" style="font-size: 10.00px;">GAE</a><a href="/tags/GC/" style="font-size: 12.86px;">GC</a><a href="/tags/Gnuplot/" style="font-size: 10.00px;">Gnuplot</a><a href="/tags/Go/" style="font-size: 14.29px;">Go</a><a href="/tags/Gradle/" style="font-size: 10.00px;">Gradle</a><a href="/tags/Grunt/" style="font-size: 10.00px;">Grunt</a><a href="/tags/Gulp/" style="font-size: 10.00px;">Gulp</a><a href="/tags/Hadoop/" style="font-size: 10.00px;">Hadoop</a><a href="/tags/Hazelcast/" style="font-size: 10.00px;">Hazelcast</a><a href="/tags/IPFS/" style="font-size: 10.00px;">IPFS</a><a href="/tags/Ignite/" style="font-size: 10.00px;">Ignite</a><a href="/tags/JVM/" style="font-size: 10.00px;">JVM</a><a href="/tags/Java/" style="font-size: 17.14px;">Java</a><a href="/tags/Kafka/" style="font-size: 20.00px;">Kafka</a><a href="/tags/Lambda/" style="font-size: 14.29px;">Lambda</a><a href="/tags/Linux/" style="font-size: 12.86px;">Linux</a><a href="/tags/LongAdder/" style="font-size: 10.00px;">LongAdder</a><a href="/tags/MathJax/" style="font-size: 10.00px;">MathJax</a><a href="/tags/Maven/" style="font-size: 11.43px;">Maven</a><a href="/tags/Memcached/" style="font-size: 10.00px;">Memcached</a><a href="/tags/Metrics/" style="font-size: 10.00px;">Metrics</a><a href="/tags/Mongo/" style="font-size: 12.86px;">Mongo</a><a href="/tags/Netty/" style="font-size: 15.71px;">Netty</a>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">归档</h3>
+    <div class="widget">
+      <ul class="archive-list"><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/10/">October 2021</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/08/">August 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/07/">July 2021</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/06/">June 2021</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/05/">May 2021</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/04/">April 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/03/">March 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/02/">February 2021</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/01/">January 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/12/">December 2020</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/11/">November 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/09/">September 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/08/">August 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/07/">July 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/06/">June 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/05/">May 2020</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/04/">April 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/03/">March 2020</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/02/">February 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/01/">January 2020</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/12/">December 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/11/">November 2019</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/10/">October 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/09/">September 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/08/">August 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/07/">July 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/06/">June 2019</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/05/">May 2019</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/04/">April 2019</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/03/">March 2019</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/02/">February 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/01/">January 2019</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/12/">December 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/11/">November 2018</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/10/">October 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/09/">September 2018</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/08/">August 2018</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/07/">July 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/06/">June 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/05/">May 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/04/">April 2018</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/03/">March 2018</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/02/">February 2018</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/01/">January 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/12/">December 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/11/">November 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/10/">October 2017</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/09/">September 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/08/">August 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/07/">July 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/06/">June 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/05/">May 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/04/">April 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/03/">March 2017</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/02/">February 2017</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/01/">January 2017</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/12/">December 2016</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/11/">November 2016</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/10/">October 2016</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/09/">September 2016</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/08/">August 2016</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/07/">July 2016</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/06/">June 2016</a><span class="archive-list-count">14</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/05/">May 2016</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/04/">April 2016</a><span class="archive-list-count">14</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/03/">March 2016</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/02/">February 2016</a><span class="archive-list-count">8</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/01/">January 2016</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/12/">December 2015</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/11/">November 2015</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/10/">October 2015</a><span class="archive-list-count">9</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/09/">September 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/08/">August 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/07/">July 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/06/">June 2015</a><span class="archive-list-count">8</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/05/">May 2015</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/04/">April 2015</a><span class="archive-list-count">15</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/03/">March 2015</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/02/">February 2015</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/01/">January 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/12/">December 2014</a><span class="archive-list-count">28</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/11/">November 2014</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/10/">October 2014</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/09/">September 2014</a><span class="archive-list-count">28</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/08/">August 2014</a><span class="archive-list-count">19</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/07/">July 2014</a><span class="archive-list-count">1</span></li></ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">近期文章</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+            <a href="/2021/10/06/replace-implementations-in-go-std-libs-at-runtime/">强制更改Go标准库的实现</a>
+          </li>
+        
+          <li>
+            <a href="/2021/08/30/how-is-go-generic-implemented/">Go泛型是怎么实现的?</a>
+          </li>
+        
+          <li>
+            <a href="/2021/08/01/benchmark-of-rpc-frameworks/">2021年Go生态圈rpc框架benchmark</a>
+          </li>
+        
+          <li>
+            <a href="/2021/07/13/Updating-the-Go-Memory-Model/">[译]更新Go内存模型</a>
+          </li>
+        
+          <li>
+            <a href="/2021/07/11/Programming-Language-Memory-Models/">[译]编程语言内存模型</a>
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">友情链接</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+			 
+            <a href="http://stackshare.io" target="_blank">技术栈</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://toutiao.io/" target="_blank">开发者头条</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://weekly.manong.io/issues/" target="_blank">码农周刊</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.tuicool.com/mags" target="_blank">编程狂人周刊</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.importnew.com/" target="_blank">importnew</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://ifeve.com/" target="_blank">并发编程网</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://github.com" target="_blank">github</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://stackoverflow.com/" target="_blank">stackoverflow</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.javacodegeeks.com/" target="_blank">javacodegeeks</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.infoq.com/" target="_blank">infoq</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.dzone.com/links/index.html" target="_blank">dzone</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://oj.leetcode.com/problems/" target="_blank">leetcode</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://tutorials.jenkov.com" target="_blank">jenkov</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://howtodoinjava.com" target="_blank">HowToDoInJava</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://java-design-patterns.com/patterns/" target="_blank">java design patterns</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://medium.com/netflix-techblog" target="_blank">Netflix技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://www.techiedelight.com" target="_blank">Techie Delight</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://engineering.linkedin.com/blog" target="_blank">Linkedin技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://blogs.dropbox.com/tech/" target="_blank">Dropbox技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://code.fb.com" target="_blank">Facebook技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://jm.taobao.org" target="_blank">淘宝中间件团队</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://tech.meituan.com" target="_blank">美团技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://blogs.360.cn" target="_blank">360技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://xiaomi-info.github.io" target="_blank">小米信息部技术团队</a>
+			
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+      
+
+  
+</aside>
+        
+      </div>
+      <footer id="footer">
+  
+  <div class="outer">
+    <div id="footer-info" class="inner">
+      &copy; 2021 smallnest<br>
+	  Powered by <a href="http://hexo.io/" target="_blank">Hexo</a>
+    </div>
+  </div>
+</footer>
+    </div>
+    <nav id="mobile-nav">
+  
+    
+      <a href="/" class="mobile-nav-link"><i class="fa fa-home">&nbsp;</i>首页</a>
+    
+  
+    
+      <a href="/archives" class="mobile-nav-link"><i class="fa fa-folder-o">&nbsp;</i>归档</a>
+    
+  
+    
+      <a href="https://github.com/smallnest" class="mobile-nav-link"><i class="fa fa-github">&nbsp;</i>github</a>
+    
+  
+    
+      <a class="mobile-nav-link" href="#"><i class="fa fa-bars">&nbsp;</i>网站群</a>
+    
+      
+            <a class="mobile-nav-link" href="/goasm">&nbsp;&nbsp;<i class="fa fa-language">&nbsp;</i>Go汇编示例</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="https://gowebexamples.com">&nbsp;&nbsp;<i class="fa fa-external-link">&nbsp;</i>Go Web开发示例</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://go-database-sql.org">&nbsp;&nbsp;<i class="fa fa-external-link">&nbsp;</i>Go 数据库开发教程</a>
+          
+          
+    
+      
+            
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://rpcx.io">&nbsp;&nbsp;<i class="fa undefined">&nbsp;</i>RPCX官网</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://cn.doc.rpcx.io">&nbsp;&nbsp;<i class="fa undefined">&nbsp;</i>RPC开发指南</a>
+          
+          
+    
+    
+  
+    
+      <a href="/ScalaCollectionsCookbook" class="mobile-nav-link"><i class="fa fa-book">&nbsp;</i>Scala集合技术手册</a>
+    
+  
+    
+      <a href="/about" class="mobile-nav-link"><i class="fa fa-lemon-o">&nbsp;</i>关于</a>
+    
+  
+</nav>
+    
+<script src="//cdn.staticfile.org/jquery/1.11.1/jquery.min.js"></script>
+<script src="//cdn.bootcss.com/jquery.lazyload/1.9.1/jquery.lazyload.min.js"></script>
+
+<script src="//cdnjs.cloudflare.com/ajax/libs/fancybox/3.2.5/jquery.fancybox.min.js"></script>
+
+
+<script src="/js/script.js" type="text/javascript"></script>
+
+<!-- mathjax config similar to math.stackexchange -->
+<script type="text/x-mathjax-config">
+  MathJax.Hub.Config({
+    tex2jax: {
+      inlineMath: [ ['$','$'], ["\\(","\\)"] ],
+      processEscapes: true,
+      skipTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code']
+    }
+  });
+  MathJax.Hub.Queue(function() {
+      var all = MathJax.Hub.getAllJax(), i;
+      for(i=0; i < all.length; i += 1) {
+        all[i].SourceElement().parentNode.className += ' has-jax';
+      }
+  });
+</script>
+<script type="text/javascript" src="//cdn.bootcss.com/mathjax/2.6.0-beta.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML">
+</script>
+
+<div id="totop" style="position:fixed;bottom:150px;right:10px;cursor: pointer;z-index: 2000;">
+	<a title="返回顶部"><img src="/images/scrollup.png"/></a>
+</div>
+<script src="/js/totop.js" type="text/javascript"></script>
+
+
+
+
+<script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "//hm.baidu.com/hm.js?e085d87993250aab11f3e0c15f1c2785";
+  var s = document.getElementsByTagName("script")[0]; 
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+
+
+  </div>
+</body>
+</html>
