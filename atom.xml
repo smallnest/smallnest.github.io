@@ -4,7 +4,7 @@
   <subtitle><![CDATA[大道至简 Simplicity is the ultimate form of sophistication]]></subtitle>
   <link href="/atom.xml" rel="self"/>
   <link href="https://colobu.com/"/>
-  <updated>2021-10-28T04:19:36.708Z</updated>
+  <updated>2021-11-09T08:06:38.622Z</updated>
   <id>https://colobu.com/</id>
   
   <author>
@@ -13,6 +13,67 @@
   </author>
   
   <generator uri="http://zespia.tw/hexo/">Hexo</generator>
+  
+  <entry>
+    <title><![CDATA[Go并发编程一年回顾(2021)]]></title>
+    <link href="https://colobu.com/2021/11/09/the-state-of-go-sync-2021/"/>
+    <id>https://colobu.com/2021/11/09/the-state-of-go-sync-2021/</id>
+    <published>2021-11-09T06:37:32.000Z</published>
+    <updated>2021-11-09T08:04:48.742Z</updated>
+    <content type="html"><![CDATA[<p>去年的时候我写了一篇<a href="https://colobu.com/2020/07/05/the-state-of-go-sync-2020/" target="_blank" rel="external">Go并发编程一年回顾</a>,如今2021年也快结束了，Go 1.18的特性已经冻结，美国页很快进入了假期模式，趁这个节点，我们回顾一下近一年Go并发编程的进展。</p>
+<a id="more"></a>
+<h2 id="TryLock终于要发布">TryLock终于要发布</h2>
+<p>很久以来(可以追溯到2013年<a href="https://github.com/golang/go/issues/6123" target="_blank" rel="external">#6123</a>),就有人提议给Mutex增加TryLock的方法，被大佬们无情的拒绝了，断断续续，断断续续的一直有人提议需要这个方法，如今到了2021年，Go team大佬们终于松口了，增加了相应的方法(<a href="https://github.com/golang/go/issues/45435" target="_blank" rel="external">#45435</a>)。</p>
+<p>一句话来说，Mutex增加了TryLock， 尝试获取锁, RWMutex 增加了 TryLock和TryRLock方法，尝试获取写锁和读锁。它们都返回bool类型。如果返回true,代表已经获取到了相应的锁，如果返回false,则表示没有获取到相应的锁。</p>
+<p>本质上，要实现这些方法并不麻烦，接下来我们看看相应的实现(去除了race代码)。</p>
+<p>首先是Mutex.TryLock:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> (m *Mutex) TryLock() <span class="typename">bool</span> {</div><div class="line">	<span class="keyword">if</span> atomic.CompareAndSwapInt32(&m.state,<span class="number"> 0</span>, mutexLocked) {</div><div class="line">		<span class="keyword">return</span> <span class="constant">true</span></div><div class="line">	}</div><div class="line">	<span class="keyword">return</span> <span class="constant">false</span></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>也就是利用aromic.CAS操作state字段，如果当前没有被锁或者没有等待锁的情况，就可以成功获取到锁。不会尝试spin和与等待者竞争。</p>
+<p>不过这段代码的风格经常会被拿来吐槽吧，当然有一个理由就是这样写比较直观，大家学习代码风格和最佳实践的时候更可能这样去写：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> (m *Mutex) TryLock() <span class="typename">bool</span> {</div><div class="line">	<span class="keyword">return</span> atomic.CompareAndSwapInt32(&m.state,<span class="number"> 0</span>, mutexLocked)</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>读写锁有些麻烦，因为它有读锁和写锁两种情况。</p>
+<p>首先看RWMutex.TryLock(去除了race代码):</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> (rw *RWMutex) TryLock() <span class="typename">bool</span> {</div><div class="line">	<span class="keyword">if</span> !rw.w.TryLock() {</div><div class="line">		<span class="keyword">return</span> <span class="constant">false</span></div><div class="line">	}</div><div class="line">	<span class="keyword">if</span> !atomic.CompareAndSwapInt32(&rw.readerCount,<span class="number"> 0</span>, -rwmutexMaxReaders) {</div><div class="line">        rw.w.Unlock()</div><div class="line">		<span class="keyword">return</span> <span class="constant">false</span></div><div class="line">	}</div><div class="line">	<span class="keyword">return</span> <span class="constant">true</span></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>首先底层的Mutex.TryLock,尝试获取w字段的锁,如果成功，需要检查当前的Reader, 如果没有reader,则成功, 如果此时不幸还有reader没有释放读锁，那么尝试Lock也是不成功的,返回false。注意返回之前一定要把rw.w的锁释放掉。<br>这里的风格问题前面已提到了。</p>
+<p>接下来看RWMutex.TryRLock(去除了race代码):</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> (rw *RWMutex) TryRLock() <span class="typename">bool</span> {</div><div class="line">	<span class="keyword">for</span> {</div><div class="line">		c := atomic.LoadInt32(&rw.readerCount)</div><div class="line">		<span class="keyword">if</span> c &lt;<span class="number"> 0</span> {</div><div class="line">			<span class="keyword">return</span> <span class="constant">false</span></div><div class="line">		}</div><div class="line">		<span class="keyword">if</span> atomic.CompareAndSwapInt32(&rw.readerCount, c, c<span class="number">+1</span>) {</div><div class="line">			<span class="keyword">return</span> <span class="constant">true</span></div><div class="line">		}</div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>这段代码首先检查readerCount,如果为负值，说明有writer，此时直接返回false。</p>
+<p>如果没有writer, 则使用atomic.CAS把reader加1, 如果成功，返回。如果不成功，那么此时可能有其它reader加入，或者也可能有writer加入，因为不能判断是reader还是writer加入，那么就用一个for循环再重试。</p>
+<p>如果是writer加入，那么下一次循环c可能就是负数，直接返回false,如果刚才是有reader加入，那么它再尝试加1就好了。</p>
+<p>以上就是新增的代码，不是特别复杂。Go team不情愿的把这几个方法加上了, 同时有很贴心的提示(恐吓):</p>
+<blockquote>
+<p>Note that while correct uses of TryLock do exist, they are rare,<br>and use of TryLock is often a sign of a deeper problem<br> in a particular use of mutexes. </p>
+</blockquote>
+<h2 id="WaitGroup的字段变化">WaitGroup的字段变化</h2>
+<p>先前，WaitGroup类型使用<code>[3]uint32</code>作为<code>state1</code>字段的类型，在64位和32位编译器情况下，这个字段的byte的意义是不同的，主要是为了对齐。虽然使用一个字段很&quot;睿智&quot;,但是阅读起来却很费劲，现在，Go team把它改成了两个字段，根据对齐规则，64位编译器会对齐相应字段，讲真的，我们不差那4个字节。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> WaitGroup <span class="keyword">struct</span> {</div><div class="line">	noCopy noCopy</div><div class="line"></div><div class="line">	<span class="comment">// 64-bit value: high 32 bits are counter, low 32 bits are waiter count.</span></div><div class="line">	<span class="comment">// 64-bit atomic operations require 64-bit alignment, but 32-bit</span></div><div class="line">	<span class="comment">// compilers only guarantee that 64-bit fields are 32-bit aligned.</span></div><div class="line">	<span class="comment">// For this reason on 32 bit architectures we need to check in state()</span></div><div class="line">	<span class="comment">// if state1 is aligned or not, and dynamically "swap" the field order if</span></div><div class="line">	<span class="comment">// needed.</span></div><div class="line">	state1 <span class="typename">uint64</span></div><div class="line">	state2 <span class="typename">uint32</span></div><div class="line">}</div><div class="line"></div><div class="line"><span class="comment">// state returns pointers to the state and sema fields stored within wg.state*.</span></div><div class="line"><span class="keyword">func</span> (wg *WaitGroup) state() (statep *<span class="typename">uint64</span>, semap *<span class="typename">uint32</span>) {</div><div class="line">	<span class="keyword">if</span> unsafe.Alignof(wg.state1) ==<span class="number"> 8</span> || <span class="typename">uintptr</span>(unsafe.Pointer(&wg.state1))<span class="number">%8</span> ==<span class="number"> 0</span> {</div><div class="line">		<span class="comment">// state1 is 64-bit aligned: nothing to do.</span></div><div class="line">		<span class="keyword">return</span> &wg.state1, &wg.state2</div><div class="line">	} <span class="keyword">else</span> {</div><div class="line">		<span class="comment">// state1 is 32-bit aligned but not 64-bit aligned: this means that</span></div><div class="line">		<span class="comment">// (&state1)+4 is 64-bit aligned.</span></div><div class="line">		state := (*<span class="number">[3</span>]<span class="typename">uint32</span>)(unsafe.Pointer(&wg.state1))</div><div class="line">		<span class="keyword">return</span> (*<span class="typename">uint64</span>)(unsafe.Pointer(&state<span class="number">[1</span>])), &state<span class="number">[0</span>]</div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>64位对齐情况下state1和state2意义很明确，如果不是64位对齐，还得巧妙的转换一下。</p>
+<h2 id="Pool中使用fastrandn替换fastrand">Pool中使用fastrandn替换fastrand</h2>
+<p>Go运行时中提供了<code>fastrandn</code>方法，要比<code>fastrand() % n</code>快很多，相关的文章可以看下面中的注释中的地址。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div></pre></td><td class="code"><pre><div class="line"><span class="comment">//go:nosplit</span></div><div class="line"><span class="keyword">func</span> fastrand() <span class="typename">uint32</span> {</div><div class="line">	mp := getg().m</div><div class="line">	<span class="comment">// Implement wyrand: https://github.com/wangyi-fudan/wyhash</span></div><div class="line">	<span class="keyword">if</span> goarch.IsAmd64|goarch.IsArm64|goarch.IsPpc64|</div><div class="line">		goarch.IsPpc64le|goarch.IsMips64|goarch.IsMips64le|</div><div class="line">		goarch.IsS390x|goarch.IsRiscv64 ==<span class="number"> 1</span> {</div><div class="line">		mp.fastrand +=<span class="number"> 0</span>xa0761d6478bd642f</div><div class="line">		hi, lo := math.Mul64(mp.fastrand, mp.fastrand<span class="number">^0</span>xe7037ed1a0b428db)</div><div class="line">		<span class="keyword">return</span> <span class="typename">uint32</span>(hi ^ lo)</div><div class="line">	}</div><div class="line"></div><div class="line">	<span class="comment">// Implement xorshift64+</span></div><div class="line">	t := (*<span class="number">[2</span>]<span class="typename">uint32</span>)(unsafe.Pointer(&mp.fastrand))</div><div class="line">	s1, s0 := t<span class="number">[0</span>], t<span class="number">[1</span>]</div><div class="line">	s1 ^= s1 &lt;&lt;<span class="number"> 17</span></div><div class="line">	s1 = s1 ^ s0 ^ s1&gt;<span class="number">&gt;7</span> ^ s0&gt;<span class="number">&gt;16</span></div><div class="line">	t<span class="number">[0</span>], t<span class="number">[1</span>] = s0, s1</div><div class="line">	<span class="keyword">return</span> s0 + s1</div><div class="line">}</div><div class="line"></div><div class="line"><span class="comment">//go:nosplit</span></div><div class="line"><span class="keyword">func</span> fastrandn(n <span class="typename">uint32</span>) <span class="typename">uint32</span> {</div><div class="line">	<span class="comment">// This is similar to fastrand() % n, but faster.</span></div><div class="line">	<span class="comment">// See https://lemire.me/blog/2016/06/27/a-fast-alternative-to-the-modulo-reduction/</span></div><div class="line">	<span class="keyword">return</span> <span class="typename">uint32</span>(<span class="typename">uint64</span>(fastrand()) * <span class="typename">uint64</span>(n) &gt;&gt;<span class="number"> 32</span>)</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>所以sync.Pool中使用<code>fastrandn</code>做了一点点修改，用来提高性能。好卷啊，这一点点性能都来压榨,关键，这还是开启race才会执行的代码。</p>
+<h2 id="sync-Value增加了Swap和CompareAndSwap两个便利方法">sync.Value增加了Swap和CompareAndSwap两个便利方法</h2>
+<p>如果使用sync.Value,这两个方法的逻辑经常会用到，现在这两个方法已经添加到标准库中了。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> (v *Value) Swap(<span class="built_in">new</span> <span class="keyword">interface</span>{}) (old <span class="keyword">interface</span>{}) </div><div class="line"><span class="keyword">func</span> (v *Value) CompareAndSwap(old, <span class="built_in">new</span> <span class="keyword">interface</span>{}) (swapped <span class="typename">bool</span>)</div></pre></td></tr></table></figure>
+
+<p>Go 1.18中虽然实现了泛型，但是一些库的修改有可能在将来的版本中实现了。在泛型推出来之后，atomic对类型的支持会有大大的加强，所以将来Value这个类型有可能退出历史舞台，很少被使用了。(参考Russ Cox的文章<a href="https://research.swtch.com/gomm" target="_blank" rel="external">Updating the Go Memory Model</a>)</p>
+<p>整体来说，Go的并发相关的库比较稳定，并没有大的变化。</p>
+]]></content>
+    <summary type="html">
+    <![CDATA[<p>去年的时候我写了一篇<a href="https://colobu.com/2020/07/05/the-state-of-go-sync-2020/" target="_blank" rel="external">Go并发编程一年回顾</a>,如今2021年也快结束了，Go 1.18的特性已经冻结，美国页很快进入了假期模式，趁这个节点，我们回顾一下近一年Go并发编程的进展。</p>
+]]>
+    
+    </summary>
+    
+      <category term="Go" scheme="https://colobu.com/categories/Go/"/>
+    
+  </entry>
   
   <entry>
     <title><![CDATA[Go泛型系列：再简化，省略接口]]></title>
@@ -1770,39 +1831,6 @@
 ]]></content>
     <summary type="html">
     <![CDATA[<p>代码覆盖率是软件测试中的一种度量，描述程序中源代码被测试的比例和程度，所得比例称为代码覆盖率。</p>
-]]>
-    
-    </summary>
-    
-      <category term="Go" scheme="https://colobu.com/categories/Go/"/>
-    
-  </entry>
-  
-  <entry>
-    <title><![CDATA[利好！极大可能在go 1.17中就能尝试泛型]]></title>
-    <link href="https://colobu.com/2021/02/20/merge-dev-typeparams-to-master-during-Go-1-17/"/>
-    <id>https://colobu.com/2021/02/20/merge-dev-typeparams-to-master-during-Go-1-17/</id>
-    <published>2021-02-20T01:06:45.000Z</published>
-    <updated>2021-10-06T03:29:34.402Z</updated>
-    <content type="html"><![CDATA[<p>你也知道，Go 将在1.18 中正式支持泛型。依照Go每年发布两个版本的节奏，Go 1.18会在2022年春,也就是二月份左右发布，但是有可能你会在Go 1.17中尝鲜。</p>
-<p>Go的泛型近一年来一直由Ian Lance Taylor(编译器大牛、Go核心成员)和Robert Griesemer（Go创始三巨头之一，Google V8、Chubby和HotSpot JVM的主要贡献者）等人开发，一直在<a href="https://github.com/golang/go/tree/dev.typeparams" target="_blank" rel="external">dev.typeparams</a>分支上做预研和开发工作。</p>
-<a id="more"></a>
-<p>由于泛型会对Go核心代码做大的修改，影响很多文件，所以我一直好奇将来dev.typeparams merge回master分支，以及他们怎么把如何管理冲突的？我们知道，Go master分支是当前的开发分支，2月份Go 1.16发布之后(也就是前几天)，master分支主要是Go 1.17分支的开发，核心开发人员也会对运行时、编辑器等核心代码做改动。如果两个分支都做了一些改动，将来merge一起就会有很多的冲突，这将是一件麻烦事。使用git+多分支开发的同学应该都深有感触。</p>
-<p>Go开发者采用定期把master的commit merge到dev.typeparams分支方式，尽早解决冲突，我以前也是采用这种方式，因为尽早解决冲突的方式每次解决冲突的量比较少，还是可控的，但是由于master分支的开发者无需顾虑dev.typeparams分支的情况，导致最近冲突有些大，解决起来很困难，所以<a href="https://github.com/golang/go/issues/43931" target="_blank" rel="external">#43931</a>提议将dev.typeparams分支merge到master分支，以后泛型的开发直接在master分支。</p>
-<p>泛型特性可以通过feature flag的方式控制特性的启用和禁用，所以即使merge到master分支，也可以控制在Go 1.18再把特性启用。如果泛型的提案<a href="https://github.com/golang/go/issues/43651" target="_blank" rel="external">#43651</a>被拒绝掉的话，相关的无用代码也可以被清除掉。</p>
-<p>这也类似引入go module的方式，go module历经几个版本，通过GO111MODULE开关控制这个特性的启用。</p>
-<p>比如引入<code>-G</code>开关，<code>-G=0</code>启用类型检查，<code>-G=1</code>启用 <code>types2 w/o generics</code>支持， <code>-G=2</code>使用<code>types2 w/ generics</code>支持。比如<code>-G=1</code>在Go 1.17中就默认启用，<code>-G=2</code>在Go 1.18中启用。这也是很好的一种渐进式引入特性的方法。</p>
-<p>而且在master分支开发泛型避免了merge冲突，极大减少了泛型开发者的心智负担，但是这个提议一开始遭到了Russ Cox的反对。</p>
-<p>Rob Pike是Go语言之父，Go语言的初始三巨头之一，也是Go的精神领袖和掌门人，但是最近一两年突然很少听到他的消息了，偶尔在github能看到他的一点活跃度，目前掌门人的衣钵传给了Russ Cox。</p>
-<p>Russ Cox反对的依据是泛型提案<a href="https://github.com/golang/go/issues/43651" target="_blank" rel="external">#43651</a>还没有被正式接受，虽然大家都明白，这个泛型几乎一定会被加入到Go特性中，但是根据流程，一个未被批准的提案也是可能被拒绝掉了，所以现在merge到master分支的话，是违反流程的。</p>
-<p>这是江湖规矩!</p>
-<p>但是这一切都在泛型提案被接受的情况下解决了。所以刚才几小时，dev.typeparams分支已经被merge master分支了<a href="https://go-review.googlesource.com/c/go/+/294331" target="_blank" rel="external">294331</a>。</p>
-<p>也就是，你可以在master分支中关注泛型的开发进度，而且也极有可能，在Go 1.17分支中开始尝鲜Go泛型的一些特性，尽管Russ Cox建议不开放这个特性，但是既然相关的工作已经实现，倒不如早点让大家尝试，或许能更早的发现问题，让Go 1.18泛型正式发布的时候更健壮，如果担心，可以默认不启用这些特性，但是可以通过开关打开这个特性。</p>
-<p>总之，Go泛型离我们越来越近了，期望能尽早在1.17中尝试Go泛型的特性。</p>
-]]></content>
-    <summary type="html">
-    <![CDATA[<p>你也知道，Go 将在1.18 中正式支持泛型。依照Go每年发布两个版本的节奏，Go 1.18会在2022年春,也就是二月份左右发布，但是有可能你会在Go 1.17中尝鲜。</p>
-<p>Go的泛型近一年来一直由Ian Lance Taylor(编译器大牛、Go核心成员)和Robert Griesemer（Go创始三巨头之一，Google V8、Chubby和HotSpot JVM的主要贡献者）等人开发，一直在<a href="https://github.com/golang/go/tree/dev.typeparams" target="_blank" rel="external">dev.typeparams</a>分支上做预研和开发工作。</p>
 ]]>
     
     </summary>
