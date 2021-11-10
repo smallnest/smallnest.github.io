@@ -4,7 +4,7 @@
   <subtitle><![CDATA[大道至简 Simplicity is the ultimate form of sophistication]]></subtitle>
   <link href="/atom.xml" rel="self"/>
   <link href="https://colobu.com/"/>
-  <updated>2021-11-09T08:06:38.622Z</updated>
+  <updated>2021-11-10T00:36:00.588Z</updated>
   <id>https://colobu.com/</id>
   
   <author>
@@ -19,7 +19,7 @@
     <link href="https://colobu.com/2021/11/09/the-state-of-go-sync-2021/"/>
     <id>https://colobu.com/2021/11/09/the-state-of-go-sync-2021/</id>
     <published>2021-11-09T06:37:32.000Z</published>
-    <updated>2021-11-09T08:04:48.742Z</updated>
+    <updated>2021-11-10T00:35:33.185Z</updated>
     <content type="html"><![CDATA[<p>去年的时候我写了一篇<a href="https://colobu.com/2020/07/05/the-state-of-go-sync-2020/" target="_blank" rel="external">Go并发编程一年回顾</a>,如今2021年也快结束了，Go 1.18的特性已经冻结，美国页很快进入了假期模式，趁这个节点，我们回顾一下近一年Go并发编程的进展。</p>
 <a id="more"></a>
 <h2 id="TryLock终于要发布">TryLock终于要发布</h2>
@@ -30,14 +30,14 @@
 <figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> (m *Mutex) TryLock() <span class="typename">bool</span> {</div><div class="line">	<span class="keyword">if</span> atomic.CompareAndSwapInt32(&m.state,<span class="number"> 0</span>, mutexLocked) {</div><div class="line">		<span class="keyword">return</span> <span class="constant">true</span></div><div class="line">	}</div><div class="line">	<span class="keyword">return</span> <span class="constant">false</span></div><div class="line">}</div></pre></td></tr></table></figure>
 
 <p>也就是利用aromic.CAS操作state字段，如果当前没有被锁或者没有等待锁的情况，就可以成功获取到锁。不会尝试spin和与等待者竞争。</p>
-<p>不过这段代码的风格经常会被拿来吐槽吧，当然有一个理由就是这样写比较直观，大家学习代码风格和最佳实践的时候更可能这样去写：</p>
+<p>不要吐槽上面的代码风格，可能你觉得不应该写成下面的方式吗？原因在于我删除了race代码，那些代码块中包含race代码，所以不能像下面一样简写：</p>
 <figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> (m *Mutex) TryLock() <span class="typename">bool</span> {</div><div class="line">	<span class="keyword">return</span> atomic.CompareAndSwapInt32(&m.state,<span class="number"> 0</span>, mutexLocked)</div><div class="line">}</div></pre></td></tr></table></figure>
 
 <p>读写锁有些麻烦，因为它有读锁和写锁两种情况。</p>
 <p>首先看RWMutex.TryLock(去除了race代码):</p>
 <figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> (rw *RWMutex) TryLock() <span class="typename">bool</span> {</div><div class="line">	<span class="keyword">if</span> !rw.w.TryLock() {</div><div class="line">		<span class="keyword">return</span> <span class="constant">false</span></div><div class="line">	}</div><div class="line">	<span class="keyword">if</span> !atomic.CompareAndSwapInt32(&rw.readerCount,<span class="number"> 0</span>, -rwmutexMaxReaders) {</div><div class="line">        rw.w.Unlock()</div><div class="line">		<span class="keyword">return</span> <span class="constant">false</span></div><div class="line">	}</div><div class="line">	<span class="keyword">return</span> <span class="constant">true</span></div><div class="line">}</div></pre></td></tr></table></figure>
 
-<p>首先底层的Mutex.TryLock,尝试获取w字段的锁,如果成功，需要检查当前的Reader, 如果没有reader,则成功, 如果此时不幸还有reader没有释放读锁，那么尝试Lock也是不成功的,返回false。注意返回之前一定要把rw.w的锁释放掉。<br>这里的风格问题前面已提到了。</p>
+<p>首先底层的Mutex.TryLock,尝试获取w字段的锁,如果成功，需要检查当前的Reader, 如果没有reader,则成功, 如果此时不幸还有reader没有释放读锁，那么尝试Lock也是不成功的,返回false。注意返回之前一定要把rw.w的锁释放掉。</p>
 <p>接下来看RWMutex.TryRLock(去除了race代码):</p>
 <figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> (rw *RWMutex) TryRLock() <span class="typename">bool</span> {</div><div class="line">	<span class="keyword">for</span> {</div><div class="line">		c := atomic.LoadInt32(&rw.readerCount)</div><div class="line">		<span class="keyword">if</span> c &lt;<span class="number"> 0</span> {</div><div class="line">			<span class="keyword">return</span> <span class="constant">false</span></div><div class="line">		}</div><div class="line">		<span class="keyword">if</span> atomic.CompareAndSwapInt32(&rw.readerCount, c, c<span class="number">+1</span>) {</div><div class="line">			<span class="keyword">return</span> <span class="constant">true</span></div><div class="line">		}</div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
 
