@@ -4,7 +4,7 @@
   <subtitle><![CDATA[大道至简 Simplicity is the ultimate form of sophistication]]></subtitle>
   <link href="/atom.xml" rel="self"/>
   <link href="https://colobu.com/"/>
-  <updated>2021-11-10T00:36:00.588Z</updated>
+  <updated>2021-12-22T06:38:24.610Z</updated>
   <id>https://colobu.com/</id>
   
   <author>
@@ -13,6 +13,85 @@
   </author>
   
   <generator uri="http://zespia.tw/hexo/">Hexo</generator>
+  
+  <entry>
+    <title><![CDATA[Go泛型不支持泛型方法，这是一个悲伤的故事]]></title>
+    <link href="https://colobu.com/2021/12/22/no-parameterized-methods/"/>
+    <id>https://colobu.com/2021/12/22/no-parameterized-methods/</id>
+    <published>2021-12-22T00:25:06.000Z</published>
+    <updated>2021-12-22T06:37:46.594Z</updated>
+    <content type="html"><![CDATA[<p>根据Go 泛型提案的描述，Go不支持泛型方法:<a href="https://github.com/golang/proposal/blob/master/design/43651-type-parameters.md#no-parameterized-methods" target="_blank" rel="external">No parameterized methods</a>。主要原因Go泛型的处理是在编译的时候实现的，泛型方法在编译的时候，如果没有上下文的分析推断，很难判断泛型方案该如何实例化，甚至判断不了，导致目前(Go 1.18)Go实现中不支持泛型方案。</p>
+<p>不过，泛型方法的缺失，多多少少给程序员带来一丝丝的忧伤的情绪，在一些场景之下，使用起来特别不方便。我最近看到了几个因为缺乏泛型方法导致的问题，在本文中总结一下，和大家探讨。</p>
+<p>有一点点让人欣慰的是，Ian Lance Taylor和Ian Lance Taylor并没有把话说绝，说不定在某个版本中，泛型方法又支持了:</p>
+<blockquote>
+<p>So while parameterized methods seem clearly useful at first glance, we would have to decide what they mean and how to implement that.</p>
+</blockquote>
+<a id="more"></a>
+<h2 id="为啥当前Go泛型不好实现泛型方法?">为啥当前Go泛型不好实现泛型方法?</h2>
+<p>考虑下面一个例子，一共有四个package:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> p1</div><div class="line"></div><div class="line"><span class="comment">// S 是一个普通的struct,但是包含一个泛型方法Identity.</span></div><div class="line"><span class="keyword">type</span> S <span class="keyword">struct</span>{}</div><div class="line"></div><div class="line"><span class="comment">// Identity 一个泛型方法，支持任意类型.</span></div><div class="line"><span class="keyword">func</span> (S) Identity[T any](v T) T { <span class="keyword">return</span> v }</div></pre></td></tr></table></figure>
+
+
+
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> p2</div><div class="line"></div><div class="line"><span class="comment">// HasIdentity 定义了一个接口，支持任意实现了泛型方法Identity的类型.</span></div><div class="line"><span class="keyword">type</span> HasIdentity <span class="keyword">interface</span> {</div><div class="line">	Identity[T any](T) T</div><div class="line">}</div></pre></td></tr></table></figure>
+
+
+
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> p3</div><div class="line"></div><div class="line"><span class="keyword">import</span> <span class="string">"p2"</span></div><div class="line"></div><div class="line"><span class="comment">// CheckIdentity 是一个普通函数，检查实参是不是实现了HasIdentity接口，如果是，则调用这个接口的泛型方法Identity.</span></div><div class="line"><span class="keyword">func</span> CheckIdentity(v <span class="keyword">interface</span>{}) {</div><div class="line">	<span class="keyword">if</span> vi, ok := v.(p2.HasIdentity); ok {</div><div class="line">		<span class="keyword">if</span> got := vi.Identity[<span class="typename">int</span>]<span class="number">(0</span>); got !=<span class="number"> 0</span> {</div><div class="line">			<span class="built_in">panic</span>(got)</div><div class="line">		}</div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
+
+
+
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> p4</div><div class="line"></div><div class="line"><span class="keyword">import</span> (</div><div class="line">	<span class="string">"p1"</span></div><div class="line">	<span class="string">"p3"</span></div><div class="line">)</div><div class="line"></div><div class="line"><span class="comment">// CheckSIdentity 传参S给CheckIdentity.</span></div><div class="line"><span class="keyword">func</span> CheckSIdentity() {</div><div class="line">	p3.CheckIdentity(p1.S{})</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>一切看起来都没有问题，但是问题是<code>package p3</code>不知道<code>p1.S</code>类型，整个程序中如果也没有其它地方调用<code>p1.S.Identity</code>,依照现在的Go编译器的实现，是没有办法为<code>p1.S.Identity[int]</code>生成对应的代码的。</p>
+<p>是的，如果go编译器做的比较复杂，在编译的时候这个场景是可以识别出来的，但是它需要遍历整体的程序调用链以便生成全部可能的泛型方法，对编译时间和编译器复杂性带来很大的调整。另外一点，如果代码中通过反射调用的话，编译器可能会遗漏一些泛型方法的实现，这就很要命了。</p>
+<p>如果在运行时实现呢？就需要JIT或者反射等技术，这会造成运行时性能的下降。</p>
+<p>很难实现啊？如果规定泛型方法不能实现接口呢？那么这类的泛型方法的存在的意义是什么呢？</p>
+<p>所以目前没有太好的手段去实现泛型方法，暂时搁置了。</p>
+<p>如果真的有必要，你可以通过实现泛型函数来实现泛型方法，把方法的receiver当成第一个参数传递过去。</p>
+<p>这可以解决一部分问题，但是在使用的过程中多多少少有些麻烦。</p>
+<p>因为泛型方法的缺乏，大家在开始使用泛型的时候就遇到了麻烦，最近连续看到多篇关于这方面的问题，比如下面几个。</p>
+<h2 id="Facilitator模式_by_rakyll">Facilitator模式 by rakyll</h2>
+<p>昨天rakyll写了一篇文章<a href="https://rakyll.org/generics-facilititators/" target="_blank" rel="external">https://rakyll.org/generics-facilititators/</a>,介绍她遇到的困难以及解决方式。这也是促进我把这几天看到的case总结的原因。</p>
+<p>如果你熟悉其它编程语言，在使用orm框架的时候，可能见过下面类似的代码，实现泛型方法进行某种对象的查询:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div></pre></td><td class="code"><pre><div class="line">db, err := database.Connect(<span class="string">"...."</span>)</div><div class="line"><span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">    log.Fatal(err)</div><div class="line">}</div><div class="line"></div><div class="line">all, err := db.All[Person](ctx) <span class="comment">// Reads all person entities</span></div><div class="line"><span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">    log.Fatal(err)</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>因为Go缺乏泛型方法的实现，你不能实现泛型<code>All</code>方法，那么怎么实现呢？一种方式是实现<code>All</code>函数，另一种实现是实现rakyll称之为的<code>Facilitator模式</code>:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> database</div><div class="line"></div><div class="line"><span class="keyword">type</span> Client <span class="keyword">struct</span>{ ... }</div><div class="line"></div><div class="line"><span class="keyword">type</span> Querier[T any] <span class="keyword">struct</span> {</div><div class="line">	client *Client</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> NewQuerier[T any](c *Client) *Querier[T] {</div><div class="line">	<span class="keyword">return</span> &Querier[T]{</div><div class="line">		client: c,</div><div class="line">	}</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> (q *Querier[T]) All(ctx context.Context) ([]T, error) {</div><div class="line">	<span class="comment">// implementation</span></div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> (q *Querier[T]) Filter(ctx context.Context, filter ...Filter) ([]T, error) {</div><div class="line">	<span class="comment">// implementation</span></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>函数实现让人感觉到一种无力感，一种缺乏归宿感，一种没有对象的感觉，而这种实现呢，生成了特定类型的Querier[T],<code>All</code>方法就有泛型的感觉了(虽然实际是Receiver泛型)</p>
+<h2 id="泛型signleflight">泛型signleflight</h2>
+<p>有些同学熟悉Go官方扩展库<a href="golang.org/x/sync/singleflight">x/sync/singleflight</a>，这个库很好的解决大并发的时候并发访问的问题，常常用在cache访问和微服务访问的处理之中。</p>
+<p>为了支持任意类型，它内部的实现是使用<code>interface{}</code>(<code>any</code>)类型来表示和处理的:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">var</span> g Group</div><div class="line">v, _, _ := g.Do(<span class="string">"key"</span>, <span class="keyword">func</span>() (<span class="keyword">interface</span>{}, error) {</div><div class="line">    <span class="keyword">return</span> <span class="string">"bar"</span>, <span class="constant">nil</span></div><div class="line">})</div><div class="line">useString(v.(<span class="typename">string</span>))</div></pre></td></tr></table></figure>
+
+<p>五天前，有人把它改造成泛型的方式:<a href="https://github.com/marwan-at-work/singleflight" target="_blank" rel="external">marwan-at-work/singleflight</a>，上面的代码使用起来改变成如下方式:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">var</span> g Group[<span class="typename">string</span>]</div><div class="line">v, _, _ := g.Do(<span class="string">"key"</span>, <span class="keyword">func</span>() (<span class="typename">string</span>, error) {</div><div class="line">    <span class="keyword">return</span> <span class="string">"bar"</span>, <span class="constant">nil</span></div><div class="line">})</div><div class="line">useString(v)</div></pre></td></tr></table></figure>
+
+<p>相当于把Group改造成泛型类型，而不是实现泛型方法<code>Do</code>(当然目前Go泛型也实现不了)。</p>
+<p>这个处理和上面rakyll处理方式类型，都是生成泛型类型，通过Receiver实现泛型的方法的处理。</p>
+<p>不过对于这种方式，有一点不好的地方就是每种类型你都得生成一个特别的对象，略显麻烦。</p>
+<h2 id="map_reduce">map reduce</h2>
+<p>更早时候关于泛型的讨论，有人提出泛型方法的缺乏导致Go实现map reduce类似的库的困难，具体在哪里提到的我已经忘记了。</p>
+<p>比如下面的实现一个iter的map reduce:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> (i *iter[T any]) <span class="keyword">map</span>[K ~<span class="typename">string</span>](mapFn <span class="keyword">func</span>(t T) K) *iter[K]</div></pre></td></tr></table></figure>
+
+<p>这种情况下用户想传入任意的<code>K</code>,把原先<code>T</code>类型的iter转换成<code>K</code>类型的iter,这种就不想其它支持泛型语言那么好实现了。</p>
+]]></content>
+    <summary type="html">
+    <![CDATA[<p>根据Go 泛型提案的描述，Go不支持泛型方法:<a href="https://github.com/golang/proposal/blob/master/design/43651-type-parameters.md#no-parameterized-methods" target="_blank" rel="external">No parameterized methods</a>。主要原因Go泛型的处理是在编译的时候实现的，泛型方法在编译的时候，如果没有上下文的分析推断，很难判断泛型方案该如何实例化，甚至判断不了，导致目前(Go 1.18)Go实现中不支持泛型方案。</p>
+<p>不过，泛型方法的缺失，多多少少给程序员带来一丝丝的忧伤的情绪，在一些场景之下，使用起来特别不方便。我最近看到了几个因为缺乏泛型方法导致的问题，在本文中总结一下，和大家探讨。</p>
+<p>有一点点让人欣慰的是，Ian Lance Taylor和Ian Lance Taylor并没有把话说绝，说不定在某个版本中，泛型方法又支持了:</p>
+<blockquote>
+<p>So while parameterized methods seem clearly useful at first glance, we would have to decide what they mean and how to implement that.</p>
+</blockquote>
+]]>
+    
+    </summary>
+    
+      <category term="Go" scheme="https://colobu.com/categories/Go/"/>
+    
+  </entry>
   
   <entry>
     <title><![CDATA[Go并发编程一年回顾(2021)]]></title>
@@ -1804,33 +1883,6 @@
     <summary type="html">
     <![CDATA[<p>我在二月份的文章<a href="https://colobu.com/2021/02/20/merge-dev-typeparams-to-master-during-Go-1-17/" target="_blank" rel="external">利好！极大可能在go 1.17中就能尝试泛型</a>提到，虽然Go泛型会在Go 1.18中正式发布，但是因为各种原因，代码已经开始在master分支中实现，所以极大可能你会在今年9月份发布的Go 1.17中就能尝试使用Go泛型。</p>
 <p>那么，现在，可以去掉&quot;可能&quot;这两个字了。在Go 1.17可以确定的说你能够尝试Go泛型编程了，尽管建议你还是在Go 1.18以及以后的版本才正式在产品中使用泛型。</p>
-]]>
-    
-    </summary>
-    
-      <category term="Go" scheme="https://colobu.com/categories/Go/"/>
-    
-  </entry>
-  
-  <entry>
-    <title><![CDATA[Go代码覆盖率工具介绍]]></title>
-    <link href="https://colobu.com/2021/03/15/go-cover-introduction/"/>
-    <id>https://colobu.com/2021/03/15/go-cover-introduction/</id>
-    <published>2021-03-15T13:49:48.000Z</published>
-    <updated>2021-10-06T03:29:34.297Z</updated>
-    <content type="html"><![CDATA[<p>代码覆盖率是软件测试中的一种度量，描述程序中源代码被测试的比例和程度，所得比例称为代码覆盖率。</p>
-<a id="more"></a>
-<div class="bilibili"><br>    <iframe width="95%" height="450" src="//player.bilibili.com/player.html?aid=929627497&bvid=BV1jK4y1U7cY&cid=310271674&page=1&high_quality=1" scrolling="no" border="0" frameborder="no" framespacing="0" allowfullscreen="true"> </iframe><br></div>
-
-
-<p><img src="1.png" alt=""></p>
-<p><img src="2.png" alt=""></p>
-<p><img src="3.png" alt=""></p>
-<p><img src="4.png" alt=""></p>
-<p><img src="5.png" alt=""></p>
-]]></content>
-    <summary type="html">
-    <![CDATA[<p>代码覆盖率是软件测试中的一种度量，描述程序中源代码被测试的比例和程度，所得比例称为代码覆盖率。</p>
 ]]>
     
     </summary>
