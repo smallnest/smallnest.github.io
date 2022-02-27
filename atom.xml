@@ -4,7 +4,7 @@
   <subtitle><![CDATA[大道至简 Simplicity is the ultimate form of sophistication]]></subtitle>
   <link href="/atom.xml" rel="self"/>
   <link href="https://colobu.com/"/>
-  <updated>2022-01-27T11:01:38.885Z</updated>
+  <updated>2022-02-27T10:12:46.089Z</updated>
   <id>https://colobu.com/</id>
   
   <author>
@@ -13,6 +13,166 @@
   </author>
   
   <generator uri="http://zespia.tw/hexo/">Hexo</generator>
+  
+  <entry>
+    <title><![CDATA[经典并发问题： 理发店的故事]]></title>
+    <link href="https://colobu.com/2022/02/27/barbershop-problem/"/>
+    <id>https://colobu.com/2022/02/27/barbershop-problem/</id>
+    <published>2022-02-27T08:40:51.000Z</published>
+    <updated>2022-02-27T10:12:01.956Z</updated>
+    <content type="html"><![CDATA[<p>马上就二月二了，理发店就要忙活起来了，托尼、凯文、艾伦等老师的理发剪磨刀霍霍，把椅子擦亮，准备各位顾客的到来。</p>
+<p><a href="https://en.wikipedia.org/wiki/Sleeping_barber_problem" target="_blank" rel="external">Sleeping barber problem</a>是一个经典的goroutine交互和并发控制的问题，可以很好的用来演示多写多读的并发问题(multiple writers multiple readers)。</p>
+<a id="more"></a>
+<p>理发店问题最早是由计算机科学先驱 Edsger Dijkstra 在1965指出的，在 Silberschatz 和 Galvin 的 Operating Systems Concepts一书中有此问题的变种。</p>
+<p>这个问题是这样子的。<br>有这么一个理发店，有一位理发师和几个让顾客等待的座位：</p>
+<ul>
+<li>如果没有顾客，这位理发师就躺在理发椅上睡觉</li>
+<li>顾客必须唤醒理发师让他开始理发</li>
+<li>如果一位顾客到来，理发师正在理发<ul>
+<li>如果还有顾客用来等待的座位，则此顾客坐下</li>
+<li>如果座位都满了，则此顾客离开</li>
+</ul>
+</li>
+<li>理发师理完头发后，需要检查是否还有等待的顾客<ul>
+<li>如果有，则请一位顾客起来开始理发</li>
+<li>如果没有，理发师则去睡觉</li>
+</ul>
+</li>
+</ul>
+<p>虽然条件很多，我们可以把它想象成为一个并发的queue。在当前的问题下，有多个并发写(multiple writer, 顾客)，一个并发读(single reader),对吧。</p>
+<h2 id="使用sync-Cond实现">使用sync.Cond实现</h2>
+<p>一般，先前，我们处理并发队列通过使用<a href="https://pkg.go.dev/sync#Cond" target="_blank" rel="external">sync.Cond</a>这个并发原语(在java语言中，我们一般使用wait/notify)。</p>
+<p>就<code>sync.Cond</code>这个并发原语而言，它并不是一个很容易使用的对象。因为它还需要一个一个<code>sync.Locker</code>配合使用，并且相关的方法要么必须使用Locker、要么可以省略Locker，容易让人迷惑，等待的goroutine被唤醒时还需要检查判断条件，所以用起来总是需要小心翼翼地。</p>
+<p>首先，我们定义一个Locker和一个Cond,并且定义顾客等待的座位数。<br>来了一位顾客，座位数加一，Tony老师叫起一位等待的顾客开始理发时，座位数减一。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">var</span> (</div><div class="line">	seatsLock sync.Mutex</div><div class="line">	seats     <span class="typename">int</span></div><div class="line">	cond = sync.NewCond(&seatsLock)</div><div class="line">)</div></pre></td></tr></table></figure>
+
+<p>理发师的工作就是不断的检查是否有顾客等待，如果有，就交起一位顾客开始理发，理发耗时是随机的，理完再去叫下一位顾客。如果没有顾客，那么理发师就会被阻塞(开始睡觉)。<br>逐一这里Cond的使用方法，Wait之后需要for循环检查条件是否满足，并且Wait上下会有Locker的使用。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div></pre></td><td class="code"><pre><div class="line"><span class="comment">// 理发师</span></div><div class="line"><span class="keyword">func</span> barber() {</div><div class="line">	<span class="keyword">for</span> {</div><div class="line">		<span class="comment">// 等待一个用户</span></div><div class="line">		log.Println(<span class="string">"Tony老师尝试请求一个顾客"</span>)</div><div class="line">		seatsLock.Lock()</div><div class="line">		<span class="keyword">for</span> seats ==<span class="number"> 0</span> {</div><div class="line">			cond.Wait()</div><div class="line">		}</div><div class="line">		seats--</div><div class="line">		seatsLock.Unlock()</div><div class="line">		log.Println(<span class="string">"Tony老师找到一位顾客，开始理发"</span>)</div><div class="line"></div><div class="line">		randomPause<span class="number">(2000</span>)</div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p><code>customers</code>模拟陆陆续续的顾客的到来:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> customers() {</div><div class="line">	<span class="keyword">for</span> {</div><div class="line">		randomPause<span class="number">(1000</span>)</div><div class="line">		<span class="keyword">go</span> customer()</div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>顾客到来之后，先请求seatsLock， 避免多个顾客同时进来的并发竞争。然后他会检查是否有空闲的座位，如果有则坐下并通知理发师。此时理发师如果睡眠则会被唤醒，如果正在理发会忽略。<br>如果没有空闲的座位则离开。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> customer() {</div><div class="line">	seatsLock.Lock()</div><div class="line">	<span class="keyword">defer</span> seatsLock.Unlock()</div><div class="line"></div><div class="line">	<span class="keyword">if</span> seats ==<span class="number"> 3</span> {</div><div class="line">		log.Println(<span class="string">"没有空闲座位了，一位顾客离开了"</span>)</div><div class="line">		<span class="keyword">return</span></div><div class="line">	}</div><div class="line">	seats++</div><div class="line">	cond.Broadcast()</div><div class="line"></div><div class="line">	log.Println(<span class="string">"一位顾客开始坐下排队理发"</span>)</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>这里简单的是由整数seats代表空闲的座位，实际处理这样的场景的时候，你可能会使用一个slice作为队列。</p>
+<p>本身这个实现还是很简单的，但是Cond+Locker的使用方式还是感觉让人有那么一点不放心，事实上，很多这样的场景，我们可以使用channel来实现。</p>
+<h2 id="使用Channel实现Semaphore">使用Channel实现Semaphore</h2>
+<p>我们可以使用Channel实现一个Semaphore来解决理发店问题。Semaphore实现如下,和我们水分子生成的问题中的实现是类似的：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> Semaphore <span class="keyword">chan</span> <span class="keyword">struct</span>{}</div><div class="line"></div><div class="line"><span class="keyword">func</span> (s Semaphore) Acquire() {</div><div class="line">	s &lt;- <span class="keyword">struct</span>{}{}</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> (s Semaphore) TryAcquire() <span class="typename">bool</span> {</div><div class="line">	<span class="keyword">select</span> {</div><div class="line">	<span class="keyword">case</span> s &lt;- <span class="keyword">struct</span>{}{}: <span class="comment">// 还有空位子</span></div><div class="line">		<span class="keyword">return</span> <span class="constant">true</span></div><div class="line">	<span class="keyword">default</span>: <span class="comment">// 没有空位子了,离开</span></div><div class="line">		<span class="keyword">return</span> <span class="constant">false</span></div><div class="line">	}</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> (s Semaphore) Release() {</div><div class="line">	&lt;-s</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>有了这个并发原语，我们就容易解决理发店问题了。注意这里我们实现了<code>TryAcquire</code>,就是为了顾客到来的是否检查有没有空闲的座位。<br>这里为什么不使用Go官方扩展的<code>semaphore.Weighted</code>并发原语呢，是因为<code>semaphore.Weighted</code>有个问题，在<code>Accquire</code>之前调用<code>Release</code>方法的话会panic，所以我们自己实现了一个。</p>
+<p>我们定义了有三个等待座位的信号量。Tony老师先调用<code>Release</code>方法，也就是想从座位上请一位顾客过来理发，以便空出一个等待座位。如果没有顾客，Tony就会无奈的等待和睡觉了。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">var</span> seats = <span class="built_in">make</span>(Semaphore,<span class="number"> 3</span>)</div><div class="line"></div><div class="line"><span class="comment">// 理发师</span></div><div class="line"><span class="keyword">func</span> barber() {</div><div class="line">	<span class="keyword">for</span> {</div><div class="line">    		<span class="comment">// 等待一个用户</span></div><div class="line">		log.Println(<span class="string">"Tony老师尝试请求一个顾客"</span>)</div><div class="line">		seats.Release()</div><div class="line">		log.Println(<span class="string">"Tony老师找到一位顾客，开始理发"</span>)</div><div class="line"></div><div class="line">		randomPause<span class="number">(2000</span>)</div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>顾客的检查也更简单:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div></pre></td><td class="code"><pre><div class="line"><span class="comment">// 模拟顾客陆陆续续的过来</span></div><div class="line"><span class="keyword">func</span> customers() {</div><div class="line">	<span class="keyword">for</span> {</div><div class="line">		randomPause<span class="number">(1000</span>)</div><div class="line"></div><div class="line">		<span class="keyword">go</span> customer()</div><div class="line">	}</div><div class="line">}</div><div class="line"></div><div class="line"><span class="comment">// 顾客</span></div><div class="line"><span class="keyword">func</span> customer() {</div><div class="line">	<span class="keyword">if</span> ok := seats.TryAcquire(); ok {</div><div class="line">		log.Println(<span class="string">"一位顾客开始坐下排队理发"</span>)</div><div class="line">	} <span class="keyword">else</span> {</div><div class="line">		log.Println(<span class="string">"没有空闲座位了，一位顾客离开了"</span>)</div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>可以看到，如果我们使用自定义的Semaphore话，代码会变得更加的简单。</p>
+<p>那么这种channel实现的Semaphore有什么缺陷吗？那就是如果队列的长度太大的话，channel的容量就会很大。不过如果类型设置为strcut{}类型的话，就会节省很多的内存，所以一般也不会有什么问题，虽然比官方扩展的计数器方式的<code>semaphore.Weighted</code>多占用一些空间，但是占用的空间还是有限的。</p>
+<p>更进一步，尽然我们要实现一个队列，其实可以通过这个channel来实现，把顾客类型替换struct{}类型，这样就没有额外多余的占用了。</p>
+<h2 id="多理发师的情况">多理发师的情况</h2>
+<p>更进一步，我们考虑多个理发师的情况。</p>
+<p>多个理发师的问题其实就演变成了多写(multiple writer)多读(multiple reader)的场景了。</p>
+<p>托尼、凯文和艾伦是理发界的三大巨头，我们演示三位理发师并发理发的场景，同时理发店的规模也扩大了，有10个可以等待的座位。</p>
+<p>基于channel实现的Semaphore的解决方案，多个理发师的场景和单个理发师的场景是一样的:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div><div class="line">35</div><div class="line">36</div><div class="line">37</div><div class="line">38</div><div class="line">39</div><div class="line">40</div><div class="line">41</div><div class="line">42</div><div class="line">43</div><div class="line">44</div><div class="line">45</div><div class="line">46</div><div class="line">47</div><div class="line">48</div><div class="line">49</div><div class="line">50</div><div class="line">51</div><div class="line">52</div><div class="line">53</div><div class="line">54</div><div class="line">55</div><div class="line">56</div><div class="line">57</div><div class="line">58</div><div class="line">59</div><div class="line">60</div><div class="line">61</div><div class="line">62</div><div class="line">63</div><div class="line">64</div><div class="line">65</div><div class="line">66</div><div class="line">67</div><div class="line">68</div><div class="line">69</div><div class="line">70</div><div class="line">71</div><div class="line">72</div><div class="line">73</div><div class="line">74</div><div class="line">75</div><div class="line">76</div><div class="line">77</div><div class="line">78</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> main</div><div class="line"></div><div class="line"><span class="keyword">import</span> (</div><div class="line">	<span class="string">"log"</span></div><div class="line">	<span class="string">"math/rand"</span></div><div class="line">	<span class="string">"os"</span></div><div class="line">	<span class="string">"os/signal"</span></div><div class="line">	<span class="string">"syscall"</span></div><div class="line">	<span class="string">"time"</span></div><div class="line">)</div><div class="line"></div><div class="line"><span class="keyword">type</span> Semaphore <span class="keyword">chan</span> <span class="keyword">struct</span>{}</div><div class="line"></div><div class="line"><span class="keyword">func</span> (s Semaphore) Acquire() {</div><div class="line">	s &lt;- <span class="keyword">struct</span>{}{}</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> (s Semaphore) TryAcquire() <span class="typename">bool</span> {</div><div class="line">	<span class="keyword">select</span> {</div><div class="line">	<span class="keyword">case</span> s &lt;- <span class="keyword">struct</span>{}{}: <span class="comment">// 还有空位子</span></div><div class="line">		<span class="keyword">return</span> <span class="constant">true</span></div><div class="line">	<span class="keyword">default</span>: <span class="comment">// 没有空位子了,离开</span></div><div class="line">		<span class="keyword">return</span> <span class="constant">false</span></div><div class="line">	}</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> (s Semaphore) Release() {</div><div class="line">	&lt;-s</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">var</span> seats = <span class="built_in">make</span>(Semaphore,<span class="number"> 10</span>)</div><div class="line"></div><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	<span class="comment">// 托尼、凯文、艾伦理发师三巨头</span></div><div class="line">	<span class="keyword">go</span> barber(<span class="string">"Tony"</span>)</div><div class="line">	<span class="keyword">go</span> barber(<span class="string">"Kevin"</span>)</div><div class="line">	<span class="keyword">go</span> barber(<span class="string">"Allen"</span>)</div><div class="line"></div><div class="line">	<span class="keyword">go</span> customers()</div><div class="line"></div><div class="line">	sigs := <span class="built_in">make</span>(<span class="keyword">chan</span> os.Signal,<span class="number"> 1</span>)</div><div class="line">	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)</div><div class="line">	&lt;-sigs</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> randomPause(max <span class="typename">int</span>) {</div><div class="line">	time.Sleep(time.Millisecond * time.Duration(rand.Intn(max)))</div><div class="line">}</div><div class="line"></div><div class="line"><span class="comment">// 理发师</span></div><div class="line"><span class="keyword">func</span> barber(name <span class="typename">string</span>) {</div><div class="line">	<span class="keyword">for</span> {</div><div class="line">		<span class="comment">// 等待一个用户</span></div><div class="line">		log.Println(name + <span class="string">"老师尝试请求一个顾客"</span>)</div><div class="line">		seats.Release()</div><div class="line">		log.Println(name + <span class="string">"老师找到一位顾客，开始理发"</span>)</div><div class="line"></div><div class="line">		randomPause<span class="number">(2000</span>)</div><div class="line">	}</div><div class="line">}</div><div class="line"></div><div class="line"><span class="comment">// 模拟顾客陆陆续续的过来</span></div><div class="line"><span class="keyword">func</span> customers() {</div><div class="line">	<span class="keyword">for</span> {</div><div class="line">		randomPause<span class="number">(1000</span>)</div><div class="line"></div><div class="line">		<span class="keyword">go</span> customer()</div><div class="line">	}</div><div class="line">}</div><div class="line"></div><div class="line"><span class="comment">// 顾客</span></div><div class="line"><span class="keyword">func</span> customer() {</div><div class="line">	<span class="keyword">if</span> ok := seats.TryAcquire(); ok {</div><div class="line">		log.Println(<span class="string">"一位顾客开始坐下排队理发"</span>)</div><div class="line">	} <span class="keyword">else</span> {</div><div class="line">		log.Println(<span class="string">"没有空闲座位了，一位顾客离开了"</span>)</div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>全部经典并发问题的代码可以参考<a href="https://github.com/smallnest/dive-to-gosync-workshop/tree/master/11.classical_problems" target="_blank" rel="external">smallnest/dive-to-gosync-workshop</a>。下一次我们再分析一个更加复杂的理发店问题。</p>
+]]></content>
+    <summary type="html">
+    <![CDATA[<p>马上就二月二了，理发店就要忙活起来了，托尼、凯文、艾伦等老师的理发剪磨刀霍霍，把椅子擦亮，准备各位顾客的到来。</p>
+<p><a href="https://en.wikipedia.org/wiki/Sleeping_barber_problem" target="_blank" rel="external">Sleeping barber problem</a>是一个经典的goroutine交互和并发控制的问题，可以很好的用来演示多写多读的并发问题(multiple writers multiple readers)。</p>
+]]>
+    
+    </summary>
+    
+      <category term="Go" scheme="https://colobu.com/categories/Go/"/>
+    
+  </entry>
+  
+  <entry>
+    <title><![CDATA[经典并发问题: 哲学家就餐问题]]></title>
+    <link href="https://colobu.com/2022/02/13/dining-philosophers-problem/"/>
+    <id>https://colobu.com/2022/02/13/dining-philosophers-problem/</id>
+    <published>2022-02-13T09:25:44.000Z</published>
+    <updated>2022-02-24T09:36:34.503Z</updated>
+    <content type="html"><![CDATA[<p>哲学家就餐问题是一个非常非常经典的问题，也是一个非常通用的研究并发编程中死锁现象的问题。</p>
+<a id="more"></a>
+<blockquote>
+<p>为什么我们要研究经典的并发问题呢？这些经典问题是对现实中的计算机编程的抽象，代表了非常通用的计算机并发问题，计算机科学家对此进行了深入的研究，也总结出很多行之有效的解决办法。我们通过学习这些经典问题，可以将我们遇到的并发问题做对比，看不看是否是类似的问题，如何是相同的问题，可以使用前人总结的解决方案去解决。同时练习解决这些问题，也可以使我们学习和掌握并发原语和解决问题的技巧，举一反三去解决更多的并发问题。</p>
+</blockquote>
+<p>在1971年，著名的计算机科学家艾兹格·迪科斯彻(Edsger Dijkstra)提出了一个同步问题，即假设有五台计算机都试图访问五份共享的磁带驱动器。稍后，这个问题被托尼·霍尔(Tony Hoare)重新表述为哲学家就餐问题。这个问题可以用来解释死锁和资源耗尽。</p>
+<p>到了中国，哲学家就餐问题可以这样表述，假设因为新冠的原因，五位哲学家被隔离在一个房间里。这五位哲学家分别是孔子、庄子、墨子、孙子和老子，他们围坐在一个圆形的餐桌旁，餐桌上有无尽的可口的饭菜，不幸的是，出于环保的原因，只有五根筷子，每根筷子都位于两位哲学家之间。哲学家吃饭时，必须拿起自己左右两边的两根筷子才能吃饭，吃完饭后才放回筷子，这样其它哲学家可以再拿起筷子。</p>
+<p>虽然隔离的日子比较寂寞，但是这些哲学家还是有事情可做，他们不断的冥想或者吃饭。饿了的时候就开始尝试拿起筷子，吃随机时间的饭菜，然后放下筷子开始冥想。冥想一段时间就饿了，又开始吃饭。所以他们总是处于冥想-饿了-吃饭-冥想这样的状态中。</p>
+<p><img src="1.png" alt=""></p>
+<p>这个哲学家很好的模拟了计算机并发编程中一定数量的资源和一定数量的持有者的并发问题，这类问题很大的一个问题就是死锁问题。</p>
+<p>如果五位哲学家同时饿了，同时拿起左手边的那根筷子，你就会发现他们想去拿右边的筷子的时候，都没有办法拿起右边的筷子，因为右边那根筷子都被旁边的哲学家拿走了，所有的哲学家都处于等待状态而没有办法继续下去。对于程序来说，就是程序 hang死了，没有办法继续处理。</p>
+<blockquote>
+<p>如果这五位哲学家同时发现没有右边的筷子可用，他们同时放下左手的筷子，冥想5分钟再同时就餐，你会发现程序貌似还在进行，但是哲学家依然还是没有办法就餐，这种现象叫做死锁。在分布式一致性算法中在选主的时候也会有类似的现象，有些实现是通过随机休眠一定的时间，避免各个节点同时请求选主来避免。</p>
+</blockquote>
+<p>如果系统中只有一个线程，当然不会产生死锁。如果每个线程仅需求一种并发资源，也不会产生死锁。不过这只是理想状态，在现实中是可遇不可求的。如果你搜索Go官方的项目中的issue,可以看到几百个关于死锁的issue,足可以表明死锁是一个常见且并不容易处理的bug。</p>
+<p><img src="2.png" alt=""></p>
+<p>死锁的四个条件是：</p>
+<ul>
+<li><p><strong>禁止抢占</strong>（no preemption）：系统资源不能被强制从一个线程中退出。如果哲学家可以抢夺，那么大家都去抢别人的筷子，也会打破死锁的局面，但这是有风险的，因为可能孔子还没吃饭就被老子抢走了。计算机资源如果不是主动释放而是被抢夺有可能出现意想不到的现象。</p>
+</li>
+<li><p><strong>持有和等待</strong>（hold and wait）：一个线程在等待时持有并发资源。持有并发资源并还等待其它资源，也就是吃着碗里的望着锅里的。</p>
+</li>
+<li><p><strong>互斥</strong>（mutual exclusion）：资源只能同时分配给一个线程，无法多个线程共享。资源具有排他性，孔子和老子的关系再好，也不允许他们俩一起拿着一根筷同时吃。</p>
+</li>
+<li><p><strong>循环等待</strong>（circular waiting）：一系列线程互相持有其他进程所需要的资源。必须有一个循环依赖的关系。</p>
+</li>
+</ul>
+<p>死锁只有在四个条件同时满足时发生，预防死锁必须至少破坏其中一项。</p>
+<h2 id="模拟哲学家就餐问题">模拟哲学家就餐问题</h2>
+<p>首先我们通过程序模拟哲学家就餐问题，看看程序在运行的是不是会产生死锁问题。</p>
+<p>首先我们定义筷子对象和哲学家对象。其中筷子是并发资源，具有排他性，所以它包含一个锁，用来实现互斥，并且禁止抢占(其它非持有这根筷子的哲学家不能调用Unlock,只有持有这根筷子的哲学家才能调用Unlock)。</p>
+<p>每个哲学家需要左手的筷子和右手的筷子，status代表哲学家的状态(冥想、饿了、就餐中)，他有一种状态就是持有一根筷子并请求另一根筷子。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div></pre></td><td class="code"><pre><div class="line"><span class="comment">// Chopstick 代表筷子.</span></div><div class="line"><span class="keyword">type</span> Chopstick <span class="keyword">struct</span>{ sync.Mutex }</div><div class="line"></div><div class="line"><span class="comment">// Philosopher 代表哲学家.</span></div><div class="line"><span class="keyword">type</span> Philosopher <span class="keyword">struct</span> {</div><div class="line">    <span class="comment">// 哲学家的名字</span></div><div class="line">    name <span class="typename">string</span></div><div class="line">    <span class="comment">// 左手一只和右手一只筷子</span></div><div class="line">    leftChopstick, rightChopstick *Chopstick</div><div class="line">    status                        <span class="typename">string</span></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>哲学家在隔离的房间就是不断的冥想、就餐、冥想、就餐...... 永无终日。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div></pre></td><td class="code"><pre><div class="line"><span class="comment">// 无休止的进餐和冥想.</span></div><div class="line"><span class="comment">// 吃完睡(冥想、打坐), 睡完吃.</span></div><div class="line"><span class="comment">// 可以调整吃睡的时间来增加或者减少抢夺叉子的机会.</span></div><div class="line"><span class="keyword">func</span> (p *Philosopher) dine() {</div><div class="line">    <span class="keyword">for</span> {</div><div class="line">        mark(p, <span class="string">"冥想"</span>)</div><div class="line">        randomPause<span class="number">(10</span>)</div><div class="line"></div><div class="line">        mark(p, <span class="string">"饿了"</span>)</div><div class="line">        p.leftChopstick.Lock() <span class="comment">// 先尝试拿起左手边的筷子</span></div><div class="line">        mark(p, <span class="string">"拿起左手筷子"</span>)</div><div class="line">        p.rightChopstick.Lock() <span class="comment">// 再尝试拿起右手边的筷子</span></div><div class="line"></div><div class="line">        mark(p, <span class="string">"用膳"</span>)</div><div class="line">        randomPause<span class="number">(10</span>)</div><div class="line"></div><div class="line">        p.rightChopstick.Unlock() <span class="comment">// 先尝试放下右手边的筷子</span></div><div class="line">        p.leftChopstick.Unlock()  <span class="comment">// 再尝试拿起左手边的筷子</span></div><div class="line">    }</div><div class="line">}</div><div class="line"></div><div class="line"><span class="comment">// 随机暂停一段时</span></div><div class="line"><span class="keyword">func</span> randomPause(max <span class="typename">int</span>) {</div><div class="line">    time.Sleep(time.Millisecond * time.Duration(rand.Intn(max)))</div><div class="line">}</div><div class="line"></div><div class="line"><span class="comment">// 显示此哲学家的状态</span></div><div class="line"><span class="keyword">func</span> mark(p *Philosopher, action <span class="typename">string</span>) {</div><div class="line">    fmt.Printf(<span class="string">"%s开始%s\n"</span>, p.name, action)</div><div class="line">    p.status = fmt.Sprintf(<span class="string">"%s开始%s\n"</span>, p.name, action)</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>这里的mark用来在控制台输出此哲学家的状态，便于我们观察。</p>
+<p>最后一步就是实现main函数，分配5根筷子和五个哲学家，让程序运行起来:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> main() {</div><div class="line">    <span class="keyword">go</span> http.ListenAndServe(<span class="string">"localhost:8972"</span>, <span class="constant">nil</span>)</div><div class="line"></div><div class="line">    <span class="comment">// 哲学家数量</span></div><div class="line">    count :=<span class="number"> 5</span></div><div class="line"></div><div class="line">    <span class="comment">// 创建5根筷子</span></div><div class="line">    chopsticks := <span class="built_in">make</span>([]*Chopstick, count)</div><div class="line">    <span class="keyword">for</span> i :=<span class="number"> 0</span>; i &lt; count; i++ {</div><div class="line">        chopsticks[i] = <span class="built_in">new</span>(Chopstick)</div><div class="line">    }</div><div class="line"></div><div class="line">    <span class="comment">//</span></div><div class="line">    names := []<span class="typename">string</span>{color.RedString(<span class="string">"孔子"</span>), color.MagentaString(<span class="string">"庄子"</span>), color.CyanString(<span class="string">"墨子"</span>), color.GreenString(<span class="string">"孙子"</span>), color.WhiteString(<span class="string">"老子"</span>)}</div><div class="line"></div><div class="line">    <span class="comment">// 创建哲学家, 分配给他们左右手边的叉子，领他们做到圆餐桌上.</span></div><div class="line">    philosophers := <span class="built_in">make</span>([]*Philosopher, count)</div><div class="line">    <span class="keyword">for</span> i :=<span class="number"> 0</span>; i &lt; count; i++ {</div><div class="line">        philosophers[i] = &Philosopher{</div><div class="line">            name: names[i], leftChopstick: chopsticks[i], rightChopstick: chopsticks[(i<span class="number">+1</span>)%count],</div><div class="line">        }</div><div class="line">        <span class="keyword">go</span> philosophers[i].dine()</div><div class="line">    }</div><div class="line"></div><div class="line">    sigs := <span class="built_in">make</span>(<span class="keyword">chan</span> os.Signal,<span class="number"> 1</span>)</div><div class="line">    signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)</div><div class="line">    &lt;-sigs</div><div class="line"></div><div class="line">    fmt.Println(<span class="string">"退出中... 每个哲学家的状态:"</span>)</div><div class="line">    <span class="keyword">for</span> _, p := <span class="keyword">range</span> philosophers {</div><div class="line">        fmt.Print(p.status)</div><div class="line">    }</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>运行这个程序你会很快就发现这个程序会hang住，每个哲学家都处于拿到左手筷子等待右手筷子的状态。</p>
+<p>在我们实际的应用中，死锁问题并不是这么容易的被发现的，很可能在一些非常特定的场景(也被称之为corner case)才会被触发和发现。</p>
+<h2 id="解法一：限制就餐人数">解法一：限制就餐人数</h2>
+<p>我们知道，解决死锁的问题就是破坏死锁形成的四个条件之一就可以。一般来说，禁止抢占和互斥是我们必须的条件，所以其它两个条件是我们重点突破的点。</p>
+<p>针对哲学家就餐问题，如果我们限制最多允许四位哲学家同时就餐，就可以避免循环依赖的条件，因为依照抽屉原理，总是会有一位哲学家可以拿到两根筷子，所以程序可以运行下去。</p>
+<p>针对限制特定数量资源的情况，最好用的并发原语就是信号量(Semaphore)。Go官方提供了一个扩展库，提供了一个Semaphore的实现：<a href="https://pkg.go.dev/golang.org/x/sync/semaphore" target="_blank" rel="external">semaphore/Weighted</a>。</p>
+<p>我们把这个信号量初始值设置为4，代表最多允许同时4位哲学家就餐。把这个信号量传给哲学家对象，哲学家想就餐时就请求这个信号量，如果能得到一个许可，就可以就餐，吃完把许可释放回给信号量。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div><div class="line">35</div><div class="line">36</div><div class="line">37</div><div class="line">38</div><div class="line">39</div><div class="line">40</div><div class="line">41</div><div class="line">42</div><div class="line">43</div><div class="line">44</div><div class="line">45</div><div class="line">46</div><div class="line">47</div><div class="line">48</div><div class="line">49</div><div class="line">50</div><div class="line">51</div><div class="line">52</div><div class="line">53</div><div class="line">54</div><div class="line">55</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> Philosopher <span class="keyword">struct</span> {</div><div class="line">    <span class="comment">// 哲学家的名字</span></div><div class="line">    name <span class="typename">string</span></div><div class="line">    <span class="comment">// 左手一只和右手一只筷子</span></div><div class="line">    leftChopstick, rightChopstick *Chopstick</div><div class="line">    status                        <span class="typename">string</span></div><div class="line">    <span class="comment">// 信号量</span></div><div class="line">    sema *semaphore.Weighted</div><div class="line">}</div><div class="line"></div><div class="line"><span class="comment">// 无休止的进餐和冥想.</span></div><div class="line"><span class="comment">// 吃完睡(冥想、打坐), 睡完吃.</span></div><div class="line"><span class="comment">// 可以调整吃睡的时间来增加或者减少抢夺叉子的机会.</span></div><div class="line"><span class="keyword">func</span> (p *Philosopher) dine() {</div><div class="line">    <span class="keyword">for</span> {</div><div class="line">        mark(p, <span class="string">"冥想"</span>)</div><div class="line">        randomPause<span class="number">(10</span>)</div><div class="line"></div><div class="line">        mark(p, <span class="string">"饿了"</span>)</div><div class="line">        p.sema.Acquire(context.Background(),<span class="number"> 1</span>) <span class="comment">// 请求一个许可</span></div><div class="line">        p.leftChopstick.Lock() <span class="comment">// 先尝试拿起左手边的筷子</span></div><div class="line">        mark(p, <span class="string">"拿起左手筷子"</span>)</div><div class="line">        p.rightChopstick.Lock() <span class="comment">// 再尝试拿起右手边的筷子</span></div><div class="line"></div><div class="line">        mark(p, <span class="string">"用膳"</span>)</div><div class="line">        randomPause<span class="number">(10</span>)</div><div class="line"></div><div class="line">        p.rightChopstick.Unlock() <span class="comment">// 先尝试放下右手边的筷子</span></div><div class="line">        p.leftChopstick.Unlock()  <span class="comment">// 再尝试拿起左手边的筷子</span></div><div class="line">        p.sema.Release<span class="number">(1</span>) <span class="comment">// 释放许可给信号量</span></div><div class="line">    }</div><div class="line">}</div><div class="line"></div><div class="line"></div><div class="line"></div><div class="line"><span class="keyword">func</span> main() {</div><div class="line">    ......</div><div class="line"></div><div class="line">    <span class="comment">// 最多允许四个哲学家就餐</span></div><div class="line">    sema := semaphore.NewWeighted<span class="number">(4</span>)</div><div class="line">    <span class="comment">//</span></div><div class="line">    names := []<span class="typename">string</span>{color.RedString(<span class="string">"孔子"</span>), color.MagentaString(<span class="string">"庄子"</span>), color.CyanString(<span class="string">"墨子"</span>), color.GreenString(<span class="string">"孙子"</span>), color.WhiteString(<span class="string">"老子"</span>)}</div><div class="line"></div><div class="line">    <span class="comment">// 创建哲学家, 分配给他们左右手边的叉子，领他们做到圆餐桌上.</span></div><div class="line">    philosophers := <span class="built_in">make</span>([]*Philosopher, count)</div><div class="line">    <span class="keyword">for</span> i :=<span class="number"> 0</span>; i &lt; count; i++ {</div><div class="line">        philosophers[i] = &Philosopher{</div><div class="line">            name: names[i], leftChopstick: chopsticks[i], rightChopstick: chopsticks[(i<span class="number">+1</span>)%count],</div><div class="line">            sema: sema,</div><div class="line">        }</div><div class="line">        <span class="keyword">go</span> philosophers[i].dine()</div><div class="line">    }</div><div class="line"></div><div class="line">    ......</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>你可以运行这个程序，看看是否程序是否还会被hang住。</p>
+<h2 id="解法二：奇偶资源">解法二：奇偶资源</h2>
+<p>我们给每一位哲学家编号，从1到5, 如果我们规定奇数号的哲学家首先拿左手边的筷子，再拿右手边的筷子，偶数号的哲学家先拿右手边的筷子，再拿左手边的筷子， 释放筷子的时候按照相反的顺序，这样也可以避免出现循环依赖的情况。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div><div class="line">35</div><div class="line">36</div><div class="line">37</div><div class="line">38</div><div class="line">39</div><div class="line">40</div><div class="line">41</div><div class="line">42</div><div class="line">43</div><div class="line">44</div><div class="line">45</div><div class="line">46</div><div class="line">47</div><div class="line">48</div><div class="line">49</div><div class="line">50</div></pre></td><td class="code"><pre><div class="line"><span class="comment">// 无休止的进餐和冥想.</span></div><div class="line"><span class="comment">// 吃完睡(冥想、打坐), 睡完吃.</span></div><div class="line"><span class="comment">// 可以调整吃睡的时间来增加或者减少抢夺叉子的机会.</span></div><div class="line"><span class="keyword">func</span> (p *Philosopher) dine() {</div><div class="line">    <span class="keyword">for</span> {</div><div class="line">        mark(p, <span class="string">"冥想"</span>)</div><div class="line">        randomPause<span class="number">(10</span>)</div><div class="line"></div><div class="line">        mark(p, <span class="string">"饿了"</span>)</div><div class="line">        <span class="keyword">if</span> p.ID<span class="number">%2</span> ==<span class="number"> 1</span> { <span class="comment">// 奇数</span></div><div class="line">            p.leftChopstick.Lock() <span class="comment">// 先尝试拿起左手边的筷子</span></div><div class="line">            mark(p, <span class="string">"拿起左手筷子"</span>)</div><div class="line">            p.rightChopstick.Lock() <span class="comment">// 再尝试拿起右手边的筷子</span></div><div class="line"></div><div class="line">            mark(p, <span class="string">"用膳"</span>)</div><div class="line">            randomPause<span class="number">(10</span>)</div><div class="line"></div><div class="line">            p.rightChopstick.Unlock() <span class="comment">// 先尝试放下右手边的筷子</span></div><div class="line">            p.leftChopstick.Unlock()  <span class="comment">// 再尝试放下左手边的筷子</span></div><div class="line">        } <span class="keyword">else</span> {</div><div class="line">            p.rightChopstick.Lock() <span class="comment">// 先尝试拿起右手边的筷子</span></div><div class="line">            mark(p, <span class="string">"拿起右手筷子"</span>)</div><div class="line">            p.leftChopstick.Lock() <span class="comment">// 再尝试拿起左手边的筷子</span></div><div class="line"></div><div class="line">            mark(p, <span class="string">"用膳"</span>)</div><div class="line">            randomPause<span class="number">(10</span>)</div><div class="line"></div><div class="line">            p.leftChopstick.Unlock()  <span class="comment">// 先尝试放下左手边的筷子</span></div><div class="line">            p.rightChopstick.Unlock() <span class="comment">// 再尝试放下右手边的筷子</span></div><div class="line">        }</div><div class="line"></div><div class="line">    }</div><div class="line">}</div><div class="line"></div><div class="line"></div><div class="line"><span class="keyword">func</span> main() {</div><div class="line">    ......</div><div class="line"></div><div class="line">    <span class="comment">// 创建哲学家, 分配给他们左右手边的叉子，领他们做到圆餐桌上.</span></div><div class="line">    philosophers := <span class="built_in">make</span>([]*Philosopher, count)</div><div class="line">    <span class="keyword">for</span> i :=<span class="number"> 0</span>; i &lt; count; i++ {</div><div class="line">        philosophers[i] = &Philosopher{</div><div class="line">            ID:   i +<span class="number"> 1</span>,</div><div class="line">            name: names[i], leftChopstick: chopsticks[i], rightChopstick: chopsticks[(i<span class="number">+1</span>)%count],</div><div class="line">        }</div><div class="line">        <span class="keyword">go</span> philosophers[i].dine()</div><div class="line">    }</div><div class="line"></div><div class="line">    ......</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>运行这个程序，你同样也会发现程序可以顺利执行下去，并不会出现死锁的现象。</p>
+<h2 id="解法三：资源分级">解法三：资源分级</h2>
+<p>另一个简单的解法是为资源（这里是筷子）分配一个偏序或者分级的关系，并约定所有资源都按照这种顺序获取，按相反顺序释放，而且保证不会有两个无关资源同时被同一项工作所需要。在哲学家就餐问题中，筷子按照某种规则编号为1至5，每一个工作单元（哲学家）总是先拿起左右两边编号较低的筷子，再拿编号较高的。用完筷子后，他总是先放下编号较高的筷子，再放下编号较低的。在这种情况下，当四位哲学家同时拿起他们手边编号较低的筷子时，只有编号最高的筷子留在桌上，从而第五位哲学家就不能使用任何一只筷子了。而且，只有一位哲学家能使用最高编号的筷子，所以他能使用两只筷子用餐。当他吃完后，他会先放下编号最高的筷子，再放下编号较低的筷子，从而让另一位哲学家拿起后边的这只开始吃东西。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div></pre></td><td class="code"><pre><div class="line"><span class="comment">// 无休止的进餐和冥想.</span></div><div class="line"><span class="comment">// 吃完睡(冥想、打坐), 睡完吃.</span></div><div class="line"><span class="comment">// 可以调整吃睡的时间来增加或者减少抢夺叉子的机会.</span></div><div class="line"><span class="keyword">func</span> (p *Philosopher) dine() {</div><div class="line">    <span class="keyword">for</span> {</div><div class="line">        mark(p, <span class="string">"冥想"</span>)</div><div class="line">        randomPause<span class="number">(10</span>)</div><div class="line"></div><div class="line">        mark(p, <span class="string">"饿了"</span>)</div><div class="line">        <span class="keyword">if</span> p.ID ==<span class="number"> 5</span> { <span class="comment">//</span></div><div class="line">            p.rightChopstick.Lock() <span class="comment">// 先尝试拿起第1只筷子</span></div><div class="line">            mark(p, <span class="string">"拿起左手筷子"</span>)</div><div class="line">            p.leftChopstick.Lock() <span class="comment">// 再尝试拿起第5只筷子</span></div><div class="line"></div><div class="line">            mark(p, <span class="string">"用膳"</span>)</div><div class="line">            randomPause<span class="number">(10</span>)</div><div class="line"></div><div class="line">            p.leftChopstick.Unlock()  <span class="comment">// 先尝试放下第5只的筷子</span></div><div class="line">            p.rightChopstick.Unlock() <span class="comment">// 再尝试放下第1只的筷子</span></div><div class="line">        } <span class="keyword">else</span> {</div><div class="line">            p.leftChopstick.Lock() <span class="comment">// 先尝试拿起左手边的筷子(第n只)</span></div><div class="line">            mark(p, <span class="string">"拿起右手筷子"</span>)</div><div class="line">            p.rightChopstick.Lock() <span class="comment">// 再尝试拿起右手边的筷子(第n+1只)</span></div><div class="line"></div><div class="line">            mark(p, <span class="string">"用膳"</span>)</div><div class="line">            randomPause<span class="number">(10</span>)</div><div class="line"></div><div class="line">            p.rightChopstick.Unlock() <span class="comment">// 先尝试放下右手边的筷子</span></div><div class="line">            p.leftChopstick.Unlock()  <span class="comment">// 再尝试拿起左手边的筷子</span></div><div class="line">        }</div><div class="line"></div><div class="line">    }</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<h2 id="解法四：引入服务生">解法四：引入服务生</h2>
+<p>如果我们引入一个服务生，比如韩非子，由韩非子负责分配筷子，这样我们就可以将拿左手筷子和右手筷子看成一个原子操作，要么拿到筷子，要么等待，就可以破坏死锁的第二个条件(持有和等待)。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> Philosopher <span class="keyword">struct</span> {</div><div class="line">    <span class="comment">// 哲学家的名字</span></div><div class="line">    name <span class="typename">string</span></div><div class="line">    <span class="comment">// 左手一只和右手一只筷子</span></div><div class="line">    leftChopstick, rightChopstick *Chopstick</div><div class="line">    status                        <span class="typename">string</span></div><div class="line"></div><div class="line">    mu *sync.Mutex</div><div class="line">}</div><div class="line"></div><div class="line"><span class="comment">// 无休止的进餐和冥想.</span></div><div class="line"><span class="comment">// 吃完睡(冥想、打坐), 睡完吃.</span></div><div class="line"><span class="comment">// 可以调整吃睡的时间来增加或者减少抢夺叉子的机会.</span></div><div class="line"><span class="keyword">func</span> (p *Philosopher) dine() {</div><div class="line">    <span class="keyword">for</span> {</div><div class="line">        mark(p, <span class="string">"冥想"</span>)</div><div class="line">        randomPause<span class="number">(10</span>)</div><div class="line"></div><div class="line">        mark(p, <span class="string">"饿了"</span>)</div><div class="line">        p.mu.Lock() <span class="comment">// 服务生控制</span></div><div class="line">        p.leftChopstick.Lock() <span class="comment">// 先尝试拿起左手边的筷子</span></div><div class="line">        mark(p, <span class="string">"拿起左手筷子"</span>)</div><div class="line">        p.rightChopstick.Lock() <span class="comment">// 再尝试拿起右手边的筷子</span></div><div class="line">        p.mu.Unlock() </div><div class="line"></div><div class="line">        mark(p, <span class="string">"用膳"</span>)</div><div class="line">        randomPause<span class="number">(10</span>)</div><div class="line"></div><div class="line">        p.rightChopstick.Unlock() <span class="comment">// 先尝试放下右手边的筷子</span></div><div class="line">        p.leftChopstick.Unlock()  <span class="comment">// 再尝试拿起左手边的筷子</span></div><div class="line">    }</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>完整代码可以参考 [dive-to-gosync-workshop(<a href="https://github.com/smallnest/dive-to-gosync-workshop/tree/master/11.classical_problems" target="_blank" rel="external">https://github.com/smallnest/dive-to-gosync-workshop/tree/master/11.classical_problems</a>)</p>
+<p>下一篇我们讲解另外一个经典并发问题：一氧化二氢的生成。</p>
+]]></content>
+    <summary type="html">
+    <![CDATA[<p>哲学家就餐问题是一个非常非常经典的问题，也是一个非常通用的研究并发编程中死锁现象的问题。</p>
+]]>
+    
+    </summary>
+    
+      <category term="Go" scheme="https://colobu.com/categories/Go/"/>
+    
+  </entry>
   
   <entry>
     <title><![CDATA[pyroscope: 一个简单易用的持续剖析平台]]></title>
@@ -194,12 +354,100 @@
     <link href="https://colobu.com/2022/01/15/Writing-maintainable-Go-code/"/>
     <id>https://colobu.com/2022/01/15/Writing-maintainable-Go-code/</id>
     <published>2022-01-15T04:54:58.000Z</published>
-    <updated>2022-01-16T11:24:12.023Z</updated>
+    <updated>2022-02-24T09:36:34.503Z</updated>
     <content type="html"><![CDATA[<p>编写可维护的代码是最基本的要求。清晰度、可读性和简单性都是保持代码可维护性的各个方面。它应该使某人加入您的项目或在有人离开后维护代码的过程变得容易。可维护性的衡量指标是代码更改的容易程度以及与这些更改引起的风险性。为了有效地编写Go程序，了解Go语言的属性和地道写法，并使用与命名、程序构建、格式等相关既定约定是至关重要。</p>
 <p>以下是一些有助于编写可维护的Go代码的良好实践。</p>
 <p>原文: <a href="https://jogendra.dev/writing-maintainable-go-code" target="_blank" rel="external">Writing maintainable Go code</a> by Jogendra.</p>
 <a id="more"></a>
-<p>公众号连接: <a href="https://mp.weixin.qq.com/s?__biz=MzU2ODc4NzUxMg==&amp;mid=2247483782&amp;idx=1&amp;sn=3fcb0a72de81eec4ba5f20ca955635c3&amp;chksm=fc89d6d1cbfe5fc7baccc36dae8de112c4bf3065f5f3807933f526b37d0b49bda5585f0bf9e8&amp;token=1374820075&amp;lang=zh_CN#rd" target="_blank" rel="external">编写可维护的Go代码</a></p>
+<p>保持小巧的<code>main</code>函数</p>
+<p>&quot;<a href="https://go.dev/tour/basics/1" target="_blank" rel="external">Go之旅</a>&quot;中讲到：</p>
+<blockquote>
+<p>每个 Go 程序都由包组成。程序在包 <code>main</code> 中开会运行。</p>
+</blockquote>
+<p>包<strong>main</strong>是唯一的，那些导出名称(<code>exported name</code>)既不会导出，编译器也不会将其视为常规包; 相反，它将其编译为可执行程序。在包<strong>main</strong>中，<strong>main</strong>函数必须存在，它是 Go 程序的入口点。对软件包<code>main</code>和函数<code>main</code>的期望是它们尽可能少。</p>
+<p><strong>main.main</strong>是单例的，仅被调用一次。你为它内部的代码编写测试也很困难，因此，强烈建议使用<em>main.main</em>仅仅启动程序，但不要在此包中编写业务逻辑。将启动程序和业务逻辑分别写在单独的包中可改进程序的结构和可维护性。</p>
+<h2 id="使用有意义的名称">使用有意义的名称</h2>
+<p>在 Go 中命名主要强调一致、简短和准确的名称，因为它们往往会提高代码的可读性。</p>
+<p>Russ Cox的命名<a href="https://research.swtch.com/names" target="_blank" rel="external">理念</a>：</p>
+<blockquote>
+<p>一个名称的长度不应超过它的信息内容。对于一个局部变量，名称<code>i</code>和<code>index</code>或者<code>idx</code>携带同样的信息，而且更方便快速阅读。类似地，<code>i</code>和<code>j</code>这一对命名比索引变量<code>i1</code>和<code>i2</code>更好(更差的是<code>index1</code>和<code>index2</code>),在阅读代码的时候它们更容易区分。全局名称必须传达相对更多的信息，因为它们出现在更广泛的上下文中。即便如此，一个简短、准确的名字比冗长的名字更能说明问题：比较<a href="http://www.google.com/codesearch?q=acquire" target="_blank" rel="external"><code>acquire</code></a>和<a href="http://www.google.com/codesearch?q=take_?ownership" target="_blank" rel="external"><code>take_ownership</code></a>。让每个命名都能<a href="http://www.bartleby.com/141/strunk5.html#13" target="_blank" rel="external">区分</a>。</p>
+</blockquote>
+<p>Ken Thompson，Rob Pike，Robert Griesemer，Russ Cox，Ian Lance Taylor等人多年的编程经验和命名理念很可能激发了Go中的命名约定。<a href="https://talks.golang.org/2014/names.slide" target="_blank" rel="external">这是</a>安德鲁·格兰德（Andrew Gerrand）的一张幻灯片，其更深入地讨论了Go中的命名。</p>
+<h2 id="代码分组">代码分组</h2>
+<p>在函数（或方法）中，某些语句可能有关联。因此，建议将这些语句保留在单独的代码块中，用换行符分隔。分组使程序构造更好，并通过分隔相关部分来提高可读性</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div></pre></td><td class="code"><pre><div class="line"><span class="comment">// Creating new HTTP request with request body</span></div><div class="line">req, err := http.NewRequest(<span class="string">"POST"</span>, <span class="string">"https://api.example.com/endpoint"</span>, body)</div><div class="line"><span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">    <span class="comment">// handle err</span></div><div class="line">}</div><div class="line"></div><div class="line"><span class="comment">// Setting headers to HTTP request</span></div><div class="line">req.Header.Set(<span class="string">"Content-Type"</span>, <span class="string">"application/json"</span>)</div><div class="line">req.Header.Set(<span class="string">"Authorization"</span>, <span class="string">"Bearer b7d03a6947b217efb6f3ec3bd3504582"</span>)</div><div class="line"></div><div class="line"><span class="comment">// Executing the request</span></div><div class="line">resp, err := http.DefaultClient.Do(req)</div><div class="line"><span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">    <span class="comment">// handle err</span></div><div class="line">}</div><div class="line"><span class="keyword">defer</span> resp.Body.Close()</div></pre></td></tr></table></figure>
+
+<h2 id="撰写有意义的注释">撰写有意义的注释</h2>
+<p>注释是理解现有代码的绝佳方式，它可以回答这段代码的作用，为什么会存在某些代码段以及为什么它是这样编写的。最好在编写代码时就编写注释，但更重要的是在更新代码时更新注释。代码更新可能会改变特定代码的实现目的，因此更新注释也至关重要的; 否则，它将造成困惑而不是在以后有所帮助。与其编写与代码相矛盾的注释还不如不写代码注释。您可以在 Go 中编写块注释或内联注释，你可以选择任何更适合您的代码的内容。</p>
+<p>您使用该工具做检查在 Go 中你是否正确编写注释代码。<a href="https://blog.golang.org/godoc" target="_blank" rel="external">godoc</a>将从您的代码中提取注释，并为您的 Go 程序生成文档。Go 中的注释有几个不错的功能，请参阅<a href="https://blog.jbowen.dev/2019/09/the-magic-of-go-comments/" target="_blank" rel="external">Go代码注释的魔法</a>以详细了解。<code></code></p>
+<p>知道不必写注释与知道应该写注释一样重要。最好避免过度注释代码，并将其留给其他程序员来理解Go。您应该避显而易见的注释，如果代码的可读性足够高，则不需要注释。例如：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div></pre></td><td class="code"><pre><div class="line"><span class="comment">// Get country code from customer address.</span></div><div class="line">    countryCode := getCountryCode(address)</div><div class="line"></div><div class="line">    <span class="comment">// If country code is "IN", assign "India" as</span></div><div class="line">    <span class="comment">// country.</span></div><div class="line">    <span class="keyword">if</span> countryCode == <span class="string">"IN"</span> {</div><div class="line">        country = <span class="string">"India"</span></div><div class="line">    }</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>这里写的注释没啥意义，不会增加任何价值。</p>
+<h2 id="不要重复">不要重复</h2>
+<p>DRY（不要重复自己）是软件开发的一个原则，旨在减少软件模式的重复，用抽象代替它以避免冗余。</p>
+<p>那么，代码重复又有什么问题呢？在有变更之前，没有太多问题。想象一下，在10个地方重复相同的代码，每当有小的变化时都要在所有10个地方做改变。如果代码仅存在于一个位置，则更容易维护代码，从而确保一致性。如果代码重复，您很有可能忘记更新其中一个副本，这意味着您在一个副本中修复的错误仍将存在于另一个副本中。</p>
+<p>如果必须再次编写相同的代码，可以其移动到大多数<code>helper</code>函数所在的共享package中。通过删除重复的代码，您将拥有更少的代码，这些代码将更清晰，更易于维护。</p>
+<p>缺少泛型（Go 1.17以及先前版本）可能会使 Go 代码在某些地方看起来重复。但是，随着Go 1.18正式支持泛型，将使编写通用代码变得更加简单，冗余更少，并且更易于维护。</p>
+<p>但是，有时重复代码比试图强制抽象以免冗余会更简单，更容易理解。因此，更重要的是要知道在哪里应用 DRY，在哪里不应用 DRY，因为代码的可读性和易懂性胜过其他问题。</p>
+<h2 id="Linting和样式指南">Linting和样式指南</h2>
+<p>遵守编码标准使代码库保持一致，易于代码审查和维护。它使编码风格一致。通常，风格指南是有争议的，为了让人们遵守相同指南的最佳方法是为Go代码创建一个标准的风格指南。拥有风格指南不是最重要的，最重要的是让你的团队真正地使用它。市面上有许多开源的 linting 工具和样式指南，你可以从以此为基础并对其进行修改，使其适合你。</p>
+<p>Go有一个在社区中普遍使用和接受的代码格式标准，尽管它不需要特殊的规则。Go 提供了这个<code>fmt</code>工具，鼓励和保护 Go 代码使用既定约定进行格式化。</p>
+<p>许多编辑器支持在保存文件时调用文件格式化工具。或者，像 <a href="https://github.com/mvdan/gofumpt" target="_blank" rel="external">gofumpt</a>工具，提供更严格的格式化版本。该工具是 <code>gofmt</code>的修改分支，可用作<code>gofmt</code>原地替换。此外，这些工具还支持自定义源代码转换和添加自定义的规则。</p>
+<p>如果您想遵循Go的社区风格指南，可以使用<a href="https://github.com/golang/lint" target="_blank" rel="external">golint</a>。该工具提供了有关代码样式的有用提示，还可以帮助查看Go的公认约定。这将极大地帮助加入项目的每个新开发人员。</p>
+<h2 id="避免深度嵌套">避免深度嵌套</h2>
+<p>过度的嵌套困扰着每个人。深度嵌套使得代码很难遵循设计逻辑。如果您正在执行代码审查或重新访问旧代码，具有大量嵌套的超大函数（或方法）会造成逻辑的混乱。此外，嵌套代码难以阅读; 嵌套越小，读者的认知负荷就越小。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">if</span> condition1 {</div><div class="line">    <span class="keyword">if</span> condition2 {</div><div class="line">        <span class="keyword">if</span> condition3 {</div><div class="line">            <span class="comment">// ...</span></div><div class="line">        } <span class="keyword">else</span> {</div><div class="line">            <span class="comment">// ...</span></div><div class="line">        }</div><div class="line">    } <span class="keyword">else</span> {</div><div class="line">        <span class="keyword">if</span> condition5 {</div><div class="line">            <span class="comment">// ...</span></div><div class="line">        }</div><div class="line">    }</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>开发人员可以通过多种方式避免这种情况。<a href="https://en.wikibooks.org/wiki/Computer_Programming/Coding_Style/Minimize_nesting" target="_blank" rel="external">这里是</a>一个很好的阅读材料。</p>
+<h2 id="编写更好的函数">编写更好的函数</h2>
+<p>避免编写较长的函数;函数越小越好。较长的函数可能难以读取、测试和维护。较长的函数通常具有较大的职责，因此建议将它们分解为较小的函数。通过分解较长的函数创建的较短的函数，可以服务更多的调用方。因为它们可以提供可管理的独立任务。</p>
+<p>Unix管道的发明者、Unix的创始人之一道格·麦克罗伊（Doug McIlroy）说（Unix Philosophy）：</p>
+<blockquote>
+<p>让每个程序都做好一件事。要完成一项新工作，请重新构建，而不是通过添加新功能使旧程序复杂化。</p>
+</blockquote>
+<p>因此，分解函数以做好一件事确实与Unix哲学英雄相惜。</p>
+<p>如前所述，命名对于可读性至关重要。好的函数名称比注释更好，它们与编写良好的注释或 API 文档一样有助于理解代码。尽量保留较少的功能参数。</p>
+<h2 id="避免包(package)级别状态">避免包(package)级别状态</h2>
+<p>在 Go 中，对于任何给定的导入路径，包的实例都是唯一一个(单例)。这意味着在包级别上，任何变量只有一个实例。包级别的变量在全局级别共享，这意味着所有访问者将共享同一个实例。函数<code>X</code>可以修改变量，函数<code>Y</code>可以读取修改后的值。</p>
+<p>使用包级别的变量可能会产生许多影响：</p>
+<ol>
+<li>很难跟踪变量的修改位置以及跟踪访问变量的位置以做出任何决定。</li>
+<li>包级变量导致紧密耦合; 一个角落的代码修改可能需要修改代码的另一个角落，这使得阅读、修改和单元测试代码变得更加困难。</li>
+<li>它可能会导致争用条件等问题。</li>
+</ol>
+<p>但是，包级别常量的使用非常有用。因此，始终建议尽可能避免使用包级别状态(译者注: 可修改的变量)。若要减少耦合，请将相关变量移到所需的结构体的字段上。在结构体中定义依赖项和配置使其变得容易。接口的使用也非常有帮助。</p>
+<h2 id="尽早返回并明智地使用条件">尽早返回并明智地使用条件</h2>
+<p>条件语句是我们必须经常写的东西。它在代码是干净还是混乱方面发挥着重要作用。例如：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> do(n <span class="typename">int</span>) <span class="typename">bool</span> {</div><div class="line">    <span class="keyword">if</span> n &gt;<span class="number"> 12</span> {</div><div class="line">        <span class="keyword">return</span> <span class="constant">false</span></div><div class="line">    } <span class="keyword">else</span> {</div><div class="line">        <span class="keyword">return</span> <span class="constant">true</span></div><div class="line">    }</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>此代码的问题在于<code>else</code>语句在此处没有帮助;相反，它使代码变得混乱且可读性降低。相反，把它写成：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> do(n <span class="typename">int</span>) <span class="typename">bool</span> {</div><div class="line">    <span class="keyword">if</span> n &gt;<span class="number"> 12</span> {</div><div class="line">        <span class="keyword">return</span> <span class="constant">false</span></div><div class="line">    }</div><div class="line">    <span class="keyword">return</span> <span class="constant">true</span></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>译者注， 把它写成下面的方式更简洁：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> do(n <span class="typename">int</span>) <span class="typename">bool</span> {</div><div class="line">    <span class="keyword">return</span> n &lt;=<span class="number"> 12</span></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>你也经常会看到整个函数体都包在<code>if</code>语句里面,这也是不好的</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> do(n <span class="typename">int</span>) {</div><div class="line">    <span class="keyword">if</span> n &gt;<span class="number"> 12</span> {</div><div class="line">        sum()</div><div class="line">        subtract()</div><div class="line">        multiply()</div><div class="line">    }</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>可以翻转判断条件使代码更简洁可读:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> do(n <span class="typename">int</span>) {</div><div class="line">    <span class="keyword">if</span> n &lt;=<span class="number"> 12</span> {</div><div class="line">        <span class="keyword">return</span></div><div class="line">    }</div><div class="line">    sum()</div><div class="line">    subtract()</div><div class="line">    multiply()</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<h2 id="更经常的使用switch">更经常的使用<code>switch</code></h2>
+<p><strong>switch</strong>语句是缩短 if-else 语句序列的最佳方式，有益于编写干净的程序。程序经常需要做比较判断，如果我们的程序使用了太多的<code>if-else</code>，会使代码凌乱且可读性较差。所以使用switch有很大帮助。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> transact(bank <span class="typename">string</span>) {</div><div class="line">    <span class="keyword">if</span> bank == <span class="string">"Citi"</span> {</div><div class="line">        fmt.Printf(<span class="string">"Tx #1: %s\n"</span>, bank)</div><div class="line">    } <span class="keyword">else</span> <span class="keyword">if</span> bank == <span class="string">"StandardChartered"</span> {</div><div class="line">        fmt.Printf(<span class="string">"Tx #2: %s\n"</span>, bank)</div><div class="line">    } <span class="keyword">else</span> <span class="keyword">if</span> bank == <span class="string">"HSBC"</span> || bank == <span class="string">"Deutsche"</span> || bank == <span class="string">"JPMorgan"</span> {</div><div class="line">        fmt.Printf(<span class="string">"Tx #3: %s\n"</span>, bank)</div><div class="line">    } <span class="keyword">else</span> <span class="keyword">if</span> bank == <span class="string">"NatWest"</span> {</div><div class="line">        fmt.Printf(<span class="string">"Tx #4: %s\n"</span>, bank)</div><div class="line">    } <span class="keyword">else</span> {</div><div class="line">        fmt.Printf(<span class="string">"Tx #E: %s\n"</span>, bank)</div><div class="line">    }</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>这看起来很乱，对吧？现在让我们改用一个switch。以下代码如何以惯用方式重写相同的代码：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> transact(bank <span class="typename">string</span>) {</div><div class="line">    <span class="keyword">switch</span> bank {</div><div class="line">    <span class="keyword">case</span> <span class="string">"Citi"</span>:</div><div class="line">        fmt.Printf(<span class="string">"Tx #1: %s\n"</span>, bank)</div><div class="line">    <span class="keyword">case</span> <span class="string">"StandardChartered"</span>:</div><div class="line">        fmt.Printf(<span class="string">"Tx #2: %s\n"</span>, bank)</div><div class="line">    <span class="keyword">case</span> <span class="string">"HSBC"</span>, <span class="string">"Deutsche"</span>, <span class="string">"JPMorgan"</span>:</div><div class="line">        fmt.Printf(<span class="string">"Tx #3: %s\n"</span>, bank)</div><div class="line">    <span class="keyword">case</span> <span class="string">"NatWest"</span>:</div><div class="line">        fmt.Printf(<span class="string">"Tx #4: %s\n"</span>, bank)</div><div class="line">    <span class="keyword">default</span>:</div><div class="line">        fmt.Printf(<span class="string">"Tx #E: %s\n"</span>, bank)</div><div class="line">    }</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>将来，如果添加新的银行，使用<code>switch-case</code>将更容易，更干净。</p>
+<h2 id="持续的代码重构">持续的代码重构</h2>
+<p>在大型代码库中，重构代码库结构至关重要。代码重构不时地提高代码的可读性和质量。这不是一次性的过程；团队应持续支付技术债务，以保持代码库正常。我曾学过“尽早重构，经常重构”（<code>refactor early, refactor often</code>），这对于编写可维护的Go代码非常有意义。随着时间的推移，包的代码数量和责任会变得越来越重，因此最好将一些包分解成更小的包，因为它们易于维护。重构包的另一个好理由是改进命名。包只包含与其功能相关的代码也是至关重要的。例如，Go把<code>os.SEEK_SET</code>、<code>os.SEEK_CUR</code>和 <code>os.SEEK_END</code>移动到<code>io.SeekStart</code>、<code>io.SeekCurrent</code>和 <code>io.SeekEnd</code>。包<code>io</code>更适合于组织涉及文件I/O的代码。将包分解成小的包也会使依赖关系变得轻量级。</p>
+<h2 id="结论">结论</h2>
+<p>随着时间和其他程序员在代码库上工作，我们更好地理解可维护性意味着什么。 编写可维护的代码并不复杂； 它需要每个贡献代码的人的知识、经验和仔细思考。 我们讨论的一组良好实践应该可以帮助您和团队更好地维护您的 Go 代码。</p>
+<blockquote>
+<p>原文 <a href="https://deepsource.io/learn/software-engineering-guide/writing-maintainable-go-code/" target="_blank" rel="external">Writing maintainable Go code - DeepSource Learn</a> by Jogendra</p>
+</blockquote>
 ]]></content>
     <summary type="html">
     <![CDATA[<p>编写可维护的代码是最基本的要求。清晰度、可读性和简单性都是保持代码可维护性的各个方面。它应该使某人加入您的项目或在有人离开后维护代码的过程变得容易。可维护性的衡量指标是代码更改的容易程度以及与这些更改引起的风险性。为了有效地编写Go程序，了解Go语言的属性和地道写法，并使用与命名、程序构建、格式等相关既定约定是至关重要。</p>
@@ -1706,190 +1954,6 @@
     </summary>
     
       <category term="Go" scheme="https://colobu.com/categories/Go/"/>
-    
-  </entry>
-  
-  <entry>
-    <title><![CDATA[深入Go Module之go.mod文件解析]]></title>
-    <link href="https://colobu.com/2021/06/28/dive-into-go-module-1/"/>
-    <id>https://colobu.com/2021/06/28/dive-into-go-module-1/</id>
-    <published>2021-06-28T00:04:01.000Z</published>
-    <updated>2022-01-06T10:11:01.584Z</updated>
-    <content type="html"><![CDATA[<p>昨天在GopherChina 2021大会上分享了《深入Go Module》，干货太多了，接下来的分几篇文章详细介绍下。</p>
-<a id="more"></a>
-<p>现在哪个新编程语言不都是提供库版本工具呢？Java、Python、nonjs、rust都有一套自己的库管理方法和库注册中心，不管它们的叫法如何。Go最初推出来的时候并没有一个库管理方式，而是采用<strong>GOPATH</strong>的方式，所有的项目都必须放在GOPATH下，不止一次有从其它语言比如Java转过过来的同学问我:&quot;为什么我在我的一个文件夹下建的项目没法编译呢？&quot;,那是因为他的文件夹没有建在GOPATH下，而等他想在GOPATH下建项目的时候，package path他又不知道该怎么写。</p>
-<p>所以GO使用的GOPATH方式确实对新手来说是一件非常令人困惑的事。而随着Go生态圈的快速壮大，另一个经典的库管理的问题也出现了。就是我们项目中的依赖库经常出现API broken的情况，因为依赖的库相关接口改变了，导致我们的项目更新了依赖库后编译不过，我们不得不需要修改自己的代码以便适应依赖库的最新版本。更困难的是，如果多个依赖库分别依赖第三个依赖库的第三个版本，版本冲突就出现了。</p>
-<p>依赖库冲突几乎每个编程语言都有这样的问题，甚至操作系统也有<a href="https://baike.baidu.com/item/DLL%E5%9C%B0%E7%8B%B1" target="_blank" rel="external">DLL地狱问题</a>,所以各种编程语言都尝试使用自己的方式解决依赖库版本的问题。</p>
-<p>前面说了，Go最初是没有官方的库版本的方式的，都是靠第三方的工具实现，比如godep、glide、dep等,从2012年各种工具分别出现，大海淘沙，浮浮沉沉，最后也就有几个常用的工具大家在使用，dep是2017出现的一个版本，让人眼前一亮，而且也得到了Go官方的支持，项目也放在Golang组织之下<a href="https://github.com/golang/dep" target="_blank" rel="external">golang/dep</a>。</p>
-<p>但是蜜月期没有多久，2018年Russ Cox经过深思熟虑以及一些早期的试验，决定go库版本的方式需要从头再来，深度集成go的各种工具(go get、go list等)，实现精巧的最小化版本选择算法，解决broken API共存等问题，所以dep就被废弃了，这件事还导致dep的作者相当的失望和数次争辩。</p>
-<p>但是不管怎样，Go官方的库管理方式还是在2018年go 1.11中实验性的推出了，通过设置一个环境变量<code>GO111MODULE=on</code>就可以弃用，并且期望go 1.12正式退出，而环境变量<code>GO111MODULE=on</code>就可以去掉了。可是没有想到的是，go module推出后问题多多，现在每一个go的版本中都有对go module修改，导致这个特性一直没有最终完成，这也是我吐槽它的地方：都快三年了，一个feature都开发那么久，而且未来的go 1.17、go 1.18还有一些改变，同学们，还学的动吗？</p>
-<p>go官方库管理方式叫做go module。 先前，我们的库都是以package来组织的，package以一个文件或者多个文件实现单一的功能，一个项目包含一个package或者多个package。Go module就是一组统一打版和发布的package的集合，在根文件下有go.mod文件定义module path和依赖库的版本，package以子文件夹的形式存在module中，对package path就是 module path +&quot;/&quot;+ package name的形式。</p>
-<p>一般我们项目都是单module的形式，项目主文件夹下包含go.mod,子文件夹定义package，或者主文件夹也是一个package。但是一个项目也可以包含多个module,只不过这种方式不常用而已。</p>
-<h2 id="go-mod">go.mod</h2>
-<p>go module最重要的是go.mod文件的定义，它用来标记一个module和它的依赖库以及依赖库的版本。会放在module的主文件夹下，一般以<code>go.mod</code>命名。</p>
-<p>一个go.mod内容类似下面的格式:</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div></pre></td><td class="code"><pre><div class="line">module github.com/panicthis/modfile</div><div class="line"></div><div class="line"><span class="keyword">go</span><span class="number"> 1.16</span></div><div class="line"></div><div class="line">require (</div><div class="line">	github.com/cenk/backoff v2<span class="number">.2.1</span>+incompatible</div><div class="line">	github.com/coreos/bbolt v1<span class="number">.3.3</span></div><div class="line">	github.com/edwingeng/doublejump v0<span class="number">.0.0</span><span class="number">-20200330080233</span>-e4ea8bd1cbed</div><div class="line">	github.com/stretchr/objx v0<span class="number">.3.0</span> <span class="comment">// indirect</span></div><div class="line">	github.com/stretchr/testify v1<span class="number">.7.0</span></div><div class="line">	<span class="keyword">go</span>.etcd.io/bbolt v1<span class="number">.3.6</span> <span class="comment">// indirect</span></div><div class="line">	<span class="keyword">go</span>.etcd.io/etcd/client/v2 v2<span class="number">.305.0</span>-rc<span class="number">.1</span></div><div class="line">	<span class="keyword">go</span>.etcd.io/etcd/client/v3 v3<span class="number">.5.0</span>-rc<span class="number">.1</span></div><div class="line">	golang.org/x/net v0<span class="number">.0.0</span><span class="number">-20210610132358</span><span class="number">-84</span>b48f89b13b <span class="comment">// indirect</span></div><div class="line">	golang.org/x/sys v0<span class="number">.0.0</span><span class="number">-20210611083646</span>-a4fc73990273 <span class="comment">// indirect</span></div><div class="line">)</div><div class="line"></div><div class="line">exclude (</div><div class="line">	<span class="keyword">go</span>.etcd.io/etcd/client/v2 v2<span class="number">.305.0</span>-rc<span class="number">.0</span></div><div class="line">	<span class="keyword">go</span>.etcd.io/etcd/client/v3 v3<span class="number">.5.0</span>-rc<span class="number">.0</span></div><div class="line">)</div><div class="line"></div><div class="line"></div><div class="line"></div><div class="line">retract (</div><div class="line">    v1<span class="number">.0.0</span> <span class="comment">// 废弃的版本，请使用v1.1.0</span></div><div class="line">)</div></pre></td></tr></table></figure>
-
-<p>虽然是一个简单的文件，但是里面的乾坤不少，让我们依次介绍它们。</p>
-<h3 id="语义化版本_2-0-0">语义化版本 2.0.0</h3>
-<p>Go module遵循<a href="https://semver.org/lang/zh-CN/" target="_blank" rel="external">语义化版本规范 2.0.0</a>。语义化版本规范 2.0.0规定了版本号的格式，每个字段的意义以及版本号比较的规则等等。</p>
-<p><img src="semver2.png" alt=""></p>
-<p>如果你想为你的项目发版，你可以设置tag为上面的格式，比如<code>v1.3.0</code>、<code>v2.0.0-rc.1</code>等等。metadata中在Go版本比较时是不参与运算的，只是一个辅助信息。</p>
-<h3 id="module_path">module path</h3>
-<p>go.mod的第一行是module path, 一般采用仓库+module name的方式定义。这样我们获取一个module的时候，就可以到它的仓库中去查询，或者让go proxy到仓库中去查询。</p>
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line"><span class="class"><span class="keyword">module</span> <span class="title">github</span>.<span class="title">com</span>/<span class="title">panicthis</span>/<span class="title">modfile</span></span></div></pre></td></tr></table></figure>
-
-<p>如果你的版本已经大于等于2.0.0，按照Go的规范，你应该加上major的后缀，module path改成下面的方式:</p>
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line"><span class="class"><span class="keyword">module</span> <span class="title">github</span>.<span class="title">com</span>/<span class="title">panicthis</span>/<span class="title">modfile</span>/<span class="title">v2</span></span></div></pre></td></tr></table></figure>
-
-
-
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line"><span class="class"><span class="keyword">module</span> <span class="title">github</span>.<span class="title">com</span>/<span class="title">panicthis</span>/<span class="title">modfile</span>/<span class="title">v3</span></span></div></pre></td></tr></table></figure>
-
-<p>而且引用代码的时候，也要加上<code>v2</code>、<code>v3</code>、<code>vx</code>后缀，以便和其它major版本进行区分。</p>
-<p>这是一个很奇怪的约定，带来的好处是你一个项目中可以使用依赖库的不同的major版本，它们可以共存。</p>
-<h3 id="go_directive">go directive</h3>
-<p>第二行是go directive。格式是 <code>go 1.xx</code>,它并不是指你当前使用的Go版本，而是指名你的代码所需要的Go的最低版本。</p>
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">go</span> <span class="number">1.16</span></div></pre></td></tr></table></figure>
-
-<p>因为Go的标准库也有所变化，一些新的API也被增加进来，如果你的代码用到了这些新的API,你可能需要指名它依赖的go版本。</p>
-<p>这一行不是必须的，你可以不写。 </p>
-<h3 id="require">require</h3>
-<p>require段中列出了项目所需要的各个依赖库以及它们的版本，除了正规的<code>v1.3.0</code>这样的版本外，还有一些奇奇怪怪的版本和注释，那么它们又是什么意思呢？</p>
-<p>正式的版本号我们就不需要介绍了，大家都懂:</p>
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">github.<span class="keyword">com</span>/coreos/bbolt v1.<span class="number">3.3</span></div></pre></td></tr></table></figure>
-
-<h4 id="伪版本号">伪版本号</h4>
-<p><img src="version1.png" alt=""></p>
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">github.com/edwingeng/doublejump v0.<span class="number">0.0</span>-<span class="number">20200330080233</span><span class="operator">-e</span>4ea8bd1cbed</div></pre></td></tr></table></figure>
-
-<p>上面这个库中的版本号就是一个伪版本号<code>v0.0.0-20200330080233-e4ea8bd1cbed</code>,这是go module为它生成的一个类似符合语义化版本2.0.0版本，实际这个库并没有发布这个版本。</p>
-<p>正式因为这个依赖库没有发布版本，而go module需要指定这个库的一个确定的版本，所以才创建的这样一个伪版本号。</p>
-<p>go module的目的就是在go.mod中标记出这个项目所有的依赖以及它们确定的某个版本。</p>
-<p>这里的<code>20200330080233</code>是这次提交的时间，格式是<code>yyyyMMddhhmmss</code>, 而<code>e4ea8bd1cbed</code>就是这个版本的commit id,通过这个字段，就可以确定这个库的特定的版本。</p>
-<p>而前面的<code>v0.0.0</code>可能有多种生成方式，主要看你这个commit的base version:</p>
-<ul>
-<li>vX.0.0-yyyymmddhhmmss-abcdefabcdef: 如果没有base version,那么就是vX.0.0的形式</li>
-<li>vX.Y.Z-pre.0.yyyymmddhhmmss-abcdefabcdef： 如果base version是一个预发布的版本，比如vX.Y.Z-pre,那么它就用vX.Y.Z-pre.0的形式</li>
-<li>vX.Y.(Z+1)-0.yyyymmddhhmmss-abcdefabcdef: 如果base version是一个正式发布的版本，那么它就patch号加1，如vX.Y.(Z+1)-0</li>
-</ul>
-<h3 id="indirect注释">indirect注释</h3>
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line">   <span class="keyword">go</span>.etcd.io/bbolt v1<span class="number">.3.6</span> <span class="comment">// indirect</span></div><div class="line">golang.org/x/net v0<span class="number">.0.0</span><span class="number">-20210610132358</span><span class="number">-84</span>b48f89b13b <span class="comment">// indirect</span></div><div class="line">golang.org/x/sys v0<span class="number">.0.0</span><span class="number">-20210611083646</span>-a4fc73990273 <span class="comment">// indirect</span></div></pre></td></tr></table></figure>
-
-<p>有些库后面加了<code>indirect</code>后缀，这又是什么意思的。</p>
-<p>如果用一句话总结，间接的使用了这个库，但是又没有被列到某个go.mod中，当然这句话也不算太准确，更精确的说法是下面的情况之一就会对这个库加indirect后缀：</p>
-<ul>
-<li>当前项目依赖A,但是A的go.mod遗漏了B, 那么就会在当前项目的go.mod中补充B, 加indirect注释</li>
-<li>当前项目依赖A,但是A没有go.mod,同样就会在当前项目的go.mod中补充B, 加indirect注释</li>
-<li>当前项目依赖A,A又依赖B,当对A降级的时候，降级的A不再依赖B,这个时候B就标记indirect注释</li>
-</ul>
-<h3 id="incompatible">incompatible</h3>
-<p>有些库后面加了incompatible后缀，但是你如果看这些项目，它们只是发布了v2.2.1的tag,并没有<code>+incompatible</code>后缀。</p>
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">github.<span class="keyword">com</span>/cenk/backoff v2.<span class="number">2.1</span>+incompatible</div></pre></td></tr></table></figure>
-
-<p>这些库采用了go.mod的管理，但是不幸的是，虽然这些库的版major版本已经大于等于2了，但是他们的module path中依然没有添加v2、v3这样的后缀。</p>
-<p>所以go module把它们标记为<code>incompatible</code>的，虽然可以引用，但是实际它们是不符合规范的。</p>
-<h3 id="exclude">exclude</h3>
-<p>如果你想在你的项目中跳过某个依赖库的某个版本，你就可以使用这个段。</p>
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line">exclude (</div><div class="line">	<span class="keyword">go</span>.etcd.io/etcd/client/v2 v2.<span class="number">305.0</span>-rc.<span class="number">0</span></div><div class="line">	<span class="keyword">go</span>.etcd.io/etcd/client/v3 v3.<span class="number">5.0</span>-rc.<span class="number">0</span></div><div class="line">)</div></pre></td></tr></table></figure>
-
-<p>这样，Go在版本选择的时候，就会主动跳过这些版本，比如你使用<code>go get -u ......</code>或者<code>go get github.com/xxx/xxx@latest</code>等命令时，会执行version query的动作，这些版本不在考虑的范围之内。</p>
-<h3 id="replace">replace</h3>
-<p>replace也是常用的一个手段，用来解决一些错误的依赖库的引用或者调试依赖库。</p>
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line">replace github.<span class="keyword">com</span>/coreos/bbolt =&gt; <span class="keyword">go</span>.etcd.io/bbolt v1.<span class="number">3.3</span></div><div class="line">replace github.<span class="keyword">com</span>/panicthis/A v1.<span class="number">1.0</span> =&gt; github.<span class="keyword">com</span>/panicthis/R v1.<span class="number">8.0</span></div><div class="line">replace github.<span class="keyword">com</span>/coreos/bbolt =&gt; ../R</div></pre></td></tr></table></figure>
-
-<p>比如etcd v3.3.x的版本中错误的使用了<code>github.com/coreos/bbolt</code>作为bbolt的module path,其实这个库在它自己的go.mod中声明的module path是<code>go.etcd.io/bbolt</code>，又比如etcd使用的grpc版本有问题，你也可以通过replace替换成所需的grpc版本。</p>
-<p>甚至你觉得某个依赖库有问题，自己fork到本地做修改，想调试一下，你也可以替换成本地的文件夹。</p>
-<p>replace可以替换某个库的所有版本到另一个库的特定版本，也可以替换某个库的特定版本到另一个库的特定版本。</p>
-<h3 id="retract">retract</h3>
-<p>retract是go 1.16中新增加的内容，借用学术界期刊撤稿的术语，宣布撤回库的某个版本。</p>
-<p>如果你误发布了某个版本，或者事后发现某个版本不成熟，那么你可以推一个新的版本，在新的版本中，声明前面的某个版本被撤回，提示大家都不要用了。</p>
-<p>撤回的版本tag依然还存在，go proxy也存在这个版本，所以你如果强制使用，还是可以使用的，否则这些版本就会被跳过。</p>
-<p>和exclude的区别是retract是这个库的owner定义的， 而exclude是库的使用者在自己的go.mod中定义的。</p>
-]]></content>
-    <summary type="html">
-    <![CDATA[<p>昨天在GopherChina 2021大会上分享了《深入Go Module》，干货太多了，接下来的分几篇文章详细介绍下。</p>
-]]>
-    
-    </summary>
-    
-      <category term="Go" scheme="https://colobu.com/categories/Go/"/>
-    
-  </entry>
-  
-  <entry>
-    <title><![CDATA[wio terminal 掌机开发板试用报告]]></title>
-    <link href="https://colobu.com/2021/06/06/tribal-report-of-wio-terminal/"/>
-    <id>https://colobu.com/2021/06/06/tribal-report-of-wio-terminal/</id>
-    <published>2021-06-06T08:35:41.000Z</published>
-    <updated>2021-10-06T03:29:34.565Z</updated>
-    <content type="html"><![CDATA[<p>周五收到一款<a href="https://www.seeedstudio.com/Wio-Terminal.html" target="_blank" rel="external">矽递科技</a>的arduino开发板wio terminal，与Arduino和MicroPython兼容，基于ATSAMD51的微控制器,具有Realtek RTL8720DN支持的的无线连接，还带有一个240X320的彩色液晶屏，可以做为树莓派的显示器，很方便了。 话说矽递科技是一家专注物联网硬件解决方案的高新技术企业，全球前三的开源硬件供应商，牛逼了，以至于这款产品的英文资料比中文资料还丰富。</p>
-<p>对于硬件相关的领域，我还是一个小白，但是对于物联网或者硬件相关的创客产品，我是非常感兴趣的，这不，拿到这款产品，周末在家就和小朋友一起研究起来。</p>
-<p>我给自己的设置的第一个目标就是能写一个hello world的程序，在这款wio terminal显示出来。</p>
-<a id="more"></a>
-<h2 id="开箱">开箱</h2>
-<p>这款开发板相当的小巧，包装盒和一副扑克牌差不多大小，拆开包装，包含一个wio ternimal掌机，一个数据线、说明书和贴纸,还额外赠送一个5-way的按钮。</p>
-<table><tr><td><img src="box.jpg" width="100%"></td><td><img src="wio.jpg" width="100%"></td><td><img src="wio2.jpg" width="100%"></td></tr></table>
-
-<p>打开开关，默认的程序是个类似超级玛丽的小游戏,因为我已经上传了新的程序，这个默认的程序没有拍照截图。</p>
-<table><tr><td><img src="https://media-cdn.seeedstudio.com/media/catalog/product/cache/9d0ce51a71ce6a79dfa2a98d65a0f0bd/1/0/102991299-nnew-8.png" width="100%"></td><td><img src="https://media-cdn.seeedstudio.com/media/catalog/product/cache/9d0ce51a71ce6a79dfa2a98d65a0f0bd/1/0/102991299-nnew-2.jpg" width="100%"></td><td><img src="https://media-cdn.seeedstudio.com/media/catalog/product/cache/9d0ce51a71ce6a79dfa2a98d65a0f0bd/1/0/102991299-nnew-3.jpg" width="100%"></td></tr><tr><td><img src="https://media-cdn.seeedstudio.com/media/catalog/product/cache/9d0ce51a71ce6a79dfa2a98d65a0f0bd/1/0/102991299-nnew-4.jpg" width="100%"></td><td><img src="https://media-cdn.seeedstudio.com/media/catalog/product/cache/9d0ce51a71ce6a79dfa2a98d65a0f0bd/1/0/102991299-nnew-5.jpg" width="100%"></td><td><img src="https://media-cdn.seeedstudio.com/media/catalog/product/cache/9d0ce51a71ce6a79dfa2a98d65a0f0bd/1/0/102991299-nnew-6.jpg" width="100%"></td></tr></table>
-
-<h2 id="开发环境搭建">开发环境搭建</h2>
-<p>作为一个小白，我需要从最基础的开发知识入手开始学习，那么第一步就是看官方的入门资料: <a href="https://wiki.seeedstudio.com/cn/Wio-Terminal-Getting-Started/" target="_blank" rel="external">Wio Terminal入门教程</a>,这个网页包含了这个产品的技术指标和开发入门。</p>
-<p>根据这篇文章的指导，下载Arduino IDE工具，打开Blink示例,编译上传，你就可以看到蓝色呼吸灯以一秒的间隔闪亮。</p>
-<p>注意安装好Arduino IDE之后，需要在<strong>File（文件）</strong> &gt; <strong>Preference（偏好设置）</strong>菜单中最下面的<strong>Additional Boards Manager URLs</strong>中输入<code>https://files.seeedstudio.com/arduino/package_seeeduino_boards_index.json</code>,</p>
-<p><img src="arduinoide-config.png" alt=""></p>
-<p>点击 <strong>Tools（工具）</strong> &gt; <strong>Board（开发板</strong>）&gt; <strong>Boards Manager...</strong> ，在搜索栏中搜索关键字<strong>Wio Terminal</strong>后，点击并安装它。</p>
-<p><img src="arduinoide-config2.png" alt=""></p>
-<p>然后就能在开发版中选择<strong>seeedunio wio terminal</strong>开发板了。</p>
-<p>端口根据实际情况选择，我在windows操作系统中中端口是<strong>COM5</strong>,你如果不确定，可以通过关闭打开wio terminal看看哪个端口有变化，有变化的就是wio terminal对应的端口。</p>
-<p>在开发程序的时候，可能会依赖额外的库，你需要把这些库加入进来，比如LCD的库、绘图库等等。</p>
-<p>官方英文版有详细的介绍，但是中文版没有，所以学习还是从英文资料入手。</p>
-<h2 id="官方demo">官方demo</h2>
-<p>在进入我的第一个hello world程序之前，我想运行一下官方的demo程序，熟悉一下编译、上传的流程。</p>
-<p>我选定的是<a href="https://wiki.seeedstudio.com/Wio-Terminal-Displaying-Gyro/" target="_blank" rel="external">陀螺仪的演示程序</a>。</p>
-<p>它在wio terminal屏幕上画出三轴的角度，你可以通过转动wio terminal看曲线的变化。</p>
-<p><img src="https://files.seeedstudio.com/wiki/Wio-Terminal/img/C0279.2019-11-28%2018_25_43.gif" alt=""></p>
-<p>我和我们家的小朋友一起学习的，中间他还帮了我我一个大忙。小朋友通过拍打放置wio terminal的桌子来观察曲线的变化，突然想到是不是可以通过它实现一个地震检测仪，应该比张衡的那个更精准吧。</p>
-<p>这个程序按照教程的指导一步步走下来即可，它需要Seeed_Arduino_Linechart库来画折线图、通过Seeed_Arduino_LIS3DHTR库来访问陀螺仪。</p>
-<p>在arduino ide中点击上传，就可以把这个程序编译上传了。</p>
-<h2 id="使用tinygo">使用tinygo</h2>
-<p><a href="https://tinygo.org/" target="_blank" rel="external">tinygo</a>是一个以Go语言编译嵌入式程序的编译器。因为我最近几年偏重Go语言开发，所以我想尝试使用Go语言写一个hello world的程序。</p>
-<p>按照tinygo官方的文档, tinygo已经支持了<a href="https://tinygo.org/docs/reference/microcontrollers/wioterminal/" target="_blank" rel="external">Seeed Wio Terminal</a>。 太cool了，可以使用Go语言写一些程序了。</p>
-<p>于是我写了一个hello world的简单程序:</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> main</div><div class="line"></div><div class="line"><span class="keyword">import</span> <span class="string">"fmt"</span></div><div class="line"></div><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	fmt.Println(<span class="string">"Hello world!"</span>)</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>使用命令<code>tinygo flash -target=wioterminal hello.go</code>去上传。</p>
-<p>wio termnial两眼一黑，居然死了。重新关开机，windows显示未知的设备!!!</p>
-<p>赶快抢救，尝试按钮滑动两次的方式，一直没有效果。网上赶快搜资料，找不到解决办法。</p>
-<p>我有点感觉我手贱了。</p>
-<p>我放弃了，准备改天问问客服，有没有抢救办法。</p>
-<p>我家小朋友不死心，来回的开、关、开、开、关.......</p>
-<p>突然小朋友喊到，『好了！！！』。我过去一看，windows已经识别出来这个设备了，赶快把陀螺仪的程序刷上去，果然好了。</p>
-<p>我决定放弃尝试tinygo了，还是乖乖使用arduino ide进行开发好了。</p>
-<h2 id="第一个程序:_hello_world">第一个程序: hello world</h2>
-<p>切回到arduino ide之后，我决定还是按照官方的教程，去写第一个hello world程序。</p>
-<p>一个外国小哥做了很多的视频教程，youtube上有，b站上也能搜到，不过是英文的。 中文字幕官方也上传了一些，貌似比较少。</p>
-<p>反正我是写第一个hello world程序，找一个简单的视频看看就理解了。</p>
-<p>这个程序将屏幕背景设置为红色，并且在屏幕中央显示 <code>hello smallnest!</code>字体(中文字体我还没研究)：</p>
-<figure class="highlight c"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div></pre></td><td class="code"><pre><div class="line"><span class="preprocessor">#<span class="keyword">include</span>"TFT_eSPI.h"</span></div><div class="line">TFT_eSPI tft;</div><div class="line"><span class="preprocessor">#<span class="keyword">define</span> LCD_BACKLIGHT (72Ul) <span class="comment">// Control Pin of LCD</span></span></div><div class="line"> </div><div class="line"><span class="keyword">void</span> setup() {</div><div class="line">  <span class="comment">// put your setup code here, to run once:</span></div><div class="line"> </div><div class="line">    tft.begin();</div><div class="line">    tft.setRotation(<span class="number">3</span>);</div><div class="line">    tft.fillScreen(TFT_RED);</div><div class="line"> </div><div class="line">    tft.setTextColor(TFT_BLACK);</div><div class="line">    tft.setTextSize(<span class="number">3</span>);</div><div class="line">    tft.drawString(<span class="string">"hello smallnest!"</span>,<span class="number">25</span>,<span class="number">120</span>);</div><div class="line">    </div><div class="line">    </div><div class="line">}</div><div class="line"> </div><div class="line"><span class="keyword">void</span> loop() {</div><div class="line">  <span class="comment">// put your main code here, to run repeatedly:</span></div><div class="line"> </div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>程序首先初始化屏幕，将背景设置成红色。</p>
-<p>然后设置字体的颜色为黑色，大小为3,最大为7。</p>
-<p>最后画出字符串。</p>
-<p>编译上传，最后屏幕显示如下：</p>
-<p><img src="hello.jpg" alt=""></p>
-<p>第一个程序成功了。休息一下，改天进一步研究。</p>
-<h2 id="如何购买">如何购买</h2>
-<p>以下是这款产品的介绍，你可以在<a href="https://item.taobao.com/item.htm?spm=a1z10.1-c-s.w137712-11046001449.7.25cf6e6aW14NL6&amp;id=614341863391" target="_blank" rel="external">淘宝官方店</a>进行购买，价格279元。</p>
-<p style="margin-top: 1.12em; margin-bottom: 1.12em; padding: 0px; font-family: tahoma, arial, 宋体, sans-serif; font-size: 14px; white-space: normal; background-color: rgb(255, 255, 255); text-align: center;"><img align="absmiddle" src="https://img.alicdn.com/imgextra/i4/2540467004/O1CN016yu3gK21bselPYkQx_!!2540467004.png" data-spm-anchor-id="2013.1.0.i1.36dc3c04h6HNvI" style="border: 0px; vertical-align: top; max-width: 750px;"><img align="absmiddle" src="https://img.alicdn.com/imgextra/i2/2540467004/O1CN01TApUBl21bsefdIpNb_!!2540467004.png" style="border: 0px; vertical-align: top; max-width: 750px;"><img align="absmiddle" src="https://img.alicdn.com/imgextra/i1/2540467004/O1CN01X4eLee21bsekItD72_!!2540467004.png" style="border: 0px; vertical-align: top; max-width: 750px;"><img align="absmiddle" src="https://img.alicdn.com/imgextra/i4/2540467004/O1CN017quXFC21bsem4BhQB_!!2540467004.png" style="border: 0px; vertical-align: top; max-width: 750px;"><img align="absmiddle" src="https://img.alicdn.com/imgextra/i4/2540467004/O1CN01s4SWoh21bsekcpQQE_!!2540467004.png" class="" style="border: 0px; vertical-align: top; max-width: 750px;"><img align="absmiddle" src="https://img.alicdn.com/imgextra/i2/2540467004/O1CN01PPNHjl21bsehfdXXl_!!2540467004.png" class="" style="border: 0px; vertical-align: top; max-width: 750px;"><img align="absmiddle" src="https://img.alicdn.com/imgextra/i1/2540467004/O1CN01UsYYp621bseZwBQbv_!!2540467004.png" class="" style="border: 0px; vertical-align: top; max-width: 750px;"><img align="absmiddle" src="https://img.alicdn.com/imgextra/i2/2540467004/O1CN01IM7nvv21bseiZvSte_!!2540467004.png" class="" style="border: 0px; vertical-align: top; max-width: 750px;"><img align="absmiddle" src="https://img.alicdn.com/imgextra/i1/2540467004/O1CN01xfwodH21bsenAAs4u_!!2540467004.png" class="" style="border: 0px; vertical-align: top; max-width: 750px;"><img align="absmiddle" src="https://img.alicdn.com/imgextra/i1/2540467004/O1CN01QSl5Jj21bseedwBPe_!!2540467004.png" class="" style="border: 0px; vertical-align: top; max-width: 750px;"></p>]]></content>
-    <summary type="html">
-    <![CDATA[<p>周五收到一款<a href="https://www.seeedstudio.com/Wio-Terminal.html" target="_blank" rel="external">矽递科技</a>的arduino开发板wio terminal，与Arduino和MicroPython兼容，基于ATSAMD51的微控制器,具有Realtek RTL8720DN支持的的无线连接，还带有一个240X320的彩色液晶屏，可以做为树莓派的显示器，很方便了。 话说矽递科技是一家专注物联网硬件解决方案的高新技术企业，全球前三的开源硬件供应商，牛逼了，以至于这款产品的英文资料比中文资料还丰富。</p>
-<p>对于硬件相关的领域，我还是一个小白，但是对于物联网或者硬件相关的创客产品，我是非常感兴趣的，这不，拿到这款产品，周末在家就和小朋友一起研究起来。</p>
-<p>我给自己的设置的第一个目标就是能写一个hello world的程序，在这款wio terminal显示出来。</p>
-]]>
-    
-    </summary>
     
   </entry>
   
