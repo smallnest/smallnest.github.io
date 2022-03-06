@@ -4,7 +4,7 @@
   <subtitle><![CDATA[大道至简 Simplicity is the ultimate form of sophistication]]></subtitle>
   <link href="/atom.xml" rel="self"/>
   <link href="https://colobu.com/"/>
-  <updated>2022-02-27T10:12:46.089Z</updated>
+  <updated>2022-03-06T07:16:19.577Z</updated>
   <id>https://colobu.com/</id>
   
   <author>
@@ -13,6 +13,71 @@
   </author>
   
   <generator uri="http://zespia.tw/hexo/">Hexo</generator>
+  
+  <entry>
+    <title><![CDATA[经典并发问题: 大型理发店]]></title>
+    <link href="https://colobu.com/2022/03/06/hilzers-barbershop-problem/"/>
+    <id>https://colobu.com/2022/03/06/hilzers-barbershop-problem/</id>
+    <published>2022-03-06T06:04:11.000Z</published>
+    <updated>2022-03-06T07:15:36.050Z</updated>
+    <content type="html"><![CDATA[<p>二月二理发店太火了，家家都爆满，这次我们来到Hilzer的理发店，这是一家比较大的理发店。</p>
+<a id="more"></a>
+<p>这家理发店有三位有经验的理发师，每个理发师都有自己独立的理发椅。等待区有一个四座的沙发，等待区还有站一些人等待。还有一个收银台。</p>
+<ul>
+<li>依照新冠疫情防控的要求，最多允许20个顾客进入。</li>
+<li>如果有顾客，理发师优先从沙发上叫起等待最久的顾客开始理发；如果没有顾客，理发师则在自己的理发椅上睡觉</li>
+<li>顾客来到后<ul>
+<li>如果已经有20个顾客，则此顾客离开去其它理发店</li>
+<li>如果理发师在睡觉，则叫起一位理发师开始理发</li>
+<li>如果没有空闲的理发师，则选择沙发坐下</li>
+<li>如果沙发已经坐满，则在休息去站着等待</li>
+</ul>
+</li>
+<li>理完发后顾客去收银台去缴费，交完费后理发师把发票交给顾客。顾客就离开，而理发师则准备服务下一位顾客</li>
+</ul>
+<p>这一次理发店的问题比上一个<a href="https://colobu.com/2022/02/27/barbershop-problem/" target="_blank" rel="external">理发店问题</a>要复杂很多:</p>
+<ul>
+<li>等待区分为了站立区和沙发区</li>
+<li>新增加了收银台，理发师和顾客需要付款和发票的相互等待</li>
+<li>三位理发师</li>
+</ul>
+<p>这类问题使用信号量并发原语比较好，因为理发师、沙发等都是一定数量的资源。理发师和顾客之间缴费和发票之间的同步按理说使用channel比较合适，但是收银台只有一位收银员，还需要处理理发师、顾客和收银员之间的并发，所以我们可以把收银、开发票看成计数器是1的资源。</p>
+<p>首先我们还是定义信号量和辅助方法:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div></pre></td><td class="code"><pre><div class="line"><span class="comment">// Semaphore定义</span></div><div class="line"><span class="keyword">type</span> Semaphore <span class="keyword">chan</span> <span class="keyword">struct</span>{}</div><div class="line"></div><div class="line"><span class="keyword">func</span> (s Semaphore) Acquire() {</div><div class="line">	s &lt;- <span class="keyword">struct</span>{}{}</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> (s Semaphore) Release() {</div><div class="line">	&lt;-s</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> randomPause(max <span class="typename">int</span>) {</div><div class="line">	time.Sleep(time.Millisecond * time.Duration(rand.Intn(max)))</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>接下来我们定义所需的并发原语。</p>
+<p>我们使用<code>customerMutex</code>这个排他锁来控制理发店的顾客数量。<br>使用<code>sofaSema</code>控制站立用户做到沙发上以及理发师叫起等待的顾客。</p>
+<p><code>paySema</code>用来让顾客去缴费，而<code>receiptSema</code>让理发师把发票送给顾客，顾客离开。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div></pre></td><td class="code"><pre><div class="line"><span class="comment">// 顾客</span></div><div class="line"><span class="keyword">var</span> (</div><div class="line">	<span class="comment">// 控制顾客的总数</span></div><div class="line">	customerMutex    sync.Mutex</div><div class="line">	customerMaxCount =<span class="number"> 20</span></div><div class="line">	customerCount    =<span class="number"> 0</span></div><div class="line"></div><div class="line">	<span class="comment">// 沙发的容量</span></div><div class="line">	sofaSema Semaphore = <span class="built_in">make</span>(<span class="keyword">chan</span> <span class="keyword">struct</span>{},<span class="number"> 4</span>)</div><div class="line">)</div><div class="line"></div><div class="line"><span class="comment">// 理发师</span></div><div class="line"><span class="keyword">var</span> (</div><div class="line">	<span class="comment">// 三位理发师</span></div><div class="line">	barberSema Semaphore = <span class="built_in">make</span>(<span class="keyword">chan</span> <span class="keyword">struct</span>{},<span class="number"> 3</span>)</div><div class="line">)</div><div class="line"></div><div class="line"><span class="comment">// 收银台</span></div><div class="line"><span class="keyword">var</span> (</div><div class="line">	<span class="comment">// 同时只有一对理发师和顾客结账</span></div><div class="line">	paySema Semaphore = <span class="built_in">make</span>(<span class="keyword">chan</span> <span class="keyword">struct</span>{},<span class="number"> 1</span>)</div><div class="line">	<span class="comment">// 顾客拿到发票才会离开，控制开票</span></div><div class="line">	receiptSema Semaphore = <span class="built_in">make</span>(<span class="keyword">chan</span> <span class="keyword">struct</span>{},<span class="number"> 1</span>)</div><div class="line">)</div></pre></td></tr></table></figure>
+
+<p>接下来我们实现理发师的逻辑:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div></pre></td><td class="code"><pre><div class="line"><span class="comment">// 理发师工作</span></div><div class="line"><span class="keyword">func</span> barber(name <span class="typename">string</span>) {</div><div class="line">	<span class="keyword">for</span> {</div><div class="line">		<span class="comment">// 等待一个用户</span></div><div class="line">		log.Println(name + <span class="string">"老师尝试请求一个顾客"</span>)</div><div class="line">		sofaSema.Release() <span class="comment">// 等待沙发上等待最久的一位顾客</span></div><div class="line">		log.Println(name + <span class="string">"老师找到一位顾客，开始理发"</span>)</div><div class="line"></div><div class="line">		randomPause<span class="number">(2000</span>)</div><div class="line"></div><div class="line">		log.Println(name + <span class="string">"老师理完发，等待顾客付款"</span>)</div><div class="line">		paySema.Acquire() <span class="comment">// 等待用户缴费</span></div><div class="line">		log.Println(name + <span class="string">"老师给付完款的顾客发票"</span>)</div><div class="line">		receiptSema.Release() <span class="comment">// 通知顾客发票开好</span></div><div class="line">		log.Println(name + <span class="string">"老师服务完一位顾客"</span>)</div><div class="line"></div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>接下来实现顾客的逻辑, 注意<code>customerCount</code>操作需要使用Mutex保护:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div></pre></td><td class="code"><pre><div class="line"><span class="comment">// 模拟顾客陆陆续续的过来</span></div><div class="line"><span class="keyword">func</span> customers() {</div><div class="line">	<span class="keyword">for</span> {</div><div class="line">		randomPause<span class="number">(500</span>)</div><div class="line"></div><div class="line">		<span class="keyword">go</span> customer()</div><div class="line">	}</div><div class="line">}</div><div class="line"></div><div class="line"><span class="comment">// 顾客</span></div><div class="line"><span class="keyword">func</span> customer() {</div><div class="line">	customerMutex.Lock()</div><div class="line">	<span class="keyword">if</span> customerCount == customerMaxCount {</div><div class="line">		log.Println(<span class="string">"没有空闲座位了，一位顾客离开了"</span>)</div><div class="line">		customerMutex.Unlock()</div><div class="line">		<span class="keyword">return</span></div><div class="line">	}</div><div class="line">	customerCount++</div><div class="line">	customerMutex.Unlock()</div><div class="line"></div><div class="line">	log.Println(<span class="string">"一位顾客开始等沙发坐下"</span>)</div><div class="line">	sofaSema.Acquire()</div><div class="line">	log.Println(<span class="string">"一位顾客找到空闲沙发坐下,直到被理发师叫起理发"</span>)</div><div class="line"></div><div class="line">	paySema.Release()</div><div class="line">	log.Println(<span class="string">"一位顾客已付完钱"</span>)</div><div class="line">	receiptSema.Acquire()</div><div class="line">	log.Println(<span class="string">"一位顾客拿到发票，离开"</span>)</div><div class="line"></div><div class="line">	customerMutex.Lock()</div><div class="line">	customerCount--</div><div class="line">	customerMutex.Unlock()</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>最后把所有的逻辑串起来：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div></pre></td><td class="code"><pre><div class="line"></div><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	<span class="comment">// 托尼、凯文、艾伦理发师三巨头</span></div><div class="line">	<span class="keyword">go</span> barber(<span class="string">"Tony"</span>)</div><div class="line">	<span class="keyword">go</span> barber(<span class="string">"Kevin"</span>)</div><div class="line">	<span class="keyword">go</span> barber(<span class="string">"Allen"</span>)</div><div class="line"></div><div class="line">	<span class="keyword">go</span> customers()</div><div class="line"></div><div class="line">	sigs := <span class="built_in">make</span>(<span class="keyword">chan</span> os.Signal,<span class="number"> 1</span>)</div><div class="line">	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)</div><div class="line">	&lt;-sigs</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>运行这个程序观察并发的执行。</p>
+<p>通过这个问题，我们可以好好的联系Semaphore的使用，以及两个goroutine之间信号的传递，控制并发程序的协作执行。</p>
+<p>下一章你想了解什么样的经典并发问题呢？</p>
+<h2 id="历史并发问题">历史并发问题</h2>
+<ul>
+<li><a href="https://colobu.com/2022/02/13/dining-philosophers-problem/" target="_blank" rel="external">哲学家就餐问题</a></li>
+<li><a href="https://colobu.com/2019/07/23/concurrent-problem-h2o-factory/" target="_blank" rel="external">制造一氧化二氢</a></li>
+<li><a href="https://colobu.com/2022/02/27/barbershop-problem/" target="_blank" rel="external">理发店的故事</a></li>
+</ul>
+]]></content>
+    <summary type="html">
+    <![CDATA[<p>二月二理发店太火了，家家都爆满，这次我们来到Hilzer的理发店，这是一家比较大的理发店。</p>
+]]>
+    
+    </summary>
+    
+      <category term="Go" scheme="https://colobu.com/categories/Go/"/>
+    
+  </entry>
   
   <entry>
     <title><![CDATA[经典并发问题： 理发店的故事]]></title>
@@ -1890,65 +1955,6 @@
 ]]></content>
     <summary type="html">
     <![CDATA[<p>Russ Cox关于内存模型的系列文章之一。这是第一篇 <a href="https://research.swtch.com/hwmm" target="_blank" rel="external">Hardware Memory Models</a></p>
-]]>
-    
-    </summary>
-    
-      <category term="Go" scheme="https://colobu.com/categories/Go/"/>
-    
-  </entry>
-  
-  <entry>
-    <title><![CDATA[深入Go Module之讨厌的v2]]></title>
-    <link href="https://colobu.com/2021/06/28/dive-into-go-module-2/"/>
-    <id>https://colobu.com/2021/06/28/dive-into-go-module-2/</id>
-    <published>2021-06-28T03:56:05.000Z</published>
-    <updated>2021-10-06T03:29:34.276Z</updated>
-    <content type="html"><![CDATA[<p>Go module不但遵循<a href="https://semver.org/lang/zh-CN/" target="_blank" rel="external">语义化版本规范 2.0.0</a>,而且还更进一步，对语义化版本中的major还还赋予了更深的意义。</p>
-<a id="more"></a>
-<p><img src="semver2.png" alt=""></p>
-<ul>
-<li>v0.X.X: 对于主版本号(major)是0的情况，隐含你当前的API还处于不稳定的状态，新的小版本可能不向下兼容</li>
-<li>v1.X.X: 当前的API处于稳定状态，minor的增加只意味着新的feature的增加，API还是向下兼容的</li>
-<li>v2.X.X: major的增加意味着API已经不向下兼容了</li>
-</ul>
-<blockquote>
-<p><strong>问题</strong>： 你知道在go module中，哪些版本号隐含当前API是不稳定的？</p>
-</blockquote>
-<p>但是go module与众不同鹤立鸡群卓然不群的是，一旦你的major大于等于2, 你的module path必须加上v2后缀(如果tag是v3.X.X,那就是v3后缀，以此类推)。</p>
-<p>而且，包引用路径也要加上v2，比如 <code>go.etcd.io/etcd/client/v3</code>。</p>
-<p>这是一个怪异的写法，相当于在正常的易于理解的module path上加了一个狗屁膏药，以提示这个引入的库是哪个版本的？</p>
-<p>为什么要加上这个v2、v2后缀的，肯定有一定的考虑。</p>
-<p>最主要的，Go的开发者(这里指Russ Cox)在<a href="https://research.swtch.com/vgo-import" target="_blank" rel="external">import compatibility rule</a>指出:</p>
-<blockquote>
-<p>If an old package and a new package have the same import path,<br>the new package must be backwards compatible with the old package.</p>
-</blockquote>
-<p>也就是相同module path应该保证新的版本向下兼容。</p>
-<p><img src="deps.png" alt=""></p>
-<p>这种想法是好的。比如你在你的项目中可以使用同一个库的多个版本， v1版本处理以前遗留的逻辑，v2版本处理新的逻辑，v3版本试验未来的版本，同一套库的不同版本可以共存，并不会出现版本冲突的地方。</p>
-<p>而且程序员看到这些module path,也很清楚的知道版本不兼容了，谁是更新的版本。</p>
-<p>但是这种方式也是很有争议的，在实践中中也带来了很多问题，我在开发rpcx深受其害，又比如etcd,你可以看它的v3.4.X的版本，就是因为没有加上v3的后缀，导致go命令下载或者导入(get)这些package的时候根本就下载不了。</p>
-<h2 id="vX后缀污染了package_path">vX后缀污染了package path</h2>
-<p>本来正常的package path一般是仓库路径+package name,或者go module下 module path + package的方式，可是一旦版本大于等于2,就不得不加上一个后缀v2,v3等，将package path的含义改变了。</p>
-<p>当然忍一忍我们还能接受，大不了闭着眼睛用呗，最痛苦的很多Go的初学者并不了解这种设置，不知道导入新的库的版本要加v2后缀，一脸茫然。</p>
-<h2 id="v0,_v1和v2数据类型不兼容">v0, v1和v2数据类型不兼容</h2>
-<p>在module path中增加了v2,v3等后缀后，也就以为着这些package都是不同的package，虽然它们中大部分的数据类型并没有做改变，还是向下兼容的，也不能直接赋值，还是需要强转一下。</p>
-<p>比如你的项目依赖<code>Auth 1.0.0</code>, 也依赖<code>Auth 2.0.0</code>,那么即使<code>A.Config</code>在两个版本中没做任何改变，你也不能把<code>Auth.Config</code>赋值给<code>Auth/v2.Config</code>,而是需要在代码中加上强转的逻辑，两两互转。一旦发布了v3,那就得三三互转，很长的一个switch分支处理这种情况，如果发布v4，那么逻辑更复杂了。</p>
-<h2 id="给第三方库的开发者带来了很大的负担">给第三方库的开发者带来了很大的负担</h2>
-<p>虽然你觉得我也就发布v2,v3,v4等几个版本，版本路线很清晰，管理起来也不复杂，没什么大不了的。</p>
-<p>但是，如果你的库是一个非常流行的库，很多开发者基于你的库开发了第三方的库的话，就非常痛苦了。</p>
-<p>这意味着一旦你发布了一个新的版本，这些第三方的开发者就必须及时的更新他们的库，基于你的新的版本发布他们新的v2，v3版本。这就像病毒一样，初步扩展开来。给广大的开发者带来的很大的负担。</p>
-<p>当然，见仁见智，这些情况可能你不会遇到，或者也不会给你带来困扰，所以它不是一个问题。而我，在开发rpcx，或者解答一些网友的问题的时候，深深被v2伤害到了,小小的心灵无法承受v2之重。</p>
-<p>一些开源项目，为了避免版本号跳到v2,采用了其它的一些办法，比如protobuf-go, 正在做新的版本的重构，改动非常大，不和以前的版本兼容了，可以以前的版本都v1.X.X了，那怎么办呢？换module path名称。</p>
-<ul>
-<li>github.com/golang/protobuf: 支持先前的protobuf go,目前最高版本v1.5.2</li>
-<li>google.golang.org/protobuf: 新版本的module path,目前最高版本v1.27.0，初始版本v1.20.0</li>
-</ul>
-<p>对于我开发的rpcx项目，因为在go module出来之前版本号已经发布到了v6.X.X。 我想回到从前，貌似回不去了。所以我采用了一个极端的做法，把tag重建，所有的版本号都定义在v1.X.X内。还好影响的用户比较少，所以也没有用户抱怨。</p>
-<p>我这种做法比较极端，没造成用户抱怨的原因是我一直坚持go module和GOPATH并存的方式。发版的时候采用go module发版，master开发分支上采用GOPATH方式，绝大部分用户都使用master分支，或者自己fork了一个新的版本，所以造成的影响很小。</p>
-]]></content>
-    <summary type="html">
-    <![CDATA[<p>Go module不但遵循<a href="https://semver.org/lang/zh-CN/" target="_blank" rel="external">语义化版本规范 2.0.0</a>,而且还更进一步，对语义化版本中的major还还赋予了更深的意义。</p>
 ]]>
     
     </summary>
