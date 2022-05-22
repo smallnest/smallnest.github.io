@@ -4,7 +4,7 @@
   <subtitle><![CDATA[大道至简 Simplicity is the ultimate form of sophistication]]></subtitle>
   <link href="/atom.xml" rel="self"/>
   <link href="https://colobu.com/"/>
-  <updated>2022-03-06T10:07:50.553Z</updated>
+  <updated>2022-05-22T12:02:06.946Z</updated>
   <id>https://colobu.com/</id>
   
   <author>
@@ -13,6 +13,443 @@
   </author>
   
   <generator uri="http://zespia.tw/hexo/">Hexo</generator>
+  
+  <entry>
+    <title><![CDATA[使用ebpf跟踪rpcx微服务]]></title>
+    <link href="https://colobu.com/2022/05/22/use-ebpf-to-trace-rpcx-microservices/"/>
+    <id>https://colobu.com/2022/05/22/use-ebpf-to-trace-rpcx-microservices/</id>
+    <published>2022-05-22T08:34:29.000Z</published>
+    <updated>2022-05-22T12:01:28.497Z</updated>
+    <content type="html"><![CDATA[<p><a href="https://ebpf.io/zh-cn/" target="_blank" rel="external">ebpf</a>是一种创新的革命性技术，它能在内核中运行沙箱程序， 而无需修改内核源码或者加载内核模块。将 Linux 内核变成可编程之后，就能基于现有的（而非增加新的）抽象层来打造更加智能、 功能更加丰富的基础设施软件，而不会增加系统的复杂度，也不会牺牲执行效率和安全性。</p>
+<p>BPF的第一个版本在1994年问世。我们在使用tcpdump工具编写规则的时候其实就使用到它了，该工具用于查看或”嗅探”网络数据包。</p>
+<a id="more"></a>
+<p><img src="ebpf.png" alt=""></p>
+<p>使用ebpf技术，你可以从安全、跟踪&amp;性能分析、网络、观测&amp;监控等方向提供新的思路和技术：</p>
+<ul>
+<li>安全：可以从系统调用级、packet层、socket层进行安全检查，比如开发DDOS防护系统，编写防火墙程序。</li>
+<li>网络：可以开发内核层高性能包处理程序，比如Cilium提供内核层的负载均衡，把service mesh往更深层推进，解决sidecar的性能问题。</li>
+<li>跟踪&amp;性能分析: Linux提供多种类型的探针点(probe point),比如Kernel probes、perf events、Tracepoints、User-space probes、User statically defined tracepoints、XDP等等，我们可以编写probe程序收集这些探针点的信息，所以我们可以通过这种方式跟踪程序，分析性能。</li>
+<li>观测&amp;监控: 对这些探针点的持续观测和监控，我们可以丰富我们的trace程序。关键是，我们不需要更改既有的程序，而是通过ebpf方法从其它程序进行观测。2014年，著名的内核黑客Alexei Starovoitov对BPF的功能进行了扩展。他增加了寄存器的数量和程序允许的大小，增加了JIT编译，并创建了一个用于检查程序是否安全的程序。然而，最令人印象深刻的是，新的BPF程序不仅能够在处理数据包时运行，而且能够响应其他内核事件，并在内核和用户空间之间来回传递信息。Alexei Starovoitov的新版本的BPF被称为eBPF（e代表扩展：extended）。但现在，它已经取代了所有旧版的BPF用法，并且已经变得非常流行，为了简单起见，它仍然被称为BPF。</li>
+</ul>
+<p><img src="functions.png" alt=""></p>
+<p>你可以自己编写bpf程序，进行定制化的逻辑处理和分析，也可以使用大神们写好的工具，利用这些工具对程序进行通用的性能分析和跟踪。本文主要介绍使用一些工具对rpcx微服务程序进行通用的分析，既然是通用的，你可以可以对其它的Go程序进行分析，而且不仅限于Go程序，其它应用程序甚至内核你可以进行分析和跟踪。</p>
+<p>自己编写bpf程序我准备再新开一篇文章介绍。</p>
+<p>这一次主要介绍<a href="https://github.com/iovisor/bcc" target="_blank" rel="external">bcc提供的相关工具</a>和<a href="https://github.com/iovisor/bpftrace" target="_blank" rel="external">bpftrace</a>。</p>
+<p>bcc是用于创建基于eBPF的高效内核跟踪和操作程序的工具包，其中包括一些有用的命令行工具和示例。 BCC简化了用C进行内核检测的eBPF程序的编写，包括LLVM的包装器以及Python和Lua的前端。它还提供了用于直接集成到应用程序中的高级库。</p>
+<p>bpftrace是Linux eBPF的高级跟踪语言。它的语言受awk和C以及DTrace和SystemTap等以前的跟踪程序的启发。 bpftrace使用LLVM作为后端将脚本编译为eBPF字节码，并利用BCC作为与Linux eBPF子系统以及现有Linux跟踪功能和连接点进行交互的库。</p>
+<h2 id="简单的_rpcx_微服务程序">简单的 rpcx 微服务程序</h2>
+<p>既然要使用ebpf分析程序，首先我们要有一个程序。这里我选取了<a href="https://github.com/smallnest/rpcx" target="_blank" rel="external">rpcx</a>一个最简单的例子，实现一个乘法的最小的微服务。</p>
+<p>这个程序的代码可以在<a href="https://github.com/rpcxio/rpcx-examples/tree/master/102basic" target="_blank" rel="external">rpcx-examples-102basic</a>下载到。</p>
+<p>服务端的程序如下:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> main</div><div class="line"></div><div class="line"><span class="keyword">import</span> (</div><div class="line">	<span class="string">"context"</span></div><div class="line">	<span class="string">"flag"</span></div><div class="line">	<span class="string">"fmt"</span></div><div class="line"></div><div class="line">	example <span class="string">"github.com/rpcxio/rpcx-examples"</span></div><div class="line">	<span class="string">"github.com/smallnest/rpcx/server"</span></div><div class="line">)</div><div class="line"></div><div class="line"><span class="keyword">var</span> (</div><div class="line">	addr = flag.String(<span class="string">"addr"</span>, <span class="string">"localhost:8972"</span>, <span class="string">"server address"</span>)</div><div class="line">)</div><div class="line"></div><div class="line"><span class="keyword">type</span> Arith <span class="keyword">struct</span>{}</div><div class="line"></div><div class="line"><span class="comment">// 使用ebpf跟踪这个服务调用</span></div><div class="line"><span class="keyword">func</span> (t *Arith) Mul(ctx context.Context, args example.Args, reply *example.Reply) error {</div><div class="line">	reply.C = args.A * args.B</div><div class="line">	fmt.Println(<span class="string">"C="</span>, reply.C)</div><div class="line">	<span class="keyword">return</span> <span class="constant">nil</span></div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	flag.Parse()</div><div class="line"></div><div class="line">	s := server.NewServer()</div><div class="line">	s.RegisterName(<span class="string">"Arith"</span>, <span class="built_in">new</span>(Arith), <span class="string">""</span>)</div><div class="line">	err := s.Serve(<span class="string">"tcp"</span>, *addr)</div><div class="line">	<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">		<span class="built_in">panic</span>(err)</div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>使用<code>go build server.go</code>编译出<code>server</code>程序并运行(<code>./server</code>)。</p>
+<p>客户端程序如下:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div><div class="line">35</div><div class="line">36</div><div class="line">37</div><div class="line">38</div><div class="line">39</div><div class="line">40</div><div class="line">41</div><div class="line">42</div><div class="line">43</div><div class="line">44</div><div class="line">45</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> main</div><div class="line"></div><div class="line"><span class="keyword">import</span> (</div><div class="line">	<span class="string">"context"</span></div><div class="line">	<span class="string">"flag"</span></div><div class="line">	<span class="string">"log"</span></div><div class="line">	<span class="string">"time"</span></div><div class="line"></div><div class="line">	<span class="string">"github.com/smallnest/rpcx/protocol"</span></div><div class="line"></div><div class="line">	example <span class="string">"github.com/rpcxio/rpcx-examples"</span></div><div class="line">	<span class="string">"github.com/smallnest/rpcx/client"</span></div><div class="line">)</div><div class="line"></div><div class="line"><span class="keyword">var</span> (</div><div class="line">	addr = flag.String(<span class="string">"addr"</span>, <span class="string">"localhost:8972"</span>, <span class="string">"server address"</span>)</div><div class="line">)</div><div class="line"></div><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	flag.Parse()</div><div class="line"></div><div class="line">	d, _ := client.NewPeer2PeerDiscovery(<span class="string">"tcp@"</span>+*addr, <span class="string">""</span>)</div><div class="line">	opt := client.DefaultOption</div><div class="line">	opt.SerializeType = protocol.JSON</div><div class="line"></div><div class="line">	xclient := client.NewXClient(<span class="string">"Arith"</span>, client.Failtry, client.RandomSelect, d, opt)</div><div class="line">	<span class="keyword">defer</span> xclient.Close()</div><div class="line"></div><div class="line">	args := example.Args{</div><div class="line">		A:<span class="number"> 10</span>,</div><div class="line">		B:<span class="number"> 20</span>,</div><div class="line">	}</div><div class="line"></div><div class="line">	<span class="keyword">for</span> {</div><div class="line">		reply := &example.Reply{}</div><div class="line">		err := xclient.Call(context.Background(), <span class="string">"Mul"</span>, args, reply)</div><div class="line">		<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">			log.Fatalf(<span class="string">"failed to call: %v"</span>, err)</div><div class="line">		}</div><div class="line"></div><div class="line">		log.Printf(<span class="string">"%d * %d = %d"</span>, args.A, args.B, reply.C)</div><div class="line">		time.Sleep(time.Second)</div><div class="line">	}</div><div class="line"></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>客户端每一秒会调用<code>Arith.Mul</code>微服务一次，微服务的逻辑也很简单，就是执行乘法，并把结果返回给客户端。</p>
+<h2 id="跟踪和分析微服务">跟踪和分析微服务</h2>
+<p>作为演示，本文只跟踪服务端<code>Arith.Mul</code>调用情况。</p>
+<p>bcc提供了很多的基于bpf的分析程序，如下图(大神Brendan Gregg整理的经典图)</p>
+<p><img src="bcc_tracing_tools_early2019.png" alt=""><br><img src="bpftrace_tools_early2019.png" alt=""></p>
+<p>这里我们会选取几个相关的工具演示如何使用这些工具分析运行中的程序。 注意是运行中的程序，我们并没有给程序添加额外的一些埋点。</p>
+<h3 id="bcc套件">bcc套件</h3>
+<p>首先你得安装bcc套件，而且你的Linux内核还要足够新，在一些大厂的机房内，还有一些内核版本的2.6.x服务器，这些老的内核服务器不能支持ebpf或者ebpf的新特性。</p>
+<p>我是在我的阿里云的一台虚机上测试的，它的版本是:</p>
+<ul>
+<li>Linux lab 4.18.0-348.2.1.el8_5.x86_64</li>
+<li>CentOS Stream release 8</li>
+</ul>
+<p>直接<code>yum install bcc-tools</code>就可以安装这些工具。 </p>
+<p>如果你是其它的版本的操作系统，你可以参考bcc的安装文档进行安装: <a href="https://github.com/iovisor/bcc/blob/master/INSTALL.md" target="_blank" rel="external">bcc/INSTALL</a>。</p>
+<p>在使用工具分析之前，你首先要知道你的微服务<code>Arith.Mul</code>在符号表中的名称，你可以使用objdump查询到:</p>
+<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div></pre></td><td class="code"><pre><div class="line">[root@lab server]<span class="comment"># objdump -t server|grep Mul|grep main</span></div><div class="line"><span class="number">000000000075</span>a5e0 g     F .text	<span class="number">00000000000000</span>d0              main.(*Arith).Mul</div></pre></td></tr></table></figure>
+
+<p>它的名称是<code>main.(*Arith).Mul</code>,下面我们会使用这个名称分析这个微服务。</p>
+<p>确保刚下的服务器一直在运行中。</p>
+<h4 id="funccount">funccount</h4>
+<p>funccount 用来统计一段时间内某个函数的调用次数。</p>
+<p>在server所在的目录下执行下面的命令(如果在不同的路径，你需要更改命令参数中程序的路径):</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div></pre></td><td class="code"><pre><div class="line">[root@lab server]<span class="comment"># funccount -d 10  './server:main.*.Mul'</span></div><div class="line">Tracing <span class="number">1</span> functions <span class="keyword">for</span> <span class="string">"b'./server:main.*.Mul'"</span><span class="keyword">...</span> Hit Ctrl-C to end.</div><div class="line"></div><div class="line">FUNC                                    COUNT</div><div class="line">b<span class="string">'main.(*Arith).Mul'</span>                       <span class="number">10</span></div><div class="line">Detaching...</div><div class="line">[root@lab server]<span class="comment">#</span></div></pre></td></tr></table></figure>
+
+<p>这里我们设置观察时间是10秒，可以看到在这10秒内，这个函数被调用了10次。</p>
+<p>它包含几个参数，比如你可以持续观察，每5秒输出一次结果:</p>
+<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div></pre></td><td class="code"><pre><div class="line">[root@lab server]<span class="comment"># funccount -Ti 5  './server:main.*.Mul'</span></div><div class="line">Tracing <span class="number">1</span> functions <span class="keyword">for</span> <span class="string">"b'./server:main.*.Mul'"</span>... Hit Ctrl-C to end.</div><div class="line"></div><div class="line"><span class="number">18</span>:<span class="number">08</span>:<span class="number">29</span></div><div class="line">FUNC                                    COUNT</div><div class="line">b<span class="string">'main.(*Arith).Mul'</span>                        <span class="number">5</span></div></pre></td></tr></table></figure>
+
+<p>我们甚至可以用它进行Go GC相关函数的跟踪:</p>
+<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div></pre></td><td class="code"><pre><div class="line">[root@lab server]<span class="comment"># funccount -d 10  './server:runtime.*.gc*'</span></div><div class="line">Tracing <span class="number">21</span> functions <span class="keyword">for</span> <span class="string">"b'./server:runtime.*.gc*'"</span>... Hit Ctrl-C to end.</div><div class="line"></div><div class="line">FUNC                                    COUNT</div><div class="line">b<span class="string">'runtime.(*gcControllerState).update'</span>        <span class="number">2</span></div><div class="line">b<span class="string">'runtime.mallocgc'</span>                       <span class="number">250</span></div></pre></td></tr></table></figure>
+
+<p>抑或是跟踪Go运行时的调度:</p>
+<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div></pre></td><td class="code"><pre><div class="line">[root@lab server]<span class="comment"># funccount -d 10  './server:runtime.schedule'</span></div><div class="line">Tracing <span class="number">1</span> functions <span class="keyword">for</span> <span class="string">"b'./server:runtime.schedule'"</span>... Hit Ctrl-C to end.</div><div class="line"></div><div class="line">FUNC                                    COUNT</div><div class="line">b<span class="string">'runtime.schedule'</span>                        <span class="number">20</span></div><div class="line">Detaching...</div></pre></td></tr></table></figure>
+
+<h4 id="funclatency">funclatency</h4>
+<p>funclatency统计函数的执行的耗时情况。<br>如果我们想分析<code>Arith.Mul</code>方法执行的情况，我们可以使用下面的命令，它会用直方图的形式展示这个函数调用的耗时分布:</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div></pre></td><td class="code"><pre><div class="line">[root<span class="variable">@lab</span> server]<span class="comment"># funclatency -d 10  './server:main.*.Mul'</span></div><div class="line"><span class="constant">Tracing </span><span class="number">1</span> functions <span class="keyword">for</span> <span class="string">"./server:main.*.Mul"</span>... <span class="constant">Hit Ctrl-C </span>to <span class="keyword">end</span>.</div><div class="line"></div><div class="line"></div><div class="line"><span class="constant">Function </span>= b<span class="string">'main.(*Arith).Mul'</span> [<span class="number">359284</span>]</div><div class="line">     nsecs               <span class="symbol">:</span> count     distribution</div><div class="line">         <span class="number">0</span> -&gt; <span class="number">1</span>          <span class="symbol">:</span> <span class="number">0</span>        |                                        |</div><div class="line">         <span class="number">2</span> -&gt; <span class="number">3</span>          <span class="symbol">:</span> <span class="number">0</span>        |                                        |</div><div class="line">         <span class="number">4</span> -&gt; <span class="number">7</span>          <span class="symbol">:</span> <span class="number">0</span>        |                                        |</div><div class="line">         <span class="number">8</span> -&gt; <span class="number">15</span>         <span class="symbol">:</span> <span class="number">0</span>        |                                        |</div><div class="line">        <span class="number">16</span> -&gt; <span class="number">31</span>         <span class="symbol">:</span> <span class="number">0</span>        |                                        |</div><div class="line">        <span class="number">32</span> -&gt; <span class="number">63</span>         <span class="symbol">:</span> <span class="number">0</span>        |                                        |</div><div class="line">        <span class="number">64</span> -&gt; <span class="number">127</span>        <span class="symbol">:</span> <span class="number">0</span>        |                                        |</div><div class="line">       <span class="number">128</span> -&gt; <span class="number">255</span>        <span class="symbol">:</span> <span class="number">0</span>        |                                        |</div><div class="line">       <span class="number">256</span> -&gt; <span class="number">511</span>        <span class="symbol">:</span> <span class="number">0</span>        |                                        |</div><div class="line">       <span class="number">512</span> -&gt; <span class="number">1023</span>       <span class="symbol">:</span> <span class="number">0</span>        |                                        |</div><div class="line">      <span class="number">1024</span> -&gt; <span class="number">2047</span>       <span class="symbol">:</span> <span class="number">0</span>        |                                        |</div><div class="line">      <span class="number">2048</span> -&gt; <span class="number">4095</span>       <span class="symbol">:</span> <span class="number">0</span>        |                                        |</div><div class="line">      <span class="number">4096</span> -&gt; <span class="number">8191</span>       <span class="symbol">:</span> <span class="number">0</span>        |                                        |</div><div class="line">      <span class="number">8192</span> -&gt; <span class="number">16383</span>      <span class="symbol">:</span> <span class="number">0</span>        |                                        |</div><div class="line">     <span class="number">16384</span> -&gt; <span class="number">32767</span>      <span class="symbol">:</span> <span class="number">7</span>        |****************************************|</div><div class="line">     <span class="number">32768</span> -&gt; <span class="number">65535</span>      <span class="symbol">:</span> <span class="number">3</span>        |*****************                       |</div><div class="line"></div><div class="line">avg = <span class="number">31978</span> nsecs, <span class="symbol">total:</span> <span class="number">319783</span> nsecs, <span class="symbol">count:</span> <span class="number">10</span></div></pre></td></tr></table></figure>
+
+<p>我们统计了10秒的数据。可以看到期间这个函数被调用了10次。平均耗时31微秒。</p>
+<p>如果我们想检查线上的程序有没有长尾的现象，使用这个工具很容易分析统计。</p>
+<h4 id="funcslower">funcslower</h4>
+<p>funcslower 这个工具可以跟踪内核和程序的执行慢的函数，比如使用下面的命令:</p>
+<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div></pre></td><td class="code"><pre><div class="line">[root@lab server]<span class="comment"># funcslower -u 10  './server:main.(*Arith).Mul'</span></div><div class="line">Tracing function calls slower than <span class="number">10</span> us... Ctrl+C to quit.</div><div class="line">COMM           PID    LAT(us)             RVAL FUNC</div><div class="line">server         <span class="number">359284</span>   <span class="number">44.75</span>                <span class="number">0</span> ./server:main.(*Arith).Mul</div><div class="line">server         <span class="number">359284</span>   <span class="number">30.97</span>                <span class="number">0</span> ./server:main.(*Arith).Mul</div><div class="line">server         <span class="number">359284</span>   <span class="number">33.38</span>                <span class="number">0</span> ./server:main.(*Arith).Mul</div><div class="line">server         <span class="number">359284</span>   <span class="number">31.28</span>                <span class="number">0</span> ./server:main.(*Arith).Mul</div></pre></td></tr></table></figure>
+
+<p>你甚至可以打印出堆栈信息:</p>
+<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div></pre></td><td class="code"><pre><div class="line">[root@lab server]funcslower -UK -u <span class="number">10</span>  <span class="string">'./server:main.(*Arith).Mul'</span></div><div class="line">Tracing function calls slower than <span class="number">10</span> us... Ctrl+C to quit.</div><div class="line">COMM           PID    LAT(us)             RVAL FUNC</div><div class="line">server         <span class="number">359284</span>   <span class="number">31.20</span>                <span class="number">0</span> ./server:main.(*Arith).Mul</div><div class="line">    b<span class="string">'runtime.call64.abi0'</span></div><div class="line">    b<span class="string">'runtime.reflectcall'</span></div><div class="line">    b<span class="string">'reflect.Value.call'</span></div><div class="line">    b<span class="string">'reflect.Value.Call'</span></div><div class="line">    b<span class="string">'github.com/smallnest/rpcx/server.(*service).call'</span></div><div class="line">    b<span class="string">'github.com/smallnest/rpcx/server.(*Server).handleRequest'</span></div><div class="line">    b<span class="string">'github.com/smallnest/rpcx/server.(*Server).serveConn.func2'</span></div><div class="line">    b<span class="string">'runtime.goexit.abi0'</span></div><div class="line">server         <span class="number">359284</span>   <span class="number">32.23</span>                <span class="number">0</span> ./server:main.(*Arith).Mul</div><div class="line">    b<span class="string">'runtime.call64.abi0'</span></div><div class="line">    b<span class="string">'runtime.reflectcall'</span></div><div class="line">    b<span class="string">'reflect.Value.call'</span></div><div class="line">    b<span class="string">'reflect.Value.Call'</span></div><div class="line">    b<span class="string">'github.com/smallnest/rpcx/server.(*service).call'</span></div></pre></td></tr></table></figure>
+
+<h4 id="tcp_系列工具">tcp 系列工具</h4>
+<p>bcc提供了一堆的对tcp的跟踪情况，我们可以针对不同的场景选择使用相应的工具。</p>
+<ul>
+<li>tools/tcpaccept: 跟踪TCP被动连接 (accept()). </li>
+<li>tools/tcpconnect: 跟踪TCP主动的连接 (connect()).</li>
+<li>tools/tcpconnlat: 跟踪TCP主动连接的延迟(connect()). </li>
+<li>tools/tcpdrop: 跟踪内核的TCP包的丢包细节.</li>
+<li>tools/tcplife: 跟踪TCP session(生命周期指标汇总).</li>
+<li>tools/tcpretrans: 跟踪TCP重传.</li>
+<li>tools/tcprtt: 跟踪TCP来回的耗时.</li>
+<li>tools/tcpstates: 跟踪TCP session状态的改变.</li>
+<li>tools/tcpsubnet: 按子网汇总和聚合TCP发送情况.</li>
+<li>tools/tcpsynbl: 显示TCP SYN backlog的情况.</li>
+<li>tools/tcptop: 按主机汇总TCP send/recv吞吐情况.</li>
+<li>tools/tcptracer: 跟踪TCP 建立/关闭连接的情况 (connect(), accept(), close()).</li>
+<li>tools/tcpcong: 跟踪TCP套接字拥塞控制状态持续时间.</li>
+</ul>
+<p>比如我们如果关注连接的建立情况，可以使用<code>tcptracer</code>:</p>
+<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div></pre></td><td class="code"><pre><div class="line">[root@lab lib]<span class="comment"># tcptracer</span></div><div class="line">Tracing TCP established connections. Ctrl-C to end.</div><div class="line">T  PID    COMM             IP SADDR            DADDR            SPORT  DPORT</div><div class="line">C  <span class="number">360005</span> client           <span class="number">4</span>  <span class="number">127.0</span>.<span class="number">0.1</span>        <span class="number">127.0</span>.<span class="number">0.1</span>        <span class="number">43126</span>  <span class="number">8972</span></div><div class="line">X  <span class="number">360005</span> client           <span class="number">6</span>  [::<span class="number">1</span>]            [::<span class="number">1</span>]            <span class="number">43010</span>  <span class="number">8972</span></div><div class="line">A  <span class="number">359284</span> server           <span class="number">4</span>  <span class="number">127.0</span>.<span class="number">0.1</span>        <span class="number">127.0</span>.<span class="number">0.1</span>        <span class="number">8972</span>   <span class="number">43126</span></div><div class="line">X  <span class="number">360005</span> client           <span class="number">4</span>  <span class="number">127.0</span>.<span class="number">0.1</span>        <span class="number">127.0</span>.<span class="number">0.1</span>        <span class="number">43126</span>  <span class="number">8972</span></div><div class="line">X  <span class="number">359284</span> server           <span class="number">4</span>  <span class="number">127.0</span>.<span class="number">0.1</span>        <span class="number">127.0</span>.<span class="number">0.1</span>        <span class="number">8972</span>   <span class="number">43126</span></div><div class="line">C  <span class="number">360009</span> client           <span class="number">4</span>  <span class="number">127.0</span>.<span class="number">0.1</span>        <span class="number">127.0</span>.<span class="number">0.1</span>        <span class="number">43130</span>  <span class="number">8972</span></div><div class="line">X  <span class="number">360009</span> client           <span class="number">6</span>  [::<span class="number">1</span>]            [::<span class="number">1</span>]            <span class="number">43014</span>  <span class="number">8972</span></div><div class="line">A  <span class="number">359284</span> server           <span class="number">4</span>  <span class="number">127.0</span>.<span class="number">0.1</span>        <span class="number">127.0</span>.<span class="number">0.1</span>        <span class="number">8972</span>   <span class="number">43130</span></div></pre></td></tr></table></figure>
+
+<p>另外还有一堆的<code>xxxxsnoop</code>程序，可以对特定的系统调用进行跟踪。</p>
+<h3 id="bpftrace">bpftrace</h3>
+<p>有时候，我们想使用脚本实现一些定制化的跟踪，比如类似awk这样的工具，可以提供简单的脚本编写。</p>
+<p>bpftrace就是这样的工具, 它使用LLVM作为后端将脚本编译为eBPF字节码，并利用BCC作为与Linux eBPF子系统以及现有Linux跟踪功能和连接点进行交互的库。</p>
+<p>bpftrace参考手册可以在<a href="https://github.com/iovisor/bpftrace/blob/master/docs/reference_guide.md#20-override-override-return-value" target="_blank" rel="external">bpftrace reference_guide</a>找到。</p>
+<p>以我们的<code>Arith.Mul</code>为例，我们可以使用下面的命令，在函数调用时加入探针，把输入的参数打印出来:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div></pre></td><td class="code"><pre><div class="line">[root@lab server]# bpftrace -e <span class="string">'uprobe:./server:main.*.Mul {printf("%s - %s: arg1: %d, arg2: %d\n", comm, func, arg0, arg1)}'</span></div><div class="line">Attaching<span class="number"> 1</span> probe...</div><div class="line">server - main.(*Arith).Mul: arg1:<span class="number"> 10</span>, arg2:<span class="number"> 20</span></div><div class="line">server - main.(*Arith).Mul: arg1:<span class="number"> 10</span>, arg2:<span class="number"> 20</span></div><div class="line">server - main.(*Arith).Mul: arg1:<span class="number"> 10</span>, arg2:<span class="number"> 20</span></div></pre></td></tr></table></figure>
+
+<p>为什么arg0,arg1就能把参数打印出来呢？简单说，我们的微服务参数正好是两个int64的整数，正好对应arg0,arg1。</p>
+<p>rpcx的服务返回值也是当做参数传入的，函数调用的时候还没有设置，所以你如果打印arg3并不是reply返回值。</p>
+<p>这个时候我们需要移动探针，加一个偏移量，加多少的便宜量呢？通过反汇编我们看到加92时返回值已经赋值了，所以使用下面的命令就可以打印返回值了(这个时候第一个参数就被覆盖掉了):</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div></pre></td><td class="code"><pre><div class="line">[root@lab <span class="keyword">server</span>]<span class="preprocessor"># bpftrace -e 'uprobe:./server:main.*.Mul+92 {printf("%s - %s: reply: %d\n", comm, func, arg0)}'</span></div><div class="line">Attaching <span class="number">1</span> probe...</div><div class="line"><span class="keyword">server</span> - main.(*Arith).Mul: reply: <span class="number">200</span></div><div class="line"><span class="keyword">server</span> - main.(*Arith).Mul: reply: <span class="number">200</span></div><div class="line"><span class="keyword">server</span> - main.(*Arith).Mul: reply: <span class="number">200</span></div></pre></td></tr></table></figure>
+
+<h2 id="参考文档">参考文档</h2>
+<ol>
+<li><a href="https://www.brendangregg.com/blog/2017-01-31/golang-bcc-bpf-function-tracing.html" target="_blank" rel="external">https://www.brendangregg.com/blog/2017-01-31/golang-bcc-bpf-function-tracing.html</a></li>
+<li><a href="https://golangexample.com/library-to-work-with-ebpf-programs-from-golang/" target="_blank" rel="external">https://golangexample.com/library-to-work-with-ebpf-programs-from-golang/</a></li>
+<li><a href="https://tonybai.com/2020/12/25/bpf-and-go-modern-forms-of-introspection-in-linux/" target="_blank" rel="external">https://tonybai.com/2020/12/25/bpf-and-go-modern-forms-of-introspection-in-linux/</a></li>
+<li><a href="https://networkop.co.uk/post/2021-03-ebpf-intro/" target="_blank" rel="external">https://networkop.co.uk/post/2021-03-ebpf-intro/</a></li>
+<li><a href="https://medium.com/bumble-tech/bpf-and-go-modern-forms-of-introspection-in-linux-6b9802682223#db17" target="_blank" rel="external">https://medium.com/bumble-tech/bpf-and-go-modern-forms-of-introspection-in-linux-6b9802682223#db17</a></li>
+<li><a href="https://blog.px.dev/ebpf-http-tracing/" target="_blank" rel="external">https://blog.px.dev/ebpf-http-tracing/</a></li>
+<li><a href="https://www.ebpf.top/post/ebpf_and_go/" target="_blank" rel="external">https://www.ebpf.top/post/ebpf_and_go/</a></li>
+<li><a href="https://www.ebpf.top/" target="_blank" rel="external">https://www.ebpf.top/</a></li>
+</ol>
+]]></content>
+    <summary type="html">
+    <![CDATA[<p><a href="https://ebpf.io/zh-cn/" target="_blank" rel="external">ebpf</a>是一种创新的革命性技术，它能在内核中运行沙箱程序， 而无需修改内核源码或者加载内核模块。将 Linux 内核变成可编程之后，就能基于现有的（而非增加新的）抽象层来打造更加智能、 功能更加丰富的基础设施软件，而不会增加系统的复杂度，也不会牺牲执行效率和安全性。</p>
+<p>BPF的第一个版本在1994年问世。我们在使用tcpdump工具编写规则的时候其实就使用到它了，该工具用于查看或”嗅探”网络数据包。</p>
+]]>
+    
+    </summary>
+    
+      <category term="go" scheme="https://colobu.com/tags/go/"/>
+    
+      <category term="ebpf" scheme="https://colobu.com/tags/ebpf/"/>
+    
+      <category term="Go" scheme="https://colobu.com/categories/Go/"/>
+    
+  </entry>
+  
+  <entry>
+    <title><![CDATA[atomic包的新变化]]></title>
+    <link href="https://colobu.com/2022/05/06/changes-in-atomic-package/"/>
+    <id>https://colobu.com/2022/05/06/changes-in-atomic-package/</id>
+    <published>2022-05-06T00:59:12.000Z</published>
+    <updated>2022-05-22T08:37:06.156Z</updated>
+    <content type="html"><![CDATA[<p>Russ Cox在去年的系列<a href="https://colobu.com/2021/07/13/Updating-the-Go-Memory-Model/" target="_blank" rel="external">文章</a>中，提到对atomic包的改变，并且开了一个issue供大家<a href="https://github.com/golang/go/discussions/47141" target="_blank" rel="external">讨论</a>,现在他提交的改变已经merge到master分支，Go 1.19就会包含这些改变。</p>
+<a id="more"></a>
+<p>你也可以使用<a href="https://pkg.go.dev/golang.org/dl/gotip" target="_blank" rel="external">gotip</a>提前了解这些改变。</p>
+<p>Russ Cox这次的提交只是对atomic补充了一些新的类型，这些类型是对基本类型(primitive type, 如bool、int32、int64、uint32、uint64、uintptr等)的一个包装，以便提供原子操作。</p>
+<p>事实上，uber很早以前就提供类似的功能，也许你很早之前就使用过<a href="https://github.com/uber-go/atomic" target="_blank" rel="external">uber-go/atomic</a>这个库。</p>
+<p>Russ Cox实现的方式也类似，毕竟，这个为基本类型实现包装器的套路还是比较固定的，但是实现上略微有些不同。</p>
+<ul>
+<li>Russ Cox在标准库中的实现<ul>
+<li>嵌入<code>_ noCopy</code>,方便go vet等工具做data race检查</li>
+<li>代码可以进行inline,提高性能</li>
+</ul>
+</li>
+<li>Uber的实现<ul>
+<li>嵌入<code>_ nocmp</code>,避免非原子比较</li>
+<li>提供JSON Marshal/UnMarshal的功能，方便序列化</li>
+<li>提供更多类型的包装器: <code>Duration</code>、<code>String</code>、<code>Time</code>、<code>Float64</code>、<code>Error</code></li>
+</ul>
+</li>
+</ul>
+<p>我们在这篇文章中主要介绍Russ Cox的实现，毕竟这是Go标准库中的改动，我多少要对这些改动有些印象，在我们将来的代码开发，或者看别人的代码时做到心中有数。</p>
+<p>这次改动增加了bool、int32、int64、uint32、uint64、uintptr、Value、unsafe.Pointer类型的包装器：<code>Bool</code>、<code>Int32</code>、<code>Int64</code>、<code>Uint32</code>、<code>Uint64</code>、<code>Uintptr</code>、<code>Value</code>、<code>Pointer</code>。</p>
+<p>所有这些类型都包含下面四个<strong>方法</strong>:</p>
+<ul>
+<li>CompareAndSwap(old, new *T) (swapped bool) : 执行CAS操作</li>
+<li>Load() *T : 原子load对应的值</li>
+<li>Store(val *T) : 将值val原子存储</li>
+<li>Swap(new <em>T) (old </em>T)： 原子保存新值，并返回老的值</li>
+</ul>
+<p>针对不同的类型，可能还会有一些额外的方法，比如:</p>
+<ul>
+<li>Int32: <code>func (x *Int32) Add(delta int32) (new int32)</code></li>
+<li>Int64: <code>func (x *Int64) Add(delta int64) (new int64)</code></li>
+<li>Uint32: <code>func (x *Int64) Add(delta int64) (new int64)</code></li>
+<li>Uint64: <code>func (x *Uint64) Add(delta uint64) (new uint64)</code></li>
+<li>Uintptr: <code>func (x *Uintptr) Add(delta uintptr) (new uintptr)</code></li>
+</ul>
+<p>同样，针对<code>Uint32</code>、<code>Uint64</code>类型，只有Add方法，如果想减去一个正值c，就得利用Add加上一个负值（-c），可是delta的类型都是uxxx类型，怎么办呢？使用<code>^uint64(c-1)</code>或者<code>^uint32(c-1)</code>。</p>
+<p>这些包装器和方法其实对应的是atomic的相应的函数，所以使用起来没什么难度:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">var</span> i Int64</div><div class="line">i.Add<span class="number">(100</span>)</div><div class="line">i.Load()</div><div class="line">i.Store<span class="number">(200</span>)</div><div class="line">i.Swap<span class="number">(300</span>)</div><div class="line">I.CompareAndSwap<span class="number">(300</span><span class="number">,400</span>)</div></pre></td></tr></table></figure>
+
+<p>你可以查看go doc了解更详细的信息: <a href="https://pkg.go.dev/sync/atomic@master" target="_blank" rel="external">sync/atomic</a></p>
+]]></content>
+    <summary type="html">
+    <![CDATA[<p>Russ Cox在去年的系列<a href="https://colobu.com/2021/07/13/Updating-the-Go-Memory-Model/" target="_blank" rel="external">文章</a>中，提到对atomic包的改变，并且开了一个issue供大家<a href="https://github.com/golang/go/discussions/47141" target="_blank" rel="external">讨论</a>,现在他提交的改变已经merge到master分支，Go 1.19就会包含这些改变。</p>
+]]>
+    
+    </summary>
+    
+      <category term="Go" scheme="https://colobu.com/categories/Go/"/>
+    
+  </entry>
+  
+  <entry>
+    <title><![CDATA[Go泛型的坏例子]]></title>
+    <link href="https://colobu.com/2022/04/26/Crimes-with-Go-Generics/"/>
+    <id>https://colobu.com/2022/04/26/Crimes-with-Go-Generics/</id>
+    <published>2022-04-26T00:09:46.000Z</published>
+    <updated>2022-05-22T08:37:06.156Z</updated>
+    <content type="html"><![CDATA[<p>Go 1.18发布了第一版的Go泛型之后，大家开始对Go泛型进行了深入的研究，今天翻译的这一篇，是加拿大的Xe Iaso刚出炉的一篇有趣的<a href="https://christine.website/blog/gonads-2022-04-24" target="_blank" rel="external">文章</a>，对Go泛型的应用做了一些探索。</p>
+<a id="more"></a>
+<p>Go 1.18在语言中添加了泛型特性。允许您把你的类型作为参数，这样你可以创建复合类型（类型之外的类型）。这让你在使用Go的过程中可以有更多的表现力和清晰度。</p>
+<p>然而，如果你正在寻找关于如何使用Go泛型的好主意，这篇文章不适合你。这里面满是坏主意。这篇文章全是不应该在生产环境中使用Go泛型的方法。不要将本文中的示例复制到生产中。通过阅读本文，您同意不将本文中的示例复制到生产中。</p>
+<p>我已将本文的代码放在<a href="https://tulpa.dev/internal/gonads" target="_blank" rel="external">我的git服务器</a>上。我故意采取以下步骤以便代码难以在生产环境中使用：</p>
+<ol>
+<li>我在一个名为<code>internal</code>的gitea组织下创建了它。这将使您无法导入包，除非您是从我的gitea服务器上的repo使用它。该gitea服务器上的注册被禁用。有关内部包规则的更多信息，请参见<a href="https://go.dev/doc/go1.4#internalpackages" target="_blank" rel="external">此处</a>。</li>
+<li>软件包文档包含一条神奇的注释，它会让staticcheck和其他linter 警告您正在使用的软件包已被弃用。</li>
+</ol>
+<h2 id="Queue[T]"><code>Queue[T]</code></h2>
+<p>首先，让我们展示一下计算机科学中一个难题。让我们创建一个MPMS（multiple producer, multiple subscriber,多生产者、多消费者）队列,这是我们并发编程常见的一种数据结构。</p>
+<p>首先，我们需要一个struct来包装一切。它看起来是这样的：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> Queue[T any] <span class="keyword">struct</span> {</div><div class="line">  data <span class="keyword">chan</span> T</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>上面代码创建了一个名为<code>Queue</code>的类型，它接受一个类型参数<code>T</code>。这个<code>T</code>可以是任何类型，但唯一要求是这个数据是一个Go类型。</p>
+<p>您可以使用以下函数为<code>Queue[T]</code>实例创建一个小小的构造函数：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> NewQueue[T any](size <span class="typename">int</span>) Queue[T] {</div><div class="line">  <span class="keyword">return</span> Queue[T]{</div><div class="line">    data: <span class="built_in">make</span>(<span class="keyword">chan</span> T, size),</div><div class="line">  }</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>现在，让我们在<code>Queue</code> struct上创建一些方法，当然也就是压入和弹出操作了。它们可能是这样的：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> (q Queue[T]) Push(val T) {</div><div class="line">  q.data &lt;- val</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> (q Queue[T]) Pop() T {</div><div class="line">  <span class="keyword">return</span> &lt;-q.data</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>这些方法将允许您将数据放在队列的末尾，然后从头部取出数据。你可以这样使用它们：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div></pre></td><td class="code"><pre><div class="line">q := NewQueue[<span class="typename">string</span>]<span class="number">(5</span>)</div><div class="line">q.Push(<span class="string">"hi there"</span>)</div><div class="line">str := q.Pop()</div><div class="line"><span class="keyword">if</span> str != <span class="string">"hi there"</span> {</div><div class="line">  <span class="built_in">panic</span>(<span class="string">"string is wrong"</span>)</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>目前来说一切都好，但是有个小问题，当队列为空时，调用<code>Pop</code>时调用者会被阻塞在那里，我们可以使用<code>select - default</code>语句来实现非阻塞版本的<code>TrpPop</code>方法:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div></pre></td><td class="code"><pre><div class="line"></div><div class="line"><span class="keyword">func</span> (q Queue[T]) TryPop() (T, <span class="typename">bool</span>) {</div><div class="line">  <span class="keyword">select</span> {</div><div class="line">  <span class="keyword">case</span> val := &lt;-q.data:</div><div class="line">    <span class="keyword">return</span> val, <span class="constant">true</span></div><div class="line">  <span class="keyword">default</span>:</div><div class="line">    <span class="keyword">return</span> <span class="constant">nil</span>, <span class="constant">false</span></div><div class="line">  }</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>但是，不幸的事情发生了，上面的代码无法编译,出错信息如下:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">cannot use <span class="constant">nil</span> as T value in <span class="keyword">return</span> statement</div></pre></td></tr></table></figure>
+
+<p>在该代码中，<code>T</code>可以是任何值，包括可能不为nil的值。我们可以利用var语句来解决这个问题，它生成一个新变量，并将其初始化为该类型的零值：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> Zero[T any]() T {</div><div class="line">  <span class="keyword">var</span> zero T</div><div class="line">  <span class="keyword">return</span> zero</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>我们可以像下面一样使用这个返回零值的函数:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div></pre></td><td class="code"><pre><div class="line">log.Printf(<span class="string">"%q"</span>, Zero[<span class="typename">string</span>]())</div><div class="line">log.Printf(<span class="string">"%v"</span>, Zero[<span class="typename">int</span>]())</div></pre></td></tr></table></figure>
+
+<p>输出的结果可能如下:</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div></pre></td><td class="code"><pre><div class="line"><span class="number">2009</span><span class="regexp">/11/</span><span class="number">10</span> <span class="number">23</span>:<span class="number">00</span>:<span class="number">00</span> <span class="string">""</span></div><div class="line"><span class="number">2009</span><span class="regexp">/11/</span><span class="number">10</span> <span class="number">23</span>:<span class="number">00</span>:<span class="number">00</span> <span class="number">0</span></div></pre></td></tr></table></figure>
+
+<p>现在我们就可以改造<code>TryPop</code>的<code>default</code>分支了:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> (q Queue[T]) TryPop() (T, <span class="typename">bool</span>) {</div><div class="line">  <span class="keyword">select</span> {</div><div class="line">  <span class="keyword">case</span> val := &lt;-q.data:</div><div class="line">    <span class="keyword">return</span> val, <span class="constant">true</span></div><div class="line">  <span class="keyword">default</span>:</div><div class="line">    <span class="keyword">var</span> zero T</div><div class="line">    <span class="keyword">return</span> zero, <span class="constant">false</span></div><div class="line">  }</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>最后我们写一个单元测试来测试它:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> TestQueue(t *testing.T) {</div><div class="line">  q := NewQueue[<span class="typename">int</span>]<span class="number">(5</span>)</div><div class="line">  <span class="keyword">for</span> i := <span class="keyword">range</span> <span class="built_in">make</span>([]<span class="keyword">struct</span>{},<span class="number"> 5</span>) {</div><div class="line">    q.Push(i)</div><div class="line">  }</div><div class="line">	</div><div class="line">  <span class="keyword">for</span> <span class="keyword">range</span> <span class="built_in">make</span>([]<span class="keyword">struct</span>{},<span class="number"> 5</span>) {</div><div class="line">    t.Log(q.Pop())</div><div class="line">  }</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<h2 id="Option[T]"><code>Option[T]</code></h2>
+<p>使用Go时，人们会有很多原因使用指针值：</p>
+<ul>
+<li>指针值可能为零，因此可以表示该值可能不存在。</li>
+<li>指针值只在内存中存储偏移量，因此传递该值会导致只复制指针，而不用复制传递的值。</li>
+<li>传递给函数的指针值允许您在传递中改变值。否则Go将复制该值，您就可以随心所欲地对其进行更改，但所做的更改不会持续到函数调用之后。你可以认为这是“不可变的”，但它不像在Rust中函数传递那样严格。</li>
+</ul>
+<p><code>Optiion[T]</code>类型可以帮助我们对第一条约束创建一个容器：一个值可能不存在。我们可以这样定义：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> Option[T any] <span class="keyword">struct</span> {</div><div class="line">  val *T</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>你需要为这个容器实现一组方法:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">var</span> ErrOptionIsNone = errors.New(<span class="string">"gonads: Option[T] has no value"</span>)</div><div class="line"></div><div class="line"><span class="keyword">func</span> (o Option[T]) Take() (T, error) {</div><div class="line">  <span class="keyword">if</span> o.IsNone() {</div><div class="line">    <span class="keyword">var</span> zero T</div><div class="line">    <span class="keyword">return</span> zero, ErrOptionIsNone</div><div class="line">  }</div><div class="line"></div><div class="line">  <span class="keyword">return</span> *o.val, <span class="constant">nil</span></div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> (o *Option[T]) Set(val T) {</div><div class="line">  o.val = &val</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> (o *Option[T]) Clear() {</div><div class="line">  o.val = <span class="constant">nil</span></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>Some other functions that will be useful will be an IsSome function to tell if the Option contains a value. We can use this to also implement an IsNone function that will let you tell if that Option does not contain a value. They will look like this:</p>
+<p>其他一些有用的函数包括<code>IsSome</code>函数，用于判断<code>Option</code>是否包含值。我们还可以为它实现一个<code>IsNone</code>函数，该函数将让您判断该<code>Option</code>是否不包含值。它们看起来是这样的：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> (o Option[T]) IsSome() <span class="typename">bool</span> {</div><div class="line">  <span class="keyword">return</span> o.val != <span class="constant">nil</span></div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> (o Option[T]) IsNone() <span class="typename">bool</span> {</div><div class="line">  <span class="keyword">return</span> !o.IsSome()</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>当<code>Option</code>没有保存某个值时，我们可以说<code>Option</code>为空，我们可以使用<code>IsSome</code>来实现<code>IsNone</code>。</p>
+<p>最后我们把这些都放在<code>Yank</code>函数中，它类似Rust语言中的<code>Option::unwrap()</code>:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> (o Option[T]) Yank() T {</div><div class="line">  <span class="keyword">if</span> o.IsNone() {</div><div class="line">    <span class="built_in">panic</span>(<span class="string">"gonads: Yank on None Option"</span>)</div><div class="line">  }</div><div class="line"></div><div class="line">  <span class="keyword">return</span> *o.val</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>写个Go单元测试校验它:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> TestOption(t *testing.T) {</div><div class="line">  o := NewOption[<span class="typename">string</span>]()</div><div class="line">  val, err := o.Take()</div><div class="line">  <span class="keyword">if</span> err == <span class="constant">nil</span> {</div><div class="line">    t.Fatalf(<span class="string">"[unexpected] wanted no value out of Option[T], got: %v"</span>, val)</div><div class="line">  }</div><div class="line">    </div><div class="line">  o.Set(<span class="string">"hello friendos"</span>)</div><div class="line">  _, err = o.Take()</div><div class="line">  <span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">    t.Fatalf(<span class="string">"[unexpected] wanted no value out of Option[T], got: %v"</span>, err)</div><div class="line">  }</div><div class="line">    </div><div class="line">  o.Clear()</div><div class="line">  <span class="keyword">if</span> o.IsSome() {</div><div class="line">    t.Fatal(<span class="string">"Option should have none, but has some"</span>)</div><div class="line">  }</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<blockquote>
+<p>脱离本篇文章，我认为<code>Option[T]</code>, 但是它需要更进一步的工作和泛化（才能更好的应用在生产环境），这应当是Go核心团队去做的事情，而不是第三方自己去实现。</p>
+</blockquote>
+<h2 id="Thunk[T]"><code>Thunk[T]</code></h2>
+<p>在计算机科学中，我们通常程序分成数值(value)和计算(computation)。通常我们会处理其中一个,或者另一个。但是有时候计算也可以被视为值，但这是非常罕见的。更为罕见的是，将部分完成的计算用作一个值。</p>
+<p><code>thunk</code>是一种存储为值的部分计算。为了了解我所说的内容，让我们考虑一下这个JavaScript函数：</p>
+<figure class="highlight javascript"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">const</span> add = (x, y) =&gt; x + y;</div><div class="line"><span class="built_in">console</span>.log(add(<span class="number">2</span>, <span class="number">2</span>)); <span class="comment">// 4</span></div></pre></td></tr></table></figure>
+
+<p>上面的代码实现了一个<code>add</code>函数对象，需要两个参数，返回一个参数。很多场景下都会这么使用。但是如果我们只绑定一个参数，让另一个参数做变量，这会变得很困难。</p>
+<p>我们可以这样实现<code>add</code>:</p>
+<figure class="highlight javascript"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">const</span> add = (x) =&gt; (y) =&gt; x + y;</div><div class="line"><span class="built_in">console</span>.log(add(<span class="number">2</span>)(<span class="number">2</span>)); <span class="comment">// 4</span></div></pre></td></tr></table></figure>
+
+<p>它需要我们部分的实现<code>add</code>函数，比如<code>addTwo</code>:</p>
+<figure class="highlight javascript"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">const</span> addTwo = add(<span class="number">2</span>);</div><div class="line"><span class="built_in">console</span>.log(addTwo(<span class="number">3</span>)); <span class="comment">// 5</span></div></pre></td></tr></table></figure>
+
+<p>也可以用在不需要参数的函数中，这样实现了延迟计算:</p>
+<figure class="highlight javascript"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">const</span> hypotenuse = (x, y) =&gt; <span class="built_in">Math</span>.sqrt(x * x + y * y);</div><div class="line"><span class="keyword">const</span> thunk = () =&gt; hypot(<span class="number">3</span>, <span class="number">4</span>);</div></pre></td></tr></table></figure>
+
+<p>你可以传递<code>trunk</code>对象，而不必立即计算它，只有在需要的时候才去计算。</p>
+<figure class="highlight javascript"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">dominateWorld(thunk); <span class="comment">// thunk is passed as an unevaluated function</span></div></pre></td></tr></table></figure>
+
+<p>现在我们使用Go来实现这个类型:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> Thunk[T any] <span class="keyword">struct</span> {</div><div class="line">  doer <span class="keyword">func</span>() T</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>然后使用<code>Force</code>函数强制<code>Trunk</code>进行计算:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> (t Thunk[T]) Force() T {</div><div class="line">  <span class="keyword">return</span> t.doer()</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>这是可行的，但是我们也可以比JavaScript示例更进一步。我们可以利用<code>Thunk[T]</code>容器来缓存<code>doer</code>函数的结果，这样多次调用它实际上只会返回一次相同的结果。</p>
+<blockquote>
+<p>请记住，这只适用于纯函数，或不修改外部世界的函数。这也不仅仅是全局变量，而是任何可以在任何地方修改任何状态的函数，包括网络和文件系统IO。(如果你不理解纯函数，可以搜索pure function了解更多)</p>
+</blockquote>
+<p>所以<code>Trunk[T]</code>可以实现如下:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> Thunk[T any] <span class="keyword">struct</span> {</div><div class="line">  doer <span class="keyword">func</span>() T <span class="comment">// action being thunked</span></div><div class="line">  o    *Option[T] <span class="comment">// cache for complete thunk data</span></div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> (t *Thunk[T]) Force() T {</div><div class="line">  <span class="keyword">if</span> t.o.IsSome() {</div><div class="line">    <span class="keyword">return</span> t.o.Yank()</div><div class="line">  }</div><div class="line">    </div><div class="line">  t.o.Set(t.doer())</div><div class="line">  <span class="keyword">return</span> t.o.Yank()</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> NewThunk[T any](doer <span class="keyword">func</span>() T) *Thunk[T] {</div><div class="line">  <span class="keyword">return</span> &Thunk[T]{</div><div class="line">    doer: doer,</div><div class="line">    o:    NewOption[T](),</div><div class="line">  }</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>现在来一个复杂点的例子，我们用它实现斐波那契函数。斐波那契函数正规的例子如下:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> Fib(n <span class="typename">int</span>) <span class="typename">int</span> {</div><div class="line">  <span class="keyword">if</span> n &lt;=<span class="number"> 1</span> {</div><div class="line">    <span class="keyword">return</span> n</div><div class="line">  }</div><div class="line">    </div><div class="line">  <span class="keyword">return</span> Fib(n<span class="number">-1</span>) + Fib(n<span class="number">-2</span>)</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>我们写一个单元测试看看它的时间花费:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> TestRecurFib(t *testing.T) {</div><div class="line">  t.Log(Fib<span class="number">(40</span>))</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>运行go test,结果如下:</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line">$ go test -run RecurFib</div><div class="line"><span class="header">=== RUN   TestRecurFib</span></div><div class="line"><span class="code">    thunk_test.go:15: 102334155</span></div><div class="line"><span class="bullet">--- </span>PASS: TestRecurFib (0.36s)</div></pre></td></tr></table></figure>
+
+<p>然而，我们可以使用刚才实现的<code>Trunk[T]</code>实现它，不过更复杂了:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> TestThunkFib(t *testing.T) {</div><div class="line">  cache := <span class="built_in">make</span>([]*Thunk[<span class="typename">int</span>],<span class="number"> 41</span>)</div><div class="line">  </div><div class="line">  <span class="keyword">var</span> fib <span class="keyword">func</span>(<span class="typename">int</span>) <span class="typename">int</span></div><div class="line">  fib = <span class="keyword">func</span>(n <span class="typename">int</span>) <span class="typename">int</span> {</div><div class="line">    <span class="keyword">if</span> cache[n].o.IsSome() {</div><div class="line">      <span class="keyword">return</span> *cache[n].o.val</div><div class="line">    }</div><div class="line">    <span class="keyword">return</span> fib(n<span class="number">-1</span>) + fib(n<span class="number">-2</span>)</div><div class="line">  }</div><div class="line">  </div><div class="line">  <span class="keyword">for</span> i := <span class="keyword">range</span> cache {</div><div class="line">    i := i</div><div class="line">    cache[i] = NewThunk(<span class="keyword">func</span>() <span class="typename">int</span> { <span class="keyword">return</span> fib(i) })</div><div class="line">  }</div><div class="line">  cache<span class="number">[0</span>].o.Set<span class="number">(0</span>)</div><div class="line">  cache<span class="number">[1</span>].o.Set<span class="number">(1</span>)</div><div class="line">  </div><div class="line">  t.Log(cache<span class="number">[40</span>].Force())</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>执行go test,.输出结果:</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line"><span class="header">=== RUN   TestThunkFib</span></div><div class="line"><span class="code">    thunk_test.go:36: 102334155</span></div><div class="line"><span class="bullet">--- </span>PASS: TestThunkFib (0.60s)</div></pre></td></tr></table></figure>
+
+<p>奇怪不？为什么更慢了?我们不是缓存了中间计算的结果了么？下面的代码是我们常见的优化，我们的版本和下面不是一样的么？</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> TestMemoizedFib(t *testing.T) {</div><div class="line">  mem := <span class="keyword">map</span>[<span class="typename">int</span>]<span class="typename">int</span>{</div><div class="line">   <span class="number"> 0</span>:<span class="number"> 0</span>,</div><div class="line">   <span class="number"> 1</span>:<span class="number"> 1</span>,</div><div class="line">  }</div><div class="line">    </div><div class="line">  <span class="keyword">var</span> fib <span class="keyword">func</span>(<span class="typename">int</span>) <span class="typename">int</span></div><div class="line">  fib = <span class="keyword">func</span>(n <span class="typename">int</span>) <span class="typename">int</span> {</div><div class="line">    <span class="keyword">if</span> result, ok := mem[n]; ok {</div><div class="line">      <span class="keyword">return</span> result</div><div class="line">    }</div><div class="line">        </div><div class="line">    result := fib(n<span class="number">-1</span>) + fib(n<span class="number">-2</span>)</div><div class="line">    mem[n] = result</div><div class="line">    <span class="keyword">return</span> result</div><div class="line">  }</div><div class="line">    </div><div class="line">  t.Log(fib<span class="number">(40</span>))</div><div class="line">}</div></pre></td></tr></table></figure>
+
+
+
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line">$ go test -run Memoized</div><div class="line"><span class="header">=== RUN   TestMemoizedFib</span></div><div class="line"><span class="code">    thunk_test.go:35: 102334155</span></div><div class="line"><span class="bullet">--- </span>PASS: TestMemoizedFib (0.00s)</div></pre></td></tr></table></figure>
+
+<p>如果你把我们使用<code>Trunk[T]</code>的斐波那契函数改动如下，也是能快速跑完的：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div></pre></td><td class="code"><pre><div class="line">fib = <span class="keyword">func</span>(n <span class="typename">int</span>) <span class="typename">int</span> {</div><div class="line">  <span class="keyword">if</span> cache[n].o.IsSome() {</div><div class="line">    <span class="keyword">return</span> *cache[n].o.val</div><div class="line">  }</div><div class="line">  </div><div class="line">  result := fib(n<span class="number">-1</span>) + fib(n<span class="number">-2</span>)</div><div class="line">  cache[n].o.Set(result)</div><div class="line">  <span class="keyword">return</span> result</div><div class="line">}</div></pre></td></tr></table></figure>
+
+
+
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line"><span class="header">=== RUN   TestThunkFib</span></div><div class="line"><span class="code">    thunk_test.go:59: 102334155</span></div><div class="line"><span class="bullet">--- </span>PASS: TestThunkFib (0.00s)</div></pre></td></tr></table></figure>
+
+<p>要明确的是，这不是Go泛型的错。我几乎可以肯定的是，我糟糕的代码导致了速度大大降低。</p>
+<blockquote>
+<p>网友指出我的代码事实上是错误的，我的<code>fib</code>实现应该如下:</p>
+</blockquote>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line">fib = <span class="keyword">func</span>(n <span class="typename">int</span>) <span class="typename">int</span> {</div><div class="line">  <span class="keyword">return</span> cache[n<span class="number">-1</span>].Force() + cache[n<span class="number">-2</span>].Force()</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>我很高兴Go语言添加了泛型。这肯定会让很多事情变得更容易，更富有表现力。我担心在学习Go泛型的过程会给人们带来很多麻烦，。泛型应在特定情况下使用，而不是被滥用。</p>
+<p>我希望这是一个关于如何在Go中使用泛型的有趣研究，但请不要在生产中使用这些示例。</p>
+]]></content>
+    <summary type="html">
+    <![CDATA[<p>Go 1.18发布了第一版的Go泛型之后，大家开始对Go泛型进行了深入的研究，今天翻译的这一篇，是加拿大的Xe Iaso刚出炉的一篇有趣的<a href="https://christine.website/blog/gonads-2022-04-24" target="_blank" rel="external">文章</a>，对Go泛型的应用做了一些探索。</p>
+]]>
+    
+    </summary>
+    
+      <category term="go" scheme="https://colobu.com/categories/go/"/>
+    
+  </entry>
+  
+  <entry>
+    <title><![CDATA[Uber工程师对真实世界并发问题的研究]]></title>
+    <link href="https://colobu.com/2022/04/07/A-Study-of-Real-World-Data-Races-in-Golang/"/>
+    <id>https://colobu.com/2022/04/07/A-Study-of-Real-World-Data-Races-in-Golang/</id>
+    <published>2022-04-07T00:16:19.000Z</published>
+    <updated>2022-05-22T08:37:06.155Z</updated>
+    <content type="html"><![CDATA[<p>今天Uber工程师放出一篇论文(<a href="https://arxiv.org/abs/2204.00764" target="_blank" rel="external">A Study of Real-World Data Races in Golang</a>)，作者是Uber的工程师Milind Chabbi和Murali Krishna Ramanathan，他们负责使用Go内建的data race detector在Uber内的落地，经过6个多月的研究分析，他们将data race detector成功落地，并基于对多个项目的分析，得出了一些有趣的结论。</p>
+<a id="more"></a>
+<p>我们知道，Go是Uber公司的主打编程语言。他们对Uber的2100个不同的微服务，4600万行Go代码的分析，发现了超过2000个的有数据竞争的bug, 修复了其中的1000多个，剩余的正在分析修复中。</p>
+<p>谈起真实世界中的Go并发Bug,其实2019年我们华人学者的<a href="https://songlh.github.io/paper/go-study.pdf" target="_blank" rel="external">Understanding Real-World Concurrency Bugs in Go</a>论文可以说是开山之作，首次全面系统地分析了几个流行的大型Go项目的并发bug。今天谈的这一篇呢，是Uber工程师针对Uber的众多的Go代码做的分析。我猜他们可能是类似国内工程效能部的同学，所以这篇论文有一半的篇幅介绍Go data race detector是怎么落地的，这个我们就不详细讲了，这篇论文的另一半是基于对data race的分析，罗列出了常见的出现data race的场景，对我们Gopher同学来说，很有学习的意义，所以我晚上好好拜读了一下这篇论文，做一总结和摘要。</p>
+<p>作为一个大厂，肯定不止一种开发语言，作者对Uber线上个编程语言(go、java、nodejs、python)进行分析，可以看到：</p>
+<ol>
+<li>相比较Java， 在Go语言中会更多的使用并发处理</li>
+<li>同一个进程中，nodejs平均会启动16个线程，python会启动16-32个线程，java进程一般启动128-1024个线程，10%的Java程序启动4096个线程，7%的java程序启动8192个线程。Go程序一般启动1024-4096个goroutine,6%的Go程序启动8192个goroutine(原文是8102，我认为是一个笔误)，最大13万个。</li>
+</ol>
+<p>可以看到Go程序会比其它语言有更多的并发单元，更多的并发单元意味着存在着更多的并发bug。Uber代码库中都有哪些类的并发bug呢？</p>
+<p>下面的介绍会很多的使用数据竞争概念(data race)，它是并发编程中常见的概念，有数据竞争，意味着有多个并发单元对同一个数据资源有并发的读写，至少有一个写，有可能会导致并发问题。</p>
+<h2 id="透明地引用捕获_(Transparent_Capture-by-Reference)">透明地引用捕获 (Transparent Capture-by-Reference)</h2>
+<p>直接翻译过来你可能觉得不知所云。Transparent是指没有显示的声明或者定义，就直接引用某些变量，很容易导致数据竞争。通过例子更容易理解。这是一大类，我们分成小类逐一介绍。</p>
+<h3 id="循环变量的捕获">循环变量的捕获</h3>
+<p>不得不说，这也是我最常犯的错误。虽然明明知道会有这样的问题，但是在开发的过程中，总是无意的犯这样的错误。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">for</span> _ , job := <span class="keyword">range</span> jobs {</div><div class="line"> <span class="keyword">go</span> <span class="keyword">func</span> () {</div><div class="line">   ProcessJob ( job )</div><div class="line"> }()</div><div class="line"> } <span class="comment">// end for</span></div></pre></td></tr></table></figure>
+
+<p>比如这个简单的例子,job是索引变量，循环中启动了一个goroutine处理这个job。job变量就透明地被这个goroutine引用。</p>
+<p>循环变量是唯一的，意味着启动的这个goroutine,有可能处理的都是同一个job,而并不是期望的没有一个job。</p>
+<p>这个例子还很明显，有时候循环体内特别复杂，可能并不像这个例子那么容易发现。</p>
+<h3 id="err变量被捕获">err变量被捕获</h3>
+<p>下面这个例子，y,z的赋值时，会对同一个err进行写操作，也可能会导致数据竞争，产生并发问题。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div></pre></td><td class="code"><pre><div class="line">x , err := Foo ()</div><div class="line"><span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">...</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">go</span> <span class="keyword">func</span> () {</div><div class="line"> <span class="keyword">var</span> y <span class="typename">int</span></div><div class="line"> y , err = Bar ()</div><div class="line">  <span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">  ...</div><div class="line">  }</div><div class="line">}()</div><div class="line"></div><div class="line"><span class="keyword">var</span> z <span class="typename">string</span></div><div class="line">z , err = Baz ()</div><div class="line"><span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">...</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<h3 id="捕获命名的返回值">捕获命名的返回值</h3>
+<p>下面这个例子定义了一个命名的返回值<code>result</code>。可以看到 <code>... = result</code>（读操作）和<code>return 20</code> (写操作)有数据竞争的问题，虽然<code>return 20</code>你并没有看到对result的赋值。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> NamedReturnCallee () ( result <span class="typename">int</span>) {</div><div class="line">  result =<span class="number"> 10</span></div><div class="line">  <span class="keyword">if</span> ... {</div><div class="line">    <span class="keyword">return</span> <span class="comment">// this has the effect of " return 10"</span></div><div class="line">  }</div><div class="line">  <span class="keyword">go</span> <span class="keyword">func</span> () {</div><div class="line">   ... = result <span class="comment">// read result</span></div><div class="line">  }()</div><div class="line">  <span class="keyword">return</span><span class="number"> 20</span> <span class="comment">// this is equivalent to result =20</span></div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> Caller () {</div><div class="line"> retVal := NamedReturnCallee ()</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p><code>defer</code>也会有类似的效果,下面这段代码对err有数据竞争问题。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div></pre></td><td class="code"><pre><div class="line"> <span class="keyword">func</span> Redeem ( request Entity ) ( resp Response , err error )</div><div class="line">{</div><div class="line"> <span class="keyword">defer</span> <span class="keyword">func</span> () {</div><div class="line">  resp , err = c . Foo ( request , err )</div><div class="line"> }()</div><div class="line"> err = CheckRequest ( request )</div><div class="line"> ... <span class="comment">// err check but no return</span></div><div class="line"> <span class="keyword">go</span> <span class="keyword">func</span> () {</div><div class="line">  ProcessRequest ( request , err != <span class="constant">nil</span> )</div><div class="line"> }()</div><div class="line"> <span class="keyword">return</span> <span class="comment">// the defer function runs after here</span></div><div class="line"> }</div></pre></td></tr></table></figure>
+
+<h2 id="Slice相关的数据竞争">Slice相关的数据竞争</h2>
+<p>下面这个例子，<code>safeAppend</code>使用锁对<code>myResults</code>进行了保护，但是在每次循环调用<code>(uuid, myResults)</code>并没有读保护，也会有竞争问题，而且不容易发现。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> ProcessAll ( uuids [] <span class="typename">string</span> ) {</div><div class="line"> <span class="keyword">var</span> myResults [] <span class="typename">string</span></div><div class="line"> <span class="keyword">var</span> mutex sync . Mutex</div><div class="line"> safeAppend := <span class="keyword">func</span> ( res <span class="typename">string</span> ) {</div><div class="line"> mutex.Lock ()</div><div class="line">  myResults = <span class="built_in">append</span> ( myResults , res )</div><div class="line"> mutex.Unlock ()</div><div class="line"> }</div><div class="line"></div><div class="line"> <span class="keyword">for</span> _ , uuid := <span class="keyword">range</span> uuids {</div><div class="line"> <span class="keyword">go</span> <span class="keyword">func</span> ( id <span class="typename">string</span> , results [] <span class="typename">string</span> ) {</div><div class="line"> res := Foo ( id )</div><div class="line"> safeAppend ( res )</div><div class="line">  }( uuid , myResults ) <span class="comment">// slice read without holding lock</span></div><div class="line"> }</div><div class="line"> ...</div><div class="line"> }</div></pre></td></tr></table></figure>
+
+<h2 id="非线程安全的map">非线程安全的map</h2>
+<p>这个很常见了，几乎每个Gopher都曾犯过，犯过才意识到Go内建的map对象并不是线程安全的，需要加锁或者使用sync.Map等其它并发原语。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> processOrders ( uuids [] <span class="typename">string</span> ) error {</div><div class="line"><span class="keyword">var</span> errMap = <span class="built_in">make</span> ( <span class="keyword">map</span> [ <span class="typename">string</span> ] error )</div><div class="line"><span class="keyword">for</span> _ , uuid := <span class="keyword">range</span> uuids {</div><div class="line"><span class="keyword">go</span> <span class="keyword">func</span> ( uuid <span class="typename">string</span> ) {</div><div class="line">orderHandle , err := GetOrder ( uuid )</div><div class="line"><span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">▶ errMap [ uuid ] = err</div><div class="line"><span class="keyword">return</span></div><div class="line">}</div><div class="line">...</div><div class="line">}( uuid )</div><div class="line"><span class="keyword">return</span> combineErrors ( errMap )</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<h2 id="传值和传引用的误用">传值和传引用的误用</h2>
+<p>Go标准库常见并发原语不允许在使用后Copy, go vet也能检查出来。比如下面的代码，两个goroutine想共享mutex,需要传递<code>&amp;mutex</code>,而不是<code>mutex</code>。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">var</span> a <span class="typename">int</span></div><div class="line"><span class="comment">// CriticalSection receives a copy of mutex .</span></div><div class="line"><span class="keyword">func</span> CriticalSection ( m sync . Mutex ) {</div><div class="line">m.Lock ()</div><div class="line"> a ++</div><div class="line">m.Unlock ()</div><div class="line">}</div><div class="line"><span class="keyword">func</span> main () {</div><div class="line">mutex := sync . Mutex {}</div><div class="line"><span class="comment">// passes a copy of m to A .</span></div><div class="line"><span class="keyword">go</span> CriticalSection ( mutex )</div><div class="line"><span class="keyword">go</span> CriticalSection ( mutex )</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<h2 id="混用消息传递和共享内存两种并发方式">混用消息传递和共享内存两种并发方式</h2>
+<p>消息传递常用channel。下面的例子中，如果context因为超时或者主动cancel被取消的话，Start中的goroutine中的<code>f.ch &lt;- 1</code>可能会被永远阻塞，导致goroutine泄露。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> ( f * Future ) Start () {</div><div class="line"><span class="keyword">go</span> <span class="keyword">func</span> () {</div><div class="line">resp , err := f.f () <span class="comment">// invoke a registered function</span></div><div class="line"> f.response = resp</div><div class="line"> f.err = err</div><div class="line"> f.ch &lt;-<span class="number"> 1</span> <span class="comment">// may block forever !</span></div><div class="line">}()</div><div class="line">}</div><div class="line"><span class="keyword">func</span> ( f * Future ) Wait ( ctx context . Context ) error {</div><div class="line"><span class="keyword">select</span> {</div><div class="line"><span class="keyword">case</span> &lt;-f.ch :</div><div class="line"><span class="keyword">return</span> <span class="constant">nil</span></div><div class="line"><span class="keyword">case</span> &lt;- ctx.Done () :</div><div class="line"> f.err = ErrCancelled</div><div class="line"><span class="keyword">return</span> ErrCancelled</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<h2 id="并发测试">并发测试</h2>
+<p>Go的<code>testing.T.Parallel()</code>为单元测试提供了并发能力，或者开发者自己写一些并发的测试程序测试代码逻辑，在这些并发测试中，也是有可能导致数据竞争的。不要以为测试不会有数据竞争问题。</p>
+<h2 id="不正确的锁调用">不正确的锁调用</h2>
+<h3 id="为写操作申请读锁">为写操作申请读锁</h3>
+<p>下面这个例子中，<code>g.ready</code>是写操作，可是这个函数调用的是读锁。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> ( g * HealthGate ) updateGate () {</div><div class="line">g.mutex.RLock ()</div><div class="line"><span class="keyword">defer</span> g.mutex.RUnlock ()</div><div class="line"><span class="comment">// ... several read - only operations ...</span></div><div class="line"><span class="keyword">if</span> ... {</div><div class="line"> g.ready = <span class="constant">true</span> <span class="comment">// Concurrent writes .</span></div><div class="line"> g.gate.Accept () <span class="comment">// More than one Accept () .</span></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<h3 id="其它锁的问题">其它锁的问题</h3>
+<p>你会发现，大家经常犯的一个“弱智”的问题，就是Mutex只有Lock或者只有Unlock,或者两个Lock,这类问题本来你认为绝不会出现的，在现实中却经常能看到。</p>
+<p>还有使用<code>atomic</code>进行原子写，但是却没有原子读。</p>
+<blockquote>
+<p>我认为这里Uber工程师并没有全面详细的介绍使用锁常见的一些陷阱，推荐你学习极客时间中的<a href="https://time.geekbang.org/column/intro/355" target="_blank" rel="external">Go 并发编程实战课</a>课程，此课程详细介绍了每个并发原语的陷阱和死锁情况。</p>
+</blockquote>
+<h2 id="总结">总结</h2>
+<p>总结一下，下表列出了基于语言类型统计的数据竞争bug数：</p>
+<p><img src="2.png" alt=""></p>
+<p>整体来看，锁的误用是最大的数据竞争的原因。并发访问slice和map也是很常见的数据竞争的原因。<br><img src="3.png" alt=""></p>
+]]></content>
+    <summary type="html">
+    <![CDATA[<p>今天Uber工程师放出一篇论文(<a href="https://arxiv.org/abs/2204.00764" target="_blank" rel="external">A Study of Real-World Data Races in Golang</a>)，作者是Uber的工程师Milind Chabbi和Murali Krishna Ramanathan，他们负责使用Go内建的data race detector在Uber内的落地，经过6个多月的研究分析，他们将data race detector成功落地，并基于对多个项目的分析，得出了一些有趣的结论。</p>
+]]>
+    
+    </summary>
+    
+      <category term="Go" scheme="https://colobu.com/categories/Go/"/>
+    
+  </entry>
   
   <entry>
     <title><![CDATA[最常用的架构模式]]></title>
@@ -1252,648 +1689,6 @@
 <p>这些不是我想介绍的内容，今天我肝一篇介绍Go泛型实现原理的文章，介绍Go泛型实现的方案。</p>
 <p>对于一个函数<code>func Echo[T any](t T){}</code>，Go编译器到底编译成了什么代码？</p>
 <p>简单的说，当前Go泛型实现的方案和下图中的方案一样：</p>
-]]>
-    
-    </summary>
-    
-      <category term="Go" scheme="https://colobu.com/categories/Go/"/>
-    
-  </entry>
-  
-  <entry>
-    <title><![CDATA[2021年Go生态圈rpc框架benchmark]]></title>
-    <link href="https://colobu.com/2021/08/01/benchmark-of-rpc-frameworks/"/>
-    <id>https://colobu.com/2021/08/01/benchmark-of-rpc-frameworks/</id>
-    <published>2021-08-01T11:08:17.000Z</published>
-    <updated>2021-10-06T03:29:34.208Z</updated>
-    <content type="html"><![CDATA[<p>有朋友问，每年年初的时候我会发布一个rpc的框架的大比拼，今年为啥没有了？<br><a id="more"></a></p>
-<p>有几个原因，一是我去年下半年换了一份工作，熟悉新的业务耗费了很大精力，导致博客文章相对少了，开源的贡献也少了，二是rpcx我自己觉得性能已经很不错了没有想着进一步的优化，所以也没有做相应的benchmark比较。</p>
-<p>前几个星期头条的同学推出他们的rpcx框架<a href="https://github.com/cloudwego/kitex" target="_blank" rel="external">kitex</a>,据说性能要比rpcx和grpc好很多，加上今年GopherChina2021大会上他们也分享了他们的netpoll的优化。</p>
-<p>本来，我对自定义epoll一类的框架如evio、gnet是不感冒的，因为go本身的net库也是基于epoll实现的，只不过这类框架在处理epoll事件之后的处理和标准库是不一样的。在GopherChina大会上我也和小伙伴说，我担心的这类框架的&quot;长尾效应&quot;,也就是从客户端视角看，大大并发的情况下latency的长尾效应可能是一个很大的痛点。这个话题我一直想专门写一篇文章探讨一下，希望这个秋季能出一篇深度分析标准库和自定义epoll的文章。</p>
-<p>当然，既然头条的同学测试kitex性能不错，那么我也就把kitex加入到我的<a href="https://github.com/rpcxio/rpcx-benchmark" target="_blank" rel="external">rpc benchmark项目</a>中了,并且在这个周末也对几种Go rpc框架做了benchmark对比,我想自己测试看看这些框架的性能表现。</p>
-<p>当然，每次发表benchmark文章，我都会先声明，没有一个benchmark可以全面的反应这些框架的完整的性能的，更不用说完整的特性了。每个人在使用rpc框架时，面对的场景可能都不同，有些是CPU敏感的服务、有的是IO敏感的服务、有的是内存敏感的服务、有的是读数据库的服务、有的是提供缓存的服务、有些是写文件的服务，消息的长度有大有小、消息的编码格式也不尽相同，有的是同步调用，有的是异步调用，有些是同机房的调用，有些是跨机房的调用，有些用tcp，有些用udp,......,各种各样五花八门，所以没有一种benchmark可以涵盖所有的场景。这次我做的benchmark，也只是覆盖了其中的一种场景。但是幸运的是，这个项目提供了一个框架，可以根据你的场景自己定制，如果你感兴趣，你可以在这个项目的基础上做一些修改，以便和你的使用场景做匹配。</p>
-<p>另外，性能只是比较rpc框架的一个方面，千万不要因为测试结果A框架比B框架好就拿去吹嘘，那是幼稚的表现。另外也不可能Go生态圈只有一个框架存在，目前Go生态圈至少有十几个框架存在，各有特色。我个人对于Go生态圈的微服务框架持开放态度，而且也会了解和学习其它框架的优点，让rpcx框架变得更好，我相信·其他开发者也是这么想的。</p>
-<p>想比以前的测试，我把Dubbo、Motan、Tarsgo等rpc框架去掉了。我个人不认为这些框架真的适合Go生态群的开发。Go的设计哲学就是简单，这几种框架都需要复杂的配置。当然我知道这些框架原先是Java、C++语言的，只不过为了跨语言才port到Go生态圈，导致这些框架的使用非常的复杂，因为为了保持和主语言的框架的兼容。如果单纯的Go生态圈的使用的话，我还是建议挑选简单可依赖的纯Go生态圈的框架。</p>
-<p>为了尽量保持一致的测试环境，所有的框架统一遵循下面的约定：</p>
-<ul>
-<li>分别测试并发数为100、200、500、1000、2000、5000的场景，测试单个服务在面对不同并发量的情况下的性能。</li>
-<li>从客户端统计吞吐率和延迟(latency)</li>
-<li>采用共享的client。创建一定数量的client作为client池。</li>
-<li>所有的框架都是在“公平”的情况下测试。测试数据都是一致的，采用protobuf进行测试。虽然有比Protobuf性能更好的序列化框架，但是因为不具有通用性所以不考虑。</li>
-<li>测试会进行预热。</li>
-<li>避免<a href="http://highscalability.com/blog/2015/10/5/your-load-generator-is-probably-lying-to-you-take-the-red-pi.html" target="_blank" rel="external">coordinated omission</a>:测试统计的是等待时间+服务时间,而不是服务端服务时间</li>
-<li>统计既包含平均值，也包含P99.9值。</li>
-</ul>
-<h2 id="测试环境">测试环境</h2>
-<ul>
-<li>Intel(R) Xeon(R) Silver 4110 CPU @ 2.10GHz,2颗</li>
-<li>总物理核 8个， 开超线程逻辑核数为 32个</li>
-<li>内存 128G</li>
-<li>Go 1.16.6</li>
-<li>各框架版本<ul>
-<li>arpc: 1.1.5</li>
-<li>go std rpc: 1.16.6</li>
-<li>grpc: 1.39.0</li>
-<li>kitex: 0.0.3</li>
-<li>rpcx: 1.6.5</li>
-</ul>
-</li>
-</ul>
-<p>测试是在单机上进行的。 坏处就是测试是没有像实际情况一样经过实际网络，而是本机网络支持处理，好处就是我们可以刨去长距离或者不好的网络的影响，只关注于rpc框架的处理。</p>
-<h2 id="测试步骤">测试步骤</h2>
-<p>生成每个框架的服务端和客户端:</p>
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div></pre></td><td class="code"><pre><div class="line">-<span class="ruby">rwxr-xr-x <span class="number">1</span> smallnest <span class="constant">USER</span>  <span class="number">9756450</span> <span class="constant">Aug</span>  <span class="number">1</span> <span class="number">17</span><span class="symbol">:</span><span class="number">50</span> arpc_server</span></div><div class="line">-<span class="ruby">rwxr-xr-x <span class="number">1</span> smallnest <span class="constant">USER</span> <span class="number">12800584</span> <span class="constant">Aug</span>  <span class="number">1</span> <span class="number">17</span><span class="symbol">:</span><span class="number">51</span> gostd_server</span></div><div class="line">-<span class="ruby">rwxr-xr-x <span class="number">1</span> smallnest <span class="constant">USER</span> <span class="number">12520016</span> <span class="constant">Aug</span>  <span class="number">1</span> <span class="number">17</span><span class="symbol">:</span><span class="number">52</span> grpc_server</span></div><div class="line">-<span class="ruby">rwxr-xr-x <span class="number">1</span> smallnest <span class="constant">USER</span> <span class="number">11240760</span> <span class="constant">Aug</span>  <span class="number">1</span> <span class="number">17</span><span class="symbol">:</span><span class="number">53</span> kitex_server</span></div><div class="line">-<span class="ruby">rwxr-xr-x <span class="number">1</span> smallnest <span class="constant">USER</span> <span class="number">11810350</span> <span class="constant">Aug</span>  <span class="number">1</span> <span class="number">17</span><span class="symbol">:</span><span class="number">54</span> rpcx_server</span></div><div class="line"></div><div class="line">-<span class="ruby">rwxr-xr-x <span class="number">1</span> smallnest <span class="constant">USER</span>  <span class="number">5021980</span> <span class="constant">Aug</span>  <span class="number">1</span> <span class="number">17</span><span class="symbol">:</span><span class="number">56</span> arpc_client</span></div><div class="line">-<span class="ruby">rwxr-xr-x <span class="number">1</span> smallnest <span class="constant">USER</span> <span class="number">11109233</span> <span class="constant">Aug</span>  <span class="number">1</span> <span class="number">17</span><span class="symbol">:</span><span class="number">57</span> gostd_client</span></div><div class="line">-<span class="ruby">rwxr-xr-x <span class="number">1</span> smallnest <span class="constant">USER</span> <span class="number">12581237</span> <span class="constant">Aug</span>  <span class="number">1</span> <span class="number">17</span><span class="symbol">:</span><span class="number">58</span> grpc_client</span></div><div class="line">-<span class="ruby">rwxr-xr-x <span class="number">1</span> smallnest <span class="constant">USER</span> <span class="number">11559544</span> <span class="constant">Aug</span>  <span class="number">1</span> <span class="number">17</span><span class="symbol">:</span><span class="number">59</span> kitex_client</span></div><div class="line">-<span class="ruby">rwxr-xr-x <span class="number">1</span> smallnest <span class="constant">USER</span> <span class="number">16065065</span> <span class="constant">Aug</span>  <span class="number">1</span> <span class="number">18</span><span class="symbol">:</span><span class="number">00</span> rpcx_client</span></div></pre></td></tr></table></figure>
-
-<p>启动服务端:</p>
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">./xxx_server <span class="operator">-d</span> <span class="number">127.0</span>.<span class="number">0.1</span>:<span class="number">8972</span></div></pre></td></tr></table></figure>
-
-<p>客户端测试(并发数100)</p>
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">./xxx_client -c <span class="number">1000</span> -n <span class="number">10000000</span> <span class="operator">-s</span> <span class="number">127.0</span>.<span class="number">0.1</span>:<span class="number">8973</span></div></pre></td></tr></table></figure>
-
-<p>每个场景会发送一千万个请求，内容一个不大不小的protobuf编码的数据，服务端收到后会设置某个字段为<code>OK</code>,并返回。没有复杂的计算。</p>
-<p>相对于简单的echo 字符串的服务，消息体适中，编码格式通用，业务处理简单，耗时很短吞吐率有保障。</p>
-<h2 id="测试结果">测试结果</h2>
-<p>当前对5种rpc框架做了测试，有些是普通的rpc服务，比如arpc、Go标准库中的rpc、有些是支持微服务治理的框架如kitex、rpcx，有些是有一些微服务治理的功能如grpc。测试的时候，并没有测试他们的微服务治理的功能，而是只是测试了他们简单的rpc调用。</p>
-<p>实际测试是，发现kitex在并发数为2000的时候，客户端调用会有少量出错，并发数为5000时，会有10+%的调用出错。</p>
-<h3 id="吞吐率_(越高越好)">吞吐率 (越高越好)</h3>
-<p>也就是每秒完成的调用数。</p>
-<p><img src="throughputs.png" alt=""></p>
-<h3 id="延迟(平均耗时，越小越好)">延迟(平均耗时，越小越好)</h3>
-<p>单位毫秒。</p>
-<p><img src="latency.png" alt=""></p>
-<h3 id="延迟(P99-9耗时，越小越好)">延迟(P99.9耗时，越小越好)</h3>
-<p>单位毫秒。</p>
-<p><img src="p99.png" alt=""></p>
-<h3 id="原始测试数据">原始测试数据</h3>
-<p><img src="data.png" alt=""></p>
-<h2 id="简单总结">简单总结</h2>
-<p>arpc表现亮眼，吞吐率和耗时表现都不错。它是一个类似go web编程风格的rpc框架，采用router和handler的方式实现服务，值的学习。</p>
-<p>kitex在并发量小的时候吞吐率要比rpcx要好，随着并发量增多，吞吐率基本差不多，吞吐率在大一些，它的长尾效应很明显P99.9延迟很高，这符合我对自定义epoll框架的推测。如果有小伙伴有不同的想法，欢迎发送评论。</p>
-<p>Go标准库rpc框架中规中矩。</p>
-<p>rpcx框架表现优异，在各种并发量的情况下都领先，并且没有明显的长尾效应。</p>
-<p>grpc本来也是很不错的框架，但是性能和这几位比起来，还稍差一些。</p>
-<p>通过这次测试，我对rpcx当前的性能有了一个大致的了解，并且通过对其它rpc框架测试，又进一步优化了rpcx的性能。</p>
-<blockquote>
-<p>可能这个测试对于基于netpoll的kitex不&quot;公平&quot;，我的理解是自定义netpoll适合那种有巨量socket连接，并发量适中的场景。</p>
-</blockquote>
-]]></content>
-    <summary type="html">
-    <![CDATA[<p>有朋友问，每年年初的时候我会发布一个rpc的框架的大比拼，今年为啥没有了？<br>]]>
-    
-    </summary>
-    
-      <category term="Go" scheme="https://colobu.com/categories/Go/"/>
-    
-  </entry>
-  
-  <entry>
-    <title><![CDATA[[译]更新Go内存模型]]></title>
-    <link href="https://colobu.com/2021/07/13/Updating-the-Go-Memory-Model/"/>
-    <id>https://colobu.com/2021/07/13/Updating-the-Go-Memory-Model/</id>
-    <published>2021-07-13T09:53:00.000Z</published>
-    <updated>2021-10-06T03:29:34.174Z</updated>
-    <content type="html"><![CDATA[<p>这是Russ Cox的系列论文的第三篇，也是最后一篇: <a href="https://research.swtch.com/gomm" target="_blank" rel="external">Updating the Go Memory Model</a>。</p>
-<p>文章对 官方的Go内存模型做了一些补充和思考。</p>
-<a id="more"></a>
-<p><img src="gophers-racing.jpeg" alt=""></p>
-<p>当前的Go语言内存模型是在2009年编写的，从那以后略有更新。很明显，至少有一些细节我们应该添加到当前的内存这个内存模型中，其中包括对竞态检测器的明确认可，以及关于sync/atomic中的API是如何同步程序的清晰声明。</p>
-<p>这篇文章重申了Go的总体哲学和当前的内存模型，然后概述了我认为我们应该对Go内存模型进行的相对较小的调整。假定你已经了解了前两篇文章<a href="https://colobu.com/2021/06/30/hwmm/" target="_blank" rel="external">“硬件内存模型”</a>和<a href="https://colobu.com/2021/07/11/Programming-Language-Memory-Models/" target="_blank" rel="external">“编程语言内存模型”</a>中的背景知识。</p>
-<p>我已经开启了一个<a href="https://golang.org/s/mm-discuss" target="_blank" rel="external">GitHub讨论项目</a>来收集对反馈。根据这些反馈，我打算在本月晚些时候准备一份正式的Go提案。使用GitHub讨论本身就是一个实验，我还会继续尝试<a href="https://research.swtch.com/proposals-discuss" target="_blank" rel="external">找到一个合理的方法来扩大这些重要变化的讨论</a>。</p>
-<h2 id="Go_设计哲学">Go 设计哲学</h2>
-<p>Go旨在成为构建实用、高效系统的编程环境。它的目标是为小型项目的轻量级开发语言，但也可以优雅地扩展到大型项目和大型工程团队。</p>
-<p>Go鼓励在高层次上处理并发，特别是通过通信。第一句Go箴言(<a href="https://go-proverbs.github.io/" target="_blank" rel="external">Go proverb</a>)就是“不要通过共享内存来通信，而是通过通信共享内存。”另一个流行的谚语是“清晰胜于聪明。”换句话说，Go鼓励通过避免使用巧妙的代码来避免狡猾的bug。</p>
-<p>Go的目标不仅仅是可以理解的程序，还包括可以理解的语言和可以理解的package API。复杂或巧妙的语言特征或API与这一目标相矛盾。正如Tony Hoare在1980年<a href="https://www.cs.fsu.edu/~engelen/courses/COP4610/hoare.pdf" target="_blank" rel="external">图灵奖演讲</a>中所说:</p>
-<blockquote>
-<p>I conclude that there are two ways of constructing a software design: One way is to make it so simple that there are obviously no deficiencies and the other way is to make it so complicated that there are no obvious deficiencies.</p>
-<p>我的结论是，构建软件设计有两种方法:一种方法是简单实现，以至于明显没有缺陷；另一种方法是异常复杂，以至于没有明显缺陷。</p>
-</blockquote>
-<p>第一种方法要困难得多。它需要同样的技巧、奉献、洞察力，甚至是灵感，就像发现构成复杂自然现象基础的简单物理定律一样。它还要求愿意接受受物理、逻辑和技术限制的目标，并在冲突的目标无法实现时接受妥协。</p>
-<p>这与Go的设计API的理念非常吻合。我们通常在设计过程中花很长时间来确保一个应用编程接口是正确的，并努力将其简化为最基本、最有用的精华。</p>
-<p>Go作为一个有用的编程环境的另一方面是为最常见编程错误有定义明确的语义，这有助于理解和调试。这个想法并不新鲜。再次引用Tony Hoare的话，这是来自他1972年的“软件质量”检查单:</p>
-<blockquote>
-<p>As well as being very simple to use, a software program must be very difficult to misuse; it must be kind to programming errors, giving clear indication of their occurrence, and never becoming unpredictable in its effects.</p>
-<p>一个软件程序不仅使用起来非常简单，而且很难被误用；它必须友好对待编程错误，给出它们发生的明确指示，并且其影响永远不会变得不可预测。</p>
-</blockquote>
-<p>为有问题的程序定义良好的语义，这种常识并不像人们预期的那样普遍。在C/C++中，未定义的行为已经演变成一种编译器作者的全权委托，以越来越有趣的方式将有轻微问题的程序转换成有大问题的程序。Go不采用这种方法:不存在“未定义的行为”。特别是，像空指针取消引用、整数溢出和无意的无限循环这样的错误都在Go中定义了语义。</p>
-<h2 id="当前的_Go内存模型">当前的 Go内存模型</h2>
-<p>Go的内存模型始于以下建议，符合Go的总体哲学:</p>
-<ul>
-<li>修改由多个goroutines同时访问的数据的程序必须串行化这些访问。</li>
-<li>为了实现串行访问, 需要使用channel操作或其他同步原语(如sync和sync/atomic包中的原语)来保护数据。</li>
-<li>如果你必须阅读本文的其余部分才能理解你的程序的行为，那你太聪明了。</li>
-<li>别自作聪明。</li>
-</ul>
-<p>这仍然是个好建议。该建议也与其他语言对DRF-SC的鼓励使用一致:同步以消除数据竞争，然后程序将表现得好像顺序一致，不需要理解内存模型的其余部分。</p>
-<p>根据这个建议，Go内存模型定义了一个传统的基于happens-before对读写竞争的定义。像在Java和JavaScript中一样，在Go中的读操作可以观察到任何更早但尚未被覆盖的写操作，或者任何竞争的写操作；仅安排一个这样的写入会强制产生指定的结果。</p>
-<p>然后，内存模型继续定义同步操作，这些操作建立交替执行的goroutine的happen-before关系。操作尽管稀松平常，但是还是带有一些Go特有的风格:</p>
-<ul>
-<li>如果package <strong>p</strong>引入了package <strong>q</strong>,那么<strong>q</strong>的init函数的执行完成一定happen-before <strong>p</strong>的所有init函数(之前)</li>
-<li><strong>main.main</strong> 函数一定 happen after 所有的init函数完成(之后)</li>
-<li>go语句创建一个goroutine一定happen before goroutine执行(之前)</li>
-<li>往一个channel中send happen before 从这个channel receive这个数据完成(之前)</li>
-<li>一个channel的close一定happen before 从这个channel receive到零值数据(这里指因为close而返回的零值数据)</li>
-<li>从一个unbuffered channel的receive一定happen before 往这个channel send完成(之前)</li>
-<li>从容量为C的channel receive第k个数据一定happen before第k+C次send完成(之前)</li>
-<li>对于任意的<strong>sync.Mutex</strong>或者<strong>sync.RWMutex</strong>类型的变量l以及n &lt; m, 调用第n次l.UnLock()一定happen before 第m次的l.Lock()返回(之前)</li>
-<li>once.Do(f)中的对f的单次调用一定happen before 任意次的对once.Do(f)调用返回(之前)</li>
-</ul>
-<p>值得注意的是，这个列表忽略了package sync中新加的API以及sync/atomic的API。</p>
-<p>Go内存模型规范以一些不正确同步的例子结束。它没有包含错误编译的例子。</p>
-<h2 id="对Go内存模型做的改变">对Go内存模型做的改变</h2>
-<p>2009年，当我们着手编写Go的内存模型时，Java内存模型进行了新的修订，C/C++11内存模型正在定稿。一些人强烈鼓励我们采用C/C++11模型，并充分利用了其已经完成的所有工作。对我们来说这似乎很冒险。相反，我们决定采用一种更保守的方法来保证我们要做的，这一决定得到了随后十年详细描述Java/C/C++内存模型中非常狡猾问题的论文的证实。是的，定义足够充分的内存模型来指导程序员和编译器作者是很重要的，但是完全正式地定义一个正确的内存模型似乎仍然超出了最有才华的研究人员的能力范围。Go定义一个最小的需求就足够了。</p>
-<p>下面这一部分列出了我认为我们应该做的调整。如前所述，我已经开启了一个<a href="https://golang.org/s/mm-discuss" target="_blank" rel="external">GitHub讨论项</a>来收集反馈。根据这些反馈，我计划在本月晚些时候准备一份正式的Go提案。</p>
-<h3 id="文档化Go的整体方法">文档化Go的整体方法</h3>
-<p>“不要聪明”的建议很重要，应该坚持下去，但我们也需要在深入研究happen before细节之前，对Go的整体方法更多的谈一谈。我看到过很多关于Go方法的不正确总结，比如宣称Go的模型是C/C++的“DRF-SC或Catch Fire”。 这种误会是可以理解的: Go内存模型规范没有说它的方法是什么，而且它是如此之短(材料又如此微妙)，以至于人们看到了他们期望看到的东西，而不是那里有什么或没有什么。</p>
-<p>拟在Go内存模型规范中增加的文档大致如下:</p>
-<blockquote>
-<h2 id="概观">概观</h2>
-<p>Go以与本语言其余部分几乎相同的方式处理其内存模型，旨在保持语义简单、可理解和有用。</p>
-<p>数据竞争被定义为对存储器位置的写入与对同一位置的另一次读取或写入同时发生，除非所有访问都是由sync/atomic package提供的原子数据访问提供。如前所述，强烈建议程序员使用适当的同步来避免数据竞争。在没有数据竞争的情况下，Go程序表现得好像所有的gorouitine都被多路复用到一个处理器上。这个属性有时被称为DRF-SC:无数据竞争的程序以顺序一致的方式执行。</p>
-<p>其他编程语言通常采用两种方法之一来处理包含数据竞争的程序。第一，以C和C++为例，带有数据竞争的程序是无效的:编译器可能会以任意令人惊讶的方式中断它们。第二，以Java和JavaScript为例，具有数据竞争的程序定义了语义，通过限制竞争的可能影响，使程序更加可靠和易于调试。Go的方法介于这两者之间。具有数据竞争的程序是无效的，因为语言实现可能会报告竞争并终止程序。但另一方面，具有数据竞争的程序定义了具有有限数量结果的语义，使得错误的程序更可靠，更容易调试。</p>
-</blockquote>
-<p>这些文字应该阐明Go和其他语言有什么不同，纠正读者先前的任何期望。</p>
-<p>在“happen before”一节的最后，我们还应该澄清某些竞争仍然会导致内存损坏。当前它以下面的句子结束：</p>
-<blockquote>
-<p>Reads and writes of values larger than a single machine word behave as multiple machine-word-sized operations in an unspecified order.</p>
-</blockquote>
-<p>我们应该加上一点:</p>
-<blockquote>
-<p>请注意，这意味着多word数据结构上的竞争可能导致单次写入产生不一致值。当值依赖于内部(指针、长度)或(指针、类型)pair的一致性时，就像大多数Go实现中的接口、map、切片和字符串的情况一样，这种竞争又会导致内存损坏。</p>
-</blockquote>
-<p>这将更清楚地说明保证对具有数据竞争的程序的限制。</p>
-<h3 id="文档化_sync库的happen_before">文档化 sync库的happen before</h3>
-<p>自从Go内存模型发布以来，一些新的API已经被添加到sync包中。我们需要将它们添加到内存模型中(<a href="https://golang.org/issue/7948" target="_blank" rel="external">issue#7948</a>)。谢天谢地谢广坤，增加的内容看起来很简单。我相信它们应该如下：</p>
-<ul>
-<li>对于sync.Cond, <strong>Broadcast</strong> 和 <strong>Signal</strong> 一定happen before 它解锁的Wait方法调用完成(之前)</li>
-<li>对于sync.Map, Load, LoadAndDelete 和 LoadOrStore 都是读操作， Delete、LoadAndDelete和 Store都是写操作。LoadOrStore当它的loaded返回false时是写操作。一个写操作happen before 能观察到这个写操作的读操作(之前)</li>
-<li>对于sync.Pool,对Put(x)的调用一定happen before Get方法返回这个x(之前)。同样的，返回x的New方法一定happen before Get方法返回这个x(之前)</li>
-<li>对于sync.EWaitGroup, Done方法的调用一定happen before 它解锁的Wait方法调用返回(之前)</li>
-</ul>
-<p>这些API的用户需要知道保证，以便有效地使用它们。因此，虽然我们应该将这些文字保留在内存模型中以供介绍，但我们也应该将其包含在package sync的文档注释中。这也将有助于为第三方同步原语树立一个榜样，说明记录由API建立的顺序保证的重要性。</p>
-<h3 id="文档话_sync/atomic的happen_before">文档话 sync/atomic的happen before</h3>
-<p>Atomic operations are missing from the memory model. We need to add them (issue #5045). I believe we should say:</p>
-<p>内存模型中缺少原子操作的保证。我们需要添加它们(<a href="https://golang.org/issue/5045" target="_blank" rel="external">issue #5045</a>)。我认为我们应该说:</p>
-<blockquote>
-<p>sync/atomic package中的API统称为“原子操作”，可用于同步各种goroutine执行。如果原子操作A的效果被原子操作B观察到，那么A发生在B之前(happen before)。在一个程序中执行的所有原子操作表现得好像是以某种顺序一致的顺序执行的。</p>
-</blockquote>
-<p>这是Dmitri Vyukov在2013年提出的建议，也是我在2016年非正式承诺的。它还与Java的volatiles和C++的默认原子具有相同的语义。</p>
-<p>就C/C++而言，同步原子只有两种选择:顺序一致或acquire/release(Relaxed原子不会创建happen before，因此没有同步效果). 对这两者的决策归结为，第一，能够推理出多个位置上原子操作的相对顺序有多重要，第二，顺序一致的原子与acquire/release原子相比要多昂贵(慢)。</p>
-<p>首先要考虑的是，关于多个位置上原子操作的相对顺序的推理非常重要。在之前的一篇文章中，我举了一个使用两个原子变量实现的无锁快速路径的条件变量的<a href="https://research.swtch.com/plmm#cond" target="_blank" rel="external">例子</a>，这两个原子变量被使用acuqire/release原子打破了。这种模式反复出现。例如，sync.WaitGroup曾经的实现使用了一对<a href="https://go.googlesource.com/go/+/ee6e1a3ff77a41eff5a606a5aa8c46bf8b571a13/src/pkg/sync/waitgroup.go#54" target="_blank" rel="external">原子uint32值</a>：wg.counter和wg.waiters。<a href="https://go.googlesource.com/go/+/cf148f3d468f4d0648e7fc6d2858d2afdc37f70d/src/runtime/sema.go#134" target="_blank" rel="external">Go运行时中的信号量的实现</a>也依赖于两个独立的原子word，即信号量值*addr和相应的waiter count root.nwait。还有更多。在缺乏顺序一致的语义的情况下(也就是说，如果我们改为采用acquire/release语义)，人们仍然会像这样错误地编写代码；它会神秘地失败，而且只在特定的情况下。</p>
-<p>根本的问题是，使用acuqire/release原子使无数据竞争的程序不会导致程序以顺序一致的方式运行，因为原子本身不会提供保证。也就是说，这样的程序不提供DRF-SC。这使得这种程序很难推理，因此很难正确编写。</p>
-<p>关于第二个考虑，正如在之前的文章中提到的，硬件设计人员开始为顺序一致的原子提供直接支持。例如，ARMv8添加了ldar和stlr指令来实现顺序一致的原子，它们也是acquire/release原子的推荐实现。如果我们为sync/atomic采用acquire/release语义，那么写在ARMv8上的程序无论如何都会获得顺序一致性。这无疑会导致依赖更强顺序的程序意外地在更弱的平台上崩溃。，如果由于竞争窗口很小, acquire/release和结果一致的原子之间的差异在实践中很难观察到，这甚至可能发生在单个架构上。</p>
-<p>这两种考虑都强烈建议我们应该采用顺序一致的原子而不是acquire/release原子:顺序一致的原子更有用，一些芯片已经完全缩小了这两个级别之间的差距。如果差距很大，想必其他人也会这么做。</p>
-<p>同样的考虑，以及Go拥有小型、易于理解的API的总体哲学，所有这一切都反对将acuqire/release作为一套额外的并行API来提供。似乎最好只提供最容易理解的，最有用的，很难被误用的原子操作。</p>
-<p>另一种可能性是提供原始屏障，而不是原子操作(当然，C++两者都提供)。屏障的缺点是使期望变得不那么清晰，并且在某种程度上更加局限于特定的体系结构。Hans Boehm文章<a href="http://www.hboehm.info/c++mm/ordering_integrated.html" target="_blank" rel="external">“Why atomics have integrated ordering constraints”</a>给出了提供原子而不是屏障的论点(他使用术语栅栏fence)。一般来说，原子比栅栏更容易理解，而且由于我们现在已经提供了原子操作，所以我们不能轻易移除它们。一个机制要比提供两个好。</p>
-<h3 id="可能的改变：_为sync/atomic提供类型化的API">可能的改变： 为sync/atomic提供类型化的API</h3>
-<p>上面的定义说，当一个特定的内存块必须由多个线程同时访问而没有其他同步时，消除争用的唯一方法是让所有的访问都使用原子。仅仅让一些访问使用原子是不够的。例如，与原子读或写并发的非原子写仍然是s数据竞争，与非原子读或写并发的原子写也是数据竞争。</p>
-<p>因此，一个特定的值是否应该用atomic访问是该值的属性，而不是特定的访问。正因为如此，大多数语言将这些信息放在类型系统中，比如Java的volatile int和C++的atomic<int>。Go当前的API没有，这意味着正确的使用需要仔细标注结构或全局变量的哪些字段预计只能使用原子API来访问。</int></p>
-<blockquote>
-<p>译者按: uber提供了类似的库<a href="https://github.com/uber-go/atomic" target="_blank" rel="external">uber-go/atomic</a>。</p>
-</blockquote>
-<p>为了提高程序的正确性，我开始认为Go应该定义一组类型化的原子值，类似于当前的原子值。值:Bool、Int、Uint、Int32、Uint32、Int64、Uint64和Uintptr。像Value一样，它们也有CompareAndSwap、Load、Store和Swap方法。例如:</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> Int32 <span class="keyword">struct</span> { v <span class="typename">int32</span> }</div><div class="line"></div><div class="line"><span class="keyword">func</span> (i *Int32) Add(delta <span class="typename">int32</span>) <span class="typename">int32</span> {</div><div class="line">	<span class="keyword">return</span> AddInt32(&i.v, delta)</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> (i *Int32) CompareAndSwap(old, <span class="built_in">new</span> <span class="typename">int32</span>) (swapped <span class="typename">bool</span>) {</div><div class="line">	<span class="keyword">return</span> CompareAndSwapInt32(&i.v, old, <span class="built_in">new</span>)</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> (i *Int32) Load() <span class="typename">int32</span> {</div><div class="line">	<span class="keyword">return</span> LoadInt32(&i.v)</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> (i *Int32) Store(v <span class="typename">int32</span>) {</div><div class="line">	<span class="keyword">return</span> StoreInt32(&i.v, v)</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> (i *Int32) Swap(<span class="built_in">new</span> <span class="typename">int32</span>) (old <span class="typename">int32</span>) {</div><div class="line">	<span class="keyword">return</span> SwapInt32(&i.v, <span class="built_in">new</span>)</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>我将Bool包括在列表中，因为我们在Go标准库中多次用原子整数构造了原子Bool(在未暴露的API中)。显然是有需要的。</p>
-<p>我们还可以利用即将到来的泛型支持，并为原子指针定义一个API，该API是类型化的，并且在其API中没有包不安全:</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> Pointer[T any] <span class="keyword">struct</span> { v *T }</div><div class="line"></div><div class="line"><span class="keyword">func</span> (p *Pointer[T]) CompareAndSwap(old, <span class="built_in">new</span> *T) (swapped <span class="typename">bool</span>) {</div><div class="line">	<span class="keyword">return</span> CompareAndSwapPointer(... lots of unsafe ...)</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>(以此类推),你可能会想到不能使用泛型定义一个类型吗？我没有看到一个干净的方法使用泛型来实现atomic.Atomic[T]，避免我们引入Bool、Int等作为单独的类型。走走看吧。</p>
-<h3 id="可能的改变:_增加非同步的atomic">可能的改变: 增加非同步的atomic</h3>
-<p>所有其他现代编程语言都提供了一种方法来进行并发内存读写，这种方法不会使程序同步，但也不会使程序无效(不会算作数据竞争)。C、C++、Rust和Swift都有relaxed原子。Java有VarHandle的“普通”模式。JavaScript对共享内存缓冲区(唯一的共享内存)有非原子的访问权限。Go没有办法做到这一点。或许应该有，我不知道。</p>
-<p>如果我们想添加非同步的原子读写，我们可以向类型化的原子添加UnsyncAdd、UnsyncCompareAndSwap、UnsyncLoad、UnsyncStore和 UnsyncSwap方法。将它们命名为“unsync”避免了一些“relaxed”名称的问题。首先，有些人用relaxed作为相对的比较，如“acquire/release是比顺序一致性更宽松的内存顺序。”你可以说这不是这个术语的恰当用法，但它确实发生了。其次，也是更重要的，这些操作的关键细节不是操作本身的内存排序，而是它们对程序其余部分的同步没有影响。对于不是内存模型专家的人来说，看到UnsyncLoad应该清楚没有同步，而RelaxedLoad可能不会。在人群中喵一眼Unsync也知道它是不安全的。</p>
-<p>有了API，真正的问题是到底要不要添加这些。对提供非同步原子的争论是，它确实对某些数据结构中快速路径的性能有影响。我的总体印象是，它在非x86架构上最重要，尽管我没有数据来支持这一点。不提供不同步的原子可以被认为是对那些架构的惩罚。</p>
-<p>反对提供非同步原子的一个可能的争论是，在x86上，忽略了潜在的编译器重组的影响，非同步原子与acquire/release原子是无法区分的。因此，他们可能会被滥用来编写只适用于x86的代码。反驳的理由是，这样的花招不会通过race检测器，它实现的是实际的内存模型，而不是x86内存模型。</p>
-<p>由于缺乏证据，我们没有理由添加这个API。如果有人强烈认为我们应该添加它，那么证明这一点的方法是收集两方面的证据:(1)程序员需要编写的代码的普遍适用性，以及(2)使用非同步原子对广泛使用的系统产生的显著性能改进。(使用Go以外的语言的程序来显示这一点是很好的。)</p>
-<h3 id="文档化对编译器优化的禁止项">文档化对编译器优化的禁止项</h3>
-<p>当前的内存模型最后给出了无效程序的例子。由于内存模型是程序员和编译器作者之间的契约，我们应该添加无效编译器优化的例子。例如，我们可以添加:</p>
-<h4 id="不正确的编译">不正确的编译</h4>
-<p>Go内存模型和Go程序一样限制编译器优化。一些在单线程程序中有效的编译器优化在Go程序中是无效。特别是，编译器不能在无竞争程序中引入数据竞争。它不能允许单次读取观察到多个值。并且它不能允许一个写操作写入多个值。</p>
-<p>Not introducing data races into race-free programs means not moving reads or writes out of conditional statements in which they appear. For example, a compiler must not invert the conditional in this program:</p>
-<p>不在无竞争程序中引入数据竞争意味着不移动出现条件语句的读或写。例如，编译器不得反转该程序中的条件:</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line">i :=<span class="number"> 0</span></div><div class="line"><span class="keyword">if</span> cond {</div><div class="line">	i = *p</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>也就是说，编译器不能将程序重写为这个:</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line">i := *p</div><div class="line"><span class="keyword">if</span> !cond {</div><div class="line">	i =<span class="number"> 0</span></div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>如果cond为false，另一个goroutine正在写*p，那么原始程序是无竞争的，但是重写的程序包含竞争。</p>
-<p>不引入数据竞争也意味着不假设循环终止。例如，在这个程序中，编译器不能将对<em>p或</em>q访问移动到循环前面:</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div></pre></td><td class="code"><pre><div class="line">n :=<span class="number"> 0</span></div><div class="line"><span class="keyword">for</span> e := list; e != <span class="constant">nil</span>; e = e.next {</div><div class="line">	n++</div><div class="line">}</div><div class="line">i := *p</div><div class="line">*q =<span class="number"> 1</span></div></pre></td></tr></table></figure>
-
-<p>如果列表指向循环列表，那么原始程序永远不会访问<em>p或</em>q，但是重写的程序会。</p>
-<p>不引入数据竞争也意味着不假设被调用的函数总是返回或者没有同步操作。例如，在这个程序中，编译器不能移动对<em>p或</em>q访问到函数调用之前:</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line">f()</div><div class="line">i := *p</div><div class="line">*q =<span class="number"> 1</span></div></pre></td></tr></table></figure>
-
-<p>如果调用从未返回，那么原始程序将不会再访问<em>p或</em>q，但是重写的程序会。如果调用包含同步操作，那么原始程序可以建立f和<em>p/</em>q的happen before关系，但是重写的程序就破坏了这个关系。</p>
-<p>不允许单次读取观察多个值,意味着不从共享内存中重新加载局部变量。例如，在这个程序中，编译器不能扔掉(spill)i,并重新加载它:</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div></pre></td><td class="code"><pre><div class="line">i := *p</div><div class="line"><span class="keyword">if</span> i &lt;<span class="number"> 0</span> || i &gt;= <span class="built_in">len</span>(funcs) {</div><div class="line">	<span class="built_in">panic</span>(<span class="string">"invalid function index"</span>)</div><div class="line">}</div><div class="line">... <span class="built_in">complex</span> code ...</div><div class="line"><span class="comment">// compiler must NOT reload i = *p here</span></div><div class="line">funcs[i]()</div></pre></td></tr></table></figure>
-
-<p>如果复杂的代码需要许多寄存器，单线程程序的编译器可以在不保存副本的情况下丢弃i，然后在funcs<a href="">i</a>之前重新加载i = <em>p。Go编译器不能，因为</em>p的值可能已经更改。(相反，编译器可能会将i移动到栈上)。</p>
-<p>不允许一次写操作写入多个值也意味着不使用在写入之前将本地变量作为临时存储写入的内存。例如，编译器不得在此程序中使用*p作为临时存储:</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">*p = i + *p<span class="number">/2</span></div></pre></td></tr></table></figure>
-
-<p>也就是说，它绝不能把程序改写成这样:</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div></pre></td><td class="code"><pre><div class="line">*p /=<span class="number"> 2</span></div><div class="line">*p += i</div></pre></td></tr></table></figure>
-
-<p>如果i和<em>p开始等于2，则原始代码最终</em>p = 3，但是一个竞争线程只能从<em>p读取2或3。重写后的代码最终</em>p = 1，然后*p = 3，这也允许竞争线程读取1。</p>
-<p>请注意，所有这些优化在C/C++编译器中都是允许的:与C/C++编译器共享后端的Go编译器必须注意禁用对Go无效的优化。</p>
-<p>这些分类和示例涵盖了最常见的C/C++编译器优化，这些优化与为竞争数据访问定义的语义不兼容。他们明确规定Go和C/C++有不同的要求。</p>
-<h2 id="结论">结论</h2>
-<p>Go在其内存模型中保守的方法很好地服务了我们，应该继续下去。然而，有一些早该做的更改，包括定义sync和sync/package package中新API的同步行为。特别是atomic的内存模型应该被文档化，其以提供顺序一致的行为，这种行为创建了与它们左右的非原子代码同步的happen before关系。这与所有其他现代系统语言提供的默认原子相匹配。</p>
-<p>也许更新中最独特的部分是清楚地声明具有数据竞争的程序可能会被停止以报告竞争，但是在其他方面具有明确定义的语义。这约束了程序员和编译器，它优先考虑并发程序的可调试性和正确性，而不是编译器编写者的便利性。</p>
-<h2 id="感谢">感谢</h2>
-<p>这一系列的帖子从我有幸在谷歌工作的一长串工程师的讨论和反馈中受益匪浅。我感谢他们。我对任何错误或不受欢迎的意见负全部责任。</p>
-]]></content>
-    <summary type="html">
-    <![CDATA[<p>这是Russ Cox的系列论文的第三篇，也是最后一篇: <a href="https://research.swtch.com/gomm" target="_blank" rel="external">Updating the Go Memory Model</a>。</p>
-<p>文章对 官方的Go内存模型做了一些补充和思考。</p>
-]]>
-    
-    </summary>
-    
-      <category term="Go" scheme="https://colobu.com/categories/Go/"/>
-    
-  </entry>
-  
-  <entry>
-    <title><![CDATA[[译]编程语言内存模型]]></title>
-    <link href="https://colobu.com/2021/07/11/Programming-Language-Memory-Models/"/>
-    <id>https://colobu.com/2021/07/11/Programming-Language-Memory-Models/</id>
-    <published>2021-07-11T12:53:32.000Z</published>
-    <updated>2021-10-06T03:29:34.129Z</updated>
-    <content type="html"><![CDATA[<p>这是Russ Cox的第二篇<a href="https://research.swtch.com/plmm" target="_blank" rel="external">Programming Language Memory Models</a>。</p>
-<p>如果你已经阅读了前一篇<a href="https://colobu.com/2021/06/30/hwmm/#%E5%BC%B1%E6%8E%92%E5%BA%8F%E5%92%8C%E6%97%A0%E6%95%B0%E6%8D%AE%E7%AB%9E%E4%BA%89%E7%9A%84%E9%A1%BA%E5%BA%8F%E4%B8%80%E8%87%B4%E6%80%A7" target="_blank" rel="external">硬件内存模型</a>,以及如果有Java内存模型或者C++内存模型的经验，本文还好理解，如果你没有相关经验，可能阅读起来比较费劲，建议先阅读一下相关的材料。论文有些词句比较难以理解，本人才学疏浅，有翻译不当之处欢迎批评指正。</p>
-<a id="more"></a>
-<p>编程语言内存模型回答了并行程序可以依靠什么行为以便它们的线程之间可以共享内存的问题。例如，考虑下面这个类似C语言的程序，其中x和done都从零开始：</p>
-<figure class="highlight c"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line"><span class="comment">// Thread 1           // Thread 2</span></div><div class="line">x = <span class="number">1</span>;                <span class="keyword">while</span>(done == <span class="number">0</span>) { <span class="comment">/* loop */</span> }</div><div class="line">done = <span class="number">1</span>;             print(x);</div></pre></td></tr></table></figure>
-
-<p>程序试图通过变量x从线程1向线程2发送一条消息(x)，使用done作为信号，通知线程2消息已经准备好被接收。如果线程1和线程2都运行在自己的专用处理器上，并且都运行完成，那么这个程序是否保证能够按照预期完成并打印1？编程语言内存模型回答了这个问题，以及其它类似问题。</p>
-<p>Although each programming language differs in the details, a few general answers are true of essentially all modern multithreaded languages, including C, C++, Go, Java, JavaScript, Rust, and Swift:</p>
-<p>尽管每种编程语言在细节上有所不同，但是一些通用答案基本上适用于所有现代多线程语言，包括C、C++、Go、Java、JavaScript、Rust和Swift:</p>
-<ul>
-<li>首先，如果x和done是普通变量，那么线程2的循环可能永远不会停止。一种常见的编译器优化是在变量首次使用时将其加载到寄存器中，然后尽可能长时间地重用该寄存器，以便将来访问该变量。如果线程2在线程1执行之前将done复制到一个寄存器中，它可能会在整个循环中一直使用该寄存器，永远不会注意到线程1后来修改了done。</li>
-<li>其次，即使线程2的循环会停止，也就是观察到done == 1，它仍然可能打印x的值为0。编译器通常会根据优化试探法甚至是生成代码时使用哈希表或其他中间数据结构的方式，对程序读写进行重新排序。线程1的编译代码可能在done赋值之后而不是之前写入x，或者线程2的编译代码也可能在循环前读取x。</li>
-</ul>
-<p>既然这个程序有并发问题，那么问题是如何修复它。</p>
-<p>现代语言以原子变量(atomic variable)或原子操作(atomic operation)的形式提供特殊能力，允许程序同步其线程。如果我们使用一个原子变量实现done(或者用原子操作来操作它)，那么我们的程序保证会执行完成并打印1。使用原子变量或者原子操作会产生很多效果：</p>
-<ul>
-<li>线程1的编译代码必须确保对x的写入完成，并且在对done的写入可见之前对x的写入对其他线程可见。</li>
-<li>线程2的编译代码必须在循环的每次迭代中(重新)读取done。</li>
-<li>线程2的编译代码必须在读取done之后才读取x。</li>
-<li>编译后的代码必须做任何必要的事情来禁用可能会重新引入这些问题的硬件优化</li>
-<li></li>
-</ul>
-<p>使done原子化的最终结果是程序按照我们想要的方式运行，成功地将x的值从线程1传递到线程2。</p>
-<p>在最初始的程序中，在编译器的代码重新排序之后，线程1可能会在线程2读取x的同时写x。这是data race问题。在修改后的程序中，原子变量done用于同步对x的访问:线程1现在不可能在线程2读取x的同时写入x。这个程序没有数据竞争。一般来说，现代语言保证了无数据竞争的程序总是以顺序一致（sequentially consistent）的方式执行，就好像来自不同线程的操作被随意地但没有重新排序地转移到单个处理器上一样。这是硬件内存模型的<a href="https://colobu.com/2021/06/30/hwmm/#%E5%BC%B1%E6%8E%92%E5%BA%8F%E5%92%8C%E6%97%A0%E6%95%B0%E6%8D%AE%E7%AB%9E%E4%BA%89%E7%9A%84%E9%A1%BA%E5%BA%8F%E4%B8%80%E8%87%B4%E6%80%A7" target="_blank" rel="external">DRF-SC属性</a>，在编程语言环境中采用。</p>
-<p>另外，这些原子变量或原子操作更恰当应该称之为“同步原子”(synchronizing atomic)，在数据库的意义上，操作是原子的，允许同时进行读和写，就像以某种顺序按顺序运行一样:当使用原子时，普通变量上的竞争不是竞争。但更重要的是，atomic同步了程序的其余部分，提供了一种消除非原子数据竞争的方法。标准术语就是“atomic”，也就是这篇文章使用的属于。除非另有说明，请记住将“原子”理解为“同步原子”。</p>
-<p>编程语言内存模型规定了程序员和编译器所需的额外细节，作为他们之间的约定。上面谈到的通用特征基本上适用于所有现代语言，但直到最近，事情才收敛到一点:在21世纪初，有明显更多的变种。即使在今天，各种语言在更多的排序问题上也有显著的差异，包括:</p>
-<ul>
-<li>原子变量们本身的排序保证是什么？</li>
-<li>变量是否既可以原子访问，有可以非原子访问？</li>
-<li>除了原子之外是否还有其它同步机制？</li>
-<li>是否存在不同步的原子操作？</li>
-<li>有数据竞争的程序有什么保证？</li>
-</ul>
-<p>在做了一些准备之后，这篇文章的剩余部分将探讨不同的语言如何回答这些相关的问题，以及它们解决这些问题之道。这篇文章介绍探索路上的许多错误初始设计，强调我们仍然在学习啥是有效的方案，啥是无效的方案</p>
-<h2 id="硬件、Litmus_Tests、Happens_Before_和_DRF-SC">硬件、Litmus Tests、Happens Before 和 DRF-SC</h2>
-<p>在我们了解任何特定语言的细节之前，我们需要记住<a href="https://colobu.com/2021/06/30/hwmm/" target="_blank" rel="external">硬件内存模型</a>的简要经验总结。</p>
-<blockquote>
-<p>不同的CPU体系架构允许不同数量的指令重新排序，因此在多个处理器上并行运行的代码可以根据体系架构的不同有不同的结果。黄金标准是<a href="https://colobu.com/2021/06/30/hwmm/#%E9%A1%BA%E5%BA%8F%E4%B8%80%E8%87%B4%E6%80%A7" target="_blank" rel="external">顺序一致性</a>，即任何执行都必须表现得好像在不同处理器上执行的程序只是以某种顺序交替在单个处理器上执行。对于开发人员来说，这种模型更容易推理，但是今天没有重要的架构能够提供这种模型，因为提供较弱的并发保证能够足够的性能。</p>
-</blockquote>
-<p>很难对不同的内存模型做出完全通用的比较。反过来我们可以关注特定的测试用例，称为Litmus Test。如果两个内存模型通过Litmus Test有不同的行为，那么可以证明它们是不同的，并且通常可以帮助我们判断，至少对于那个测试用例，一个模型比另一个模型是弱还是强。例如，这是我们之前检查的程序的Litmus Test:</p>
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div></pre></td><td class="code"><pre><div class="line">Litmus Test: <span class="keyword">Message</span> Passing</div><div class="line">Can this <span class="keyword">program</span> see r1 = <span class="number">1</span>, r2 = <span class="number">0</span>?</div><div class="line"></div><div class="line"><span class="comment">// Thread 1           // Thread 2</span></div><div class="line">x = <span class="number">1</span>                 r1 = y</div><div class="line">y = <span class="number">1</span>                 r2 = x</div><div class="line"><span class="keyword">On</span> sequentially consistent hardware: no.</div><div class="line"><span class="keyword">On</span> x86 (<span class="keyword">or</span> other TSO): no.</div><div class="line"><span class="keyword">On</span> ARM/POWER: yes!</div><div class="line"><span class="keyword">In</span> any modern compiled language using ordinary variables: yes!</div></pre></td></tr></table></figure>
-
-<p>和前一篇文章一样，我们假设每个例子一开始所有共享变量都为零。rN这个名字表示私有存储，如寄存器或函数变量；像x和y这样的名称是共享(全局)变量。我们问在执行结束时，寄存器的特定设置是否存在可能。在回答硬件的litmus test时，我们假设没有编译器对线程中发生的事情进行重新排序:清单中的指令被直接翻译成汇编指令，交给处理器执行。</p>
-<p>结果r1 = 1，r2 = 0代表原始程序的线程2完成了循环(这里简化了循环，而是简单的使用y进行赋值)，但随后打印0。这个结果在程序操作的任何顺序一致的交替执行中是不可能的。对于汇编语言版本，在x86上打印0是不可能的，尽管由于处理器本身的重新排序优化，在ARM和POWER等更宽松的架构上打印0是可能的。在现代语言中，编译期间可能发生的重新排序使得这种结果成为可能，不管底层硬件是什么。</p>
-<p>正如我们前面提到的，今天的处理器不保证顺序一致性，而是保证一种称为<a href="https://colobu.com/2021/06/30/hwmm/#%E5%BC%B1%E6%8E%92%E5%BA%8F%E5%92%8C%E6%97%A0%E6%95%B0%E6%8D%AE%E7%AB%9E%E4%BA%89%E7%9A%84%E9%A1%BA%E5%BA%8F%E4%B8%80%E8%87%B4%E6%80%A7" target="_blank" rel="external">“无数据竞争的顺序一致性”或DRF-DRF(有时也写成SC-DRF)</a>的属性。一个保证DRF-SC的系统必须提供被称为同步指令的特定指令，它提供了一种协调不同处理器(相当于线程)的方法。程序使用这些指令在一个处理器上运行的代码和另一个处理器上运行的代码之间创建一种“happens before”的关系。</p>
-<p>例如，这里描述了一个程序在两个线程上的短暂执行；像以前一样，假设每个处理器都有自己的专用处理器:</p>
-<p><img src="mem-adve-4.png" alt=""></p>
-<p>我们在之前的帖子里也看到了这个程序。线程1和线程2执行同步指令。在这个特定执行中，两条S(a)指令建立了从线程1到线程2的happens-before关系，因此线程1中的W(x)发生在线程2中的R(x)之前。</p>
-<p>不同处理器上的两个事件，如果不是按照happens-before的顺序排序，可能会同时发生:确切的顺序搞不清楚。我们说它们同时执行。数据竞争（data race）是指对一个变量的写操作与对同一变量的读操作或写操作同时执行。提供DRF-SC的处理器保证没有数据竞争的程序行为就像它们在一个顺序一致的架构上运行一样。这是在现代处理器上编写正确的多线程汇编程序的基本保证。</p>
-<p>正如我们前面所看到的，DRF-SC也是现代语言所采用的基本保证，使得用更高级别语言编写正确的多线程程序成为可能。</p>
-<h2 id="编译器和优化">编译器和优化</h2>
-<p>我们已经提到过几次，编译器可能会在生成最终可执行代码的过程中对输入程序中的操作重新排序。让我们仔细看看这个声明和其他可能导致问题的优化。</p>
-<p>人们普遍认为，编译器几乎可以任意地对普通的内存读写进行重新排序，前提是重新排序不能改变观察到的单线程代码执行的效果。例如，考虑这个程序:</p>
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line"><span class="variable">w =</span> <span class="number">1</span></div><div class="line"><span class="variable">x =</span> <span class="number">2</span></div><div class="line"><span class="variable">r1 =</span> y</div><div class="line"><span class="variable">r2 =</span> z</div></pre></td></tr></table></figure>
-
-<p>由于w、x、y和z都是不同的变量，这四个语句可以以编译器认为最好的任何顺序执行。</p>
-<p>如上所述，如此自由地重新排序读写的能力使得普通编译程序的保证至少和ARM/POWER宽松内存模型一样弱，因为编译程序无法通过消息传递的litmus test。事实上，编译程序的保证更弱。</p>
-<p>在上一篇硬件内存模型的文章中，我们将一致性（coherence）看作是ARM/POWER架构所能保证的一个例子:</p>
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div></pre></td><td class="code"><pre><div class="line">Litmus Test: Coherence</div><div class="line">Can this program see <span class="variable">r1 =</span> <span class="number">1</span>, <span class="variable">r2 =</span> <span class="number">2</span>, <span class="variable">r3 =</span> <span class="number">2</span>, <span class="variable">r4 =</span> <span class="number">1</span>?</div><div class="line">(Can Thread <span class="number">3</span> see <span class="variable">x =</span> <span class="number">1</span> before <span class="variable">x =</span> <span class="number">2</span> while Thread <span class="number">4</span> sees the reverse?)</div><div class="line"></div><div class="line">// Thread <span class="number">1</span>    // Thread <span class="number">2</span>    // Thread <span class="number">3</span>    // Thread <span class="number">4</span></div><div class="line"><span class="variable">x =</span> <span class="number">1</span>          <span class="variable">x =</span> <span class="number">2</span>          <span class="variable">r1 =</span> x         <span class="variable">r3 =</span> x</div><div class="line">                              <span class="variable">r2 =</span> x         <span class="variable">r4 =</span> x</div><div class="line">On sequentially consistent hardware: no.</div><div class="line">On x86 (<span class="constant">or</span> other TSO): no.</div><div class="line">On ARM/POWER: no.</div><div class="line">In any modern compiled language using ordinary variables: yes!</div></pre></td></tr></table></figure>
-
-<p>所有现代硬件都保证一致性，这也可以看作是对单个存储单元的操作的顺序一致性。在这个程序中，一个写操作必须覆盖另一个，并且整个系统必须就哪个是哪个达成一致。事实证明，由于编译过程中程序的重新排序，现代语言甚至不能提供一致性。</p>
-<p>假设编译器对线程4中的两次读取进行了重新排序，然后指令按照以下顺序交替运行:</p>
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line">// Thread <span class="number">1</span>    // Thread <span class="number">2</span>    // Thread <span class="number">3</span>    // Thread <span class="number">4</span></div><div class="line">                                             // (reordered)</div><div class="line">(<span class="number">1</span>) <span class="variable">x =</span> <span class="number">1</span>                     (<span class="number">2</span>) <span class="variable">r1 =</span> x     (<span class="number">3</span>) <span class="variable">r4 =</span> x</div><div class="line">               (<span class="number">4</span>) <span class="variable">x =</span> <span class="number">2</span>      (<span class="number">5</span>) <span class="variable">r2 =</span> x     (<span class="number">6</span>) <span class="variable">r3 =</span> x</div></pre></td></tr></table></figure>
-
-<p>结果r1 = 1，r2 = 2，r3 = 2，r4 = 1 在汇编程序中是不可能的，但在高级语言中是可能的。从这个意义上说，编程语言内存模型都比最宽松的硬件内存模型都弱。</p>
-<p>但是有一些保证。每个人都同意需要提供DRF-SC，它不允许引入新的读或写的优化，即使这些优化在单线程代码中是有效的。</p>
-<p>例如，考虑下面的代码:</p>
-<figure class="highlight c"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">if</span>(c) {</div><div class="line">	x++;</div><div class="line">} <span class="keyword">else</span> {</div><div class="line">	... lots of code ...</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>有一个if语句，在else中有很多代码，在if主体中只有一个x++。拥有更少的分支并彻底消除if体可能更快。如果我们编写代码有问题，我们可以在if之前运行了x++,然后在else中用x--进行调整。也就是说，编译器可能会考虑将该代码重写为:</p>
-<figure class="highlight c"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div></pre></td><td class="code"><pre><div class="line">x++;</div><div class="line"><span class="keyword">if</span>(!c) {</div><div class="line">	x--;</div><div class="line">	... lots of code ...</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>这是安全的编译器优化吗？在单线程程序中，是的。在一个多线程程序中，当c为false时，x与另一个线程共享，答案是否: 优化会在x上引入一个原始程序中没有的数据</p>
-<p>这个例子来源于Hans Boehm 2004年的论文<a href="https://www.hpl.hp.com/techreports/2004/HPL-2004-209.pdf" target="_blank" rel="external">Threads Cannot Be Implemented As a Library</a>中的一个例子，它说明了语言不能对多线程执行的语义保持沉默。</p>
-<p>编程语言内存模型试图精确回答这些问题，即哪些优化是允许的，哪些是不允许的。通过研究过去几十年来尝试编写这些模型的历史，我们可以了解哪些可行，哪些不可行，并了解事情的发展方向。</p>
-<h2 id="原始的Java内存模型_(1996)">原始的Java内存模型 (1996)</h2>
-<p>Java是第一个试图写下多线程程序保证的主流语言。它包括互斥体(mutex)，并定义了它们隐含的内存排序要求。它还包括“volatile”原子变量: volatile变量的所有读和写都需要直接在主内存中按程序顺序执行，使得对volatile变量的操作以顺序一致的方式进行。最后，Java制定了(或者至少试图制定)具有数据竞争的程序的行为。其中的一部分是为普通变量规定一种一致性的形式，我们将在下面详细讨论。不幸的是，在Java语言规范(1996)的第一版中，这种尝试至少有两个严重的缺陷。凭借后见之明和我们已经做好的准备，它们很容易解释。当时，它们远没有那么明显被发现。</p>
-<h3 id="Atomic_需要同步">Atomic 需要同步</h3>
-<p>第一个缺陷是volatile原子变量是不同步的，所以它们无助于消除程序其余部分的竞争。我们在上面看到的消息传递程序的Java版本是:</p>
-<figure class="highlight java"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">int</span> x;</div><div class="line"><span class="keyword">volatile</span> <span class="keyword">int</span> done;</div><div class="line"></div><div class="line"><span class="comment">// Thread 1           // Thread 2</span></div><div class="line">x = <span class="number">1</span>;                <span class="keyword">while</span>(done == <span class="number">0</span>) { <span class="comment">/* loop */</span> }</div><div class="line">done = <span class="number">1</span>;             print(x);</div></pre></td></tr></table></figure>
-
-<p>因为done被声明为volatile，所以循环肯定会结束: 编译器不能将它缓存在寄存器中并导致无限循环。但是，程序不能保证打印1。编译器没有被禁止重新排序对x和done的访问，也没有被要求禁止硬件做同样的事情。</p>
-<p>因为Java volatile是非同步原子，所以您不能使用它们来构建新的同步原语。从这个意义上说，最初的Java内存模型太弱了。</p>
-<h3 id="一致性与编译器优化不兼容">一致性与编译器优化不兼容</h3>
-<p>初的Java内存模型也太强了: 强制一致性 —— 一旦线程读取了内存位置的新值，它就不能再读取旧值——不允许基本的编译器优化。前面我们讨论了重新排序读操作会如何破坏一致性，但是你可能会想，好吧，不要重新排序读操作。这里有一个更微妙的方法，可以通过另一个优化来打破一致性:公共子表达式消除。考虑一下这个Java程序:</p>
-<p>考虑一下这个Java程序:</p>
-<figure class="highlight java"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div></pre></td><td class="code"><pre><div class="line"><span class="comment">// p and q may or may not point at the same object.</span></div><div class="line"><span class="keyword">int</span> i = p.x;</div><div class="line"><span class="comment">// ... maybe another thread writes p.x at this point ...</span></div><div class="line"><span class="keyword">int</span> j = q.x;</div><div class="line"><span class="keyword">int</span> k = p.x;</div></pre></td></tr></table></figure>
-
-<p>在这个程序中，公共子表达式消除(common subexpression elimination)会注意到p.x被计算了两次，并将最后一行优化为k = i。但是，如果p和q指向同一个对象，并且另一个线程在读入I和j之间向p.x写入，那么为k重用旧值i违反了一致性:读入i看到了旧值，读入j看到了新值，但是读入k重用i会再次看到旧值。不能优化掉冗余读取会阻碍大多数编译器，使生成的代码变慢。</p>
-<p>硬件比编译器更容易提供一致性，因为硬件可以应用动态优化:它可以根据给定内存读写序列中涉及的确切地址来调整优化路径。相比之下，编译器只能应用静态优化:无论涉及什么地址和值，它们都必须提前写出正确的指令序列。在这个例子中，编译器不能根据p和q是否碰巧指向同一个对象来轻易改变发生的事情，至少在没有为这两种可能性写出代码的情况下不能，这导致了大量的时间和空间开销。编译器对内存位置之间可能存在的别名不完全了解意味着：实际上要实现一致性就需要放弃基本的优化。</p>
-<p>Bill Pugh在他1999年的论文<a href="http://citeseerx.ist.psu.edu/viewdoc/download?doi=10.1.1.17.7914&amp;rep=rep1&amp;type=pdf" target="_blank" rel="external">修复Java内存模型</a>中指出了这个问题和其他问题.</p>
-<h2 id="新的Java内存模型_(2004)">新的Java内存模型 (2004)</h2>
-<p>由于这些问题，并且因为最初的Java内存模型甚至对于专家来说都很难理解，Pugh和其他人开始努力为Java提供一个新的内存模型。该模型后来成为JSR-133，并在2004年发布的Java 5.0中被采用。规范参考是Jeremy Manson, Bill Pugh和Sarita Adve的<a href="http://rsim.cs.uiuc.edu/Pubs/popl05.pdf" target="_blank" rel="external">Java内存模型(2005)</a>，Jeremy Manson的博士论文中有更多细节。新模型遵循DRF-SC方法:保证无数据竞争的Java程序以顺序一致的方式执行。</p>
-<h3 id="同步原子和其它操作">同步原子和其它操作</h3>
-<p>正如我们前面看到的，要编写一个无数据竞争的程序，程序员需要同步操作，这些同步操作可以建立happens-before关系，以确保一个线程不会在另一个线程读取或写入非原子变量的同时写入该变量。在Java中，主要的同步操作有:</p>
-<ul>
-<li>线程的创建发生在(happen before)它的第一个动作之前</li>
-<li>mutex m的unlock发生在m的后续lock之前</li>
-<li>写volatile变量v发生在后续读取v之前</li>
-<li></li>
-</ul>
-<p>“subsequent”(“后续”)`是什么意思？Java定义了所有锁、解锁和volatile变量访问的行为，就好像它们发生在一些顺序一致的中断中，给出了整个程序中所有这些操作的总顺序。“后续”是指总顺序中的较晚执行。也就是说:锁、解锁和volatile变量访问的总顺序定义了后续的含义，然后后续定义了特定执行创建了happen before关系，然后happend before关系定义了该特定执行是否有数据竞争。如果没有数据竞争，那么执行就会以顺序一致的方式进行。</p>
-<p>事实上， volatile访问必须表现得好像在某种总排序中一样，这意味着在<a href="https://research.swtch.com/hwmm#x86" target="_blank" rel="external">存储缓冲区litmus test</a>中，不能出现r1 = 0和r2 = 0的结果:</p>
-<figure class="highlight java"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div></pre></td><td class="code"><pre><div class="line">Litmus Test: Store Buffering</div><div class="line">Can <span class="keyword">this</span> program see r1 = <span class="number">0</span>, r2 = <span class="number">0</span>?</div><div class="line"></div><div class="line"><span class="comment">// Thread 1           // Thread 2</span></div><div class="line">x = <span class="number">1</span>                 y = <span class="number">1</span></div><div class="line">r1 = y                r2 = x</div><div class="line">On sequentially consistent hardware: no.</div><div class="line">On x86 (or other TSO): yes!</div><div class="line">On ARM/POWER: yes!</div><div class="line">On Java using volatiles: no.</div></pre></td></tr></table></figure>
-
-<p>在Java中，对于volatile变量x和y，读取和写入不能被重新排序:一个写入必须排在第二位，第二个写入之后的读取必须看到第一个写入。如果我们没有顺序一致的要求——比如说，如果只要求volatile是一致的——两次读取可能会错过写入。</p>
-<p>这里有一个重要但微妙的点:所有同步操作的总顺序与happen-before关系是分开的。在程序中的每个锁、解锁或volatile变量访问之间，在一个方向或另一个方向上不存在happen-before关系:从写入到观察写入的读取，您只获得了happen-before的关系。例如，不同互斥体的锁定和解锁之间没有happen-before关系。</p>
-<h3 id="有数据竞争的程序的语义">有数据竞争的程序的语义</h3>
-<p>DRF-SC只保证没有数据竞争的程序的顺序一致行为。新的Java内存模型和最初的一样，定义了有数据竞争的程序的行为，原因有很多:</p>
-<ul>
-<li>支持Java的一般安全（security）和安全保障（safety guarantee）。</li>
-<li>让程序员更容易发现错误。</li>
-<li>使攻击者更难利用问题，因为由于数据竞争的原因可能造成的损失更有限。</li>
-<li>让程序员更清楚他们的程序是做什么的。</li>
-</ul>
-<p>新模型不再依赖于一致性，而是重新使用了happens-before关系(已经用来决定程序是否有竞争)来决定竞争读写的结果。</p>
-<p>Java的具体规则是，对于word大小或更小的变量，对变量(或字段)x的读取必须看到对x的某一次写入所存储的值。如果读取r观察到对x的写入w，那么r不发生在w之前。这意味着r可以观察发生在r之前的所有写入，并且它可以观察与r竞争的写入。</p>
-<p>使用happens-before，结合同步原子(volatile)就可以建立新的happen before关系，是对原始Java内存模型的重大改进。它为程序员提供了更多有用的保证，并使大量重要的编译器优化得到了明确的允许。这个模型至今仍然是Java的内存模型。也就是说，这仍然是不完全正确的:在试图定义竞争程序的语义时，使用before-before是有问题的。</p>
-<h3 id="happen-before不排除语无伦次(incoherence)">happen-before不排除语无伦次(incoherence)</h3>
-<p>定义程序语义的“happen-before”关系的第一个问题与一致性有关(有一次!).(以下例子摘自Jaroslav Ševčík 和 David Aspinall的论文<a href="http://citeseerx.ist.psu.edu/viewdoc/download?doi=10.1.1.112.1790&amp;rep=rep1&amp;type=pdf" target="_blank" rel="external">《论Java内存模型中程序转换的有效性》(2007年)</a>)。)</p>
-<p>这里有一个三线程的程序。让我们假设线程1和线程2已知在线程3开始之前完成。</p>
-<figure class="highlight java"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div></pre></td><td class="code"><pre><div class="line"><span class="comment">// Thread 1           // Thread 2           // Thread 3</span></div><div class="line">lock(m1)              lock(m2)</div><div class="line">x = <span class="number">1</span>                 x = <span class="number">2</span></div><div class="line">unlock(m1)            unlock(m2)</div><div class="line">                                            lock(m1)</div><div class="line">                                            lock(m2)</div><div class="line">                                            r1 = x</div><div class="line">                                            r2 = x</div><div class="line">                                            unlock(m2)</div><div class="line">                                            unlock(m1)</div></pre></td></tr></table></figure>
-
-<p>线程1在持有mutex m1时写入x = 1。线程2在持有 mutex m2时写入x = 2。这些是不同的mutex，所以两个写操作是竞争的。然而，只有线程3读取x，并且它是在获取两个mutex后读取的。对r1的读取可以是读也可以是写:两者都发生在它之前，并且都不会完全覆盖另一个。通过相同的参数，读入r2可以读或写。但是严格来说，Java内存模型中没有任何东西说两次读取必须一致：从技术上讲，r1和r2可以读取不同的x值。也就是说，这个程序可以以r1和r2持有不同的值结束。当然，没有真正的实现会产生不同的r1和r2。互斥意味着这两次读取之间没有写操作发生。他们必须得到相同的值。但是内存模型允许不同读取值的事实表明，从某种技术角度来说，它并没有精确地描述真实的Java实现。</p>
-<p>情况变得更糟。如果我们在两个读数之间再加一个指令，x = r1，会怎么样:</p>
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div></pre></td><td class="code"><pre><div class="line">// Thread 1           // Thread 2           // Thread 3</div><div class="line"><span class="operator"><span class="keyword">lock</span>(m1)              <span class="keyword">lock</span>(m2)</span></div><div class="line">x = <span class="number">1</span>                 x = <span class="number">2</span></div><div class="line"><span class="keyword">unlock</span>(m1)            <span class="keyword">unlock</span>(m2)</div><div class="line">                                            <span class="keyword">lock</span>(m1)</div><div class="line">                                            <span class="keyword">lock</span>(m2)</div><div class="line">                                            r1 = x</div><div class="line">                                            x = r1   // !?</div><div class="line">                                            r2 = x</div><div class="line">                                            <span class="keyword">unlock</span>(m2)</div><div class="line">                                            <span class="keyword">unlock</span>(m1)</div></pre></td></tr></table></figure>
-
-<p>很明显，r2 = x读数必须使用x = r1写的值，因此程序必须在r1和r2中获得相同的值。两个值r1和r2现在保证相等。</p>
-<p>这两个程序之间的差异意味着我们在编译器方面有问题。看到r1 = x后跟着x = r1时编译器很可能想要删除第二个赋值，这“显然”是多余的。但这种“优化”将第二个程序(r1和r2的值必须相同)变成了第一个程序(从技术上讲，r1可能不同于r2)。因此，根据Java内存模型，这种优化在技术上是无效的:它改变了程序的含义。明确地说，这种优化不会改变在任何你能想象的真实JVM上执行的Java程序的意义。但不知何故，Java内存模型不允许这样做，这表明还有更多需要说的。</p>
-<p>有关这个例子和其他例子的更多信息，请参见evík和Aspinall的论文。</p>
-<h2 id="以前发生的事不排除无用性（acausality）">以前发生的事不排除无用性（acausality）</h2>
-<p>最后一个例子证明是个简单的问题。这里有一个更难的问题。考虑这个litmus test，使用普通的(非volatile)Java变量:</p>
-<figure class="highlight java"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div></pre></td><td class="code"><pre><div class="line">Litmus Test: Racy Out Of Thin Air Values</div><div class="line">Can <span class="keyword">this</span> program see r1 = <span class="number">42</span>, r2 = <span class="number">42</span>?</div><div class="line"></div><div class="line"><span class="comment">// Thread 1           // Thread 2</span></div><div class="line">r1 = x                r2 = y</div><div class="line">y = r1                x = r2</div><div class="line">(Obviously not!)</div></pre></td></tr></table></figure>
-
-<p>这个程序中的所有变量都像往常一样从零开始，然后这个程序在一个线程中有效地运行y = x，在另一个线程中运行x = y。x和y最终能变成42吗？在现实生活中，显然不能。但为什么不呢？内存模型并没有否定这个结果。</p>
-<p>假设“r1 = x”的读数是42。那么“y = r1”会将42写入y，然后竞争“r2 = y”会读取42，导致“x = r2”写入42到x，且write与原始“r1 = x”竞争(因此可被原始“r1 = x”观察到)，看起来证明原始假设是正确的。在这个例子中，42被称为无中生有的值，因为它看起来没有任何理由，但随后用循环逻辑证明了自己。如果内存在当前的0之前曾经持有42，而硬件错误地推测它仍然是42，会怎么样？这种猜测可能会成为一个自我实现的预言。(在Spectre和相关攻击显示出硬件是如何不断进步的之前，这个论点似乎更加牵强。即便如此，没有一种硬件是这样凭空创造值的。)</p>
-<p>很明显，这个程序不能以r1和r2设置为42结束，但是happens-before本身并不能解释为什么不能这样做。这再次表明存在某种不完整性。新的Java内存模型花费了大量时间来解决这种不完整性，稍后将对此进行更详细的描述。</p>
-<p>这个程序有一个竞争——x和y的读取与其他线程中的写入竞争——所以我们可能会继续认为它是一个不正确的程序。但是这里有一个没有数据竞争的版本:</p>
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div></pre></td><td class="code"><pre><div class="line">Litmus <span class="keyword">Test</span>: Non-Racy <span class="keyword">Out</span> Of Thin Air Values</div><div class="line">Can this program see <span class="literal">r1</span> = <span class="number">42</span>, <span class="literal">r2</span> = <span class="number">42</span>?</div><div class="line"></div><div class="line">// Thread <span class="number">1</span>           // Thread <span class="number">2</span></div><div class="line"><span class="literal">r1</span> = x                <span class="literal">r2</span> = y</div><div class="line">if (<span class="literal">r1</span> == <span class="number">42</span>)         if (<span class="literal">r2</span> == <span class="number">42</span>)</div><div class="line">    y = <span class="literal">r1</span>                x = <span class="literal">r2</span></div><div class="line">(Obviously <span class="keyword">not</span>!)</div></pre></td></tr></table></figure>
-
-<p>由于x和y从零开始，任何顺序一致的执行都不执行写操作，所以这个程序没有写操作，所以没有竞争。不过，同样，仅happen-before并不排除这样的可能性，假设r1 = x看到竞争不是write，然后根据这个假设，两个条件最终都为真，x和y最终都是42。这是另一种无中生有的价值，但这一次是在没有竞争的程序中。任何保证DRF-SC的模型都必须保证这个程序只在末尾看到全零，然而happens-before并没有解释为什么。</p>
-<p>Java内存模型花了很多我不想赘述的话来试图排除这些类型的假设。不幸的是，五年后，Sarita Adve and Hans Boehm对这个内存模型有这样的评价:</p>
-<blockquote>
-<p>Prohibiting such causality violations in a way that does not also prohibit other desired optimizations turned out to be surprisingly difficult. … After many proposals and five years of spirited debate, the current model was approved as the best compromise. … Unfortunately, this model is very complex, was known to have some surprising behaviors, and has recently been shown to have a bug.</p>
-<p>以一种不妨碍其他期望的优化的方式来禁止这种因果关系冲突，结果令人惊讶地难以实现。……经过许多提议和五年的激烈辩论，目前的模式被认为是最好的折衷方案。……不幸的是，这个模型非常复杂，已知有一些令人惊讶的缺点，最近被证明有一个错误。</p>
-</blockquote>
-<p>(Adve 和 Boehm, <a href="https://cacm.acm.org/magazines/2010/8/96610-memory-models-a-case-for-rethinking-parallel-languages-and-hardware/fulltext" target="_blank" rel="external">“Memory Models: A Case For Rethinking Parallel Languages and Hardware,”</a> August 2010)</p>
-<h2 id="C++11_内存模型_(2011)">C++11 内存模型 (2011)</h2>
-<p>让我们把Java放在一边，研究C++。受Java新内存模型明显成功的启发，许多同样的人开始为C++定义一个类似的内存模型，最终在C++11中采用。与Java相比，C++在两个重要方面有所不同。首先，C++对具有数据竞争的程序不做任何保证，这似乎消除了对Java模型复杂性的需求。其次，C++提供了三种原子性:强同步(“顺序一致”)、弱同步(“acquire/release”,、coherence-only)和无同步(“relaxed”，用于隐藏竞争)。“relaxed”的原子性重新引入了Java关于定义什么是竞争程序的所有复杂性。结果是C++模型比Java更复杂，但对程序员的帮助更小。</p>
-<p>C++11还定义了原子栅栏作为原子变量的替代，但是它们并不常用，我不打算讨论它们。</p>
-<h3 id="DRF-SC_还是_着火(Catch_Fire）">DRF-SC 还是 着火(Catch Fire）</h3>
-<p>与Java不同，C++没有给有竞争的程序任何保证。任何有竞争的程序都属于<a href="https://blog.regehr.org/archives/213" target="_blank" rel="external">“未定义的行为”</a>。允许在程序执行的最初几微秒内进行竞争访问，从而在几小时或几天后导致任意的错误行为。这通常被称为“DRF-SC或着火”:如果程序没有数据竞争，它以顺序一致的方式运行，如果有数据竞争，它可以做任何事情，包括着火。</p>
-<p>关于DRF-SC或Catch Fire的论点的更详细的介绍，参见Boehm，<a href="http://open-std.org/jtc1/sc22/wg21/docs/papers/2007/n2176.html#undefined" target="_blank" rel="external">“内存模型原理”(2007)</a> 和Boehm和Adve，<a href="https://www.hpl.hp.com/techreports/2008/HPL-2008-56.pdf" target="_blank" rel="external">“C++并发内存模型的基础”(2008)</a>。</p>
-<p>简而言之，这中情况有四个正当理由:</p>
-<p>Briefly, there are four common justifications for this position:</p>
-<ul>
-<li>C和C++已经充斥着未定义的行为，这是编译器优化横行的语言小角落，用户最好不要迟疑。多一个未定义行为又有多大的坏处？</li>
-<li>现有的编译器和库编写时没有考虑线程，以任意方式破坏了有竞争的程序。找到并修复所有的问题太难了，或者这个争论没有了，尽管还不清楚那些不固定的编译器和库是如何应对宽松的原子的。</li>
-<li>真正知道自己在做什么并希望避免未定义行为的程序员可以使用relaxed的原子。</li>
-<li>不定义竞争语义允许实现检测和诊断竞争并停止执行。</li>
-</ul>
-<p>就我个人而言，最后一个理由是我认为唯一有说服力的，尽管我认为这个意思是说“允许使用竞争检测器”，而不是说“一个整数的竞争会使整个程序无效。”</p>
-<p>这里有一个来自“内存模型原理”的例子，我认为它抓住了C++方法的本质以及它的问题。考虑这个程序，它引用了一个全局变量x。</p>
-<figure class="highlight c++"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">unsigned</span> i = x;</div><div class="line"></div><div class="line"><span class="keyword">if</span> (i &lt; <span class="number">2</span>) {</div><div class="line">	foo: ...</div><div class="line">	<span class="keyword">switch</span> (i) {</div><div class="line">	<span class="keyword">case</span> <span class="number">0</span>:</div><div class="line">		...;</div><div class="line">		<span class="keyword">break</span>;</div><div class="line">	<span class="keyword">case</span> <span class="number">1</span>:</div><div class="line">		...;</div><div class="line">		<span class="keyword">break</span>;</div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>据称，C++编译器可能会将i保存在寄存器中，但如果标签foo处的代码很复杂，则需要重用这些寄存器。而不是转移i当前的值到栈上， 编译器可能会决定在到达switch语句时，再次从全局x加载i。结果是，在if体中，i &lt; 2可能不再为真。如果编译器使用由i索引的表将开关编译成计算跳转，那么代码将从表的末尾索引并跳转到一个意外的地址，这可能非常糟糕。</p>
-<p>从这个例子和其他类似的例子中，C++内存模型的作者得出结论，任何有竞争的访问都必须被允许对程序的未来执行造成无限的损害。我个人的结论是，在多线程程序中，编译器不应该认为它们可以通过重新执行初始化局部变量的内存读取来重新加载像i这样的局部变量。指望为单线程世界编写的现有C++编译器找到并修复像这样的代码生成问题可能是不切实际的，但是在新的语言中，我认为我们应该有更高的目标。</p>
-<h3 id="题外话,_C/C++的未定义行为">题外话, C/C++的未定义行为</h3>
-<p>另外，C和C++坚持编译器对程序中的错误行为进行任意的行为的能力导致了真正荒谬的结果。例如，考虑这个程序，这是2017在推特上讨论的话题：</p>
-<figure class="highlight c++"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div></pre></td><td class="code"><pre><div class="line"><span class="preprocessor">#<span class="keyword">include</span> &lt;cstdlib&gt;</span></div><div class="line"></div><div class="line"><span class="keyword">typedef</span> <span class="keyword">int</span> (*Function)();</div><div class="line"></div><div class="line"><span class="keyword">static</span> Function Do;</div><div class="line"></div><div class="line"><span class="keyword">static</span> <span class="keyword">int</span> EraseAll() {</div><div class="line">	<span class="keyword">return</span> system(<span class="string">"rm -rf slash"</span>);</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">void</span> NeverCalled() {</div><div class="line">	Do = EraseAll;</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">int</span> main() {</div><div class="line">	<span class="keyword">return</span> Do();</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>如果你是一个像Clang这样的现代C++编译器，你可能会想到这个程序如下：</p>
-<ul>
-<li>很明显，main函数中，Do要么为空，要么为EraseAll。</li>
-<li>如果Do是Erasell，那么Do()与Erasell()相同。</li>
-<li>如果Do 是null, 那么Do()是未定义行为。我可以随意实现，包括作为EraseAll()无条件实现。</li>
-<li>因此，我可以将间接调用Do()优化为直接调用EraseAll()。</li>
-<li>当我处理这里的时候，我可能直接内联EraseAll。</li>
-</ul>
-<p>最终结果是，Clang将程序优化为:</p>
-<figure class="highlight c++"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">int</span> main() {</div><div class="line">	<span class="keyword">return</span> system(<span class="string">"rm -rf slash"</span>);</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>你必须承认:前一个例子，局部变量i可能在if (i &lt; 2)体的中途突然停止小于2的可能性似乎并不合适。</p>
-<p>本质上，现代C和C++编译器假设没有程序员敢尝试未定义的行为。一个程序员写一个有bug的程序？不可思议！</p>
-<p>就像我说的，在新的语言中，我认为我们应该有更高的目标。</p>
-<h3 id="Acquire/release_atomic">Acquire/release atomic</h3>
-<p>C++采用了顺序一致的原子变量，很像(新的)Java的volatile变量(与C++ volatile没有关系)。在我们的消息传递示例中，我们可以将done声明为</p>
-<figure class="highlight c++"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">atomic&lt;<span class="keyword">int</span>&gt; done;</div></pre></td></tr></table></figure>
-
-<p>然后像使用普通变量一样使用done，就像在Java中一样。或者我们可以把一个普通的整型变量去掉。然后使用</p>
-<figure class="highlight c++"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">atomic_store(&done, <span class="number">1</span>);</div></pre></td></tr></table></figure>
-
-<p>和：</p>
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">while</span>(atomic_load(&<span class="keyword">done</span>) == <span class="number">0</span>) { <span class="comment">/* loop */</span> }</div></pre></td></tr></table></figure>
-
-<p>去访问它。</p>
-<p>无论哪种方式，完成的操作都参与原子操作的顺序一致的总顺序，并同步程序的其余部分。</p>
-<p>C++还添加了较弱的原子，可以使用atomic_store_explicit和atomic_load_explicit以及附加的memory排序参数来访问这些原子。使用memory_order_seq_cst使显式调用等效于上面较短的调用。</p>
-<p>较弱的原子称为acquire/release原子，一个release如果被后来的acquire观察到，那么就创建了一个happen-before的关系(从release到acquire)。这个术语意在唤起mutex:release就像unlock mutex，acquire就像lock同一个mutex。release之前执行的写入必须对后续acquire之后执行的读取可见，就像unlock mutex之前执行的写入必须对后来unlock mutex之后执行的读取可见一样。</p>
-<p> The terminology is meant to evoke mutexes: release is like unlocking a mutex, and acquire is like locking that same mutex. The writes executed before the release must be visible to reads executed after the subsequent acquire, just as writes executed before unlocking a mutex must be visible to reads executed after later locking that same mutex.</p>
-<p>为了使用较弱的原子，我们可以将消息传递示例改为:</p>
-<figure class="highlight c++"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">atomic_store(&done, <span class="number">1</span>, memory_order_release);</div></pre></td></tr></table></figure>
-
-<p>和</p>
-<figure class="highlight c++"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">while</span>(atomic_load(&done, memory_order_acquire) == <span class="number">0</span>) { <span class="comment">/* loop */</span> }</div></pre></td></tr></table></figure>
-
-<p>它仍然是正确的。但不是所有的程序都会这样</p>
-<p>回想一下，顺序一致的原子要求程序中所有原子的行为与执行的一些全局交替执行(全局顺序)一致。acquire/release原子不会。它们只需要对单个内存位置的操作进行顺序一致的交替执行。也就是说，它们只需要一致性。结果是，一个使用具有多个存储位置的acquire/release原子的程序可能会观察到无法用程序中所有acquire/release原子的顺序一致的交替来解释的执行，这可以说是违反了DRF-SC！</p>
-<p>为了说明不同之处，这里再举一个存储缓冲区的例子:</p>
-<figure class="highlight c++"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div></pre></td><td class="code"><pre><div class="line">Litmus Test: Store Buffering</div><div class="line">Can <span class="keyword">this</span> program see r1 = <span class="number">0</span>, r2 = <span class="number">0</span>?</div><div class="line"></div><div class="line"><span class="comment">// Thread 1           // Thread 2</span></div><div class="line">x = <span class="number">1</span>                 y = <span class="number">1</span></div><div class="line">r1 = y                r2 = x</div><div class="line">On sequentially consistent hardware: no.</div><div class="line">On x86 (or other TSO): yes!</div><div class="line">On ARM/POWER: yes!</div><div class="line">On Java (<span class="keyword">using</span> volatiles): no.</div><div class="line">On C++<span class="number">11</span> (sequentially consistent atomics): no.</div><div class="line">On C++<span class="number">11</span> (acquire/release atomics): yes!</div></pre></td></tr></table></figure>
-
-<p>C++顺序一致的原子与Java的volatile相匹配。但是acquire-release原子在x的顺序和y的顺序之间没有强加任何关系。特别地，允许程序表现得好像r1 = y发生在y = 1之前，而同时r2 = x发生在x = 1之前，使得r1 = 0，r2 = 0与整个程序的顺序一致性相矛盾。为什么要引入这些较弱的获取/发布原子？可能是因为它们是x86上的普通内存操作。</p>
-<p>请注意，对于观察特定写入的一组给定的特定读取，C++顺序一致原子和C++ acquire/release原子创建相同的happen-before关系。它们之间的区别在于，顺序一致的原子不允许观察特定写入的某些特定读取集，但acuqire/release原子允许这些特定读取集。一个这样的例子是导致存储缓冲测试出现r1 = 0，r2 = 0的结果。</p>
-<p>acquire/release原子在实践中不如提供顺序一致性的原子有用。这里有一个例子。假设我们有一个新的同步原语，一个具有通知和等待两种方法的一次性条件变量。为了简单起见，只有一个线程会调用Notify，只有一个线程会调用Wait。我们想安排Notify在另一个线程还没有等待的时候是无锁的。我们可以用一对原子整数来实现:</p>
-<figure class="highlight c++"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">class</span> Cond {</div><div class="line">	atomic&lt;<span class="keyword">int</span>&gt; done;</div><div class="line">	atomic&lt;<span class="keyword">int</span>&gt; waiting;</div><div class="line">	...</div><div class="line">};</div><div class="line"></div><div class="line"><span class="keyword">void</span> Cond::notify() {</div><div class="line">	done = <span class="number">1</span>;</div><div class="line">	<span class="keyword">if</span> (!waiting)</div><div class="line">		<span class="keyword">return</span>;</div><div class="line">	<span class="comment">// ... wake up waiter ...</span></div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">void</span> Cond::wait() {</div><div class="line">	waiting = <span class="number">1</span>;</div><div class="line">	<span class="keyword">if</span>(done)</div><div class="line">		<span class="keyword">return</span>;</div><div class="line">	<span class="comment">// ... sleep ...</span></div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>这段代码的重要部分是在检查waiting之前notify设置done为1, 为wait在检查done之前设置waiting为1,因此并发调用notify和wait不会导致notify立即返回并等待休眠。但是使用C++ acquire/release原子，它们可以。而且它们可能只需要很少的几率发生，使得这种错误很难重现和诊断。(更糟糕的是，在像64位ARM这样的一些架构上，实现acquire/release原子的最佳方式是顺序一致的原子，因此您可能会编写在64位ARM上运行良好的代码，但在移植到其他系统时才发现它是不正确的。)</p>
-<p>基于这种理解，“acquire/release”对于这些原子来说是一个不幸的名字，因为顺序一致的原子做同样的acquire和release。不同之处在于顺序一致性的丧失。称这些为“一致性”原子可能更好。太迟了。</p>
-<h3 id="Relaxed_atomic">Relaxed atomic</h3>
-<p>C++并没有仅仅停留在连贯的获取/发布原子上。它还引入了非同步原子，称为relaxed原子。这些原子根本没有同步效果——它们没有创建先发生的边——并且它们根本没有排序保证。事实上，宽松原子读/写和普通读/写没有区别，除了宽松原子上的竞争不被认为是竞争，不能着火。</p>
-<p>C++没有停止与仅仅提供一致性的acquire/release原子。它还引入了非同步原子，称为relaxed原子(memory_order_relaxed)。这些原子根本没有同步效果——它们没有创建happens-before关系——并且它们根本没有排序保证。事实上，relaxed原子读/写和普通读/写没有区别，除了relaxed原子上的竞争不被认为是竞争，不能着火。</p>
-<p>修改后的Java内存模型的大部分复杂性来自于定义具有数据竞争的程序的行为。如果C++采用DRF-SC或Catch Fire——实际上不允许有数据竞争的程序——意味着我们可以扔掉前面看到的所有奇怪的例子，那么C++语言规范将比Java语言规范更简单，那就太好了。不幸运的是，包括releaxed的原子最终保留了所有这些关注，这意味着C++11规范最终并不比Java简单。</p>
-<p>像Java的内存模型一样，C++11的内存模型最终也是不正确的。考虑之前的无数据竞争计划:</p>
-<figure class="highlight c++"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div></pre></td><td class="code"><pre><div class="line">Litmus Test: Non-Racy Out Of Thin Air Values</div><div class="line">Can <span class="keyword">this</span> program see r1 = <span class="number">42</span>, r2 = <span class="number">42</span>?</div><div class="line"></div><div class="line"><span class="comment">// Thread 1           // Thread 2</span></div><div class="line">r1 = x                r2 = y</div><div class="line"><span class="keyword">if</span> (r1 == <span class="number">42</span>)         <span class="keyword">if</span> (r2 == <span class="number">42</span>)</div><div class="line">    y = r1                x = r2</div><div class="line">(Obviously not!)</div><div class="line"></div><div class="line">C++<span class="number">11</span> (ordinary variables): no.</div><div class="line">C++<span class="number">11</span> (relaxed atomics): yes!</div></pre></td></tr></table></figure>
-
-<p>Viktor Vafeiadis和其他人在他们的论文<a href="https://fzn.fr/readings/c11comp.pdf" target="_blank" rel="external">“Common Compiler Optimisations are Invalid in the C11 Memory Model and what we can do about it” (2015)</a>中表明，C++11规范保证当x和y是普通变量时，该程序必须以x和y设置为零结束。但是如果x和y是relaxed的原子，那么，严格来说，C++11规范不排除r1和r2最终都可能达到42。(惊喜！)</p>
-<p>详情见论文，但在较高的层次上，C++11规范有一些正式规则，试图禁止无中生有的值，并结合了一些模糊的词语来阻止其他类型的有问题的值。这些正式的规则就是问题所在，因此C++14放弃了它们，只留下了模糊的词语。引用删除它们的基本原理，C++11公式证明是“既不充分的，因为它使人们基本上无法对内存顺序放松的程序进行推理，也严重有害，因为它可以说不允许在ARM和POWER等体系结构上对memory_order_relaxed的所有合理实现。”</p>
-<p>综上所述，Java试图正式排除所有不合法的执行，但失败了。然后，借助Java的后知后觉，C++11试图正式地只排除一些不合法的执行，也失败了。C++14然后说什么都不正式。这不是正确的方向。</p>
-<p>事实上，Mark Batty和其他人在2015年发表的一篇题为<a href="https://www.cl.cam.ac.uk/~jp622/the_problem_of_programming_language_concurrency_semantics.pdf" target="_blank" rel="external">“编程语言并发语义的问题”</a>的论文给出了这一发人深省的评估:</p>
-<blockquote>
-<p>Disturbingly, 40+ years after the first relaxed-memory hardware was introduced (the IBM 370/158MP), the field still does not have a credible proposal for the concurrency semantics of any general-purpose high-level language that includes high-performance shared-memory concurrency primitives.</p>
-<p>令人不安的是，在引入第一个relaxed内存硬件(IBM 370/158MP)40多年后，该领域仍然没有一个可信的提案来描述任何包含高性能共享内存并发原语的通用高级语言的并发语义。</p>
-</blockquote>
-<p>甚至定义弱有序硬件的语义(忽略软件和编译器优化的复杂性)也不太顺利。张思卓等人在2018年发表的一篇名为<a href="https://arxiv.org/abs/1805.07886" target="_blank" rel="external">《构建弱记忆模型》</a>的论文讲述了最近发生的一些事情:</p>
-<blockquote>
-<p>Sarkar et al. published an operational model for POWER in 2011, and Mador-Haim et al. published an axiomatic model that was proven to match the operational model in 2012. However, in 2014, Alglave et al. showed that the original operational model, as well as the corresponding axiomatic model, ruled out a newly observed behavior on POWER machines. For another instance, in 2016, Flur et al. gave an operational model for ARM, with no corresponding axiomatic model. One year later, ARM released a revision in their ISA manual explicitly forbidding behaviors allowed by Flur&#39;s model, and this resulted in another proposed ARM memory model. Clearly, formalizing weak memory models empirically is error-prone and challenging.</p>
-<p>Sarkar等人在2011年公布了POWER的运行模型，Mador-Haim等人在2012年公布了一个公理化模型，该模型被证明与运行模型相匹配。然而，在2014年，Alglave等人表明，最初的操作模型以及相应的公理模型排除了在POWER机器上新观察到的行为。再比如，2016年，Flur等人给出了一个ARM的操作模型，没有对应的公理模型。一年后，ARM在他们的ISA手册中发布了一个修订版，明确规定了Flur模型允许的行为，这导致了另一个提出的ARM内存模型。显然，根据经验形式化弱记忆模型是容易出错且具有挑战性的。</p>
-</blockquote>
-<p>在过去的十年里，致力于定义和形式化所有这些的研究人员非常聪明、有才华和坚持不懈，我并不想通过指出结果中的不足来贬低他们的努力和成就。我从这些简单的结论中得出结论，这个指定线程程序的确切行为的问题，即使没有竞争，也是难以置信的微妙和困难。如今，即使是最优秀、最聪明的研究人员似乎也无法理解这一点。即使不是，编程语言定义在日常开发人员可以理解的情况下效果最好，而不需要花费十年时间研究并发程序的语义。</p>
-<h2 id="C,_Rust_和_Swift_的内存模型">C, Rust 和 Swift 的内存模型</h2>
-<p>C11也采用了C++11内存模型，使其成为C/C++11内存模型。</p>
-<p>2015年的<a href="https://doc.rust-lang.org/std/sync/atomic/" target="_blank" rel="external">Rust 1.0.0</a>和2020年的<a href="https://github.com/apple/swift-evolution/blob/master/proposals/0282-atomics.md" target="_blank" rel="external">Swift 5.3</a>都整体采用了C/C++内存模型，拥有DRF-SC或Catch Fire以及所有的原子类型和原子栅栏。</p>
-<p>毫不奇怪，这两种语言都采用了C/C++ 模型，因为它们建立在C/C++编译器工具链(LLVM)上，并强调与C/C++代码的紧密集成。</p>
-<h3 id="硬件题外话：_有效的顺序一致性atomic">硬件题外话： 有效的顺序一致性atomic</h3>
-<p>早期的多处理器体系结构有多种同步机制和内存模型，具有不同程度的可用性。在这种多样性中，不同同步抽象的效率取决于它们如何映射到架构所提供的内容。为了构造顺序一致的原子变量的抽象，有时唯一的选择是使用比严格必要的要多得多、贵得多的内存栅栏barriers，特别是在ARM和POWER上。</p>
-<p>随着C、C++和Java都提供了这种顺序一致性同步原子的抽象，硬件设计者就应该让这种抽象变得高效。ARMv8架构(32位和64位)引入了ldar和stlr load和store指令，提供了直接的实现。在2017年的一次谈话中，赫伯·萨特声称，IBM已经批准了他的说法，他们希望未来的POWER实现对顺序一致的原子也有某种更有效的支持，这让程序员“更没有理由使用relaxed的原子。”我不知道是否发生了这种情况，尽管在2021年，POWER的相关性远不如ARMv8。</p>
-<p>这种融合的效果是顺序一致的原子现在被很好地理解，并且可以在所有主要的硬件平台上有效地实现，这使得它们成为编程语言内存模型的一个很好的目标。</p>
-<h2 id="JavaScript_内存模型_(2017)">JavaScript 内存模型 (2017)</h2>
-<p>你可能会认为JavaScript，一种众所周知的单线程语言，不需要担心内存模型，当代码在多个处理器上并行运行时会发生什么。我当然有。但是你和我都错了。</p>
-<p>JavaScript有web workers，它允许在另一个线程中运行代码。按照最初的设想，工作人员只通过显式的消息复制与主JavaScript线程进行通信。没有共享的可写内存，就没有必要考虑像数据竞争这样的问题。然而，ECMAScript 2017 (ES2017)增加了SharedArrayBuffer对象，它让主线程和工作线程共享一块可写内存。为什么要这样做？在提案的<a href="https://github.com/tc39/ecmascript_sharedmem/blob/master/historical/Spec_JavaScriptSharedMemoryAtomicsandLocks.pdf" target="_blank" rel="external">早期草稿</a>中，列出的第一个原因是将多线程C++代码编译成JavaScript。</p>
-<p>当然，共享可写内存还需要定义同步的原子操作和内存模型。JavaScript在三个重要方面偏离了C++:</p>
-<ul>
-<li>首先，它将原子操作限制在顺序一致的原子上。其他原子可以被编译成顺序一致的原子，可能会损失效率，但不会损失正确性，只有一种原子可以简化系统的其余部分。</li>
-<li>第二，JavaScript不采用“DRF-SC或着火。”相反，像Java一样，它仔细定义了竞争访问的可能结果。其原理与Java非常相似，尤其是安全性。允许竞争read返回任何值允许(可以说是鼓励)实现返回不相关的数据，这可能会导致运行时<a href="https://github.com/tc39/ecmascript_sharedmem/blob/master/DISCUSSION.md#races-leaking-private-data-at-run-time" target="_blank" rel="external">私有数据的泄漏</a>。</li>
-<li>第三，部分是因为JavaScript为竞争程序提供了语义，它定义了当原子和非原子操作在同一个内存位置使用时，以及当使用不同大小的访问访问同一个内存位置时会发生什么。</li>
-</ul>
-<p>精确定义racy程序的行为会导致relaxed内存语义的复杂性，以及如何禁止无中生有的读取和类似情况。除了这些与其他地方基本相同的挑战之外，ES2017定义还有两个有趣的错误，它们是由于与新的ARMv8原子指令的语义不匹配而引起的。这些例子改编自康拉德·瓦特等人2020年的论文<a href="https://www.cl.cam.ac.uk/~jp622/repairing_javascript.pdf" target="_blank" rel="external">“Repairing and Mechanising the JavaScript Relaxed Memory Model.”</a></p>
-<p>正如我们在上一节中提到的，ARMv8增加了ldar和stlr指令，提供顺序一致的原子加载和存储。这些是针对C++的，它没有定义任何具有数据竞争的程序的行为。因此，毫不奇怪，这些指令在竞争程序中的行为与ES2017作者的期望不符，尤其是它不符合ES2017对竞争程序行为的要求。</p>
-<figure class="highlight javascript"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div></pre></td><td class="code"><pre><div class="line">Litmus Test: ES2017 racy reads on ARMv8</div><div class="line">Can <span class="keyword">this</span> program (using atomics) see r1 = <span class="number">0</span>, r2 = <span class="number">1</span>?</div><div class="line"></div><div class="line"><span class="comment">// Thread 1           // Thread 2</span></div><div class="line">x = <span class="number">1</span>                 y = <span class="number">1</span></div><div class="line">r1 = y                x = <span class="number">2</span> (non-atomic)</div><div class="line">                      r2 = x</div><div class="line">C++: yes (data race, can <span class="keyword">do</span> anything at all).</div><div class="line">Java: the program cannot be written.</div><div class="line">ARMv8 using ldar/stlr: yes.</div><div class="line">ES2017: no! (contradicting ARMv8)</div></pre></td></tr></table></figure>
-
-<p>在这个程序中，所有的读和写都是顺序一致的原子，除了x = 2:线程1使用原子存储写x = 1，但是线程2使用非原子存储写x = 2。在C++中，这是一场数据竞争，所以所有的赌注都取消了。在Java中，这个程序是不能写的:x必须要么声明为volatile，要么不声明；它有时不能被原子访问。在ES2017中，内存模型不允许r1 = 0，r2 = 1。如果r1 = y读取0，线程1必须在线程2开始之前完成，在这种情况下，非原子x = 2似乎发生在x = 1之后并覆盖x = 1，导致原子r2 = x读取2。这个解释似乎完全合理，但这不是ARMv8处理器的工作方式。</p>
-<p>事实证明，对于ARMv8指令的等效序列，对x的非原子写可以在对y的原子写之前重新排序，因此该程序实际上产生r1 = 0，r2 = 1。这在C++中不是问题，因为竞争意味着程序可以做任何事情，但对于ES2017来说，这是一个问题，它将竞争行为限制在一组不包括r1 = 0、r2 = 1的结果上</p>
-<p>由于ES2017的明确目标是使用ARMv8指令来实现顺序一致的原子操作，Watt等人报告说，他们建议的修复(计划包含在标准的下一个修订版中)将削弱竞争行为约束，足以允许这种结果。(当时我不清楚“下一次修订”是指ES2020还是ES2021。)</p>
-<p>Watt等人提出的修改还包括对第二个bug的修复，第一个bug是由Watt、Andreas Rossberg和Jean Pichon-pharabad提出的，其中一个无数据竞争的程序没有按照ES2017规范给出顺序一致的语义。该程序由下式给出:</p>
-<figure class="highlight javascript"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div></pre></td><td class="code"><pre><div class="line">Litmus Test: ES2017 data-race-free program</div><div class="line">Can this program (using atomics) see r1 = 1, r2 = 2?</div><div class="line"></div><div class="line">// Thread 1           // Thread 2</div><div class="line">x = 1                 x = 2</div><div class="line">                      r1 = x</div><div class="line">                      if (r1 == 1) {</div><div class="line">                          r2 = x // non-atomic</div><div class="line">                      }</div><div class="line">On sequentially consistent hardware: no.</div><div class="line">C++: I'm not enough of a C++ expert to say for sure.</div><div class="line">Java: the program cannot be written.</div><div class="line">ES2017: yes! (violating DRF-SC).</div></pre></td></tr></table></figure>
-
-<p>在这个程序中，所有的读和写都是顺序一致的原子，除了r2 = x，标记为。这个程序是无数据竞争的:非原子读取必须参与任何数据竞争，只有当r1 = 1时才执行，这证明线程1的x = 1发生在r1 = x之前，因此也发生在r2 = x之前。DRF-SC意味着程序必须以顺序一致的方式执行，因此r1 = 1，r2 = 2是不可能的，但ES2017规范允许这样做。</p>
-<p>因此，ES2017程序行为规范同时太强(它不允许racy程序的真实ARMv8行为)和太弱(它允许无竞争程序的非顺序一致行为)。如前所述，这些错误已经改正。即便如此，这也再次提醒我们，精确地使用以前发生的事情来指定无数据竞争程序和活泼程序的语义是多么微妙，以及将语言内存模型与底层硬件内存模型相匹配是多么微妙。</p>
-<p>令人鼓舞的是，至少到目前为止，除了顺序一致的原子之外，JavaScript避免了添加任何其他原子，并抵制了“DRF-SC或着火”结果是内存模型作为C/C++编译目标是有效的，但更接近于Java。</p>
-<h2 id="结论">结论</h2>
-<p>看看C、C++、Java、JavaScript、Rust和Swift，我们可以得出以下结论:</p>
-<ul>
-<li>它们都提供顺序一致的同步原子，用于协调并行程序的非原子部分。</li>
-<li>它们的目的都是确保程序使用适当的同步来避免数据竞争，就像以顺序一致的方式执行一样。</li>
-<li>Java和JavaScript避免了引入弱(acquire/release)同步原子，这似乎是为x86量身定制的。</li>
-<li>它们都为程序提供了一种方式来执行“有意的”数据竞争，而不会使程序的其余部分无效。在C、C++、Rust和Swift中，这种机制是relaxed，非同步原子，一种特殊的内存访问形式。在Java和JavaScript中，这种机制就是普通的内存访问。</li>
-<li>没有一种语言找到了正式禁止悖论的方法，比如无中生有的值，但是所有语言都非正式地禁止它们。</li>
-</ul>
-<p>与此同时，处理器制造商似乎已经接受了顺序一致同步原子的抽象对于高效实现非常重要，并开始这样做：ARMv8和RISC-V都提供了直接支持。</p>
-<p>最后，真正大量的验证和形式分析工作已经进入了理解这些系统和精确陈述它们的行为。特别令人鼓舞的是，瓦特等人在2020年能够给出一个JavaScript重要子集的正式模型，并使用定理证明器来证明编译对ARM、POWER、RISC-V和x86-TSO的正确性。</p>
-<p>在第一个Java内存模型问世25年后，经过许多人世纪的研究努力，我们可能开始能够形式化整个内存模型。也许，有一天，我们也会完全理解他们。</p>
-<p>【本系列的下一篇文章，关于Go内存模型，计划在7月12日那一周发布。】</p>
-<h2 id="感谢">感谢</h2>
-<p>这一系列的帖子从我有幸在谷歌工作的一长串工程师的讨论和反馈中受益匪浅。我感谢他们。我对任何错误或不受欢迎的意见负全部责任。    </p>
-]]></content>
-    <summary type="html">
-    <![CDATA[<p>这是Russ Cox的第二篇<a href="https://research.swtch.com/plmm" target="_blank" rel="external">Programming Language Memory Models</a>。</p>
-<p>如果你已经阅读了前一篇<a href="https://colobu.com/2021/06/30/hwmm/#%E5%BC%B1%E6%8E%92%E5%BA%8F%E5%92%8C%E6%97%A0%E6%95%B0%E6%8D%AE%E7%AB%9E%E4%BA%89%E7%9A%84%E9%A1%BA%E5%BA%8F%E4%B8%80%E8%87%B4%E6%80%A7" target="_blank" rel="external">硬件内存模型</a>,以及如果有Java内存模型或者C++内存模型的经验，本文还好理解，如果你没有相关经验，可能阅读起来比较费劲，建议先阅读一下相关的材料。论文有些词句比较难以理解，本人才学疏浅，有翻译不当之处欢迎批评指正。</p>
-]]>
-    
-    </summary>
-    
-      <category term="Go" scheme="https://colobu.com/categories/Go/"/>
-    
-  </entry>
-  
-  <entry>
-    <title><![CDATA[深入Go Module之未说的秘密]]></title>
-    <link href="https://colobu.com/2021/07/04/dive-into-go-module-3/"/>
-    <id>https://colobu.com/2021/07/04/dive-into-go-module-3/</id>
-    <published>2021-07-04T07:22:37.000Z</published>
-    <updated>2021-10-06T03:29:34.277Z</updated>
-    <content type="html"><![CDATA[<p>正常情况下，我们的go.mod依赖库的版本都是符合<a href="https://semver.org/lang/zh-CN/" target="_blank" rel="external">语义化版本 2.0.0</a>的版本格式，或者<a href="https://golang.org/ref/mod#non-module-compat#glos-pseudo-version" target="_blank" rel="external">伪版本格式</a>。在前面的文章我没有特别提到一点的事，Go使用服务端提交的日期和commit id生成的伪版本号是符合语义化版本号2.0.0的，因为语义化版本号中规定pre-release以连接号<strong>-</strong>加一连串以逗号分隔的标识符组成，标识符以字母数字和连接号组成，所以你看到<code>-yyyyMMddhhmmss-comitid</code>包含两个连接号，这是正常的。</p>
-<p>go要求依赖库要么不包含go.mod,要么依赖库中的go.mod定义的依赖库版本必须以语义化版本 2.0.0格式(或伪版本号)标志(其实更严格，除了<code>+incompatible</code>不能加meta字段)，因为这样我们你能够明确标识某个依赖库确切的版本，这样的版本号被称之为<a href="https://golang.org/ref/mod#glos-canonical-version" target="_blank" rel="external">canonical version</a>。</p>
-<p>其实main module还可以定义non-canonical version，通过go get或者go mod tidy更新go.mod的时候，命令会尝试更新go.mod,尝试把non-canonical version转变为canonical version版本。</p>
-<p>但是，到底有哪些non-canonical version呢？我还没看到官方文章介绍，本文尝试整理这些non-canonical version。</p>
-<a id="more"></a>
-<h3 id="只定义major或者major-minor">只定义major或者major.minor</h3>
-<p>你可以不指定minor.patch或者patch,而是让go命令尝试去寻找最大的minor和patch,所以你可以在go.mod只定义vmajor或者vmajor.minor:</p>
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line">github.<span class="keyword">com</span>/panicthis/B v1.<span class="number">2</span></div><div class="line">github.<span class="keyword">com</span>/panicthis/C v1</div><div class="line">github.<span class="keyword">com</span>/panicthis/G/v2 v2</div></pre></td></tr></table></figure>
-
-<p>运行<code>go mod tidy</code>它们会被转换成</p>
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line">github.<span class="keyword">com</span>/panicthis/B v1.<span class="number">2.1</span></div><div class="line">github.<span class="keyword">com</span>/panicthis/C v1.<span class="number">4.0</span></div><div class="line">github.<span class="keyword">com</span>/panicthis/G/v2 v2.<span class="number">0.0</span></div></pre></td></tr></table></figure>
-
-<p><code>go get</code>命令也一样，你也可以直接指定major，忽略minor和patch, 比如</p>
-<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line">go get github.com/panicthis/B@v1.<span class="number">2</span></div><div class="line">go get github.com/panicthis/C@v1</div><div class="line">go get github.com/panicthis/G/v2@v2</div></pre></td></tr></table></figure>
-
-<h3 id="latest,_upgrade_和_patch">latest, upgrade 和 patch</h3>
-<p>有三个单词有特别的语义</p>
-<ul>
-<li>latest: 选择最高的release版本，如果没有release版本，则选择最高的pre-release版本，如果根本就没有打过tag,则选择最高的伪版本号的版本(默认分支的最后的提交版本)</li>
-<li>upgrade: 类似latest,但是如果有比release更高的版本(比如pre-release),会选择更高的版本</li>
-<li>patch: major和minor和当前的版本相同，只把patch升级到最高。当然如果没有当前的版本，则无从比较，则patch退化成latest语义</li>
-</ul>
-<p>比如下面的格式:</p>
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line">github.<span class="keyword">com</span>/panicthis/D latest</div><div class="line">github.<span class="keyword">com</span>/panicthis/E upgrade</div><div class="line">github.<span class="keyword">com</span>/panicthis/F patch</div></pre></td></tr></table></figure>
-
-<p>使用go get命令也一样</p>
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">go</span> <span class="built_in">get</span> github.<span class="keyword">com</span>/panicthis/D@latest</div><div class="line"><span class="keyword">go</span> <span class="built_in">get</span> github.<span class="keyword">com</span>/panicthis/E@upgrade</div><div class="line"><span class="keyword">go</span> <span class="built_in">get</span> github.<span class="keyword">com</span>/panicthis/F@patch //因为没有本地版本，所以此命令在<span class="keyword">go</span> <span class="number">1.16</span>下可能出错</div><div class="line"><span class="keyword">go</span> <span class="built_in">get</span> -<span class="keyword">u</span>=patch github.<span class="keyword">com</span>/panicthis/F@v1.<span class="number">1.0</span></div></pre></td></tr></table></figure>
-
-<h3 id="指定特定的commit_id">指定特定的commit id</h3>
-<p>因为有时候proxy有缓存时间或者更新周期，如果你提交了一个新的commit,或者新打了一个tag,通过 <code>latest</code>不一定能拉取到最新的提交，这个时候你可以通过指定commit id的方式拉取。或者你就想测试某个特定的版本。</p>
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">github.<span class="keyword">com</span>/panicthis/H <span class="number">4</span>f7657a</div></pre></td></tr></table></figure>
-
-<p>或者</p>
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">go</span> <span class="built_in">get</span> github.<span class="keyword">com</span>/panicthis/H@<span class="number">4</span>f7657a</div></pre></td></tr></table></figure>
-
-<p>甚至，你可以使用<code>HEAD</code>，作为你最新的commit id:</p>
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">github.<span class="keyword">com</span>/panicthis/H HEAD</div></pre></td></tr></table></figure>
-
-<p>或者</p>
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">go</span> <span class="built_in">get</span> github.<span class="keyword">com</span>/panicthis/H@HEAD</div></pre></td></tr></table></figure>
-
-<h3 id="特定的分支">特定的分支</h3>
-<p>你还可以拉取特定的分支</p>
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div></pre></td><td class="code"><pre><div class="line">github.<span class="keyword">com</span>/panicthis/J master</div><div class="line">github.<span class="keyword">com</span>/panicthis/K feat-<span class="number">123</span></div></pre></td></tr></table></figure>
-
-<p>或者</p>
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">go</span> <span class="built_in">get</span> github.<span class="keyword">com</span>/panicthis/J@master</div><div class="line"><span class="keyword">go</span> <span class="built_in">get</span> github.<span class="keyword">com</span>/panicthis/K@feat-<span class="number">123</span></div></pre></td></tr></table></figure>
-
-<p>≈</p>
-<p>更有甚者，你可以使用<code>&gt;</code>、<code>&gt;=</code>、<code>&lt;</code>、<code>&lt;=</code>比较符，选取某个符合条件的最大的版本。</p>
-<p>比如:</p>
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line">github.<span class="keyword">com</span>/stretchr/testify &gt;v1.<span class="number">7.0</span></div><div class="line">github.<span class="keyword">com</span>/panicthis/F &gt;=v1.<span class="number">1.0</span></div><div class="line">github.<span class="keyword">com</span>/panicthis/F &lt;v1.<span class="number">1.0</span></div><div class="line">github.<span class="keyword">com</span>/panicthis/F &lt;=v1.<span class="number">1.0</span></div></pre></td></tr></table></figure>
-
-<p>运行go mod tidy它会转换成canonical version。</p>
-<p>或者(注意命令行中需要使用转义符)：</p>
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">go</span> <span class="built_in">get</span> github.<span class="keyword">com</span>/stretchr/testify@\&gt;v1.<span class="number">7.0</span></div><div class="line"><span class="keyword">go</span> <span class="built_in">get</span> -<span class="keyword">u</span>=patch github.<span class="keyword">com</span>/panicthis/F@\&gt;=v1.<span class="number">1.0</span></div><div class="line"><span class="keyword">go</span> <span class="built_in">get</span> -<span class="keyword">u</span>=patch github.<span class="keyword">com</span>/panicthis/F@\&lt;v1.<span class="number">1.0</span></div><div class="line"><span class="keyword">go</span> <span class="built_in">get</span> -<span class="keyword">u</span>=patch github.<span class="keyword">com</span>/panicthis/F@\&lt;=v1.<span class="number">1.0</span></div></pre></td></tr></table></figure>
-
-<p>虽然我们可以在go.mod中使用non-canonical version，但是在提交和发布的时候，我们需要使用go mod tidy把它们转换成canonical version,让依赖库的版本对应一个确定的版本，否则<code>master</code>、<code>HEAD</code>在不同的人使用的时候可能会对应不同的版本。</p>
-<h3 id="none">none</h3>
-<p>还有一个特殊的字符可以作为non-canonical version,比如</p>
-<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">go get github.com/stretchr/testify@none</div></pre></td></tr></table></figure>
-
-<p>它会从go module中移出这个依赖。</p>
-<h3 id="tip">tip</h3>
-<p>有人提议支持go从开发分支上拉取最新的版本。 有几个单次可以候选，但是感觉从 hg/mercurial中借鉴来的<code>tip</code>很合适。go最新的开发版本也叫做<code>tip</code>。</p>
-<p>这只是一个提议，未必最终支持。 <a href="https://github.com/golang/go/issues/42545" target="_blank" rel="external">#42545</a></p>
-]]></content>
-    <summary type="html">
-    <![CDATA[<p>正常情况下，我们的go.mod依赖库的版本都是符合<a href="https://semver.org/lang/zh-CN/" target="_blank" rel="external">语义化版本 2.0.0</a>的版本格式，或者<a href="https://golang.org/ref/mod#non-module-compat#glos-pseudo-version" target="_blank" rel="external">伪版本格式</a>。在前面的文章我没有特别提到一点的事，Go使用服务端提交的日期和commit id生成的伪版本号是符合语义化版本号2.0.0的，因为语义化版本号中规定pre-release以连接号<strong>-</strong>加一连串以逗号分隔的标识符组成，标识符以字母数字和连接号组成，所以你看到<code>-yyyyMMddhhmmss-comitid</code>包含两个连接号，这是正常的。</p>
-<p>go要求依赖库要么不包含go.mod,要么依赖库中的go.mod定义的依赖库版本必须以语义化版本 2.0.0格式(或伪版本号)标志(其实更严格，除了<code>+incompatible</code>不能加meta字段)，因为这样我们你能够明确标识某个依赖库确切的版本，这样的版本号被称之为<a href="https://golang.org/ref/mod#glos-canonical-version" target="_blank" rel="external">canonical version</a>。</p>
-<p>其实main module还可以定义non-canonical version，通过go get或者go mod tidy更新go.mod的时候，命令会尝试更新go.mod,尝试把non-canonical version转变为canonical version版本。</p>
-<p>但是，到底有哪些non-canonical version呢？我还没看到官方文章介绍，本文尝试整理这些non-canonical version。</p>
 ]]>
     
     </summary>
