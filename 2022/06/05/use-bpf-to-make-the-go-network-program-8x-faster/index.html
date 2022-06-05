@@ -1,0 +1,684 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset="utf-8">
+  
+  <title>使用BPF, 将Go网络程序的吞吐提升8倍</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+  <meta name="description" content="经典的bpf(classical Berkeley Packet Filter) 是非常好用的一个技术，在一些特殊的Go底层网络编程的场合，可以很好的提高性能。">
+<meta property="og:type" content="article">
+<meta property="og:title" content="使用BPF, 将Go网络程序的吞吐提升8倍">
+<meta property="og:url" content="https://colobu.com/2022/06/05/use-bpf-to-make-the-go-network-program-8x-faster/">
+<meta property="og:site_name" content="鸟窝">
+<meta property="og:description" content="经典的bpf(classical Berkeley Packet Filter) 是非常好用的一个技术，在一些特殊的Go底层网络编程的场合，可以很好的提高性能。">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="使用BPF, 将Go网络程序的吞吐提升8倍">
+<meta name="twitter:description" content="经典的bpf(classical Berkeley Packet Filter) 是非常好用的一个技术，在一些特殊的Go底层网络编程的场合，可以很好的提高性能。">
+
+  
+  <link rel="alternative" href="/atom.xml" title="鸟窝" type="application/atom+xml">
+  
+  
+  <link rel="icon" href="/favicon.png">
+  
+  <link rel="stylesheet" href="/css/style.css" type="text/css">
+
+  <link href="//cdn.staticfile.org/font-awesome/4.2.0/css/font-awesome.css" rel="stylesheet">
+  
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/fancybox/2.1.7/css/jquery.fancybox.min.css"
+    media="screen" type="text/css">
+  
+  <link rel="stylesheet" href="//cdnjs.cloudflare.com/ajax/libs/animate.css/3.1.1/animate.min.css" media="screen"
+    type="text/css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/tonsky/FiraCode@1.207/distr/fira_code.css">
+</head>
+<body>
+  <div id="container">
+    <div id="wrap">
+      <header id="header">
+  <div id="banner"></div>
+  <div id="header-outer" class="outer">
+    <div id="header-title" class="inner">
+      <h1 id="logo-wrap" class="animated bounceInLeft">
+        <a href="/" id="logo">鸟窝</a>
+      </h1>
+      
+        <h2 id="subtitle-wrap" class="animated bounceInLeft">
+          <a href="/" id="subtitle">大道至简 Simplicity is the ultimate form of sophistication</a>
+        </h2>
+      
+    </div>
+    <div id="header-inner" class="inner">
+      <nav id="main-nav">
+        <a id="main-nav-toggle" class="nav-icon"></a>
+        
+          
+            <a class="main-nav-link" href="/"><i class="fa fa-home">&nbsp;</i>首页</a>
+          
+          
+          
+            <a class="main-nav-link" href="/archives"><i class="fa fa-folder-o">&nbsp;</i>归档</a>
+          
+          
+          
+            <a class="main-nav-link" href="https://github.com/smallnest"><i class="fa fa-github">&nbsp;</i>github</a>
+          
+          
+          
+            <div class="dropdown main-nav-link"><a class="main-nav-link" href="#"><i class="fa fa-bars">&nbsp;</i>网站群</a>
+              <div class="dropdown-content">
+          
+            
+              <a href="/goasm"><i class="fa fa-language"></i>&nbsp;Go汇编示例</a>
+            
+                
+          
+            
+              <a href="https://gowebexamples.com"><i class="fa fa-external-link"></i>&nbsp;Go Web开发示例</a>
+            
+                
+          
+            
+              <a href="http://go-database-sql.org"><i class="fa fa-external-link"></i>&nbsp;Go 数据库开发教程</a>
+            
+                
+          
+            
+              <hr>
+            
+                
+          
+            
+              <a href="http://rpcx.io"><i class="fa undefined"></i>&nbsp;RPCX官网</a>
+            
+                
+          
+            
+              <a href="http://cn.doc.rpcx.io"><i class="fa undefined"></i>&nbsp;RPC开发指南</a>
+            
+                
+          
+          </div>
+        </div>
+          
+          
+          
+            <a class="main-nav-link" href="/ScalaCollectionsCookbook"><i class="fa fa-book">&nbsp;</i>Scala集合技术手册</a>
+          
+          
+          
+            <a class="main-nav-link" href="/about"><i class="fa fa-lemon-o">&nbsp;</i>关于</a>
+          
+          
+
+
+      </nav>
+      <nav id="sub-nav">
+        
+          <a id="nav-rss-link" class="nav-icon" href="/atom.xml" title="RSS Feed"></a>
+        
+        <a id="nav-search-btn" class="nav-icon" title="Search"></a>
+      </nav>
+      <div id="search-form-wrap">
+        <form action="http://www.baidu.com/baidu" method="get" accept-charset="utf-8" class="search-form">
+          <input type="search" name="word" maxlength="20" class="search-form-input" placeholder="Search">
+          <input type="submit" value="" class="search-form-submit">
+          <input name=tn type=hidden value="bds">
+          <input name=cl type=hidden value="3">
+          <input name=ct type=hidden value="2097152">
+          <input type="hidden" name="si" value="colobu.com">
+        </form>
+      </div>
+    </div>
+  </div>
+</header>
+      <div class="outer">
+        <section id="main"><article id="post-use-bpf-to-make-the-go-network-program-8x-faster" class="article article-type-post" itemscope
+  itemprop="blogPost">
+  <div class="article-meta">
+    <a href="/2022/06/05/use-bpf-to-make-the-go-network-program-8x-faster/" class="article-date">
+  <time datetime="2022-06-05T09:05:09.000Z" itemprop="datePublished">2022年06月05日</time>
+</a>
+    
+  <div class="article-category">
+    <a class="article-category-link" href="/categories/Go/">Go</a>
+  </div>
+
+    
+  <div class="article-author"> by smallnest</div>
+
+  </div>
+  <div class="article-inner">
+    
+    
+    <header class="article-header">
+      
+  
+    <h1 class="article-title" itemprop="name">
+      使用BPF, 将Go网络程序的吞吐提升8倍
+	  
+    </h1>
+  
+
+    </header>
+    
+    <div class="article-entry" itemprop="articleBody">
+      
+      
+      
+      <script>function show_answer(btn, x) { if (btn.value === "显示答案") { btn.value = "隐藏答案" } else { btn.value = "显示答案" } var as = document.getElementById(x); if (as.style.display === "none") { as.style.display = "block" } else { as.style.display = "none" } }</script>
+      <p>经典的bpf(classical Berkeley Packet Filter) 是非常好用的一个技术，在一些特殊的Go底层网络编程的场合，可以很好的提高性能。<br><a id="more"></a></p>
+<h2 id="背景">背景</h2>
+<p>先前我开发过一个Go UDP应用程序， 客户端和服务端通过UDP程序，通过raw socket进行通讯。程序的目的比较特殊，这里我以一个简单的程序为例介绍。</p>
+<p>事实上，我说我使用rawsocket方式并不严谨，我并不是采用下面的方式实现socket并进行通讯的(链路层的方式):</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div></pre></td><td class="code"><pre><div class="line">fd, err:= syscall.Socket(syscall.AF_PACKET, syscall.SOCK_RAW,syscall.ETH_P_ALL)</div><div class="line"><span class="keyword">if</span> (err != <span class="constant">nil</span>) {</div><div class="line">    fmt.Println(<span class="string">"Error: "</span> + err.Error())</div><div class="line">    <span class="keyword">return</span>;</div><div class="line">}</div><div class="line">fmt.Println(<span class="string">"Obtained fd "</span>, fd)</div><div class="line"><span class="keyword">defer</span> syscall.Close(fd)</div></pre></td></tr></table></figure>
+
+<p>也不是采用下面的rawsocket方式(IP层的方式):</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> main() {</div><div class="line">    <span class="keyword">var</span> err error</div><div class="line">    fd, e := syscall.Socket(syscall.AF_INET, syscall.SOCK_RAW, syscall.IPPROTO_UDP)</div><div class="line">    <span class="keyword">if</span> e != <span class="constant">nil</span> {</div><div class="line">        fmt.Println(<span class="string">"Problem @ location 1"</span>)</div><div class="line">    }</div><div class="line">    addr := syscall.SockaddrInet4{</div><div class="line">        Port:<span class="number"> 27289</span>,</div><div class="line">        Addr: <span class="number">[4</span>]<span class="typename">byte</span><span class="number">{127</span>,<span class="number"> 0</span>,<span class="number"> 0</span>,<span class="number"> 1</span>},</div><div class="line">    }</div><div class="line">    p := pkt()</div><div class="line">    err = syscall.Sendto(fd, p,<span class="number"> 0</span>, &addr)</div><div class="line">    <span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">        log.Fatal(<span class="string">"Sendto:"</span>, err)</div><div class="line">    }</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>而是直接采用Go标准库中封装好的方法<code>net.ListenPacket(&quot;ip4:udp&quot;, addr)</code>在IP层进行包的发送和接收。</p>
+<p>我通过封装自定义的UDP层的数据结构，实现自定义的包的发送和接收，进行网络的监控。</p>
+<p>也许有人说使用标准库的UDPConn不就行了。如果是普通的UDP程序，的确没问题，如果对于一些特殊的需求，比如监听1000个UDP端口，有上万个节点定时的发送监控的数据，我们不太可能建立1000*1万个UDPConn,所以这里我采用rawsocket通讯的方式。</p>
+<p>RawSocket是是标准Berkeley socket的一部分，我们使用Go的标准库开发网络程序时，大部分场景都是使用封装好的数据报类型(UDPConn)或者流类型(TCPConn),但是如果想做更底层的一些网络编程的话，就需要使用到RawSocket了，比如更底层的TCP、UDP网络控制、ICMP、ARP等协议。不同的操作系统可能实现的RawSocket也不同，这里我们以Linux环境为例。</p>
+<p>Linux man手册对RawSocket相关知识做了详细的介绍:<a href="https://man7.org/linux/man-pages/man2/socket.2.html" target="_blank" rel="external">socket(2)</a>、<a href="https://man7.org/linux/man-pages/man7/packet.7.html" target="_blank" rel="external">packet(7) </a>、<a href="https://man7.org/linux/man-pages/man7/raw.7.html" target="_blank" rel="external">raw(7)</a>,本文不再做转述，这也不是本文的重点。</p>
+<p>依照Linux文档，Linux 服务器中收到的包既=会传给内核网络模块，也会传给RawSocket。所以你使用RawSocket的时候有时候需要注意，比如你在处理TCP的包时，可能Linux内核的网络程序已经把这个包处理了。</p>
+<blockquote>
+<p>Raw sockets may tap all IP protocols in Linux, even protocols like ICMP or TCP which have a protocol module in the kernel.  In this case, the packets are passed to both the kernel module and the raw socket(s).  This should not be relied upon in portable programs, many other BSD socket implementation have limitations here.</p>
+</blockquote>
+<p>如果没有特殊的需求，我们直接就使用<a href="https://pkg.go.dev/net#ListenPacket" target="_blank" rel="external">net.ListenPacket</a>是实现一个RawSocket的程序。这个方法的签名如下:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> ListenPacket(network, address <span class="typename">string</span>) (PacketConn, error)</div></pre></td></tr></table></figure>
+
+<p>其中第一个参数<code>network</code>可以是<code>udp</code>、<code>udp4</code>、<code>udp6</code>、<code>unixgram</code>，也是可以<code>ip</code>、<code>ip4</code>、<code>ip6</code>加冒号再加一个协议号或者协议名，比如<code>ip:1</code>、<code>ip:icmp</code>，就可以你也处理什么协议。</p>
+<h2 id="演示程序">演示程序</h2>
+<h3 id="服务端程序">服务端程序</h3>
+<p>服务端程序我们使用<code>conn, err := net.ListenPacket(&quot;ip4:udp&quot;, *addr)</code>监听本地地址上所有的UDP包，并启动一个goroutine去处理。处理程序中应该还有一个判断，就是检查UDP的端口是不是我们处理的端口，因为这里<code>net.ListenPacket</code>监听的是本地所有的UDP,可能有很多无用的UDP包都传入到用户态的程序中了。</p>
+<p>这里我们使用gopacket对各种协议层的包的定义，方便解析(或创建)TCP/IP各层的网络协议。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div><div class="line">35</div><div class="line">36</div><div class="line">37</div><div class="line">38</div><div class="line">39</div><div class="line">40</div><div class="line">41</div><div class="line">42</div><div class="line">43</div><div class="line">44</div><div class="line">45</div><div class="line">46</div><div class="line">47</div><div class="line">48</div><div class="line">49</div><div class="line">50</div><div class="line">51</div><div class="line">52</div><div class="line">53</div><div class="line">54</div><div class="line">55</div><div class="line">56</div><div class="line">57</div><div class="line">58</div><div class="line">59</div><div class="line">60</div><div class="line">61</div><div class="line">62</div><div class="line">63</div><div class="line">64</div><div class="line">65</div><div class="line">66</div><div class="line">67</div><div class="line">68</div><div class="line">69</div><div class="line">70</div><div class="line">71</div><div class="line">72</div><div class="line">73</div><div class="line">74</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> main</div><div class="line"></div><div class="line"><span class="keyword">import</span> (</div><div class="line">	<span class="string">"flag"</span></div><div class="line">	<span class="string">"log"</span></div><div class="line">	<span class="string">"net"</span></div><div class="line"></div><div class="line">	<span class="string">"github.com/google/gopacket"</span></div><div class="line">	<span class="string">"github.com/google/gopacket/layers"</span></div><div class="line">	<span class="string">"github.com/smallnest/go-network-programming/codec"</span></div><div class="line">	<span class="string">"golang.org/x/net/bpf"</span></div><div class="line">	<span class="string">"golang.org/x/net/ipv4"</span></div><div class="line">)</div><div class="line"></div><div class="line"><span class="keyword">var</span> (</div><div class="line">	addr = flag.String(<span class="string">"s"</span>, <span class="string">"localhost"</span>, <span class="string">"server address"</span>)</div><div class="line">	port = flag.Int(<span class="string">"p"</span>,<span class="number"> 8972</span>, <span class="string">"port"</span>)</div><div class="line">)</div><div class="line"></div><div class="line"><span class="keyword">var</span> (</div><div class="line">	stat         = <span class="built_in">make</span>(<span class="keyword">map</span>[<span class="typename">string</span>]<span class="typename">int</span>)</div><div class="line">	lastStatTime = <span class="typename">int64</span><span class="number">(0</span>)</div><div class="line">)</div><div class="line"></div><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	flag.Parse()</div><div class="line"></div><div class="line">	conn, err := net.ListenPacket(<span class="string">"ip4:udp"</span>, *addr)</div><div class="line">	<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">		<span class="built_in">panic</span>(err)</div><div class="line">	}</div><div class="line"></div><div class="line">	cc := conn.(*net.IPConn)</div><div class="line">	cc.SetReadBuffer<span class="number">(20</span> *<span class="number"> 1024</span> *<span class="number"> 1024</span>)</div><div class="line">	cc.SetWriteBuffer<span class="number">(20</span> *<span class="number"> 1024</span> *<span class="number"> 1024</span>)</div><div class="line"></div><div class="line">	handleConn(conn)</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> handleConn(conn net.PacketConn) {</div><div class="line">	<span class="keyword">for</span> {</div><div class="line">		buffer := <span class="built_in">make</span>([]<span class="typename">byte</span>,<span class="number"> 1024</span>)</div><div class="line"></div><div class="line">		n, remoteaddr, err := conn.ReadFrom(buffer)</div><div class="line">		<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">			log.Fatal(err)</div><div class="line">		}</div><div class="line"></div><div class="line">		buffer = buffer[:n]</div><div class="line"></div><div class="line">		packet := gopacket.NewPacket(buffer, layers.LayerTypeUDP, gopacket.NoCopy)</div><div class="line"></div><div class="line">		<span class="comment">// Get the UDP layer from this packet</span></div><div class="line">		<span class="keyword">if</span> udpLayer := packet.Layer(layers.LayerTypeUDP); udpLayer != <span class="constant">nil</span> {</div><div class="line">			udp, _ := udpLayer.(*layers.UDP)</div><div class="line"></div><div class="line">			<span class="keyword">if</span> app := packet.ApplicationLayer(); app != <span class="constant">nil</span> {</div><div class="line"></div><div class="line">				data, err := codec.EncodeUDPPacket(net.ParseIP(<span class="string">"127.0.0.1"</span>), net.ParseIP(<span class="string">"127.0.0.1"</span>), <span class="typename">uint16</span>(udp.DstPort), <span class="typename">uint16</span>(udp.SrcPort), app.Payload())</div><div class="line">				<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">					log.Printf(<span class="string">"failed to EncodePacket: %v"</span>, err)</div><div class="line">					<span class="keyword">return</span></div><div class="line">				}</div><div class="line"></div><div class="line">				<span class="keyword">if</span> _, err := conn.WriteTo(data, remoteaddr); err != <span class="constant">nil</span> {</div><div class="line">					log.Printf(<span class="string">"failed to write packet: %v"</span>, err)</div><div class="line">					conn.Close()</div><div class="line">					<span class="keyword">return</span></div><div class="line">				}</div><div class="line">			}</div><div class="line">		}</div><div class="line"></div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<h3 id="客户端程序">客户端程序</h3>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div><div class="line">35</div><div class="line">36</div><div class="line">37</div><div class="line">38</div><div class="line">39</div><div class="line">40</div><div class="line">41</div><div class="line">42</div><div class="line">43</div><div class="line">44</div><div class="line">45</div><div class="line">46</div><div class="line">47</div><div class="line">48</div><div class="line">49</div><div class="line">50</div><div class="line">51</div><div class="line">52</div><div class="line">53</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> main</div><div class="line"></div><div class="line"><span class="keyword">import</span> (</div><div class="line">	<span class="string">"fmt"</span></div><div class="line">	<span class="string">"log"</span></div><div class="line">	<span class="string">"net"</span></div><div class="line"></div><div class="line">	<span class="string">"github.com/google/gopacket"</span></div><div class="line">	<span class="string">"github.com/google/gopacket/layers"</span></div><div class="line">	<span class="string">"github.com/smallnest/go-network-programming/codec"</span></div><div class="line">)</div><div class="line"></div><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	conn, err := net.ListenPacket(<span class="string">"ip4:udp"</span>, <span class="string">"127.0.0.1"</span>)</div><div class="line">	<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">		<span class="built_in">panic</span>(err)</div><div class="line">	}</div><div class="line"></div><div class="line">	data, err := codec.EncodeUDPPacket(net.ParseIP(<span class="string">"127.0.0.1"</span>), net.ParseIP(<span class="string">"127.0.0.1"</span>),<span class="number"> 8972</span>,<span class="number"> 0</span>, []<span class="typename">byte</span>(<span class="string">"hello"</span>))</div><div class="line">	<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">		log.Printf(<span class="string">"failed to EncodePacket: %v"</span>, err)</div><div class="line">		<span class="keyword">return</span></div><div class="line">	}</div><div class="line"></div><div class="line">	remoteAddr := &net.IPAddr{IP: net.ParseIP(<span class="string">"127.0.0.1"</span>)}</div><div class="line"></div><div class="line">	<span class="keyword">if</span> _, err := conn.WriteTo(data, remoteAddr); err != <span class="constant">nil</span> {</div><div class="line">		log.Printf(<span class="string">"failed to write packet: %v"</span>, err)</div><div class="line">		conn.Close()</div><div class="line">		<span class="keyword">return</span></div><div class="line">	}</div><div class="line"></div><div class="line">	buffer := <span class="built_in">make</span>([]<span class="typename">byte</span>,<span class="number"> 1024</span>)</div><div class="line"></div><div class="line">	n, _, err := conn.ReadFrom(buffer)</div><div class="line">	<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">		log.Fatal(err)</div><div class="line">	}</div><div class="line"></div><div class="line">	buffer = buffer[:n]</div><div class="line"></div><div class="line">	packet := gopacket.NewPacket(buffer, layers.LayerTypeUDP, gopacket.NoCopy)</div><div class="line"></div><div class="line">	<span class="comment">// Get the UDP layer from this packet</span></div><div class="line">	<span class="keyword">if</span> udpLayer := packet.Layer(layers.LayerTypeUDP); udpLayer != <span class="constant">nil</span> {</div><div class="line"></div><div class="line">		<span class="keyword">if</span> app := packet.ApplicationLayer(); app != <span class="constant">nil</span> {</div><div class="line"></div><div class="line">			fmt.Printf(<span class="string">"reply: %s\n"</span>, app.Payload())</div><div class="line">		}</div><div class="line">	}</div><div class="line"></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>客户端程序这里做了简化，写入一个<code>hello</code>,并读取服务端的返回。我们在做性能测试的时候，会使用循环不断的写入一个seq号，并检查服务端是否返回这个seq，以便计算丢包性能。并且还使用一个限流器进行限流，测试在一定的RPS情况下的丢包率。</p>
+<h3 id="辅助方法">辅助方法</h3>
+<p>下面是<code>EncodeUDPPacket</code>方法，用来产生一个UDP的包数据。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> codec</div><div class="line"></div><div class="line"><span class="keyword">import</span> (</div><div class="line">	<span class="string">"net"</span></div><div class="line"></div><div class="line">	<span class="string">"github.com/google/gopacket"</span></div><div class="line">	<span class="string">"github.com/google/gopacket/layers"</span></div><div class="line">)</div><div class="line"></div><div class="line"><span class="keyword">func</span> EncodeUDPPacket(localIP, remoteIP net.IP, localPort, remotePort <span class="typename">uint16</span>, payload []<span class="typename">byte</span>) ([]<span class="typename">byte</span>, error) {</div><div class="line">	ip := &layers.IPv4{</div><div class="line">		Version: <span class="number"> 4</span>,</div><div class="line">		TTL:     <span class="number"> 128</span>,</div><div class="line">		SrcIP:    localIP,</div><div class="line">		DstIP:    remoteIP,</div><div class="line">		Protocol: layers.IPProtocolUDP,</div><div class="line">	}</div><div class="line">	udp := &layers.UDP{</div><div class="line">		SrcPort: layers.UDPPort(localPort),</div><div class="line">		DstPort: layers.UDPPort(remotePort),</div><div class="line">	}</div><div class="line">	udp.SetNetworkLayerForChecksum(ip)</div><div class="line"></div><div class="line">	buf := gopacket.NewSerializeBuffer()</div><div class="line">	opts := gopacket.SerializeOptions{</div><div class="line">		ComputeChecksums: <span class="constant">true</span>,</div><div class="line">		FixLengths:       <span class="constant">true</span>,</div><div class="line">	}</div><div class="line"></div><div class="line">	err := gopacket.SerializeLayers(buf, opts, udp, gopacket.Payload(payload))</div><div class="line"></div><div class="line">	<span class="keyword">return</span> buf.Bytes(), err</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<h2 id="性能问题">性能问题</h2>
+<p>虽然上面的程序运行的很好，但是在并发量比较大的情况，会有一些问题。</p>
+<p>上面我们启动了一个goroutine去读取这个包，这里是一个性能瓶颈，最终服务端只能使用一个核去处理RawSocket的包。</p>
+<p>即使创建多个goroutine去读取这个PacketConn,也是没有用的，因为这个PacketConn是唯一的，它是一个瓶颈，多个goroutine有时候还不如一个goroutine去读取更好。</p>
+<p>那么能不能调用多次<code>net.ListenPacket(&quot;ip4:udp&quot;, *addr)</code>,生成多个RawSocket并发的去处理呢？</p>
+<p>貌似看起来可以，但是实际上，这多个RawSocket都会读取到相同的UDPPacket，而不是负载均衡平摊到多个Socket上。所以多个RawSocket不但没用，反而更加耗费服务器的资源了。</p>
+<p>实际测试也就能达到2~3万的吞吐，并发量再高就出现丢包的情况了。</p>
+<p>但是没有办法了么？</p>
+<p>也不是。这里我们可以看到，主要性能瓶颈是我们上面的程序没有办法做到负载均衡，利用多核的能力并发的去处理。第二个性能瓶颈就是程序监听了本机所有的UDP的packet,交给用户态程序筛选去处理，这里面有很多我们不需要的包。</p>
+<p>这两个性能问题我们都可以通过BPF进行处理。</p>
+<h2 id="BPF进行包过滤">BPF进行包过滤</h2>
+<p>经典的BPF早在1994就出现了，虽然大家现在都在谈论扩展的BPF(eBPF),但是经典的BPF依然可以发挥它的威力。</p>
+<p>你可能没有在编程中应用过BPF,但是我相信你在实际工作中一定和它发生过什么。</p>
+<p>比如你使用tcpdump在监听网络的传输情况时，经常会加上过滤手段，比如下面的命令是只监听tcp协议的8080端口:</p>
+<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">tcpdump -nn -vvvv -i any <span class="string">"tcp port 8080"</span></div></pre></td></tr></table></figure>
+
+<p>tcpdump其实就是把<code>tcp port 8080</code>生成过滤器，在内核中对包进行过滤，只把过滤后的包打筛选出来。</p>
+<p>其实你可以通过下面的命令查看编译的过滤的代码：</p>
+<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div></pre></td><td class="code"><pre><div class="line">[root@lab ~]<span class="comment"># tcpdump -d "tcp port 8080"</span></div><div class="line">(<span class="number">000</span>) ldh      [<span class="number">12</span>]</div><div class="line">(<span class="number">001</span>) jeq      <span class="comment">#0x86dd          jt 2	jf 8</span></div><div class="line">(<span class="number">002</span>) ldb      [<span class="number">20</span>]</div><div class="line">(<span class="number">003</span>) jeq      <span class="comment">#0x6             jt 4	jf 19</span></div><div class="line">(<span class="number">004</span>) ldh      [<span class="number">54</span>]</div><div class="line">(<span class="number">005</span>) jeq      <span class="comment">#0x1f90          jt 18	jf 6</span></div><div class="line">(<span class="number">006</span>) ldh      [<span class="number">56</span>]</div><div class="line">(<span class="number">007</span>) jeq      <span class="comment">#0x1f90          jt 18	jf 19</span></div><div class="line">(<span class="number">008</span>) jeq      <span class="comment">#0x800           jt 9	jf 19</span></div><div class="line">(<span class="number">009</span>) ldb      [<span class="number">23</span>]</div><div class="line">(<span class="number">010</span>) jeq      <span class="comment">#0x6             jt 11	jf 19</span></div><div class="line">(<span class="number">011</span>) ldh      [<span class="number">20</span>]</div><div class="line">(<span class="number">012</span>) jset     <span class="comment">#0x1fff          jt 19	jf 13</span></div><div class="line">(<span class="number">013</span>) ldxb     <span class="number">4</span>*([<span class="number">14</span>]&<span class="number">0</span>xf)</div><div class="line">(<span class="number">014</span>) ldh      [x + <span class="number">14</span>]</div><div class="line">(<span class="number">015</span>) jeq      <span class="comment">#0x1f90          jt 18	jf 16</span></div><div class="line">(<span class="number">016</span>) ldh      [x + <span class="number">16</span>]</div><div class="line">(<span class="number">017</span>) jeq      <span class="comment">#0x1f90          jt 18	jf 19</span></div><div class="line">(<span class="number">018</span>) ret      <span class="comment">#262144</span></div><div class="line">(<span class="number">019</span>) ret      <span class="comment">#0</span></div></pre></td></tr></table></figure>
+
+<p>这代表什么意思的？BPF定义了有限一些指令，可以在VM中，对包进行过滤.<br>第一行是加载包的偏移量(offset 12个字节)，第二行是检查是否是IPV6，如果是跳到<code>002</code>,如果不是跳到<code>008</code>。我们关注一下IPV4。<br><code>008</code>那一行是判断是否是ipv4，如果是跳到<code>009</code>。<code>009</code>加载偏移量23处的一个字节，它是ip proto,<code>010</code>行判断ip proto是否是TCP,如果是跳到<code>011</code>。<br>接下来判断flags，以便确定数据的地址。<br><code>014</code>行和<code>016</code>行是读取TCP协议中的源端口和目的端口，如果等于<code>8080</code>(<code>0x1f90</code>),则最大返回包大小262144个字节，否则就丢弃这个包。</p>
+<p>当然tcpdump的生成的代码相当的严谨了我我们实际写的时候，如果确定是ipv4的包，包也没什么扩展的话，写出的代码要比这个简单。但是我们实际在应用BPF的时候不妨采用tcpdump生成的代码，不会出错。</p>
+<p>使用<code>-dd</code>可以显示成c代码片段，使用<code>-ddd</code>显示为十进制数。我们看一下<code>-dd</code>的效果，因为这个结果我们可以用来转换成Go的代码:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div></pre></td><td class="code"><pre><div class="line">[root@lab ~]# tcpdump -dd <span class="string">"tcp port 8080"</span></div><div class="line">{<span class="number"> 0</span>x28,<span class="number"> 0</span>,<span class="number"> 0</span>,<span class="number"> 0</span>x0000000c },</div><div class="line">{<span class="number"> 0</span>x15,<span class="number"> 0</span>,<span class="number"> 6</span>,<span class="number"> 0</span>x000086dd },</div><div class="line">{<span class="number"> 0</span>x30,<span class="number"> 0</span>,<span class="number"> 0</span>,<span class="number"> 0</span>x00000014 },</div><div class="line">{<span class="number"> 0</span>x15,<span class="number"> 0</span>,<span class="number"> 15</span>,<span class="number"> 0</span>x00000006 },</div><div class="line">{<span class="number"> 0</span>x28,<span class="number"> 0</span>,<span class="number"> 0</span>,<span class="number"> 0</span>x00000036 },</div><div class="line">{<span class="number"> 0</span>x15,<span class="number"> 12</span>,<span class="number"> 0</span>,<span class="number"> 0</span>x00001f90 },</div><div class="line">{<span class="number"> 0</span>x28,<span class="number"> 0</span>,<span class="number"> 0</span>,<span class="number"> 0</span>x00000038 },</div><div class="line">{<span class="number"> 0</span>x15,<span class="number"> 10</span>,<span class="number"> 11</span>,<span class="number"> 0</span>x00001f90 },</div><div class="line">{<span class="number"> 0</span>x15,<span class="number"> 0</span>,<span class="number"> 10</span>,<span class="number"> 0</span>x00000800 },</div><div class="line">{<span class="number"> 0</span>x30,<span class="number"> 0</span>,<span class="number"> 0</span>,<span class="number"> 0</span>x00000017 },</div><div class="line">{<span class="number"> 0</span>x15,<span class="number"> 0</span>,<span class="number"> 8</span>,<span class="number"> 0</span>x00000006 },</div><div class="line">{<span class="number"> 0</span>x28,<span class="number"> 0</span>,<span class="number"> 0</span>,<span class="number"> 0</span>x00000014 },</div><div class="line">{<span class="number"> 0</span>x45,<span class="number"> 6</span>,<span class="number"> 0</span>,<span class="number"> 0</span>x00001fff },</div><div class="line">{<span class="number"> 0</span>xb1,<span class="number"> 0</span>,<span class="number"> 0</span>,<span class="number"> 0</span>x0000000e },</div><div class="line">{<span class="number"> 0</span>x48,<span class="number"> 0</span>,<span class="number"> 0</span>,<span class="number"> 0</span>x0000000e },</div><div class="line">{<span class="number"> 0</span>x15,<span class="number"> 2</span>,<span class="number"> 0</span>,<span class="number"> 0</span>x00001f90 },</div><div class="line">{<span class="number"> 0</span>x48,<span class="number"> 0</span>,<span class="number"> 0</span>,<span class="number"> 0</span>x00000010 },</div><div class="line">{<span class="number"> 0</span>x15,<span class="number"> 0</span>,<span class="number"> 1</span>,<span class="number"> 0</span>x00001f90 },</div><div class="line">{<span class="number"> 0</span>x6,<span class="number"> 0</span>,<span class="number"> 0</span>,<span class="number"> 0</span>x00040000 },</div><div class="line">{<span class="number"> 0</span>x6,<span class="number"> 0</span>,<span class="number"> 0</span>,<span class="number"> 0</span>x00000000 },</div></pre></td></tr></table></figure>
+
+<p>实际上，<a href="https://pkg.go.dev/golang.org/x/net/bpf" target="_blank" rel="external">x/net/bpf</a>提供了相应的方法，可以更容易的编写BPF程序，序列化和反序列化。比如编写一个过滤出目的端口等于8972的所有的包，我们可以简单写成如下的格式(考虑到简单形式，我们只考虑了IPV4和普通IP包的形式):</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> Filter []bpf.Instruction</div><div class="line"></div><div class="line"><span class="keyword">var</span> filter = Filter{</div><div class="line">	bpf.LoadAbsolute{Off:<span class="number"> 22</span>, Size:<span class="number"> 2</span>},                                <span class="comment">//加载目的端口到寄存器</span></div><div class="line">	bpf.JumpIf{Cond: bpf.JumpEqual, Val:<span class="number"> 8972</span>, SkipFalse:<span class="number"> 1</span>}, <span class="comment">// 如果值等于8972的话,执行下一行，否则跳过下一行</span></div><div class="line">	bpf.RetConstant{Val:<span class="number"> 0</span>xffff},   <span class="comment">// 返回这个包的最多0xffff的字节的数据</span></div><div class="line"></div><div class="line">	bpf.RetConstant{Val:<span class="number"> 0</span>x0}, <span class="comment">// 返回零个字节，也就是忽略这个包</span></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>我们可以写一个程序，把tcpdump生成的代码转换成bpf的RawInstruction指令:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div><div class="line">35</div><div class="line">36</div><div class="line">37</div><div class="line">38</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> parse(data <span class="typename">string</span>) (raws []bpf.RawInstruction) {</div><div class="line">	lines := strings.Split(data, <span class="string">"\n"</span>)</div><div class="line"></div><div class="line">	<span class="keyword">for</span> _, line := <span class="keyword">range</span> lines {</div><div class="line">		line = strings.TrimSpace(line)</div><div class="line">		<span class="keyword">if</span> line == <span class="string">""</span> {</div><div class="line">			<span class="keyword">continue</span></div><div class="line">		}</div><div class="line"></div><div class="line">		line = strings.TrimPrefix(line, <span class="string">"{"</span>)</div><div class="line">		line = strings.TrimSuffix(line, <span class="string">" },"</span>)</div><div class="line">		items := strings.Split(line, <span class="string">","</span>)</div><div class="line">		<span class="comment">// assert len(items) == 4</span></div><div class="line"></div><div class="line">		raw := bpf.RawInstruction{</div><div class="line">			Op: <span class="typename">uint16</span>(numToInteger(items<span class="number">[0</span>])),</div><div class="line">			Jt: <span class="typename">uint8</span>(numToInteger(items<span class="number">[1</span>])),</div><div class="line">			Jf: <span class="typename">uint8</span>(numToInteger(items<span class="number">[2</span>])),</div><div class="line">			K:  <span class="typename">uint32</span>(numToInteger(items<span class="number">[3</span>])),</div><div class="line">		}</div><div class="line"></div><div class="line">		raws = <span class="built_in">append</span>(raws, raw)</div><div class="line">	}</div><div class="line"></div><div class="line">	<span class="keyword">return</span> raws</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> numToInteger(s <span class="typename">string</span>) <span class="typename">int</span> {</div><div class="line">	s = strings.TrimSpace(s)</div><div class="line">	<span class="keyword">if</span> strings.HasPrefix(s, <span class="string">"0x"</span>) {</div><div class="line">		s := strings.Replace(s, <span class="string">"0x"</span>, <span class="string">""</span>,<span class="number"> -1</span>)</div><div class="line">		result, _ := strconv.ParseInt(s,<span class="number"> 16</span>,<span class="number"> 64</span>)</div><div class="line">		<span class="keyword">return</span> <span class="typename">int</span>(result)</div><div class="line">	}</div><div class="line"></div><div class="line">	result, _ := strconv.ParseInt(s,<span class="number"> 10</span>,<span class="number"> 64</span>)</div><div class="line">	<span class="keyword">return</span> <span class="typename">int</span>(result)</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>好了所有这一切都准备好了，背景知识介绍了，当前的RawSocket程序的性能瓶颈也介绍了，那么如果解决性能瓶颈呢。</p>
+<p>第一个性能瓶颈我们可以生成多个goroutine，每个goroutine负责过滤一部分的包，这样就实现了负载均衡。比如根据客户端的IP进行过滤，或者服务端监听1000个端口，每个goroutine只负责一部分的端口。而可以根据客户端的源端口进行过滤等等。总是，通过BPF过滤，一个goroutine只负责一部分的packet，实现了多核的处理。</p>
+<p>第二个瓶颈随着第一个问题也迎刃而解。因为BPF只过滤我们的特定的端口，其它端口的UDP包不会从内核态复制到用户态，减少了无用包的处理。</p>
+<p>要为标准库的PacketConn设置BPF过滤，也有多种办法，比如调用<code>syscall.SetsockoptInt</code>进行设置。但是<a href="https://pkg.go.dev/golang.org/x/net/ipv4#PacketConn.SetBPF" target="_blank" rel="external">golang.org/x/net/ipv4</a>提供了SetBPF方法，我们可以直接将标准库的PacketConn转换成ipv4.PacketConn,再进行设置。</p>
+<p>比如上面的server程序，我们可以修改为使用BPF在内核态过滤:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div><div class="line">35</div><div class="line">36</div><div class="line">37</div><div class="line">38</div><div class="line">39</div><div class="line">40</div><div class="line">41</div><div class="line">42</div><div class="line">43</div><div class="line">44</div><div class="line">45</div><div class="line">46</div><div class="line">47</div><div class="line">48</div><div class="line">49</div><div class="line">50</div><div class="line">51</div><div class="line">52</div><div class="line">53</div><div class="line">54</div><div class="line">55</div><div class="line">56</div><div class="line">57</div><div class="line">58</div><div class="line">59</div><div class="line">60</div><div class="line">61</div><div class="line">62</div><div class="line">63</div><div class="line">64</div><div class="line">65</div><div class="line">66</div><div class="line">67</div><div class="line">68</div><div class="line">69</div><div class="line">70</div><div class="line">71</div><div class="line">72</div><div class="line">73</div><div class="line">74</div><div class="line">75</div><div class="line">76</div><div class="line">77</div><div class="line">78</div><div class="line">79</div><div class="line">80</div><div class="line">81</div><div class="line">82</div><div class="line">83</div><div class="line">84</div><div class="line">85</div><div class="line">86</div><div class="line">87</div><div class="line">88</div><div class="line">89</div><div class="line">90</div><div class="line">91</div><div class="line">92</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> main</div><div class="line"></div><div class="line"><span class="keyword">import</span> (</div><div class="line">	<span class="string">"flag"</span></div><div class="line">	<span class="string">"log"</span></div><div class="line">	<span class="string">"net"</span></div><div class="line"></div><div class="line">	<span class="string">"github.com/google/gopacket"</span></div><div class="line">	<span class="string">"github.com/google/gopacket/layers"</span></div><div class="line">	<span class="string">"github.com/smallnest/go-network-programming/codec"</span></div><div class="line">	<span class="string">"golang.org/x/net/bpf"</span></div><div class="line">	<span class="string">"golang.org/x/net/ipv4"</span></div><div class="line">)</div><div class="line"></div><div class="line"><span class="keyword">var</span> (</div><div class="line">	addr = flag.String(<span class="string">"s"</span>, <span class="string">"localhost"</span>, <span class="string">"server address"</span>)</div><div class="line">	port = flag.Int(<span class="string">"p"</span>,<span class="number"> 8972</span>, <span class="string">"port"</span>)</div><div class="line">)</div><div class="line"></div><div class="line"><span class="keyword">var</span> (</div><div class="line">	stat         = <span class="built_in">make</span>(<span class="keyword">map</span>[<span class="typename">string</span>]<span class="typename">int</span>)</div><div class="line">	lastStatTime = <span class="typename">int64</span><span class="number">(0</span>)</div><div class="line">)</div><div class="line"></div><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	flag.Parse()</div><div class="line"></div><div class="line">	conn, err := net.ListenPacket(<span class="string">"ip4:udp"</span>, *addr)</div><div class="line">	<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">		<span class="built_in">panic</span>(err)</div><div class="line">	}</div><div class="line"></div><div class="line">	cc := conn.(*net.IPConn)</div><div class="line">	cc.SetReadBuffer<span class="number">(20</span> *<span class="number"> 1024</span> *<span class="number"> 1024</span>)</div><div class="line">	cc.SetWriteBuffer<span class="number">(20</span> *<span class="number"> 1024</span> *<span class="number"> 1024</span>)</div><div class="line"></div><div class="line">	pconn := ipv4.NewPacketConn(conn)</div><div class="line">	<span class="keyword">var</span> assembled []bpf.RawInstruction</div><div class="line">	<span class="keyword">if</span> assembled, err = bpf.Assemble(filter); err != <span class="constant">nil</span> {</div><div class="line">		log.Print(err)</div><div class="line">		<span class="keyword">return</span></div><div class="line">	}</div><div class="line">	pconn.SetBPF(assembled)</div><div class="line"></div><div class="line">	handleConn(conn)</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> handleConn(conn net.PacketConn) {</div><div class="line">	<span class="keyword">for</span> {</div><div class="line">		buffer := <span class="built_in">make</span>([]<span class="typename">byte</span>,<span class="number"> 1024</span>)</div><div class="line"></div><div class="line">		n, remoteaddr, err := conn.ReadFrom(buffer)</div><div class="line">		<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">			log.Fatal(err)</div><div class="line">		}</div><div class="line"></div><div class="line">		buffer = buffer[:n]</div><div class="line"></div><div class="line">		packet := gopacket.NewPacket(buffer, layers.LayerTypeUDP, gopacket.NoCopy)</div><div class="line"></div><div class="line">		<span class="comment">// Get the UDP layer from this packet</span></div><div class="line">		<span class="keyword">if</span> udpLayer := packet.Layer(layers.LayerTypeUDP); udpLayer != <span class="constant">nil</span> {</div><div class="line">			udp, _ := udpLayer.(*layers.UDP)</div><div class="line"></div><div class="line">			<span class="keyword">if</span> app := packet.ApplicationLayer(); app != <span class="constant">nil</span> {</div><div class="line"></div><div class="line">				data, err := codec.EncodeUDPPacket(net.ParseIP(<span class="string">"127.0.0.1"</span>), net.ParseIP(<span class="string">"127.0.0.1"</span>), <span class="typename">uint16</span>(udp.DstPort), <span class="typename">uint16</span>(udp.SrcPort), app.Payload())</div><div class="line">				<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">					log.Printf(<span class="string">"failed to EncodePacket: %v"</span>, err)</div><div class="line">					<span class="keyword">return</span></div><div class="line">				}</div><div class="line"></div><div class="line">				<span class="keyword">if</span> _, err := conn.WriteTo(data, remoteaddr); err != <span class="constant">nil</span> {</div><div class="line">					log.Printf(<span class="string">"failed to write packet: %v"</span>, err)</div><div class="line">					conn.Close()</div><div class="line">					<span class="keyword">return</span></div><div class="line">				}</div><div class="line">			}</div><div class="line">		}</div><div class="line"></div><div class="line">	}</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">type</span> Filter []bpf.Instruction</div><div class="line"></div><div class="line"><span class="keyword">var</span> filter = Filter{</div><div class="line">	bpf.LoadAbsolute{Off:<span class="number"> 22</span>, Size:<span class="number"> 2</span>},                                <span class="comment">// load the destination port</span></div><div class="line">	bpf.JumpIf{Cond: bpf.JumpEqual, Val: <span class="typename">uint32</span>(*port), SkipFalse:<span class="number"> 1</span>}, <span class="comment">// if Val != 8972 skip next instruction</span></div><div class="line">	bpf.RetConstant{Val:<span class="number"> 0</span>xffff},                                      <span class="comment">// return 0xffff bytes (or less) from packet</span></div><div class="line"></div><div class="line">	bpf.RetConstant{Val:<span class="number"> 0</span>x0}, <span class="comment">// return 0 bytes, effectively ignore this packet</span></div><div class="line">}</div></pre></td></tr></table></figure>
+
+
+      
+    </div>
+    <footer class="article-footer">
+      
+
+      
+      <!-- <link rel="stylesheet" href="https://unpkg.com/gitalk/dist/gitalk.css">
+      <script src="https://unpkg.com/gitalk/dist/gitalk.min.js"></script> -->
+      <section id="comments">
+        <script src="https://utteranc.es/client.js"
+                repo="smallnest/gitalk"
+                issue-term="title"
+                theme="github-light"
+                crossorigin="anonymous"
+                async>
+        </script>
+        <!-- <div id="gitalk-container"></div>
+        <script type="text/javascript">
+          var gitalkOpts = {
+            id: '2022/06/05/use-bpf-to-make-the-go-network-progra',
+            owner: 'smallnest',
+            repo: 'gitalk',
+            title: '使用BPF, 将Go网络程序的吞吐提升8倍',
+            body: 'https://colobu.com/2022/06/05/use-bpf-to-make-the-go-network-program-8x-faster/',
+            clientID: 'bc02724130ed5b7ee275',
+            clientSecret: '68cb0bae2f93a8b88b09e0eb9b08c844b06a9047',
+            admin: ['smallnest'],
+            distractionFreeMode: false
+          };
+
+          const gitalk = new Gitalk(gitalkOpts)
+          gitalk.render('gitalk-container')
+        </script> -->
+        <noscript> 为正常使用评论功能请激活JavaScript</noscript>
+      </section>
+
+      
+
+    </footer>
+  </div>
+  
+  
+<nav id="article-nav">
+  
+  
+    <a href="/2022/06/02/setup-a-k8s-cluster-with-minikube/" id="article-nav-older" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">Older</strong>
+      <div class="article-nav-title">想学习k8s但没有环境？使用minikube轻松搭建一个</div>
+    </a>
+  
+</nav>
+
+  
+</article></section>
+        
+          <aside id="sidebar">
+  
+    <div class="widget-wrap">
+  <h3 class="widget-title">微信公众号</h3>
+  <div class="widget">
+    <img width="100%" src="/images/widgets/gopatterns.jpg">
+  </div>
+</div>
+
+<div class="widget-wrap">
+  <h3 class="widget-title">极客时间专栏</h3>
+  <div class="widget">
+    <a href="https://time.geekbang.org/column/intro/100061801">
+      <img width="100%" src="/images/widgets/geekbang.png">
+    </a>
+  </div>
+</div>
+
+<div class="widget-wrap">
+    <h3 class="widget-title">原创图书</h3>
+    <div class="widget">
+      <a href="/ScalaCollectionsCookbook/">
+        <img width="100%" src="/ScalaCollectionsCookbook/scala_collections_cookbook.jpg">
+        <img width="100%" src="/ScalaCollectionsCookbook/scala_collections_cookbook_tw.png">
+      </a>
+    </div>
+</div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">分类</h3>
+    <div class="widget">
+      <ul class="category-list"><li class="category-list-item"><a class="category-list-link" href="/categories/Android/">Android</a><span class="category-list-count">12</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/C/">C++</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/DOTNET/">DOTNET</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Docker/">Docker</a><span class="category-list-count">5</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Go/">Go</a><span class="category-list-count">192</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Java/">Java</a><span class="category-list-count">64</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Linux/">Linux</a><span class="category-list-count">7</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Rust/">Rust</a><span class="category-list-count">12</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Scala/">Scala</a><span class="category-list-count">18</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/go/">go</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/k8s/">k8s</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/分享/">分享</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/前端开发/">前端开发</a><span class="category-list-count">18</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/区块链/">区块链</a><span class="category-list-count">8</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/大数据/">大数据</a><span class="category-list-count">60</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/工具/">工具</a><span class="category-list-count">28</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/数据库/">数据库</a><span class="category-list-count">3</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/架构/">架构</a><span class="category-list-count">27</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/算法/">算法</a><span class="category-list-count">4</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/管理/">管理</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/网络编程/">网络编程</a><span class="category-list-count">13</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/读书笔记/">读书笔记</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/运维/">运维</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/高并发编程/">高并发编程</a><span class="category-list-count">20</span></li></ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">标签云</h3>
+    <div class="widget tagcloud">
+      <a href="/tags/Android/" style="font-size: 15.71px;">Android</a><a href="/tags/ApacheBench/" style="font-size: 11.43px;">ApacheBench</a><a href="/tags/Bower/" style="font-size: 10.00px;">Bower</a><a href="/tags/C/" style="font-size: 10.00px;">C#</a><a href="/tags/CDN/" style="font-size: 10.00px;">CDN</a><a href="/tags/CQRS/" style="font-size: 10.00px;">CQRS</a><a href="/tags/CRC/" style="font-size: 10.00px;">CRC</a><a href="/tags/CSS/" style="font-size: 11.43px;">CSS</a><a href="/tags/CompletableFuture/" style="font-size: 10.00px;">CompletableFuture</a><a href="/tags/Comsat/" style="font-size: 10.00px;">Comsat</a><a href="/tags/Curator/" style="font-size: 18.57px;">Curator</a><a href="/tags/DSL/" style="font-size: 10.00px;">DSL</a><a href="/tags/Disruptor/" style="font-size: 10.00px;">Disruptor</a><a href="/tags/Docker/" style="font-size: 11.43px;">Docker</a><a href="/tags/Ember/" style="font-size: 11.43px;">Ember</a><a href="/tags/FastJson/" style="font-size: 10.00px;">FastJson</a><a href="/tags/Fiber/" style="font-size: 10.00px;">Fiber</a><a href="/tags/GAE/" style="font-size: 10.00px;">GAE</a><a href="/tags/GC/" style="font-size: 12.86px;">GC</a><a href="/tags/Gnuplot/" style="font-size: 10.00px;">Gnuplot</a><a href="/tags/Go/" style="font-size: 14.29px;">Go</a><a href="/tags/Gradle/" style="font-size: 10.00px;">Gradle</a><a href="/tags/Grunt/" style="font-size: 10.00px;">Grunt</a><a href="/tags/Gulp/" style="font-size: 10.00px;">Gulp</a><a href="/tags/Hadoop/" style="font-size: 10.00px;">Hadoop</a><a href="/tags/Hazelcast/" style="font-size: 10.00px;">Hazelcast</a><a href="/tags/IPFS/" style="font-size: 10.00px;">IPFS</a><a href="/tags/Ignite/" style="font-size: 10.00px;">Ignite</a><a href="/tags/JVM/" style="font-size: 10.00px;">JVM</a><a href="/tags/Java/" style="font-size: 17.14px;">Java</a><a href="/tags/Kafka/" style="font-size: 20.00px;">Kafka</a><a href="/tags/Lambda/" style="font-size: 14.29px;">Lambda</a><a href="/tags/Linux/" style="font-size: 12.86px;">Linux</a><a href="/tags/LongAdder/" style="font-size: 10.00px;">LongAdder</a><a href="/tags/MathJax/" style="font-size: 10.00px;">MathJax</a><a href="/tags/Maven/" style="font-size: 11.43px;">Maven</a><a href="/tags/Memcached/" style="font-size: 10.00px;">Memcached</a><a href="/tags/Metrics/" style="font-size: 10.00px;">Metrics</a><a href="/tags/Mongo/" style="font-size: 12.86px;">Mongo</a><a href="/tags/Netty/" style="font-size: 15.71px;">Netty</a>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">归档</h3>
+    <div class="widget">
+      <ul class="archive-list"><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/06/">June 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/05/">May 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/04/">April 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/03/">March 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/02/">February 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/01/">January 2022</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/12/">December 2021</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/11/">November 2021</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/10/">October 2021</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/08/">August 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/07/">July 2021</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/06/">June 2021</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/05/">May 2021</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/04/">April 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/03/">March 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/02/">February 2021</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/01/">January 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/12/">December 2020</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/11/">November 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/09/">September 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/08/">August 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/07/">July 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/06/">June 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/05/">May 2020</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/04/">April 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/03/">March 2020</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/02/">February 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/01/">January 2020</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/12/">December 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/11/">November 2019</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/10/">October 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/09/">September 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/08/">August 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/07/">July 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/06/">June 2019</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/05/">May 2019</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/04/">April 2019</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/03/">March 2019</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/02/">February 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/01/">January 2019</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/12/">December 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/11/">November 2018</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/10/">October 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/09/">September 2018</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/08/">August 2018</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/07/">July 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/06/">June 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/05/">May 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/04/">April 2018</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/03/">March 2018</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/02/">February 2018</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/01/">January 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/12/">December 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/11/">November 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/10/">October 2017</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/09/">September 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/08/">August 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/07/">July 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/06/">June 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/05/">May 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/04/">April 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/03/">March 2017</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/02/">February 2017</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/01/">January 2017</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/12/">December 2016</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/11/">November 2016</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/10/">October 2016</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/09/">September 2016</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/08/">August 2016</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/07/">July 2016</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/06/">June 2016</a><span class="archive-list-count">14</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/05/">May 2016</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/04/">April 2016</a><span class="archive-list-count">14</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/03/">March 2016</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/02/">February 2016</a><span class="archive-list-count">8</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/01/">January 2016</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/12/">December 2015</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/11/">November 2015</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/10/">October 2015</a><span class="archive-list-count">9</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/09/">September 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/08/">August 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/07/">July 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/06/">June 2015</a><span class="archive-list-count">8</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/05/">May 2015</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/04/">April 2015</a><span class="archive-list-count">15</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/03/">March 2015</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/02/">February 2015</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/01/">January 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/12/">December 2014</a><span class="archive-list-count">28</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/11/">November 2014</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/10/">October 2014</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/09/">September 2014</a><span class="archive-list-count">28</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/08/">August 2014</a><span class="archive-list-count">19</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/07/">July 2014</a><span class="archive-list-count">1</span></li></ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">近期文章</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+            <a href="/2022/06/05/use-bpf-to-make-the-go-network-program-8x-faster/">使用BPF, 将Go网络程序的吞吐提升8倍</a>
+          </li>
+        
+          <li>
+            <a href="/2022/06/02/setup-a-k8s-cluster-with-minikube/">想学习k8s但没有环境？使用minikube轻松搭建一个</a>
+          </li>
+        
+          <li>
+            <a href="/2022/05/22/use-ebpf-to-trace-rpcx-microservices/">使用ebpf跟踪rpcx微服务</a>
+          </li>
+        
+          <li>
+            <a href="/2022/05/06/changes-in-atomic-package/">atomic包的新变化</a>
+          </li>
+        
+          <li>
+            <a href="/2022/04/26/Crimes-with-Go-Generics/">Go泛型的坏例子</a>
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">友情链接</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+			 
+            <a href="http://stackshare.io" target="_blank">技术栈</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://toutiao.io/" target="_blank">开发者头条</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://weekly.manong.io/issues/" target="_blank">码农周刊</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.tuicool.com/mags" target="_blank">编程狂人周刊</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.importnew.com/" target="_blank">importnew</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://ifeve.com/" target="_blank">并发编程网</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://github.com" target="_blank">github</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://stackoverflow.com/" target="_blank">stackoverflow</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.javacodegeeks.com/" target="_blank">javacodegeeks</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.infoq.com/" target="_blank">infoq</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.dzone.com/links/index.html" target="_blank">dzone</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://oj.leetcode.com/problems/" target="_blank">leetcode</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://tutorials.jenkov.com" target="_blank">jenkov</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://howtodoinjava.com" target="_blank">HowToDoInJava</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://java-design-patterns.com/patterns/" target="_blank">java design patterns</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://medium.com/netflix-techblog" target="_blank">Netflix技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://www.techiedelight.com" target="_blank">Techie Delight</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://engineering.linkedin.com/blog" target="_blank">Linkedin技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://blogs.dropbox.com/tech/" target="_blank">Dropbox技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://code.fb.com" target="_blank">Facebook技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://jm.taobao.org" target="_blank">淘宝中间件团队</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://tech.meituan.com" target="_blank">美团技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://blogs.360.cn" target="_blank">360技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://xiaomi-info.github.io" target="_blank">小米信息部技术团队</a>
+			
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+      
+
+  
+</aside>
+        
+      </div>
+      <footer id="footer">
+  
+  <div class="outer">
+    <div id="footer-info" class="inner">
+      &copy; 2022 smallnest<br>
+	  Powered by <a href="http://hexo.io/" target="_blank">Hexo</a>
+    </div>
+  </div>
+</footer>
+    </div>
+    <nav id="mobile-nav">
+  
+    
+      <a href="/" class="mobile-nav-link"><i class="fa fa-home">&nbsp;</i>首页</a>
+    
+  
+    
+      <a href="/archives" class="mobile-nav-link"><i class="fa fa-folder-o">&nbsp;</i>归档</a>
+    
+  
+    
+      <a href="https://github.com/smallnest" class="mobile-nav-link"><i class="fa fa-github">&nbsp;</i>github</a>
+    
+  
+    
+      <a class="mobile-nav-link" href="#"><i class="fa fa-bars">&nbsp;</i>网站群</a>
+    
+      
+            <a class="mobile-nav-link" href="/goasm">&nbsp;&nbsp;<i class="fa fa-language">&nbsp;</i>Go汇编示例</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="https://gowebexamples.com">&nbsp;&nbsp;<i class="fa fa-external-link">&nbsp;</i>Go Web开发示例</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://go-database-sql.org">&nbsp;&nbsp;<i class="fa fa-external-link">&nbsp;</i>Go 数据库开发教程</a>
+          
+          
+    
+      
+            
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://rpcx.io">&nbsp;&nbsp;<i class="fa undefined">&nbsp;</i>RPCX官网</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://cn.doc.rpcx.io">&nbsp;&nbsp;<i class="fa undefined">&nbsp;</i>RPC开发指南</a>
+          
+          
+    
+    
+  
+    
+      <a href="/ScalaCollectionsCookbook" class="mobile-nav-link"><i class="fa fa-book">&nbsp;</i>Scala集合技术手册</a>
+    
+  
+    
+      <a href="/about" class="mobile-nav-link"><i class="fa fa-lemon-o">&nbsp;</i>关于</a>
+    
+  
+</nav>
+    
+<script src="//cdn.staticfile.org/jquery/1.11.1/jquery.min.js"></script>
+<script src="//cdn.bootcss.com/jquery.lazyload/1.9.1/jquery.lazyload.min.js"></script>
+
+<script src="//cdnjs.cloudflare.com/ajax/libs/fancybox/3.2.5/jquery.fancybox.min.js"></script>
+
+
+<script src="/js/script.js" type="text/javascript"></script>
+
+<!-- mathjax config similar to math.stackexchange -->
+<script type="text/x-mathjax-config">
+  MathJax.Hub.Config({
+    tex2jax: {
+      inlineMath: [ ['$','$'], ["\\(","\\)"] ],
+      processEscapes: true,
+      skipTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code']
+    }
+  });
+  MathJax.Hub.Queue(function() {
+      var all = MathJax.Hub.getAllJax(), i;
+      for(i=0; i < all.length; i += 1) {
+        all[i].SourceElement().parentNode.className += ' has-jax';
+      }
+  });
+</script>
+<script type="text/javascript" src="//cdn.bootcss.com/mathjax/2.6.0-beta.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML">
+</script>
+
+<div id="totop" style="position:fixed;bottom:150px;right:10px;cursor: pointer;z-index: 2000;">
+	<a title="返回顶部"><img src="/images/scrollup.png"/></a>
+</div>
+<script src="/js/totop.js" type="text/javascript"></script>
+
+
+
+
+<script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "//hm.baidu.com/hm.js?e085d87993250aab11f3e0c15f1c2785";
+  var s = document.getElementsByTagName("script")[0]; 
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+
+
+  </div>
+</body>
+</html>
