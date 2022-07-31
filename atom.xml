@@ -4,7 +4,7 @@
   <subtitle><![CDATA[大道至简 Simplicity is the ultimate form of sophistication]]></subtitle>
   <link href="/atom.xml" rel="self"/>
   <link href="https://colobu.com/"/>
-  <updated>2022-07-25T12:20:51.594Z</updated>
+  <updated>2022-07-31T09:41:23.081Z</updated>
   <id>https://colobu.com/</id>
   
   <author>
@@ -13,6 +13,103 @@
   </author>
   
   <generator uri="http://zespia.tw/hexo/">Hexo</generator>
+  
+  <entry>
+    <title><![CDATA[2022 Go生态圈 rpc 框架 Benchmark]]></title>
+    <link href="https://colobu.com/2022/07/31/2022-rpc-frameworks-benchmarks/"/>
+    <id>https://colobu.com/2022/07/31/2022-rpc-frameworks-benchmarks/</id>
+    <published>2022-07-31T07:49:55.000Z</published>
+    <updated>2022-07-31T09:40:53.414Z</updated>
+    <content type="html"><![CDATA[<p>距离上一次<a href="https://colobu.com/2021/08/01/benchmark-of-rpc-frameworks/" target="_blank" rel="external">2021年Go生态圈rpc框架benchmark</a>的测试整整一年了。一年来，各个RPC框架也获得长足的进展，<a href="https://rpcx.io" target="_blank" rel="external">rpcx</a>也在众多网友的支持下做了一些有益的优化和精简，所以是时候再做一次国内几个常用框架的性能比较了。</p>
+<a id="more"></a>
+<p>每次性能结果的发布，必然引来众多的人的注目，也引来更多的争议。这是很正常的。一个benchmark不代表评价一个框架的优劣，一个benchmakr测试也不足以代表测试所有的应用场景。在不同的业务形态下、巨大的连接数差别、消息的格式不同、消息大小的不同、部署环境的不同都可能导致某些场景下某个框架的结果比较好，某个框架的结果比较差。我们奖讨论和焦点放在还有哪些可以性能提升的点上即可。某个框架的优化点或许能够其它框架带来一些优化的提示。</p>
+<p>另外，在实际使用微服务框架的时候，大部分的性能瓶颈在于业务代码，而不是框架本身，所以重点优化业务代码也非常的重要。</p>
+<p>本次测试针对五种常见的rpc框架进行了测试:</p>
+<ul>
+<li><a href="https://github.com/smallnest/rpcx" target="_blank" rel="external">rpcx</a>, 最早的Go生态圈微服务框架之一，被新浪、好未来等公司使用</li>
+<li><a href="https://github.com/cloudwego/kitex" target="_blank" rel="external">kitex</a>, 字节跳动出品的微服务框架</li>
+<li><a href="https://github.com/lesismal/arpc" target="_blank" rel="external">arpc</a>: 一个性能优异的rpc框架 by lesismal</li>
+<li><a href="https://grpc.io/" target="_blank" rel="external">grpc</a>: Google发起的一个开源rpc框架，支持跨语言，使用广泛。该系统基于HTTP/2 协议传输，使用Protocol Buffers 作为接口描述语言。</li>
+<li><a href="https://pkg.go.dev/net/rpc" target="_blank" rel="external">标准库的rpc/std_rpc</a>: Go标准库自带的rpc框架，目前处于维护状态</li>
+</ul>
+<p>测试采用了各框架的最新版本:</p>
+<ul>
+<li><strong>rpcx</strong>: v1.7.8</li>
+<li><strong>kitex</strong>: v0.3.4</li>
+<li><strong>arpc</strong>: v1.2.9</li>
+<li><strong>grpc</strong>: v1.48.0</li>
+<li><strong>std_rpc</strong>: v1.8.4</li>
+</ul>
+<p>为了尽量保持一致性的测试，所有的测试都是在相同的才是环境下，相同的测试逻辑，相同的测试消息进行的:</p>
+<ul>
+<li>测试环境(已经服役6年的老机器,两台，一台做server,一台做client)<ul>
+<li>CPU型号: Intel(R) Xeon(R) CPU E5-2620 v2 @ 2.10GHz / 2颗</li>
+<li>物理核: 6个; 逻辑核: 12核</li>
+<li>内存: 64G</li>
+<li>开启网卡多队列</li>
+</ul>
+</li>
+<li>都采用protobuf作为消息体的编码方式，编码后的消息体大小伟581个字节</li>
+<li>在客户端统计，统计吞吐量(throughputs)和延迟(lantency, 包括最大值，平均值，中位数值，和p99.9的值， 最小值都小于1毫秒，所以未统计)<ul>
+<li>对于延迟，我们还需要关注它的长尾情况，所以需要关注中位数和p99.9。p99.9指千分之999的请求的延迟都小于某个时间。</li>
+</ul>
+</li>
+</ul>
+<p>主要分为三个场景进行测试。</p>
+<ul>
+<li>TCP连接数为10, 长连接。并发数为100、200、500、1000、2000、5000的情况<br>主要测试高并发的情况下各框架最大的能力，包括吞吐量和延迟。</li>
+<li>TCP连接数为10,并发数伟200,长连接。 吞吐量为10万/秒、15万/秒、18万/秒的情况下的延迟<br>主要测在吞吐保持一致的情况下，各个框架的延迟情况和长尾情况。延迟胡哲长尾太大意味着使用这个吞吐率是不合适。</li>
+<li>TCP连接数为1000，并发数为1000，长连接。<br>主要测试大连接数比较高的情况下各框架的性能。主要是想针对字节的kitex这种自研的netpull,看看是否更适合这种大量连接数的情况。</li>
+</ul>
+<p>这里并发数是指客户端启动的goroutine数量，多个goroutine可能共享同一个client(连接)。</p>
+<p>所有的各框架的测试代码都放在了<a href="https://github.com/rpcxio/rpcx-benchmark" target="_blank" rel="external">rpcx-benchmark</a>。测试的命令非常简单，如下面的介绍中所示，所以你可以下载下来自己测试验证，也欢迎提供优化补丁，补充更多的rpc框架等等。</p>
+<h2 id="场景一：_TCP连接数为10,_长连接。并发数为100、200、500、1000、2000、5000的情况">场景一： TCP连接数为10, 长连接。并发数为100、200、500、1000、2000、5000的情况</h2>
+<ul>
+<li>服务端启动: <code>./server -s xxx.xxx.xxx.xxx:8972</code> // xxx.xxx.xxx.xxx是服务端监听的IP地址</li>
+<li>客户端测试: <code>./client -c 2000 -n 1000000 -s xxx.xxx.xxx.xxx:8972</code> // 这里的并发数是2000, 测试总共发送1百万个请求</li>
+</ul>
+<p>测试原始数据: </p>
+<iframe width="700" height="300" frameborder="0" scrolling="no" src="https://onedrive.live.com/embed?resid=CD09EE1AE0AE8966%211237&authkey=%21ALkUD_tZUvdczJ8&em=2&wdAllowInteractivity=False&wdDownloadButton=True&wdInConfigurator=True&wdInConfigurator=True&edesNext=false&ejss=false"></iframe>
+
+
+<h3 id="吞吐量">吞吐量</h3>
+<p><img src="1.png" alt=""><br>Y轴是吞吐量/秒，越高越好。可以看到arpc框架吞吐非常的好，去年的测试也是arpc表现比较好，其次是rpcx、标准的rpc、kitex、grpc。</p>
+<p>可以看到在并发量比较大的情况下，除了grpc， 其它都能达到18万个请求/秒的吞吐量。</p>
+<h3 id="平均延迟">平均延迟</h3>
+<p><img src="2.png" alt=""><br>Y轴是平均延迟，越低越好，可以看到grpc的延迟较高。延迟正好和上面的吞吐量相反。</p>
+<h3 id="P99-9_延迟">P99.9 延迟</h3>
+<p>另外一个我们可能比较关注长尾的情况，可以选取中位数或者p99.9观察。 下面是p99.9的情况。<br><img src="3.png" alt=""></p>
+<p>当然，并发数为5000的情况下比较是无意义的，因为在并发数为5000的情况下，各框架的吞吐量是不一样的，在吞吐量高的情况下延迟也会大。<br>所以为了在公平的情况下观察长尾情况，我设计了下面的测试。</p>
+<h2 id="场景二:_TCP连接数为10,并发数伟200,长连接。_吞吐量为10万/秒、15万/秒、18万/秒的情况下的延迟">场景二: TCP连接数为10,并发数伟200,长连接。 吞吐量为10万/秒、15万/秒、18万/秒的情况下的延迟</h2>
+<p>为了观察延迟，我们需要保证吞吐量都尽量一样，在相同的吞吐量情况下观察延迟和长尾情况更科学。</p>
+<p>所以场景二就是在并发数为200的情况下，针对吞吐量为10万/秒、15万/秒、18万/秒三个场景，观察框架的延迟和P99.9延迟。</p>
+<p>测试原始数据: </p>
+<iframe width="700" height="346" frameborder="0" scrolling="no" src="https://onedrive.live.com/embed?resid=CD09EE1AE0AE8966%211240&authkey=%21AH7IxJNptuzNIRI&em=2&wdAllowInteractivity=False&wdDownloadButton=True&wdInConfigurator=True&wdInConfigurator=True&edesNext=false&ejss=false"></iframe>
+
+<h3 id="平均延迟-1">平均延迟</h3>
+<p><img src="4.png" alt=""><br>平均延迟看起来grpc比较高，因为它达不到18万/秒的吞吐，所以它的最后一个数值是没有的。kitex相对较高，这个还得具体看是不是kitex有一些具体的调优。 基本上是和吞吐量成负相关的。</p>
+<h3 id="P99-9_延迟-1">P99.9 延迟</h3>
+<p>长尾的情况，下面是p99.9的情况。<br><img src="5.png" alt=""></p>
+<p>arpc、rpcx和标准rpc的P99.9延迟还是比较好的。</p>
+<h2 id="场景三:_TCP连接数为1000，并发数为1000，长连接。">场景三: TCP连接数为1000，并发数为1000，长连接。</h2>
+<p>观察在大量连接情况下各框架的表现(吞吐率和延迟)。这个场景并没有选择巨量的连接数，而是选择了一个较常见的1000的连接数做测试，连接伟长连接。</p>
+<p><img src="6.png" alt=""></p>
+<p>arpc在连接数比较多的情况下明显要浩好于其它框架，其次就是rpcx和标准rpc框架。</p>
+<p>平均耗时和P99.9耗时也符合这个情况，具体原始数据参考</p>
+<iframe width="700" height="346" frameborder="0" scrolling="no" src="https://onedrive.live.com/embed?resid=CD09EE1AE0AE8966%211242&authkey=%21ADlRyez3xISIKx4&em=2&wdAllowInteractivity=False&wdDownloadButton=True&wdInConfigurator=True&wdInConfigurator=True&edesNext=false&ejss=false"></iframe>
+
+
+<p>总体来看，rpcx的性能还是不错的，希望在以后的日子，参考兄弟rpc框架，做进一步的优化。<br>h欢迎在<a href="https://colobu.com/2022/07/31/2022-rpc-frameworks-benchmarks/" target="_blank" rel="external">本文留言区</a>进行探讨。</p>
+]]></content>
+    <summary type="html">
+    <![CDATA[<p>距离上一次<a href="https://colobu.com/2021/08/01/benchmark-of-rpc-frameworks/" target="_blank" rel="external">2021年Go生态圈rpc框架benchmark</a>的测试整整一年了。一年来，各个RPC框架也获得长足的进展，<a href="https://rpcx.io" target="_blank" rel="external">rpcx</a>也在众多网友的支持下做了一些有益的优化和精简，所以是时候再做一次国内几个常用框架的性能比较了。</p>
+]]>
+    
+    </summary>
+    
+      <category term="Go" scheme="https://colobu.com/categories/Go/"/>
+    
+  </entry>
   
   <entry>
     <title><![CDATA[Go 垃圾回收器指南]]></title>
@@ -1910,85 +2007,6 @@
 ]]></content>
     <summary type="html">
     <![CDATA[<p>Go fuzzing(模糊测试)是Go 1.18发布的另一个非常重要的特性，因为Go泛型已经把大家的目光都吸引过去了，导致go fuzzing这个特性有些人还不是太了解。Go官方发布了一个文档，介绍了Go Fuzzing技术。<br><a href="https://tip.golang.org/doc/fuzz/" target="_blank" rel="external">Go Fuzzing</a></p>
-]]>
-    
-    </summary>
-    
-      <category term="Go" scheme="https://colobu.com/categories/Go/"/>
-    
-  </entry>
-  
-  <entry>
-    <title><![CDATA[Go泛型不支持泛型方法，这是一个悲伤的故事]]></title>
-    <link href="https://colobu.com/2021/12/22/no-parameterized-methods/"/>
-    <id>https://colobu.com/2021/12/22/no-parameterized-methods/</id>
-    <published>2021-12-22T00:25:06.000Z</published>
-    <updated>2021-12-22T06:37:46.594Z</updated>
-    <content type="html"><![CDATA[<p>根据Go 泛型提案的描述，Go不支持泛型方法:<a href="https://github.com/golang/proposal/blob/master/design/43651-type-parameters.md#no-parameterized-methods" target="_blank" rel="external">No parameterized methods</a>。主要原因Go泛型的处理是在编译的时候实现的，泛型方法在编译的时候，如果没有上下文的分析推断，很难判断泛型方案该如何实例化，甚至判断不了，导致目前(Go 1.18)Go实现中不支持泛型方案。</p>
-<p>不过，泛型方法的缺失，多多少少给程序员带来一丝丝的忧伤的情绪，在一些场景之下，使用起来特别不方便。我最近看到了几个因为缺乏泛型方法导致的问题，在本文中总结一下，和大家探讨。</p>
-<p>有一点点让人欣慰的是，Ian Lance Taylor和Ian Lance Taylor并没有把话说绝，说不定在某个版本中，泛型方法又支持了:</p>
-<blockquote>
-<p>So while parameterized methods seem clearly useful at first glance, we would have to decide what they mean and how to implement that.</p>
-</blockquote>
-<a id="more"></a>
-<h2 id="为啥当前Go泛型不好实现泛型方法?">为啥当前Go泛型不好实现泛型方法?</h2>
-<p>考虑下面一个例子，一共有四个package:</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> p1</div><div class="line"></div><div class="line"><span class="comment">// S 是一个普通的struct,但是包含一个泛型方法Identity.</span></div><div class="line"><span class="keyword">type</span> S <span class="keyword">struct</span>{}</div><div class="line"></div><div class="line"><span class="comment">// Identity 一个泛型方法，支持任意类型.</span></div><div class="line"><span class="keyword">func</span> (S) Identity[T any](v T) T { <span class="keyword">return</span> v }</div></pre></td></tr></table></figure>
-
-
-
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> p2</div><div class="line"></div><div class="line"><span class="comment">// HasIdentity 定义了一个接口，支持任意实现了泛型方法Identity的类型.</span></div><div class="line"><span class="keyword">type</span> HasIdentity <span class="keyword">interface</span> {</div><div class="line">	Identity[T any](T) T</div><div class="line">}</div></pre></td></tr></table></figure>
-
-
-
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> p3</div><div class="line"></div><div class="line"><span class="keyword">import</span> <span class="string">"p2"</span></div><div class="line"></div><div class="line"><span class="comment">// CheckIdentity 是一个普通函数，检查实参是不是实现了HasIdentity接口，如果是，则调用这个接口的泛型方法Identity.</span></div><div class="line"><span class="keyword">func</span> CheckIdentity(v <span class="keyword">interface</span>{}) {</div><div class="line">	<span class="keyword">if</span> vi, ok := v.(p2.HasIdentity); ok {</div><div class="line">		<span class="keyword">if</span> got := vi.Identity[<span class="typename">int</span>]<span class="number">(0</span>); got !=<span class="number"> 0</span> {</div><div class="line">			<span class="built_in">panic</span>(got)</div><div class="line">		}</div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
-
-
-
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> p4</div><div class="line"></div><div class="line"><span class="keyword">import</span> (</div><div class="line">	<span class="string">"p1"</span></div><div class="line">	<span class="string">"p3"</span></div><div class="line">)</div><div class="line"></div><div class="line"><span class="comment">// CheckSIdentity 传参S给CheckIdentity.</span></div><div class="line"><span class="keyword">func</span> CheckSIdentity() {</div><div class="line">	p3.CheckIdentity(p1.S{})</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>一切看起来都没有问题，但是问题是<code>package p3</code>不知道<code>p1.S</code>类型，整个程序中如果也没有其它地方调用<code>p1.S.Identity</code>,依照现在的Go编译器的实现，是没有办法为<code>p1.S.Identity[int]</code>生成对应的代码的。</p>
-<p>是的，如果go编译器做的比较复杂，在编译的时候这个场景是可以识别出来的，但是它需要遍历整体的程序调用链以便生成全部可能的泛型方法，对编译时间和编译器复杂性带来很大的调整。另外一点，如果代码中通过反射调用的话，编译器可能会遗漏一些泛型方法的实现，这就很要命了。</p>
-<p>如果在运行时实现呢？就需要JIT或者反射等技术，这会造成运行时性能的下降。</p>
-<p>很难实现啊？如果规定泛型方法不能实现接口呢？那么这类的泛型方法的存在的意义是什么呢？</p>
-<p>所以目前没有太好的手段去实现泛型方法，暂时搁置了。</p>
-<p>如果真的有必要，你可以通过实现泛型函数来实现泛型方法，把方法的receiver当成第一个参数传递过去。</p>
-<p>这可以解决一部分问题，但是在使用的过程中多多少少有些麻烦。</p>
-<p>因为泛型方法的缺乏，大家在开始使用泛型的时候就遇到了麻烦，最近连续看到多篇关于这方面的问题，比如下面几个。</p>
-<h2 id="Facilitator模式_by_rakyll">Facilitator模式 by rakyll</h2>
-<p>昨天rakyll写了一篇文章<a href="https://rakyll.org/generics-facilititators/" target="_blank" rel="external">https://rakyll.org/generics-facilititators/</a>,介绍她遇到的困难以及解决方式。这也是促进我把这几天看到的case总结的原因。</p>
-<p>如果你熟悉其它编程语言，在使用orm框架的时候，可能见过下面类似的代码，实现泛型方法进行某种对象的查询:</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div></pre></td><td class="code"><pre><div class="line">db, err := database.Connect(<span class="string">"...."</span>)</div><div class="line"><span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">    log.Fatal(err)</div><div class="line">}</div><div class="line"></div><div class="line">all, err := db.All[Person](ctx) <span class="comment">// Reads all person entities</span></div><div class="line"><span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">    log.Fatal(err)</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>因为Go缺乏泛型方法的实现，你不能实现泛型<code>All</code>方法，那么怎么实现呢？一种方式是实现<code>All</code>函数，另一种实现是实现rakyll称之为的<code>Facilitator模式</code>:</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> database</div><div class="line"></div><div class="line"><span class="keyword">type</span> Client <span class="keyword">struct</span>{ ... }</div><div class="line"></div><div class="line"><span class="keyword">type</span> Querier[T any] <span class="keyword">struct</span> {</div><div class="line">	client *Client</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> NewQuerier[T any](c *Client) *Querier[T] {</div><div class="line">	<span class="keyword">return</span> &Querier[T]{</div><div class="line">		client: c,</div><div class="line">	}</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> (q *Querier[T]) All(ctx context.Context) ([]T, error) {</div><div class="line">	<span class="comment">// implementation</span></div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> (q *Querier[T]) Filter(ctx context.Context, filter ...Filter) ([]T, error) {</div><div class="line">	<span class="comment">// implementation</span></div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>函数实现让人感觉到一种无力感，一种缺乏归宿感，一种没有对象的感觉，而这种实现呢，生成了特定类型的Querier[T],<code>All</code>方法就有泛型的感觉了(虽然实际是Receiver泛型)</p>
-<h2 id="泛型signleflight">泛型signleflight</h2>
-<p>有些同学熟悉Go官方扩展库<a href="golang.org/x/sync/singleflight">x/sync/singleflight</a>，这个库很好的解决大并发的时候并发访问的问题，常常用在cache访问和微服务访问的处理之中。</p>
-<p>为了支持任意类型，它内部的实现是使用<code>interface{}</code>(<code>any</code>)类型来表示和处理的:</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">var</span> g Group</div><div class="line">v, _, _ := g.Do(<span class="string">"key"</span>, <span class="keyword">func</span>() (<span class="keyword">interface</span>{}, error) {</div><div class="line">    <span class="keyword">return</span> <span class="string">"bar"</span>, <span class="constant">nil</span></div><div class="line">})</div><div class="line">useString(v.(<span class="typename">string</span>))</div></pre></td></tr></table></figure>
-
-<p>五天前，有人把它改造成泛型的方式:<a href="https://github.com/marwan-at-work/singleflight" target="_blank" rel="external">marwan-at-work/singleflight</a>，上面的代码使用起来改变成如下方式:</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">var</span> g Group[<span class="typename">string</span>]</div><div class="line">v, _, _ := g.Do(<span class="string">"key"</span>, <span class="keyword">func</span>() (<span class="typename">string</span>, error) {</div><div class="line">    <span class="keyword">return</span> <span class="string">"bar"</span>, <span class="constant">nil</span></div><div class="line">})</div><div class="line">useString(v)</div></pre></td></tr></table></figure>
-
-<p>相当于把Group改造成泛型类型，而不是实现泛型方法<code>Do</code>(当然目前Go泛型也实现不了)。</p>
-<p>这个处理和上面rakyll处理方式类型，都是生成泛型类型，通过Receiver实现泛型的方法的处理。</p>
-<p>不过对于这种方式，有一点不好的地方就是每种类型你都得生成一个特别的对象，略显麻烦。</p>
-<h2 id="map_reduce">map reduce</h2>
-<p>更早时候关于泛型的讨论，有人提出泛型方法的缺乏导致Go实现map reduce类似的库的困难，具体在哪里提到的我已经忘记了。</p>
-<p>比如下面的实现一个iter的map reduce:</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> (i *iter[T any]) <span class="keyword">map</span>[K ~<span class="typename">string</span>](mapFn <span class="keyword">func</span>(t T) K) *iter[K]</div></pre></td></tr></table></figure>
-
-<p>这种情况下用户想传入任意的<code>K</code>,把原先<code>T</code>类型的iter转换成<code>K</code>类型的iter,这种就不想其它支持泛型语言那么好实现了。</p>
-]]></content>
-    <summary type="html">
-    <![CDATA[<p>根据Go 泛型提案的描述，Go不支持泛型方法:<a href="https://github.com/golang/proposal/blob/master/design/43651-type-parameters.md#no-parameterized-methods" target="_blank" rel="external">No parameterized methods</a>。主要原因Go泛型的处理是在编译的时候实现的，泛型方法在编译的时候，如果没有上下文的分析推断，很难判断泛型方案该如何实例化，甚至判断不了，导致目前(Go 1.18)Go实现中不支持泛型方案。</p>
-<p>不过，泛型方法的缺失，多多少少给程序员带来一丝丝的忧伤的情绪，在一些场景之下，使用起来特别不方便。我最近看到了几个因为缺乏泛型方法导致的问题，在本文中总结一下，和大家探讨。</p>
-<p>有一点点让人欣慰的是，Ian Lance Taylor和Ian Lance Taylor并没有把话说绝，说不定在某个版本中，泛型方法又支持了:</p>
-<blockquote>
-<p>So while parameterized methods seem clearly useful at first glance, we would have to decide what they mean and how to implement that.</p>
-</blockquote>
 ]]>
     
     </summary>
