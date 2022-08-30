@@ -4,7 +4,7 @@
   <subtitle><![CDATA[大道至简 Simplicity is the ultimate form of sophistication]]></subtitle>
   <link href="/atom.xml" rel="self"/>
   <link href="https://colobu.com/"/>
-  <updated>2022-08-03T12:51:41.942Z</updated>
+  <updated>2022-08-30T08:17:08.717Z</updated>
   <id>https://colobu.com/</id>
   
   <author>
@@ -15,18 +15,76 @@
   <generator uri="http://zespia.tw/hexo/">Hexo</generator>
   
   <entry>
-    <title><![CDATA[2022 Go生态圈 rpc 框架 Benchmark [订正版]]]></title>
+    <title><![CDATA[最近对rpcx做的一些优化以及一些优化尝试]]></title>
+    <link href="https://colobu.com/2022/08/25/some-small-optimizations-of-rpcx/"/>
+    <id>https://colobu.com/2022/08/25/some-small-optimizations-of-rpcx/</id>
+    <published>2022-08-25T14:29:07.000Z</published>
+    <updated>2022-08-30T08:16:32.794Z</updated>
+    <content type="html"><![CDATA[<p>最近在做<a href="https://colobu.com/2022/07/31/2022-rpc-frameworks-benchmarks/" target="_blank" rel="external">2022 Go生态圈 rpc 框架 Benchmark</a>之前，专门花了一星期时间，对rpcx进行了重点的优化，这篇文章专门记录一下几个重要的优化点，供大家参考。</p>
+<a id="more"></a>
+<h2 id="增加handler方式，避免服务端使用reflect">增加handler方式，避免服务端使用reflect</h2>
+<p>在之前的rpcx实现中，参考的是标准库rpc的注册方式，一个服务的注册如下:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">rpcxserver.RegisterName(<span class="string">"Hello"</span>, <span class="built_in">new</span>(Hello), <span class="string">""</span>)</div></pre></td></tr></table></figure>
+
+<p>它实际是通过反射的方式遍历这个<code>rcvr</code>,找到它的服务方法和参数类型，并缓存下来:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> (s *Server) register(rcvr <span class="keyword">interface</span>{}, name <span class="typename">string</span>) (<span class="typename">string</span>, error) {</div><div class="line">	s.serviceMapMu.Lock()</div><div class="line">	<span class="keyword">defer</span> s.serviceMapMu.Unlock()</div><div class="line"></div><div class="line">	service := <span class="built_in">new</span>(service)</div><div class="line">	service.typ = reflect.TypeOf(rcvr)</div><div class="line">	service.rcvr = reflect.ValueOf(rcvr)</div><div class="line">	sname := reflect.Indirect(service.rcvr).Type().Name() <span class="comment">// Type</span></div><div class="line">	service.name = sname</div><div class="line"></div><div class="line">	<span class="comment">// Install the methods</span></div><div class="line">	service.method = suitableMethods(service.typ, <span class="constant">true</span>)</div><div class="line"></div><div class="line">	<span class="keyword">if</span> <span class="built_in">len</span>(service.method) ==<span class="number"> 0</span> {</div><div class="line">		......</div><div class="line">	}</div><div class="line">	s.serviceMap[service.name] = service</div><div class="line">	<span class="keyword">return</span> sname, <span class="constant">nil</span></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>然后在处理请求的时候，根据调用的服务和方法，找到相应的类型，对请求类型和返回类型利用reflect产生相应的值，再利用reflect的function.Call执行方法调用，虽然中间使用了池化的技术，但是内部还是大量使用的反射的功能，性能损失不少。</p>
+<p>Go标准库http router的实现给我了灵感，而<a href="https://github.com/lesismal/arpc" target="_blank" rel="external">lesismal/arpc</a>的应用和性能优异的表现，促使我决定在rpcx增加一个更有效的服务处理方式,类型配置http handler一样的方式:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> hello(ctx *server.Context) error {</div><div class="line">	msg := &proto.BenchmarkMessage{}</div><div class="line"></div><div class="line">	err := ctx.Bind(msg)</div><div class="line">	<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">		<span class="keyword">return</span> err</div><div class="line">	}</div><div class="line"></div><div class="line">	msg.Field1 = <span class="string">"OK"</span></div><div class="line">	msg.Field2 =<span class="number"> 100</span></div><div class="line"></div><div class="line">	<span class="keyword">if</span> *delay &gt;<span class="number"> 0</span> {</div><div class="line">		time.Sleep(*delay)</div><div class="line">	} <span class="keyword">else</span> {</div><div class="line">		runtime.Gosched()</div><div class="line">	}</div><div class="line"></div><div class="line">	<span class="keyword">return</span> ctx.Write(msg)</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">var</span> (</div><div class="line">	host  = flag.String(<span class="string">"s"</span>, <span class="string">"127.0.0.1:8972"</span>, <span class="string">"listened ip and port"</span>)</div><div class="line">	delay = flag.Duration(<span class="string">"delay"</span>,<span class="number"> 0</span>, <span class="string">"delay to mock business processing by sleep"</span>)</div><div class="line">)</div><div class="line"></div><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	flag.Parse()</div><div class="line"></div><div class="line">	rpcxserver := server.NewServer()</div><div class="line"></div><div class="line">	rpcxserver.AddHandler(<span class="string">"Hello"</span>, <span class="string">"Say"</span>, hello)</div><div class="line">	rpcxserver.Serve(<span class="string">"tcp"</span>, *host)</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>服务方法签名如<code>func Xxx(ctx *server.Context) error</code>,它会传入一个特制的Context,通过这个Context,能获得请求参数，也可以写回response。</p>
+<p>通过<code>ctx.Bind</code>解码出请求参数：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div></pre></td><td class="code"><pre><div class="line">   msg := &proto.BenchmarkMessage{}</div><div class="line"></div><div class="line">err := ctx.Bind(msg)</div><div class="line"><span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">	<span class="keyword">return</span> err</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>通过<code>ctx.Write(msg)</code>把response写回。</p>
+<p>这里不会用到反射。如果你的编解码器使用的不是反射的方式的话,会更高效。</p>
+<h2 id="使用goroutine_pool">使用goroutine pool</h2>
+<p>rpcx默认采用每个request至少一个goroutine处理方式。这样如果在高并发的情况下，服务端会有非常巨大的goroutine存在，虽然说Go支持上万的goroutine,但是在goroutine非常多的情况下，(内存)资源占用非常多，对Go的调度和垃圾回收也会有一定的影响，所以在高并发的场景下，采用goroutine 池在一定程度上会提升性能。</p>
+<p>说起线程池，网上已经有不下十个goroutine pool （或者叫做worker pool）的实现。rpcx使用的是<a href="https://github.com/alitto/pond" target="_blank" rel="external">alitto/pond</a>, 并没有太多的性能的考虑，而是从使用方便性方面去考虑。</p>
+<p>如果想使用goroutine池，你可以使用<code>server.WithPool(100, 1000000)</code>:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">rpcxserver := server.NewServer(server.WithPool<span class="number">(100</span>,<span class="number"> 1000000</span>))</div></pre></td></tr></table></figure>
+
+<p>其中第一个参数是goroutine(worker)的数量，第二个参数capacity是最大的待处理的请求。超过capacity，新的请求就会被阻塞。</p>
+<p>解析后的请求会被提交的goroutine pool中。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">if</span> s.pool != <span class="constant">nil</span> {</div><div class="line">	s.pool.Submit(<span class="keyword">func</span>() {</div><div class="line">		s.processOneRequest(ctx, req, conn, writeCh)</div><div class="line">	})</div><div class="line">} <span class="keyword">else</span> {</div><div class="line">	<span class="keyword">go</span> s.processOneRequest(ctx, req, conn, writeCh)</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<h3 id="调整进程优先级">调整进程优先级</h3>
+<p>有时候，你的程序可能会和其它程序混跑，即使没有其它的业务程序，也可能有系统自带的一些应用，如果我们把rpcx程序的优先级设置的高一些，使它有更多的可能被Linux系统程序调度，也会带来更多的优先级。</p>
+<p>Linux每个进程都有一个介于 -20 到 19 之间的 nice 值， 值越低会有更多的机会获得Linux的调度。默认情况下，进程的 nice 值为 0。</p>
+<p>进程的 nice 值，可以通过 nice 命令和 renice 命令修改，进而调整进程的运行顺序。</p>
+<p><code>nice [-n NI值] 程序</code> 按照指定的优先级启动程序。</p>
+<p>renice 命令可以在进程运行时修改其 NI 值，从而调整优先级。<code>renice [优先级] PID</code>。</p>
+<p>当然你也可以通过程序动态的设置进程的优先级：<code>syscall.Setpriority(syscall.PRIO_PROCESS, 0, -20)</code>，这条命令设置本进程的优先级为<code>-20</code>。</p>
+<p>这个带来10% ~ 20%性能的提升。</p>
+<p>我还想尝试只设置<code>listener.Accept</code>的goroutine,让有更多的机会获得处理的机会。不过没有可调用的系统调用去设置。尝试了<code>runtime.LockOSThread()</code>让<code>listener.Accept</code>锁定一个线程去去处理，没啥鸟用。</p>
+<h3 id="进一步优化想法">进一步优化想法</h3>
+<p>当然，还有一些优化的方法，不过还没有验证。</p>
+<p>比如redis，采用单线程(主逻辑)的方式处理请求、还有比如nginx，采用多个worker独立的去处理连接。这样可以减少并发锁的请求。<br>rpcx可以改成单worker的方式，然后启动多个worker去监听和处理请求，可能也会提升性能。不过这个没有进一步的测试。</p>
+]]></content>
+    <summary type="html">
+    <![CDATA[<p>最近在做<a href="https://colobu.com/2022/07/31/2022-rpc-frameworks-benchmarks/" target="_blank" rel="external">2022 Go生态圈 rpc 框架 Benchmark</a>之前，专门花了一星期时间，对rpcx进行了重点的优化，这篇文章专门记录一下几个重要的优化点，供大家参考。</p>
+]]>
+    
+    </summary>
+    
+      <category term="Go" scheme="https://colobu.com/categories/Go/"/>
+    
+  </entry>
+  
+  <entry>
+    <title><![CDATA[2022 Go生态圈 rpc 框架 Benchmark]]></title>
     <link href="https://colobu.com/2022/07/31/2022-rpc-frameworks-benchmarks/"/>
     <id>https://colobu.com/2022/07/31/2022-rpc-frameworks-benchmarks/</id>
     <published>2022-07-31T07:49:55.000Z</published>
-    <updated>2022-08-03T12:51:11.506Z</updated>
+    <updated>2022-08-25T14:24:21.356Z</updated>
     <content type="html"><![CDATA[<p>距离上一次<a href="https://colobu.com/2021/08/01/benchmark-of-rpc-frameworks/" target="_blank" rel="external">2021年Go生态圈rpc框架benchmark</a>的测试整整一年了。一年来，各个RPC框架也获得长足的进展，<a href="https://rpcx.io" target="_blank" rel="external">rpcx</a>也在众多网友的支持下做了一些有益的优化和精简，所以是时候再做一次国内几个常用框架的性能比较了。</p>
 <a id="more"></a>
-<p>本文第一版发布后，字节的Yangrui同学指出，测试对字节的kitex测试是不公平的：首先kitex使用的是官方的pb库，而不是其它框架使用的goo库，第二就是kitex使用一个连接就可以了，使用10个连接反而不如一个连接。 Yangtui提供了PR，所以我重新测试了一把，以正视听。</p>
 <p>每次性能结果的发布，必然引来众多的人的注目，也引来更多的争议。这是很正常的。一个benchmark不代表评价一个框架的优劣，一个benchmakr测试也不足以代表测试所有的应用场景。在不同的业务形态下、巨大的连接数差别、消息的格式不同、消息大小的不同、部署环境的不同都可能导致某些场景下某个框架的结果比较好，某个框架的结果比较差。我们将讨论和焦点放在还有哪些可以性能提升的点上即可。某个框架的优化点或许能够其它框架带来一些优化的提示。</p>
 <p>另外，在实际使用微服务框架的时候，<strong>大部分的性能瓶颈在于业务代码</strong>，而不是框架本身，所以重点优化业务代码也非常的重要。</p>
 <p>本文测试的不同框架底层传输的协议是不同，比如grpc是通过HTTP2.0，kitex支持TTHeader、HTTP2等协议，arpc使用自研的协议，rpcx使用自研的协议,标准库rpc使用自研的协议。</p>
 <p>测试的消息体编解码采用统一的protobuf。</p>
+<p><strong>YangruiEmma 指出<a href="https://github.com/rpcxio/rpcx-benchmark/issues/13" target="_blank" rel="external">测试公平性的修正建议</a>, kitex采用的protobuf生成是官方的方式，但是其它几个框架采用的是<a href="https://github.com/gogo/protobuf" target="_blank" rel="external">gogo/protobuf</a>，性能上会有所不同。这是一个问题，因为kitex创建pb代码的时候配合使用的是官方的pb库。不过字节的同学说采用自研的protobuf库，会更快</strong></p>
 <p>本测试并未记录CPU和内存的消耗。这是一个缺陷。 因为CPU和内存会一直变化，没太想好如何科学的记录测试时的CPU和内存使用值。</p>
 <p>本次测试针对五种常见的rpc框架进行了测试:</p>
 <ul>
@@ -77,14 +135,12 @@
 
 
 <h3 id="吞吐量">吞吐量</h3>
-<p><img src="1.png" alt=""><br>Y轴是吞吐量/秒，越高越好。<br>在低并发的情况下, arpc表现最好， kitex、rpcx、std_rpc差不多，grpc表现最差。<br>随着并发增大，吞吐率也有上升，kitex表现明显，在并发5000时表现最好，而arpc性能有所下降，不过和rpcx、std_rpc差别不是很大。</p>
+<p><img src="1.png" alt=""><br>Y轴是吞吐量/秒，越高越好。可以看到arpc框架吞吐非常的好，去年的测试也是arpc表现比较好，其次是rpcx、标准的rpc、kitex、grpc。</p>
 <p>可以看到在并发量比较大的情况下，除了grpc， 其它都能达到18万个请求/秒的吞吐量。</p>
 <h3 id="平均延迟">平均延迟</h3>
-<p><img src="2.png" alt=""><br>Y轴是平均延迟，越低越好.</p>
-<p>除了grpc的延迟较高外， 其它四个框架的延迟差不太多。</p>
+<p><img src="2.png" alt=""><br>Y轴是平均延迟，越低越好，可以看到grpc的延迟较高。延迟正好和上面的吞吐量相反。</p>
 <h3 id="P99-9_延迟">P99.9 延迟</h3>
 <p>另外一个我们可能比较关注长尾的情况，可以选取中位数或者p99.9观察。 下面是p99.9的情况。<br><img src="3.png" alt=""></p>
-<p>可以看到rpcx、arpc的长尾现象明显，这是需要这两个框架需要优化的地方，kitex的长尾优化效果很好，表现最好。</p>
 <p>当然，并发数为5000的情况下比较是无意义的，因为在并发数为5000的情况下，各框架的吞吐量是不一样的，在吞吐量高的情况下延迟也会大。<br>所以为了在公平的情况下观察长尾情况，我设计了下面的测试。</p>
 <h2 id="场景二:_TCP连接数为10,并发数为200,长连接。_吞吐量为10万/秒、15万/秒、18万/秒的情况下的延迟">场景二: TCP连接数为10,并发数为200,长连接。 吞吐量为10万/秒、15万/秒、18万/秒的情况下的延迟</h2>
 <p>为了观察延迟，我们需要保证吞吐量都尽量一样，在相同的吞吐量情况下观察延迟和长尾情况更科学。</p>
@@ -93,10 +149,10 @@
 <iframe width="700" height="346" frameborder="0" scrolling="no" src="https://onedrive.live.com/embed?resid=CD09EE1AE0AE8966%211240&authkey=%21AH7IxJNptuzNIRI&em=2&wdAllowInteractivity=False&wdDownloadButton=True&wdInConfigurator=True&wdInConfigurator=True&edesNext=false&ejss=false"></iframe>
 
 <h3 id="平均延迟-1">平均延迟</h3>
-<p><img src="4.png" alt=""><br>平均延迟看起来grpc比较高，因为它达不到18万/秒的吞吐，所以它的最后一个数值是没有的。其它差不多。</p>
+<p><img src="4.png" alt=""><br>平均延迟看起来grpc比较高，因为它达不到18万/秒的吞吐，所以它的最后一个数值是没有的。kitex相对较高，这个还得具体看是不是kitex有一些具体的调优。 基本上是和吞吐量成负相关的。</p>
 <h3 id="P99-9_延迟-1">P99.9 延迟</h3>
 <p>长尾的情况，下面是p99.9的情况。<br><img src="5.png" alt=""></p>
-<p>grpc表现最差， 其它差不太多。</p>
+<p>arpc、rpcx和标准rpc的P99.9延迟还是比较好的。</p>
 <h2 id="场景三:_TCP连接数为1000，并发数为1000，长连接。">场景三: TCP连接数为1000，并发数为1000，长连接。</h2>
 <p>观察在大量连接情况下各框架的表现(吞吐率和延迟)。这个场景并没有选择巨量的连接数，而是选择了一个较常见的1000的连接数做测试，连接为长连接。</p>
 <p><img src="6.png" alt=""></p>
@@ -1923,96 +1979,6 @@
 ]]></content>
     <summary type="html">
     <![CDATA[<p>自 Go 1.18 支持泛型后， Go interface 的意义已经彻彻底底的改变了，除了先前代表的方法集的意义外，还被用作泛型的类型约束(type constraint)的功能, interface已经不再是以前那个单纯的少年了。</p>
-]]>
-    
-    </summary>
-    
-      <category term="Go" scheme="https://colobu.com/categories/Go/"/>
-    
-  </entry>
-  
-  <entry>
-    <title><![CDATA[[译] go fuzzing]]></title>
-    <link href="https://colobu.com/2022/01/03/go-fuzzing/"/>
-    <id>https://colobu.com/2022/01/03/go-fuzzing/</id>
-    <published>2022-01-03T13:40:09.000Z</published>
-    <updated>2022-01-03T14:28:09.864Z</updated>
-    <content type="html"><![CDATA[<p>Go fuzzing(模糊测试)是Go 1.18发布的另一个非常重要的特性，因为Go泛型已经把大家的目光都吸引过去了，导致go fuzzing这个特性有些人还不是太了解。Go官方发布了一个文档，介绍了Go Fuzzing技术。<br><a href="https://tip.golang.org/doc/fuzz/" target="_blank" rel="external">Go Fuzzing</a></p>
-<a id="more"></a>
-<p>Go 自 1.18开始在标准工具链中开始支持模糊测试(fuzzing)。</p>
-<h2 id="概览">概览</h2>
-<p>Fuzzing 是一种自动化的测试技术， 它不断的创建输入用来测试程序的bug。 Go fuzzing使用覆盖率智能指导遍历被模糊化测试的代码，发现缺陷并报告给用户。由于模糊测试可以达到人类经常忽略的边缘场景，因此它对于发现安全漏洞和缺陷特别有价值。</p>
-<p>下面是一个模糊测试的示例，突出标识了它的主要组件。<br><img src="example.png" alt=""></p>
-<h2 id="编写并运行模糊测试">编写并运行模糊测试</h2>
-<h3 id="必备条件">必备条件</h3>
-<p>Below are rules that fuzz tests must follow.</p>
-<p>下面是模糊测试必须遵循的规则：</p>
-<ul>
-<li>模糊测试必须是一个名称类似<code>FuzzXxx</code>的函数，仅仅接收一个<code>*testing.F</code>类型的参数,没有返回值</li>
-<li>模糊测试必须在<code>*_test.go</code>文件中才能运行</li>
-<li>Fuzz target(模糊目标)必须是对<code>(*testing.F).Fuzz</code>的方法调用，参数是一个函数，并且此函数的第一个参数是<code>*testing.T</code>,然后是模糊参数(<code>fuzzing argument</code>)，没有返回值</li>
-<li>一个模糊测试中必须只有一个模糊目标</li>
-<li>所有的种子语料库(<code>seed corpus</code>)必须具有与模糊参数相同的类型,顺序相同。对<code>(*testing.F).Add</code>的调用也是如此, 同样也适用模糊测试中的testdata/fuzz中的语料文件</li>
-<li>模糊参数只能是下面的类型<ul>
-<li>string, []byte</li>
-<li>int, int8, int16, int32/rune, int64</li>
-<li>uint, uint8/byte, uint16, uint32, uint64</li>
-<li>float32, float64</li>
-<li>bool</li>
-</ul>
-</li>
-</ul>
-<h3 id="建议">建议</h3>
-<p>下面的建议可以帮助你应付大部分的模糊测试：</p>
-<ul>
-<li>Fuzzing应该在支持覆盖率检测的平台上运行（目前是AMD64和ARM64），这样语料库可以在运行时有意义地增长，并且在进行Fuzzing时可以覆盖更多的代码。</li>
-<li>模糊目标应该是快速的和确定性的，这样模糊引擎可以有效地工作，并且新的故障和代码覆盖率可以很容易地重现。</li>
-<li>由于模糊目标是在多个工作进程之间以不确定的顺序并行调用的，因此模糊目标的状态不应持续到每次调用结束后，并且模糊目标的行为不应依赖于全局状态。</li>
-</ul>
-<h3 id="定制">定制</h3>
-<p>默认的go命令满足大部分模糊化测试场景，所以典型的一个模糊化运行命令应该如下:</p>
-<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">$ go test -fuzz={FuzzTestName}</div></pre></td></tr></table></figure>
-
-<p>但是go命令提供一些定制化的参数来运行模糊测试，它们在<a href="https://pkg.go.dev/cmd/go" target="_blank" rel="external">cmd/go</a>文档中都有介绍。</p>
-<p>这里重点说几个:</p>
-<p>-fuzztime:  执行的模糊目标在退出的时候要执行的总时间或者迭代次数，默认是用不结束<br>-fuzzminimizetime: 模糊目标在每次最少尝试时要执行的时间或者迭代次数，默认是60秒。你可以禁用最小化尝试，只需把这个参数设置为0<br>-parallel: 同时执行的模糊化数量，默认是<code>$GOMAXPROCS</code>。当前进行模糊化测试时设置-cpu无效果</p>
-<h2 id="其它资源">其它资源</h2>
-<ul>
-<li><strong>教程</strong><ul>
-<li>如果想了解Go模糊化介绍性的文章，请参考<a href="https://go.dev/blog/fuzz-beta" target="_blank" rel="external">the blog post</a></li>
-<li>更多教程正在准备中</li>
-</ul>
-</li>
-<li><strong>文档</strong><ul>
-<li><code>testing</code> 包描述了模糊测试中用到的<code>testing.F</code>类型</li>
-<li><code>cmd/go</code> 描述了和模糊测试相关的参数</li>
-</ul>
-</li>
-<li><strong>技术细节</strong><ul>
-<li><a href="https://golang.org/s/draft-fuzzing-design" target="_blank" rel="external">Design draft</a></li>
-<li><a href="https://golang.org/issue/44551" target="_blank" rel="external">提案</a></li>
-</ul>
-</li>
-</ul>
-<h2 id="术语">术语</h2>
-<ul>
-<li>corpus entry: 语料库条目，可以在模糊化测试时使用。它可以是一个特殊格式的文件，也可以是<code>(*testing.F).Add</code>方法的调用</li>
-<li>coverage guidance: 一种模糊化方法，它使用代码覆盖范围的扩展来确定哪些语料库条目值得保留以备将来使用。</li>
-<li>fuzz target: 模糊测试的函数，在模糊化过程中对语料库条目和生成的值执行模糊测试。通过将函数传递给<code>(*testing.F).Fuzz</code>来提供模糊测试</li>
-<li>fuzz test: 一个test文件中的函数，格式为<code>FuzzXxx(*testing.F)</code>,用来执行模糊测试</li>
-<li>fuzzing: 一种自动测试类型，它不断地修改程序的输入，以发现代码可能易受影响的问题，如bug或漏洞。</li>
-<li>fuzzing arguments: 被传递到模糊目标的类型，并且可以被mutator修改变异</li>
-<li>fuzzing engine: 一种管理模糊化的工具，包括维护语料库、调用变体、识别新覆盖范围和报告失败。</li>
-<li>generated corpus: 语料库在模糊化过程中由模糊引擎随时间进行维护，以跟踪进度。它存储在<code>$GOCACHE/fuzz</code>中。</li>
-<li>mutator: 模糊处理时使用的一种工具，它在将语料库条目传递给模糊目标之前对其进行随机操作。</li>
-<li>package: 同一个文件夹下源代码的集合，会被编译在一起。Go代码组织的<a href="https://tip.golang.org/ref/spec#Packages" target="_blank" rel="external">方式</a>。ation.</li>
-<li>seed corpus: 用户提供的用于模糊测试的语料库，可用于指导模糊引擎。它由模糊测试中的<code>f.Add</code>调用提供的语料库条目和包中<code>testdata/fuzz/{FuzzTestName}</code>目录中的文件组成。</li>
-<li>test file: 格式为<code>xxx_test.go</code>类型的文件，包含测试、benchmark和模糊测试代码</li>
-<li>vulnerability: 代码中的安全敏感弱点，可被攻击者利用。</li>
-</ul>
-]]></content>
-    <summary type="html">
-    <![CDATA[<p>Go fuzzing(模糊测试)是Go 1.18发布的另一个非常重要的特性，因为Go泛型已经把大家的目光都吸引过去了，导致go fuzzing这个特性有些人还不是太了解。Go官方发布了一个文档，介绍了Go Fuzzing技术。<br><a href="https://tip.golang.org/doc/fuzz/" target="_blank" rel="external">Go Fuzzing</a></p>
 ]]>
     
     </summary>
