@@ -4,7 +4,7 @@
   <subtitle><![CDATA[大道至简 Simplicity is the ultimate form of sophistication]]></subtitle>
   <link href="/atom.xml" rel="self"/>
   <link href="https://colobu.com/"/>
-  <updated>2022-08-31T01:10:15.546Z</updated>
+  <updated>2022-08-31T01:20:24.095Z</updated>
   <id>https://colobu.com/</id>
   
   <author>
@@ -19,7 +19,7 @@
     <link href="https://colobu.com/2022/08/30/waitgroup-to-love-to-toss/"/>
     <id>https://colobu.com/2022/08/30/waitgroup-to-love-to-toss/</id>
     <published>2022-08-30T11:18:53.000Z</published>
-    <updated>2022-08-30T12:12:59.724Z</updated>
+    <updated>2022-08-31T01:19:57.245Z</updated>
     <content type="html"><![CDATA[<p><a href="https://pkg.go.dev/sync#WaitGroup" target="_blank" rel="external">WaitGroup</a>是Go并发编程中经常使用的做任务编排的一个一个并发原语。看起来它只有几个简单的方法，使用起来比较简单。实际上，WaitGroup的内部实现也陆陆续续改变了好几次,主要是针对它的字段的原子操作不断的做优化。</p>
 <a id="more"></a>
 <h2 id="WaitGroup原始的实现">WaitGroup原始的实现</h2>
@@ -50,7 +50,9 @@
 <p>优化还未万。在Go 1.19中， Russ Cox实现了atomic.Uint64,它在64bit架构和32bit架构下都是8byte对齐的,为啥呢？因为它有一个&quot;尚方宝剑&quot;:<code>align64</code></p>
 <figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div></pre></td><td class="code"><pre><div class="line"><span class="comment">// An Uint64 is an atomic uint64. The zero value is zero.</span></div><div class="line"><span class="keyword">type</span> Uint64 <span class="keyword">struct</span> {</div><div class="line">	_ noCopy</div><div class="line">	_ align64</div><div class="line">	v <span class="typename">uint64</span></div><div class="line">}</div></pre></td></tr></table></figure>
 
-<p>64bit架构下没有问题，32bit架构下看到这个字段，Go编译器就会自动把它按照8byte对齐，这是一个约定。你在你的package下定义struct加上<code>align64</code>是没有用的。</p>
+<p>64bit架构下没有问题，32bit架构下看到这个字段，Go编译器就会自动把它按照8byte对齐，这是一个约定。你在你的package下定义struct加上<code>align64</code>是没有用的。<br>不过如果你也想让你的struct 8byte对齐的话,你可以使用下面的技术:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">import</span> <span class="string">"sync/atomic"</span></div><div class="line"></div><div class="line"><span class="keyword">type</span> T <span class="keyword">struct</span> {</div><div class="line">    _ <span class="number">[0</span>]atomic.Int64 <span class="comment">// 占用0字节，但是隐含字段是8byte对齐的</span></div><div class="line">    x <span class="typename">uint64</span> <span class="comment">// x是8byte对齐的</span></div><div class="line">}</div></pre></td></tr></table></figure>
+
 <p>这样依赖， WaitGroup的实现又可以简化成了:</p>
 <figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> WaitGroup <span class="keyword">struct</span> {</div><div class="line">	noCopy noCopy</div><div class="line"></div><div class="line">	state atomic.Uint64 <span class="comment">// high 32 bits are counter, low 32 bits are waiter count.</span></div><div class="line">	sema  <span class="typename">uint32</span></div><div class="line">}</div></pre></td></tr></table></figure>
 
