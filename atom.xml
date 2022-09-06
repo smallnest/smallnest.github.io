@@ -4,7 +4,7 @@
   <subtitle><![CDATA[大道至简 Simplicity is the ultimate form of sophistication]]></subtitle>
   <link href="/atom.xml" rel="self"/>
   <link href="https://colobu.com/"/>
-  <updated>2022-09-05T00:00:56.625Z</updated>
+  <updated>2022-09-06T11:02:39.198Z</updated>
   <id>https://colobu.com/</id>
   
   <author>
@@ -13,6 +13,60 @@
   </author>
   
   <generator uri="http://zespia.tw/hexo/">Hexo</generator>
+  
+  <entry>
+    <title><![CDATA[与日俱进，在 Go 1.20 中这种高效转换的方式又变了]]></title>
+    <link href="https://colobu.com/2022/09/06/string-byte-convertion/"/>
+    <id>https://colobu.com/2022/09/06/string-byte-convertion/</id>
+    <published>2022-09-06T05:54:38.000Z</published>
+    <updated>2022-09-06T11:02:06.183Z</updated>
+    <content type="html"><![CDATA[<p>在 Go 1.19 的开发中, <code>string.SliceHeader</code>和<code>string.StringHeader</code>经历了一个生死存亡的争斗，这两个类型一度被标记为弃用(<a href="https://github.com/golang/go/commit/bc2e961cf4cda945dc6d607a5076b4e376553e9f" target="_blank" rel="external"><code>deprecated</code></a>),但是这两个类型经常用在 slice of byte 和 string 高效互转的场景中，如果被标记为弃用，但是目前还没有可替代的方法，所以这两个类型又把弃用标记去掉了，如无意外，它们也会在 Go 1.20 再次被标记为弃用。</p>
+<a id="more"></a>
+<h2 id="byte_slice_和_string_的转换优化">byte slice 和 string 的转换优化</h2>
+<p>直接通过强转<code>string(bytes)</code>或者<code>[]byte(str)</code>会带来数据的复制，性能不佳，所以在追求极致性能场景，我们会采用『骇客』的方式，来实现这两种类型的转换,比如k8s采用下面的方式：</p>
+<figure class="highlight go"><figcaption><span>https://github.com/kubernetes/apiserver/blob/706a6d89cf35950281e095bb1eeed5e3211d6272/pkg/authentication/token/cache/cached_token_authenticator.go#L263-L271</span></figcaption><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div></pre></td><td class="code"><pre><div class="line"><span class="comment">// toBytes performs unholy acts to avoid allocations</span></div><div class="line"><span class="keyword">func</span> toBytes(s <span class="typename">string</span>) []<span class="typename">byte</span> {</div><div class="line">	<span class="keyword">return</span> *(*[]<span class="typename">byte</span>)(unsafe.Pointer(&s))</div><div class="line">}</div><div class="line"></div><div class="line"><span class="comment">// toString performs unholy acts to avoid allocations</span></div><div class="line"><span class="keyword">func</span> toString(b []<span class="typename">byte</span>) <span class="typename">string</span> {</div><div class="line">	<span class="keyword">return</span> *(*<span class="typename">string</span>)(unsafe.Pointer(&b))</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>更多的采用下面的方式(rpcx也采用下面的方式):</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> SliceByteToString(b []<span class="typename">byte</span>) <span class="typename">string</span> {</div><div class="line">	<span class="keyword">return</span> *(*<span class="typename">string</span>)(unsafe.Pointer(&b))</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> StringToSliceByte(s <span class="typename">string</span>) []<span class="typename">byte</span> {</div><div class="line">	x := (*<span class="number">[2</span>]<span class="typename">uintptr</span>)(unsafe.Pointer(&s))</div><div class="line">	h := <span class="number">[3</span>]<span class="typename">uintptr</span>{x<span class="number">[0</span>], x<span class="number">[1</span>], x<span class="number">[1</span>]}</div><div class="line">	<span class="keyword">return</span> *(*[]<span class="typename">byte</span>)(unsafe.Pointer(&h))</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>甚至，标准库也采用这种方式：</p>
+<figure class="highlight go"><figcaption><span>https://github.com/golang/go/blob/82f902ae8e2b7f7eff0cdb087e47e939cc296a62/src/strings/clone.go</span></figcaption><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> Clone(s <span class="typename">string</span>) <span class="typename">string</span> {</div><div class="line">	<span class="keyword">if</span> <span class="built_in">len</span>(s) ==<span class="number"> 0</span> {</div><div class="line">		<span class="keyword">return</span> <span class="string">""</span></div><div class="line">	}</div><div class="line">	b := <span class="built_in">make</span>([]<span class="typename">byte</span>, <span class="built_in">len</span>(s))</div><div class="line">	<span class="built_in">copy</span>(b, s)</div><div class="line">	<span class="keyword">return</span> *(*<span class="typename">string</span>)(unsafe.Pointer(&b))</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>因为 slice of byte 和 string 数据结构类似，所以我们可以可以使用这种『骇客』的方式强转。这两种类型的数据结构在<code>reflect</code>包中有定义:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> SliceHeader <span class="keyword">struct</span> {</div><div class="line">	Data <span class="typename">uintptr</span></div><div class="line">	Len  <span class="typename">int</span></div><div class="line">	Cap  <span class="typename">int</span></div><div class="line">}</div><div class="line"><span class="keyword">type</span> StringHeader <span class="keyword">struct</span> {</div><div class="line">	Data <span class="typename">uintptr</span></div><div class="line">	Len  <span class="typename">int</span></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p><code>Slice</code>比<code>String</code>多一个<code>Cap</code>字段，它们的数据通过一个数组存储，这两个结构的<code>Data</code>存储了指向这个数组的指针。</p>
+<h2 id="Go_1-20_的新的方式">Go 1.20 的新的方式</h2>
+<p>很多项目中都使用上面的方式进行性能提升，但是这是通过<code>unsafe</code>实现的，有相当的风险，因为强转之后，slice可能会做一些变动，导致相关的数据被覆盖了或者被回收了，也经常会出现一些意想不到的问题，我在使用这种方式做RedisProxy的时候，也犯过类似的错误，我当时还以为是标准库出错了呢。</p>
+<p>因此， Go官方准备在 1.20 中把这两个类型<code>SliceHeader</code>和<code>StringHeader</code>废弃掉，避免大家的误用。<br>废弃就废弃吧，但是也得提供相应的替代方法才行。这不，在 Go 1.12中，增加了几个方法<code>String</code>、<code>StringData</code>、<code>Slice</code>和<code>SliceData</code>,用来做这种性能转换。</p>
+<ul>
+<li>func Slice(ptr *ArbitraryType, len IntegerType) []ArbitraryType: 返回一个Slice,它的底层数组自ptr开始，长度和容量都是len</li>
+<li>func SliceData(slice []ArbitraryType) *ArbitraryType：返回一个指针，指向底层的数组</li>
+<li>func String(ptr *byte, len IntegerType) string： 生成一个字符串，底层的数组开始自ptr, 长度是len</li>
+<li>func StringData(str string) *byte: 返回字符串底层的数组</li>
+</ul>
+<p>这四个方法看起来很原始很底层。</p>
+<p>这个提交是由cuiweixie提交的。因为涉及到很基础很底层的实现，而且又是可能被广泛使用的方法，所以大家review起来特别的仔细，大家可以围观: <a href="https://go-review.googlesource.com/c/go/+/427095/" target="_blank" rel="external">go-review#427095</a>。</p>
+<p>甚至，这个修改都惊动了蛰伏多月的Rob Pike大佬，他老人家询问为啥只有实现连注释文档都没有呢:<a href="https://github.com/golang/go/issues?q=is%3Aissue+unsafe" target="_blank" rel="external">#54858</a>，当然原因是这个功能还在开发和review之中，不过可以看出Rob Pike很重视这个修改。</p>
+<p>cuiweixie 甚至还修改了标准库里面一些<a href="https://github.com/golang/go/issues/54854" target="_blank" rel="external">写法</a>，使用他提交的unsafe中的这四个方法。</p>
+<h2 id="性能测试">性能测试</h2>
+<p>虽然cuiweixie的提交还没有被merge到主分支，还存在一些变数，但是我发现使用gotip能使用这几个方法了。 我理解的是gotip适合master分支保持一致的，难道不是么？</p>
+<p>不管怎样，先写个benchmark:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div><div class="line">35</div><div class="line">36</div><div class="line">37</div><div class="line">38</div><div class="line">39</div><div class="line">40</div><div class="line">41</div><div class="line">42</div><div class="line">43</div><div class="line">44</div><div class="line">45</div><div class="line">46</div><div class="line">47</div><div class="line">48</div><div class="line">49</div><div class="line">50</div><div class="line">51</div><div class="line">52</div><div class="line">53</div><div class="line">54</div><div class="line">55</div><div class="line">56</div><div class="line">57</div><div class="line">58</div><div class="line">59</div><div class="line">60</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">var</span> L =<span class="number"> 1024</span> *<span class="number"> 1024</span></div><div class="line"><span class="keyword">var</span> str = strings.Repeat(<span class="string">"a"</span>, L)</div><div class="line"><span class="keyword">var</span> s = bytes.Repeat([]<span class="typename">byte</span>{<span class="string">'a'</span>}, L)</div><div class="line"></div><div class="line"><span class="keyword">var</span> str2 <span class="typename">string</span></div><div class="line"><span class="keyword">var</span> s2 []<span class="typename">byte</span></div><div class="line"></div><div class="line"><span class="keyword">func</span> BenchmarkString2Slice(b *testing.B) {</div><div class="line">	<span class="keyword">for</span> i :=<span class="number"> 0</span>; i &lt; b.N; i++ {</div><div class="line">		bt := []<span class="typename">byte</span>(str)</div><div class="line">		<span class="keyword">if</span> <span class="built_in">len</span>(bt) != L {</div><div class="line">			b.Fatal()</div><div class="line">		}</div><div class="line">	}</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> BenchmarkString2SliceReflect(b *testing.B) {</div><div class="line">	<span class="keyword">for</span> i :=<span class="number"> 0</span>; i &lt; b.N; i++ {</div><div class="line">		bt := *(*[]<span class="typename">byte</span>)(unsafe.Pointer(&str))</div><div class="line">		<span class="keyword">if</span> <span class="built_in">len</span>(bt) != L {</div><div class="line">			b.Fatal()</div><div class="line">		}</div><div class="line">	}</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> BenchmarkString2SliceUnsafe(b *testing.B) {</div><div class="line">	<span class="keyword">for</span> i :=<span class="number"> 0</span>; i &lt; b.N; i++ {</div><div class="line">		bt := unsafe.Slice(unsafe.StringData(str), <span class="built_in">len</span>(str))</div><div class="line">		<span class="keyword">if</span> <span class="built_in">len</span>(bt) != L {</div><div class="line">			b.Fatal()</div><div class="line">		}</div><div class="line">	}</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> BenchmarkSlice2String(b *testing.B) {</div><div class="line">	<span class="keyword">for</span> i :=<span class="number"> 0</span>; i &lt; b.N; i++ {</div><div class="line">		ss := <span class="typename">string</span>(s)</div><div class="line">		<span class="keyword">if</span> <span class="built_in">len</span>(ss) != L {</div><div class="line">			b.Fatal()</div><div class="line">		}</div><div class="line">	}</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> BenchmarkSlice2StringReflect(b *testing.B) {</div><div class="line">	<span class="keyword">for</span> i :=<span class="number"> 0</span>; i &lt; b.N; i++ {</div><div class="line">		ss := *(*<span class="typename">string</span>)(unsafe.Pointer(&s))</div><div class="line">		<span class="keyword">if</span> <span class="built_in">len</span>(ss) != L {</div><div class="line">			b.Fatal()</div><div class="line">		}</div><div class="line">	}</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> BenchmarkSlice2StringUnsafe(b *testing.B) {</div><div class="line">	<span class="keyword">for</span> i :=<span class="number"> 0</span>; i &lt; b.N; i++ {</div><div class="line">		ss := unsafe.String(unsafe.SliceData(s), <span class="built_in">len</span>(str))</div><div class="line">		<span class="keyword">if</span> <span class="built_in">len</span>(ss) != L {</div><div class="line">			b.Fatal()</div><div class="line">		}</div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>实际测试结果:</p>
+<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div></pre></td><td class="code"><pre><div class="line">➜  strslice gotip test -benchmem  -bench .</div><div class="line">goos: darwin</div><div class="line">goarch: arm64</div><div class="line">pkg: github.com/smallnest/study/strslice</div><div class="line">BenchmarkString2Slice-<span class="number">8</span>          	   <span class="number">18826</span>	         <span class="number">63942</span> ns/op	 <span class="number">1048579</span> B/op	       <span class="number">1</span> allocs/op</div><div class="line">BenchmarkString2SliceReflect-<span class="number">8</span>   	<span class="number">1000000000</span>	         <span class="number">0.6498</span> ns/op	       <span class="number">0</span> B/op	       <span class="number">0</span> allocs/op</div><div class="line">BenchmarkString2SliceUnsafe-<span class="number">8</span>    	<span class="number">1000000000</span>	         <span class="number">0.8178</span> ns/op	       <span class="number">0</span> B/op	       <span class="number">0</span> allocs/op</div><div class="line">BenchmarkSlice2String-<span class="number">8</span>          	   <span class="number">18686</span>	         <span class="number">65864</span> ns/op	 <span class="number">1048580</span> B/op	       <span class="number">1</span> allocs/op</div><div class="line">BenchmarkSlice2StringReflect-<span class="number">8</span>   	<span class="number">1000000000</span>	         <span class="number">0.6488</span> ns/op	       <span class="number">0</span> B/op	       <span class="number">0</span> allocs/op</div><div class="line">BenchmarkSlice2StringUnsafe-<span class="number">8</span>    	<span class="number">1000000000</span>	         <span class="number">0.9744</span> ns/op	       <span class="number">0</span> B/op	       <span class="number">0</span> allocs/op</div></pre></td></tr></table></figure>
+
+<p>可以看到，不通过『骇客』的方式，两种类型强转耗时非常巨大，如果采用<code>reflect</code>的方式，性能提升大大改观。</p>
+<p>如果采用最新的<code>unsafe</code>包的方式，性能也能大大提高，虽然耗时比<code>reflect</code>略有增加，可以忽略。</p>
+]]></content>
+    <summary type="html">
+    <![CDATA[<p>在 Go 1.19 的开发中, <code>string.SliceHeader</code>和<code>string.StringHeader</code>经历了一个生死存亡的争斗，这两个类型一度被标记为弃用(<a href="https://github.com/golang/go/commit/bc2e961cf4cda945dc6d607a5076b4e376553e9f" target="_blank" rel="external"><code>deprecated</code></a>),但是这两个类型经常用在 slice of byte 和 string 高效互转的场景中，如果被标记为弃用，但是目前还没有可替代的方法，所以这两个类型又把弃用标记去掉了，如无意外，它们也会在 Go 1.20 再次被标记为弃用。</p>
+]]>
+    
+    </summary>
+    
+  </entry>
   
   <entry>
     <title><![CDATA[一个线程安全的泛型支持map库]]></title>
@@ -1815,123 +1869,6 @@
 <p>一种现代且更先进的方法是应用和使用profiling技术和工具，突出显示最慢的应用程序代码和消耗大部分资源（如CPU和内存）的方法。持续分析(Continuous profiling)是在生产环境中持续    收集应用程序性能数据，并将这些数据提供给开发人员进行深入分析的过程。</p>
 <p>通过，我们通过采集程序的指标，生成一个概要文件(Profile)进行单次的分析。Go语言提供了pprof工具，可以很方便的生成profile文件。你可以通过程序调用<a href="https://pkg.go.dev/runtime/pprof" target="_blank" rel="external">runtime/pprof</a>生成CPU、Heap等概要文件，也可以使用<a href="https://pkg.go.dev/net/http/pprof" target="_blank" rel="external">net/http/pprof</a>集成到web应用程序中，通过go tool pprof工具在命令行或者web页面中进行分析。</p>
 <p>有时候，我们不能及时的进行pprof分析，故障可能消失了或者程序已经crash了。另外我们可能需要不同时段的profile进行对比，进行比较才能发现问题，比如内存泄露的问题。这个时候持续分析(continuous profiling)就很重要了。很多云服务厂商都提供持续分析的功能，比如<a href="https://www.datadoghq.com/dg/apm/ts/profiler/go-continuous-profiler-ts/?utm_source=advertisement&amp;utm_medium=search&amp;utm_campaign=dg-google-profiler-emea-goprofiling-tshirt&amp;utm_keyword=%2Bgo %2Bprofiling&amp;utm_matchtype=b&amp;utm_campaignid=15426873343&amp;utm_adgroupid=128217964697&amp;gclid=Cj0KCQiA_8OPBhDtARIsAKQu0gYymyElbglw_I7uZJkZ7ynxfzn1nVojVZJ9rkm_6_hbchG09w4CCmEaAkWfEALw_wcB" target="_blank" rel="external">Go Continuous Profiler | Datadog</a>、<a href="https://cloud.google.com/profiler/docs" target="_blank" rel="external">Cloud Profiler | Google Cloud</a>、<a href="https://aws.amazon.com/cn/codeguru/features/" target="_blank" rel="external">Amazon CodeGuru Profiler</a>等。</p>
-]]>
-    
-    </summary>
-    
-      <category term="Go" scheme="https://colobu.com/categories/Go/"/>
-    
-  </entry>
-  
-  <entry>
-    <title><![CDATA[面试官提问三个Go接口的概念， 10年gopher竟无言以对]]></title>
-    <link href="https://colobu.com/2022/01/16/three-new-concepts-of-go-interface-since-1-18/"/>
-    <id>https://colobu.com/2022/01/16/three-new-concepts-of-go-interface-since-1-18/</id>
-    <published>2022-01-16T11:44:58.000Z</published>
-    <updated>2022-01-16T14:00:52.957Z</updated>
-    <content type="html"><![CDATA[<p>自 Go 1.18后， Go的interface的含义有所<a href="https://colobu.com/2022/01/08/the-interface-is-not-that-interface-in-go-1-18/" target="_blank" rel="external">变化</a>, 三个新的和Go接口有关的概念很多人还不知道: <code>type set</code>(类型集合)、<code>specific type</code>(特定类型)和<code>structural type</code>(结构类型)。</p>
-<a id="more"></a>
-<h2 id="type_set_(类型集合)">type set (类型集合)</h2>
-<p>type set称之为类型集合，一些关注Go泛型的朋友其实也对此有些了解，它是Go 1.18新增加的一个概念。</p>
-<p>Go 1.18之前，Go的接口代表了一组方法的集合(method set),凡是实现了这些方法集合的类型，都被称之为实现了这个接口。Go不像Java语言，需要显示地定义某个类实现某个接口，Go不需要这样，在Go中，只要一个类型实现了某个接口定义的所有方法，它就实现了这个接口，可以赋值给这个接口类型的变量，或者作为这个接口类型的方法的实参或者返回值，这种设计有时候也被叫做<code>鸭子类型</code>(duck typing)。只要它走起来像鸭子，叫起来像鸭子，那么它就是鸭子，这是一个很经典的对鸭子类型的描述。</p>
-<p>在Go 1.18中，接口不再代表方法的集合了，而是代表类型的集合(type set)。只要某种类型在这个接口的类型集合中，那么我们就说这种类型实现了这个接口。如果这个接口被用作类型约束，那么在这个接口定义的类型集合中的任意一个元素，都可以实例化这个类型参数。</p>
-<p>所以，实际上，为了支持接口作为类型约束的扩展，Go语言规范不得不重新定义接口的含义了，这也是类型集合出现的原因。</p>
-<p>其实，接口的方法集的概念还在 一个接口的方法集是这个接口的类型集合中所有元素的方法集的<strong>交集</strong>。</p>
-<p>r本文假定你对Go泛型有了一定的了解。假定你还不了解，那么你必须知道，Go 1.18中接口除了原先的方法元素还，还支持包含类型元素，类型元素可以是某个类型<code>T</code>、或者是近似类型<code>~T</code>,或者是它们的联合<code>int|int8|int16|int32|int64|~string</code>。</p>
-<p>如果一个接口<code>I</code>嵌入了另外一个接口<code>E</code>,那么<code>I</code>的类型集是它显示定义的类型集合和嵌入的接口<code>E</code>的类型集合的交集。相当于<code>E</code>把接口<code>I</code>的类型集收窄了。</p>
-<p>如何判断一个接口的类型集呢？请遵循下面的原则:</p>
-<ul>
-<li><p>空接口<code>any</code>、<code>interface{}</code>的类型集是所有类型的集合<br>所以像<code>int</code>、<code>string</code>、<code>strcut{}</code>、<code>MyStruct</code>、<code>func foobar()</code>、<code>chan int</code>、<code>map[int]string</code>、<code>[]int</code>等等都在空接口的类型集合中</p>
-</li>
-<li><p>非空接口的类型集合是接口元素的类型集合的交集<br>那么什么是接口元素的类型集合呢？参照下面的四条。<br>前面我们已经提到，接口元素包含类型元素和方法元素。</p>
-<ul>
-<li><p>一个方法的类型集合是定义这个方法的所有类型，也就是只要某个类型的方法集包含这个方法，那么它就属于这个方法的类型集合<br>比如接口中有<code>String() string</code>这样一个方法，那么所有实现这个方法的类型都属于<code>String() string</code>定义的类型集合，比如<code>net.IP</code>。</p>
-</li>
-<li><p>一个非接口类型的类型集合就是只包含这个类型的类型集合<br>比如<code>int</code>的类型集合只包含<code>int</code>这样一个元素。</p>
-</li>
-<li><p>近似元素<code>~T</code>的类型集合是所有底层类型为<code>T</code>的所有类型的集合</p>
-</li>
-</ul>
-<p>比如<code>type MyInt int</code>中的<code>MyInt</code>就属于<code>~int</code>的类型集合</p>
-<ul>
-<li>联合元素<code>t1|t2|…|tn</code>的类型集合是这些联合元素类型集合的<strong>并集</strong></li>
-</ul>
-</li>
-</ul>
-<p>下面的例子列举了一些类型的集合：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div></pre></td><td class="code"><pre><div class="line"><span class="comment">// 这个集合的类型集合只有int这一种类型</span></div><div class="line"><span class="keyword">interface</span> {</div><div class="line">	<span class="typename">int</span></div><div class="line">}</div><div class="line"></div><div class="line"><span class="comment">// 这个接口代表所有底层为int类型的所有类型</span></div><div class="line"><span class="keyword">interface</span> {</div><div class="line">	~<span class="typename">int</span></div><div class="line">}</div><div class="line"></div><div class="line"><span class="comment">// 这个接口代表底层为int，并且实现了String方法的所有类型</span></div><div class="line"><span class="keyword">interface</span> {</div><div class="line">	~<span class="typename">int</span></div><div class="line">	String() <span class="typename">string</span></div><div class="line">}</div><div class="line"></div><div class="line"><span class="comment">// 这个接口的类型集合是空集，因为不可能一个元素既是int又是string类型</span></div><div class="line"><span class="keyword">interface</span> {</div><div class="line">	<span class="typename">int</span></div><div class="line">	<span class="typename">string</span></div><div class="line">}</div><div class="line"></div><div class="line"><span class="comment">// Floats代表所有底层是浮点数的类型 (底层为float32或者float64)</span></div><div class="line"><span class="keyword">type</span> Floats <span class="keyword">interface</span> {</div><div class="line">	~<span class="typename">float32</span> | ~<span class="typename">float64</span></div><div class="line">}</div></pre></td></tr></table></figure>
-
-<h2 id="specific_type_(特定类型)_和_specific_type_set">specific type (特定类型) 和 specific type set</h2>
-<p>接口另外一个很重要的概念就是<code>specific type</code> (特定类型)。</p>
-<p>只有包含类型元素的接口才定义了特定类型(可能是空的类型)。</p>
-<p>如果不严格的讲，特定类型是出现在类型元素中定义的那些类型<code>T</code>、<code>~T</code>、<code>t1|t2|...|tn</code>中的<code>t1</code>、<code>t2</code>、<code>...</code>、<code>tn</code>。</p>
-<p>更准确地说，对于给定的接口<code>I</code>，特定类型的集合对应于该接口代表的类型集合<strong>𝑅</strong>，这里要求<strong>𝑅</strong>是非空且有限的。否则，如果<strong>𝑅</strong>为空或无限，则接口没有特定类型。</p>
-<p>对于一个给定的接口、类型元素或者类型，它代表的类型集合<strong>𝑅</strong>定义如下：</p>
-<ul>
-<li><p>对于一个没有任何类型元素的接口，它的<strong>𝑅</strong>是所有的元素(无限)。<br>所以它没有特定类型。</p>
-</li>
-<li><p>如果一个接口有类型元素，它的<strong>𝑅</strong>是它的元素代表的类型的交集<br>至于有没有特定类型要看<strong>𝑅</strong>是否是非空且有限。</p>
-</li>
-<li><p>对于一个非接口类型<code>T</code>,或者<code>~T</code>, 它的<strong>𝑅</strong>是包含类型<code>T</code>的集合</p>
-</li>
-<li><p>对于联合元素<code>t1|t2|…|tn</code>, 它的<strong>𝑅</strong>是这些项代表类型的<strong>并集</strong></p>
-</li>
-</ul>
-<p>下面是特定类型的例子:</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> Celsius <span class="typename">float32</span></div><div class="line"><span class="keyword">type</span> Kelvin  <span class="typename">float32</span></div><div class="line"></div><div class="line"><span class="keyword">interface</span>{}                    <span class="comment">// 无限，所以没有特定类型</span></div><div class="line"><span class="keyword">interface</span>{ <span class="typename">int</span> }               <span class="comment">// 特定类型是int</span></div><div class="line"><span class="keyword">interface</span>{ ~<span class="typename">string</span> }           <span class="comment">// 特定类型是string</span></div><div class="line"><span class="keyword">interface</span>{ <span class="typename">int</span>|~<span class="typename">string</span> }       <span class="comment">// 特定类型是int, string</span></div><div class="line"><span class="keyword">interface</span>{ Celsius|Kelvin }    <span class="comment">// 特定类型是Celsius, Kelvin</span></div><div class="line"><span class="keyword">interface</span>{ <span class="typename">float64</span>|any }       <span class="comment">// 没有特定类型，因为联合类型的代表类型是无限的</span></div><div class="line"><span class="keyword">interface</span>{ <span class="typename">int</span>; m() }          <span class="comment">// 特定类型是int</span></div><div class="line"><span class="keyword">interface</span>{ ~<span class="typename">int</span>; m() }         <span class="comment">// 特定类型是int</span></div><div class="line"><span class="keyword">interface</span>{ <span class="typename">int</span>; any }          <span class="comment">// 特定类型是int，int和any的交集</span></div><div class="line"><span class="keyword">interface</span>{ <span class="typename">int</span>; <span class="typename">string</span> }       <span class="comment">// 没有特定类型</span></div></pre></td></tr></table></figure>
-
-<h2 id="type_set_vs_specific_type_set">type set vs specific type set</h2>
-<p>类型集合和特定类型集合还是有区别的，从上面它们的定义可以看出来。</p>
-<p><strong>一个接口即使类型为空，它的特定类型集合可能不为空。</strong><br>比如<code>interface{ int; m() }</code>,它的类型集合是空的(int没有实现m方法)，但是它的特定类型是<code>int</code>。</p>
-<p><strong>一个接口即使有有限的特定类型，它的类型集合也可能是无限的</strong><br>比如<code>interface{ ~int; m() }</code>,它的特定类型是int，但是它的类型集合确是无限的(任何底层为int并且实现了方法m的类型都属于它的类型集合)</p>
-<p>那么定义特定类型有什么用呢？</p>
-<h2 id="特定类型的应用">特定类型的应用</h2>
-<p>特定类型主要用于判断类型参数是否支持索引, 像<code>a[x]</code>这样的类型。</p>
-<p>比如一个表达式<code>a[x]</code>, <code>a</code>这个实例的类型可能是数组、指向数组的指针、slice、字符串、map。</p>
-<p>如果<code>a</code>的类型是类型参数<code>P</code>的话，那么我们的代码<code>a[x]</code>在什么条件下才不会编译出错？</p>
-<p>要求的条件就和特定类型有关了：</p>
-<ul>
-<li>P必须有特定类型</li>
-<li>对于P的特定类型的值a，支持<code>a[x]</code>这种索引写法</li>
-<li>P的所有特定类型必须相同。在这里，string类型的元素类型是byte (<a href="https://github.com/golang/go/issues/49551" target="_blank" rel="external">https://github.com/golang/go/issues/49551</a>)</li>
-<li>如果P的特定类型包含map类型的话，那么它的所有特定类型必须是map,而且所有的key的类型是相同的<br>所以有时候你定义了一个包含map、slice、string的联合元素接口的话，这个接口的实例你不能使用<code>a[x]</code>索引类型，元素的类型都是int</li>
-<li><code>a[x]</code>是数组、slice、string的索引为x的元素，或者是map类型key为x的元素，a[x]的类型必须相同</li>
-<li>如果P的特定类型包含string类型，那么不能给<code>a[x]</code>赋值(字符串是不可变的)</li>
-</ul>
-<p>特定类型还用作类型转化定义上。<br>对于一个变量<code>x</code>,如果它的类型是<code>V</code>, 要转换成的类型是<code>T</code>, 只要满足下面一条，x就可以转换成<code>T</code>类型:</p>
-<ul>
-<li><code>V</code>的每一个特定类型的值都可以转换成<code>T</code>的每一个特定类型</li>
-<li>只有<code>V</code>是类型参数，<code>T</code>不是，那么<code>V</code>的每一个特定类型的值都可以转换成<code>T</code></li>
-<li>只有<code>T</code>是类型参数，<code>x</code>可以转换成T的每一个特定类型</li>
-</ul>
-<p>一句话，是类型参数就满足每一个特定类型，不是类型参数就满足这个类型。</p>
-<p>另外，对于类型参数，要调用内建的函数<code>len</code>、<code>cap</code>，必须要求它们的特定类型允许使用这些内建函数。</p>
-<h2 id="structural_type_(结构类型)">structural type (结构类型)</h2>
-<p>一个接口<code>T</code>要被成为结构化的(<code>structural</code>),需要满足下面的条件之一:</p>
-<ol>
-<li>存在一个单一的类型<code>U</code>,它是<code>T</code>的类型集合中的每一个元素相同的底层类型</li>
-<li><code>T</code>的类型集合只包含chan类型，并且它们的元素类型都是<code>E</code>, 所有的chan的方向包含相同的方向(不一定要求完全相同)</li>
-</ol>
-<p>结构化类型包含一个结构类型，根据上面的条件不同，结构类型可能是:</p>
-<ol>
-<li>类型<code>U</code>, 或者</li>
-<li>如果<code>T</code>只包含双向chan的话，结构类型为<code>chan E</code>,否则可能是<code>chan&lt;- E</code>或者<code>&lt;-chan E</code></li>
-</ol>
-<p>下面是包含结构类型的结构化接口:</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">interface</span>{ <span class="typename">int</span> }                          <span class="comment">// 结构类型为 int</span></div><div class="line"><span class="keyword">interface</span>{ Celsius|Kelvin }               <span class="comment">// 结构类型为 float32</span></div><div class="line"><span class="keyword">interface</span>{ ~<span class="keyword">chan</span> <span class="typename">int</span> }                    <span class="comment">// 结构类型为 chan int</span></div><div class="line"><span class="keyword">interface</span>{ ~<span class="keyword">chan</span> <span class="typename">int</span>|~<span class="keyword">chan</span>&lt;- <span class="typename">int</span> }        <span class="comment">// 结构类型为 chan&lt;- int</span></div><div class="line"><span class="keyword">interface</span>{ ~[]*data; String() <span class="typename">string</span> }    <span class="comment">// 结构类型为 *data</span></div><div class="line"></div><div class="line"><span class="comment">// 下面的例子不包含结构类型，所以是非结构化接口</span></div><div class="line"><span class="keyword">interface</span>{}                               <span class="comment">// 没有固定单一的底层类型</span></div><div class="line"><span class="keyword">interface</span>{ Celsius|<span class="typename">float64</span> }              <span class="comment">// 底层类型不相同</span></div><div class="line"><span class="keyword">interface</span>{ <span class="keyword">chan</span> <span class="typename">int</span> | <span class="keyword">chan</span>&lt;- <span class="typename">string</span> }     <span class="comment">// channel的元素类型不相同</span></div><div class="line"><span class="keyword">interface</span>{ &lt;-<span class="keyword">chan</span> <span class="typename">int</span> | <span class="keyword">chan</span>&lt;- <span class="typename">int</span> }      <span class="comment">// channel没有相同的方向</span></div></pre></td></tr></table></figure>
-
-<p>在Go语言规范中，并没有对结构化接口有更多的介绍，如何使用，更多是是它内部获取底层的结构类型，以及做类型检查，比如下面的例子就会报<code>no structural type</code>编译错误:</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> myByte1 []<span class="typename">byte</span></div><div class="line"><span class="keyword">func</span> _[T <span class="keyword">interface</span>{ []<span class="typename">byte</span> | myByte1 | []<span class="typename">int</span> }] (x T, i, j, k <span class="typename">int</span>) { </div><div class="line">    <span class="keyword">var</span> _ T = x[i:j:k] <span class="comment">// 底层类型不一致</span></div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> _[T <span class="keyword">interface</span>{ []<span class="typename">byte</span> | myByte1 | []<span class="typename">int</span> | <span class="typename">string</span> }] (x T, i, j, k <span class="typename">int</span>) { </div><div class="line">    <span class="keyword">var</span> _ T = x[i:j] </div><div class="line">}</div><div class="line"></div><div class="line"><span class="comment">// 下面这个函数没问题，因为string的底层页被看做[]byte</span></div><div class="line"><span class="keyword">func</span> _[T <span class="keyword">interface</span>{ []<span class="typename">byte</span> | myByte1 | myByte2 | <span class="typename">string</span> }] (x T, i, j, k <span class="typename">int</span>) { </div><div class="line">    <span class="keyword">var</span> _ T = x[i:j] </div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>下面的代码也会报<code>M has no structural type</code>编译错误</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> multiMapOfInt <span class="keyword">interface</span> {</div><div class="line">	<span class="keyword">map</span>[<span class="typename">int</span>]<span class="typename">int</span> | <span class="keyword">map</span>[<span class="typename">float64</span>]<span class="typename">int</span> | <span class="keyword">map</span>[<span class="typename">string</span>]<span class="typename">int</span> | <span class="keyword">map</span>[<span class="typename">complex64</span>]<span class="typename">int</span></div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> arraySummer[M multiMapOfInt](mp M) (sum <span class="typename">int</span>) {</div><div class="line">	<span class="keyword">for</span> _, v := <span class="keyword">range</span> mp {</div><div class="line">		sum += v</div><div class="line">	}</div><div class="line">	<span class="keyword">return</span></div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>比如下面大家使用Go泛型的时候常会犯的错误,虽然<code>[]byte</code>、<code>map[int]byte</code>、<code>string</code>都能range,而且key(index)、value类型都一样，但是也会报<code>R has no structural type</code>错误:</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> main</div><div class="line"></div><div class="line"><span class="keyword">import</span> <span class="string">"fmt"</span></div><div class="line"></div><div class="line"><span class="keyword">type</span> rangeType <span class="keyword">interface</span> {</div><div class="line">	[]<span class="typename">byte</span> | <span class="keyword">map</span>[<span class="typename">int</span>]<span class="typename">byte</span> | <span class="typename">string</span></div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> rangeIt[R rangeType](r R) {</div><div class="line">	<span class="keyword">for</span> i, v := <span class="keyword">range</span> r {</div><div class="line">		fmt.Println(i, v)</div><div class="line">	}</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	rangeIt(<span class="keyword">map</span>[<span class="typename">int</span>]<span class="typename">byte</span><span class="number">{1</span>:<span class="number"> 1</span>,<span class="number"> 2</span>:<span class="number"> 2</span>,<span class="number"> 3</span>:<span class="number"> 3</span>})</div><div class="line">}</div></pre></td></tr></table></figure>
-
-]]></content>
-    <summary type="html">
-    <![CDATA[<p>自 Go 1.18后， Go的interface的含义有所<a href="https://colobu.com/2022/01/08/the-interface-is-not-that-interface-in-go-1-18/" target="_blank" rel="external">变化</a>, 三个新的和Go接口有关的概念很多人还不知道: <code>type set</code>(类型集合)、<code>specific type</code>(特定类型)和<code>structural type</code>(结构类型)。</p>
 ]]>
     
     </summary>
