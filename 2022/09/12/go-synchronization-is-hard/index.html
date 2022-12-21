@@ -1,0 +1,810 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset="utf-8">
+  
+  <title>多年老司机，面对这些Go并发问题，也迟疑了</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+  <meta name="description" content="Go一向以它的简单易学而著称，我也遇到过同学说只需半天就能掌握Go语言了，两三年的Go开发经验就称专家了。
+想比较Rust等编程语言，Go语言的确容易上手，查看Go语言的规范你也会看到，它的语言规范相比较其它编程语言非常的简短，的确可以一个小时就可以读完。但是如果你深入了解这门语言(其它语言也是类似情况)，就会发现很多细节的地方，需要花谢心思和时间仔细琢磨琢磨。这不，我先来几道Go并发的源代码考考">
+<meta property="og:type" content="article">
+<meta property="og:title" content="多年老司机，面对这些Go并发问题，也迟疑了">
+<meta property="og:url" content="https://colobu.com/2022/09/12/go-synchronization-is-hard/">
+<meta property="og:site_name" content="鸟窝">
+<meta property="og:description" content="Go一向以它的简单易学而著称，我也遇到过同学说只需半天就能掌握Go语言了，两三年的Go开发经验就称专家了。
+想比较Rust等编程语言，Go语言的确容易上手，查看Go语言的规范你也会看到，它的语言规范相比较其它编程语言非常的简短，的确可以一个小时就可以读完。但是如果你深入了解这门语言(其它语言也是类似情况)，就会发现很多细节的地方，需要花谢心思和时间仔细琢磨琢磨。这不，我先来几道Go并发的源代码考考">
+<meta property="og:image" content="mem-tso.png">
+<meta property="og:image" content="mem-weak.png">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="多年老司机，面对这些Go并发问题，也迟疑了">
+<meta name="twitter:description" content="Go一向以它的简单易学而著称，我也遇到过同学说只需半天就能掌握Go语言了，两三年的Go开发经验就称专家了。
+想比较Rust等编程语言，Go语言的确容易上手，查看Go语言的规范你也会看到，它的语言规范相比较其它编程语言非常的简短，的确可以一个小时就可以读完。但是如果你深入了解这门语言(其它语言也是类似情况)，就会发现很多细节的地方，需要花谢心思和时间仔细琢磨琢磨。这不，我先来几道Go并发的源代码考考">
+
+  
+  <link rel="alternative" href="/atom.xml" title="鸟窝" type="application/atom+xml">
+  
+  
+  <link rel="icon" href="/favicon.png">
+  
+  <link rel="stylesheet" href="/css/style.css" type="text/css">
+
+  <link href="//cdn.staticfile.org/font-awesome/4.2.0/css/font-awesome.css" rel="stylesheet">
+  
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/fancybox/2.1.7/css/jquery.fancybox.min.css"
+    media="screen" type="text/css">
+  
+  <link rel="stylesheet" href="//cdnjs.cloudflare.com/ajax/libs/animate.css/3.1.1/animate.min.css" media="screen"
+    type="text/css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/tonsky/FiraCode@1.207/distr/fira_code.css">
+</head>
+<body>
+  <div id="container">
+    <div id="wrap">
+      <header id="header">
+  <div id="banner"></div>
+  <div id="header-outer" class="outer">
+    <div id="header-title" class="inner">
+      <h1 id="logo-wrap" class="animated bounceInLeft">
+        <a href="/" id="logo">鸟窝</a>
+      </h1>
+      
+        <h2 id="subtitle-wrap" class="animated bounceInLeft">
+          <a href="/" id="subtitle">大道至简 Simplicity is the ultimate form of sophistication</a>
+        </h2>
+      
+    </div>
+    <div id="header-inner" class="inner">
+      <nav id="main-nav">
+        <a id="main-nav-toggle" class="nav-icon"></a>
+        
+          
+            <a class="main-nav-link" href="/"><i class="fa fa-home">&nbsp;</i>首页</a>
+          
+          
+          
+            <a class="main-nav-link" href="/archives"><i class="fa fa-folder-o">&nbsp;</i>归档</a>
+          
+          
+          
+            <a class="main-nav-link" href="https://github.com/smallnest"><i class="fa fa-github">&nbsp;</i>github</a>
+          
+          
+          
+            <div class="dropdown main-nav-link"><a class="main-nav-link" href="#"><i class="fa fa-bars">&nbsp;</i>网站群</a>
+              <div class="dropdown-content">
+          
+            
+              <a href="/goasm"><i class="fa fa-language"></i>&nbsp;Go汇编示例</a>
+            
+                
+          
+            
+              <a href="https://gowebexamples.com"><i class="fa fa-external-link"></i>&nbsp;Go Web开发示例</a>
+            
+                
+          
+            
+              <a href="http://go-database-sql.org"><i class="fa fa-external-link"></i>&nbsp;Go 数据库开发教程</a>
+            
+                
+          
+            
+              <hr>
+            
+                
+          
+            
+              <a href="http://rpcx.io"><i class="fa undefined"></i>&nbsp;RPCX官网</a>
+            
+                
+          
+            
+              <a href="http://cn.doc.rpcx.io"><i class="fa undefined"></i>&nbsp;RPC开发指南</a>
+            
+                
+          
+          </div>
+        </div>
+          
+          
+          
+            <a class="main-nav-link" href="/ScalaCollectionsCookbook"><i class="fa fa-book">&nbsp;</i>Scala集合技术手册</a>
+          
+          
+          
+            <a class="main-nav-link" href="/about"><i class="fa fa-lemon-o">&nbsp;</i>关于</a>
+          
+          
+
+
+      </nav>
+      <nav id="sub-nav">
+        
+          <a id="nav-rss-link" class="nav-icon" href="/atom.xml" title="RSS Feed"></a>
+        
+        <a id="nav-search-btn" class="nav-icon" title="Search"></a>
+      </nav>
+      <div id="search-form-wrap">
+        <form action="http://www.baidu.com/baidu" method="get" accept-charset="utf-8" class="search-form">
+          <input type="search" name="word" maxlength="20" class="search-form-input" placeholder="Search">
+          <input type="submit" value="" class="search-form-submit">
+          <input name=tn type=hidden value="bds">
+          <input name=cl type=hidden value="3">
+          <input name=ct type=hidden value="2097152">
+          <input type="hidden" name="si" value="colobu.com">
+        </form>
+      </div>
+    </div>
+  </div>
+</header>
+      <div class="outer">
+        <section id="main"><article id="post-go-synchronization-is-hard" class="article article-type-post" itemscope
+  itemprop="blogPost">
+  <div class="article-meta">
+    <a href="/2022/09/12/go-synchronization-is-hard/" class="article-date">
+  <time datetime="2022-09-12T08:36:25.000Z" itemprop="datePublished">2022年09月12日</time>
+</a>
+    
+  <div class="article-category">
+    <a class="article-category-link" href="/categories/Go/">Go</a>
+  </div>
+
+    
+  <div class="article-author"> by smallnest</div>
+
+  </div>
+  <div class="article-inner">
+    
+    
+    <header class="article-header">
+      
+  
+    <h1 class="article-title" itemprop="name">
+      多年老司机，面对这些Go并发问题，也迟疑了
+	  
+    </h1>
+  
+
+    </header>
+    
+    <div class="article-entry" itemprop="articleBody">
+      
+      
+      
+      <script>function show_answer(btn, x) { if (btn.value === "显示答案") { btn.value = "隐藏答案" } else { btn.value = "显示答案" } var as = document.getElementById(x); if (as.style.display === "none") { as.style.display = "block" } else { as.style.display = "none" } }</script>
+      <p>Go一向以它的简单易学而著称，我也遇到过同学说只需半天就能掌握Go语言了，两三年的Go开发经验就称专家了。</p>
+<p>想比较Rust等编程语言，Go语言的确容易上手，查看Go语言的规范你也会看到，它的语言规范相比较其它编程语言非常的简短，的确可以一个小时就可以读完。但是如果你深入了解这门语言(其它语言也是类似情况)，就会发现很多细节的地方，需要花谢心思和时间仔细琢磨琢磨。这不，我先来几道Go并发的源代码考考你，看看你能回答上来不？</p>
+<a id="more"></a>
+<h2 id="几道Go并发的源代码问题">几道Go并发的源代码问题</h2>
+<h3 id="在另一个goroutine看到的write顺序">在另一个goroutine看到的write顺序</h3>
+<p>下面这段代码，是否可能输出<code>1, 0</code>?</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> main</div><div class="line"></div><div class="line"><span class="keyword">import</span> (</div><div class="line">	<span class="string">"fmt"</span></div><div class="line">	<span class="string">"sync"</span></div><div class="line">)</div><div class="line"></div><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	<span class="keyword">var</span> wg sync.WaitGroup</div><div class="line">	wg.Add<span class="number">(2</span>)</div><div class="line"></div><div class="line">	<span class="keyword">var</span> x, y <span class="typename">int</span></div><div class="line">	<span class="keyword">go</span> <span class="keyword">func</span>() {</div><div class="line">		x =<span class="number"> 1</span></div><div class="line">		y =<span class="number"> 1</span></div><div class="line">		wg.Done()</div><div class="line">	}()</div><div class="line"></div><div class="line">	<span class="keyword">go</span> <span class="keyword">func</span>() {</div><div class="line">		r1 := y</div><div class="line">		r2 := x</div><div class="line">		</div><div class="line">        fmt.Println(r1, r2)  <span class="comment">// ❶ r1 = 1, r2 = 0 可能吗?</span></div><div class="line">       </div><div class="line">		wg.Done()</div><div class="line">	}()</div><div class="line"></div><div class="line">	wg.Wait()</div><div class="line"></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<h3 id="两个goroutine交叉read/write">两个goroutine交叉read/write</h3>
+<p>下面这段代码是否可能输出 r1= 0, r2 =0这样的结果？</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> main</div><div class="line"></div><div class="line"><span class="keyword">import</span> (</div><div class="line">	<span class="string">"fmt"</span></div><div class="line">	<span class="string">"sync"</span></div><div class="line">)</div><div class="line"></div><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	<span class="keyword">var</span> wg sync.WaitGroup</div><div class="line">	wg.Add<span class="number">(2</span>)</div><div class="line"></div><div class="line">	<span class="keyword">var</span> x, y <span class="typename">int</span></div><div class="line">	<span class="keyword">go</span> <span class="keyword">func</span>() {</div><div class="line">		x =<span class="number"> 1</span></div><div class="line">		r1 := y</div><div class="line">		fmt.Println(r1) <span class="comment">// ❶</span></div><div class="line"></div><div class="line">		wg.Done()</div><div class="line">	}()</div><div class="line"></div><div class="line">	<span class="keyword">go</span> <span class="keyword">func</span>() {</div><div class="line">		y =<span class="number"> 1</span></div><div class="line">		r2 := x</div><div class="line">		fmt.Println(r2) <span class="comment">// ❷</span></div><div class="line"></div><div class="line">		wg.Done()</div><div class="line">	}()</div><div class="line"></div><div class="line">	wg.Wait()</div><div class="line"></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<h3 id="两个goroutine看到的write顺序">两个goroutine看到的write顺序</h3>
+<p>下面这段代码, ❶和❷可能输出<code>1,0</code>和<code>0,1</code>这两种不同的结果吗？</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div><div class="line">35</div><div class="line">36</div><div class="line">37</div><div class="line">38</div><div class="line">39</div><div class="line">40</div><div class="line">41</div><div class="line">42</div><div class="line">43</div><div class="line">44</div><div class="line">45</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> main</div><div class="line"></div><div class="line"><span class="keyword">import</span> (</div><div class="line">	<span class="string">"fmt"</span></div><div class="line">	<span class="string">"sync"</span></div><div class="line">)</div><div class="line"></div><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	<span class="keyword">var</span> wg sync.WaitGroup</div><div class="line">	wg.Add<span class="number">(4</span>)</div><div class="line"></div><div class="line">	<span class="keyword">var</span> x, y <span class="typename">int</span></div><div class="line">	<span class="keyword">go</span> <span class="keyword">func</span>() {</div><div class="line">		x =<span class="number"> 1</span></div><div class="line"></div><div class="line">		wg.Done()</div><div class="line">	}()</div><div class="line"></div><div class="line">	<span class="keyword">go</span> <span class="keyword">func</span>() {</div><div class="line">		y =<span class="number"> 1</span></div><div class="line"></div><div class="line">		wg.Done()</div><div class="line">	}()</div><div class="line"></div><div class="line">	<span class="keyword">go</span> <span class="keyword">func</span>() {</div><div class="line">		r1 := x</div><div class="line">		r2 := y</div><div class="line"></div><div class="line">		fmt.Println(r1, r2) <span class="comment">// ❶ 1,0</span></div><div class="line"></div><div class="line">		wg.Done()</div><div class="line">	}()</div><div class="line"></div><div class="line">	<span class="keyword">go</span> <span class="keyword">func</span>() {</div><div class="line">		r3 := x</div><div class="line">		r4 := y</div><div class="line"></div><div class="line">		fmt.Println(r3, r4) <span class="comment">// ❷ 0,1</span></div><div class="line"></div><div class="line">		wg.Done()</div><div class="line">	}()</div><div class="line"></div><div class="line">	wg.Wait()</div><div class="line"></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<h3 id="sync-Once">sync.Once</h3>
+<p>下面是Go标准库中<code>sync.Once</code>的实现，虽然很简单的几行代码，你品一品，有没有什么疑问？</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> (o *Once) Do(f <span class="keyword">func</span>()) {</div><div class="line">	<span class="keyword">if</span> atomic.LoadUint32(&o.done) ==<span class="number"> 0</span> { <span class="comment">// ❶</span></div><div class="line">		o.doSlow(f)</div><div class="line">	}</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> (o *Once) doSlow(f <span class="keyword">func</span>()) {</div><div class="line">	o.m.Lock() <span class="comment">// ❷</span></div><div class="line">	<span class="keyword">defer</span> o.m.Unlock() <span class="comment">// ❸</span></div><div class="line">	<span class="keyword">if</span> o.done ==<span class="number"> 0</span> { <span class="comment">// ❹</span></div><div class="line">		<span class="keyword">defer</span> atomic.StoreUint32(&o.done,<span class="number"> 1</span>) <span class="comment">// ❺</span></div><div class="line">		f()</div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>为什么❹处不使用atomic?那么❶和❺处不使用atomic行不行？</p>
+<h3 id="sync-WaitGroup">sync.WaitGroup</h3>
+<p>下面是一段<code>WaitGroup</code>的示例代码, ❶处需要使用atomic.Load吗？ 如果不使用，一定输出10吗？</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	<span class="keyword">var</span> count <span class="typename">int64</span></div><div class="line">	</div><div class="line">    <span class="keyword">var</span> wg sync.WaitGroup</div><div class="line">	wg.Add<span class="number">(10</span>)</div><div class="line">	</div><div class="line">    <span class="keyword">for</span> i :=<span class="number"> 0</span>; i &lt;<span class="number"> 10</span>; i++ {</div><div class="line">		<span class="keyword">go</span> <span class="keyword">func</span>() {</div><div class="line">			atomic.AddInt64(&count,<span class="number"> 1</span>)</div><div class="line">			wg.Done()</div><div class="line">		}()</div><div class="line">	}</div><div class="line">	</div><div class="line">    wg.Wait()</div><div class="line"></div><div class="line">	fmt.Println(count) <span class="comment">// ❶</span></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<h3 id="TryLock">TryLock</h3>
+<p>下面这段代码是Mutex的TryLock方法的实现。❶处为什么不使用atomic,会不会导致锁已经释放了但是TryLock获取不到锁？</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> (m *Mutex) TryLock() <span class="typename">bool</span> {</div><div class="line">	old := m.state <span class="comment">// ❶</span></div><div class="line">	<span class="keyword">if</span> old&(mutexLocked|mutexStarving) !=<span class="number"> 0</span> {</div><div class="line">		<span class="keyword">return</span> <span class="constant">false</span></div><div class="line">	}</div><div class="line"></div><div class="line">	<span class="keyword">if</span> !atomic.CompareAndSwapInt32(&m.state, old, old|mutexLocked) {</div><div class="line">		<span class="keyword">return</span> <span class="constant">false</span></div><div class="line">	}</div><div class="line"></div><div class="line">	<span class="keyword">return</span> <span class="constant">true</span></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>你可以先思考一下这几个问题，我们暂时不分析，接下来我们看看最新的Go内存模型，然后再分析这几个题目。</p>
+<h2 id="Go_内存模型">Go 内存模型</h2>
+<p>新版的(Go 1.19)内存模型对原有的内存模型文字做了大幅度的<a href="https://go-review.googlesource.com/c/go/+/381315/" target="_blank" rel="external">修改</a>:</p>
+<ul>
+<li><p>文档化 Go 对内存模型整体的实现方法<br>data race指对同一个内存位置有并发的write-write或者write-read，除非使用了atomic进行原子操作，否则可能就有数据竞争，所以你看啊, read-read并没有数据竞争。没有数据竞争的程序的行为就像所有的goroutine运行在单处理器上，这个属性有时候也叫 <code>DRF-SC</code> (data-race-free programs execute in a sequentially consistent manner)。</p>
+</li>
+<li><p>文档化 multiword race 可能会导致崩溃</p>
+</li>
+<li>文档化 <code>runtime.SetFinalizer</code>的 happens-before 规则</li>
+<li>文档化(或者增加<a href="https://go-review.googlesource.com/c/go/+/381316/" target="_blank" rel="external">连接</a>) 针对更多同步原语的 happens-before 规则</li>
+<li>文档化 <code>sync/atomic</code>的 happens-before 规则， 对应 C++ 的 顺序一致性 atomic (以及其它语言Java，JavaScript, Rust, Swift, C, ...)</li>
+<li>文档化 禁止编译器优化</li>
+</ul>
+<p>内存操作可以分为三者：</p>
+<ul>
+<li>read-like: 比如 read、atomic read、mutex lock 和channel receive</li>
+<li>write-like: 比如 write、atomic write、mutex unlock、channel send 和 channe close</li>
+<li>read-like和write-like并存: 比如 atomic compare-and-swap</li>
+</ul>
+<p>内存模型有提出了两种关系: <code>sequenced before</code>和<code>synchronized before</code>。<br>在一个goroutine中执行的语句和表达式遵循<code>sequenced before</code>,按照Go语言规范中定义的控制流程和表达式的求值顺序执行。<br>如果一个同步执行的read-like的内存操作<strong>r</strong>观察到一个同步执行的write-like的内存操作<strong>w</strong>,那么w <code>synchronized before</code> r。<br>而<code>happens before</code>关系就被定义为一组<code>sequenced before</code>和<code>synchronized before</code>构成的具有传递性的组合。</p>
+<p>我的理解，Go内存模型相当于把<code>happens before</code>关系细化了。</p>
+<p>一个非同步的数据读取r, 读取内存地址x,如果写w对r可见，也就是r能观察到w话，需要保证:</p>
+<ul>
+<li>w happens before r</li>
+<li>w does not happen before any other write w&#39; (to x) that happens before r (翻译过来还不如看英文哈)</li>
+</ul>
+<p>其实我不想讲太多的关于Go内存模型的理论了，毕竟是翻译官方的文档，而且我翻译几次发觉翻译的不好，不如直接看官方文档。另外个人觉得这个官方文档也写得不好，虽然前面有一些定义，但是一些术语或者论据并没有很好的解释或者严格的论证(一家之言)。比如当你说<code>some</code>的时候，你要严格定义some到底包含哪些场景。当你说特定的术语或者短语时，你要定义术语或或者增加引用。</p>
+<p>不管怎样，重要的，或者说对于Gopher来说容易理解的是，它对各种同步场景给了严格的保证(定义)，比如<code>init</code>、goroutine的创建和执行、channel、Mutex、RWMutex、Once以及新增加<code>SetFinalizer</code>,但是最最重要的是，终于提供了atomic的同步定义。</p>
+<h3 id="atomic的保证">atomic的保证</h3>
+<p><code>sync/atomic</code>包提供了一组原子操作。如果原子操作<code>A</code>能被原子操作<code>B</code>观察到，那么我们就说 A synchronized before B。<br>所有的程序中的原子操作的执行就像按照顺序一致性顺序执行一样。</p>
+<p>和C++中的sequentially consistent atomic， 以及Java的volatile变量一样。</p>
+<p>因为不同的CPU指令不同，所以具体的atomic的实现也是针对不同架构各有不同。我们以AMD64架构为例。</p>
+<p>对于读操作，比如atomic.Load其实没有做任何处理，因为是single word读取：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> Load(ptr *<span class="typename">uint32</span>) <span class="typename">uint32</span> {</div><div class="line">	<span class="keyword">return</span> *ptr</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> Loadp(ptr unsafe.Pointer) unsafe.Pointer {</div><div class="line">	<span class="keyword">return</span> *(*unsafe.Pointer)(ptr)</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> Load64(ptr *<span class="typename">uint64</span>) <span class="typename">uint64</span> {</div><div class="line">	<span class="keyword">return</span> *ptr</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>对于写(读写)操作，使用<code>LOCK</code>前缀:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div></pre></td><td class="code"><pre><div class="line">TEXT ·Cas64(SB), NOSPLIT, <span class="number">$0</span><span class="number">-25</span></div><div class="line">	MOVQ	ptr<span class="number">+0</span>(FP), BX</div><div class="line">	MOVQ	old<span class="number">+8</span>(FP), AX</div><div class="line">	MOVQ	<span class="built_in">new</span><span class="number">+16</span>(FP), CX</div><div class="line">	LOCK</div><div class="line">	CMPXCHGQ	CX,<span class="number"> 0</span>(BX)</div><div class="line">	SETEQ	ret<span class="number">+24</span>(FP)</div><div class="line">	RET</div></pre></td></tr></table></figure>
+
+<p>LOCK前缀可以确保共享内存可以排他使用，并且对数据的修改会通过MESI对其它处理器可见。LOCK在老的Intel CPU中可能采用锁总线的方式，但是在现代的CPU中，通过锁cache line方式。一个更清楚的解释可以看这篇文章<a href="https://hackmd.io/@vesuppi/Syvoiw1f8" target="_blank" rel="external">x86 LOCK prefix</a>。</p>
+<p>Store就使用了<code>XCHG</code>指令，不需要LOCK前缀，本身它就具有LOCK的功能。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div></pre></td><td class="code"><pre><div class="line">TEXT ·Store64(SB), NOSPLIT, <span class="number">$0</span><span class="number">-16</span></div><div class="line">	MOVQ	ptr<span class="number">+0</span>(FP), BX</div><div class="line">	MOVQ	val<span class="number">+8</span>(FP), AX</div><div class="line">	XCHGQ	AX,<span class="number"> 0</span>(BX)</div><div class="line">	RET</div></pre></td></tr></table></figure>
+
+<p>虽然我们看的是AMD64架构的atomic实现，但是我们不妨看一个x86架构的Load64，这是一个很有意思的知识点。<br>x86是32位的架构，word是32位，读取int64的值的时候就是multiword的场景，不使用atomic,就可能读到部分修改的值，所以32位的情况下，原子读取int64的值需要特殊处理一下，不想AMD64架构下直接读取:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div></pre></td><td class="code"><pre><div class="line">TEXT ·Load64(SB), NOSPLIT, <span class="number">$0</span><span class="number">-12</span></div><div class="line">	NO_LOCAL_POINTERS</div><div class="line">	MOVL	ptr<span class="number">+0</span>(FP), AX</div><div class="line">	TESTL	<span class="number">$7</span>, AX</div><div class="line">	JZ<span class="number">	2</span>(PC)</div><div class="line">	CALL	·panicUnaligned(SB)</div><div class="line">	MOVQ	(AX), M0</div><div class="line">	MOVQ	M0, ret<span class="number">+4</span>(FP)</div><div class="line">	EMMS</div><div class="line">	RET</div></pre></td></tr></table></figure>
+
+<p>首先它会检查是否是8byte对齐，要是不对齐就会panic。然后呢，使用MMX0寄存器(64bit)巧妙的实现原子读取。</p>
+<h3 id="WaitGroup、Cond、sync-Pool、sync-Map">WaitGroup、Cond、sync.Pool、sync.Map</h3>
+<p>最新的Go内存模型还在注释(go doc)对各种并发原语的内存模型进行了定义，虽然我觉得在Go内存模型文档中记录更合理一些。</p>
+<p>比如WaitGroup:</p>
+<blockquote>
+<p>In the terminology of the Go memory model, a call to Done “synchronizes before” the return of any Wait call that it unblocks.</p>
+</blockquote>
+<p>比如 Cond:</p>
+<blockquote>
+<p>In the terminology of the Go memory model, Cond arranges that a call to Broadcast or Signal “synchronizes before” any Wait call that it unblocks.</p>
+</blockquote>
+<p>比如Pool:</p>
+<blockquote>
+<p>In the terminology of the Go memory model, a call to Put(x) “synchronizes before” a call to Get returning that same value x. Similarly, a call to New returning x “synchronizes before” a call to Get returning that same value x.</p>
+</blockquote>
+<p>比如sync.Map:</p>
+<blockquote>
+<p>In the terminology of the Go memory model, Map arranges that a write operation “synchronizes before” any read operation that observes the effect of the write.</p>
+</blockquote>
+<p>比如RWMutex:</p>
+<blockquote>
+<p>In the terminology of the Go memory model, the n&#39;th call to Unlock “synchronizes before” the m&#39;th call to Lock for any n &lt; m, just as for Mutex. For any call to RLock, there exists an n such that the n&#39;th call to Unlock “synchronizes before” that call to RLock, and the corresponding call to RUnlock “synchronizes before” the n+1&#39;th call to Lock.</p>
+</blockquote>
+<p>比如Mutex:</p>
+<blockquote>
+<p>In the terminology of the Go memory model, the n&#39;th call to Unlock “synchronizes before” the m&#39;th call to Lock for any n &lt; m. A successful call to TryLock is equivalent to a call to Lock. A failed call to TryLock does not establish any “synchronizes before” relation at all.</p>
+</blockquote>
+<p>比如Once:</p>
+<blockquote>
+<p>In the terminology of the Go memory model, the n&#39;th call to Unlock “synchronizes before” the m&#39;th call to Lock for any n &lt; m. A successful call to TryLock is equivalent to a call to Lock. A failed call to TryLock does not establish any “synchronizes before” relation at all.</p>
+</blockquote>
+<p>比如runtime.SetFinalizer:</p>
+<blockquote>
+<p>In the terminology of the Go memory model, a call SetFinalizer(x, f) “synchronizes before” the finalization call f(x). However, there is no guarantee that KeepAlive(x) or any other use of x “synchronizes before” f(x).</p>
+</blockquote>
+<p>为什么要了解这些保证，或者说为什么要了解Go内存模型呢？就是为了能编写data-race-free、没有并发问题的程序。</p>
+<p>比如下面一段并发代码：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">var</span> a <span class="typename">string</span></div><div class="line"><span class="keyword">var</span> done <span class="typename">bool</span></div><div class="line"></div><div class="line"><span class="keyword">func</span> setup() {</div><div class="line">	a = <span class="string">"hello, world"</span></div><div class="line">	done = <span class="constant">true</span></div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	<span class="keyword">go</span> setup()</div><div class="line">	<span class="keyword">for</span> !done { <span class="comment">// 空转，等待done=true</span></div><div class="line">	}</div><div class="line">	<span class="built_in">print</span>(a)</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>这里<code>done</code>的读写并没有使用atomic进行同步控制，所以在main goroutine中没有保证&quot;a的赋值&quot; happens before &quot;done的赋值&quot;,所以这个程序有可能输出空的字符串，甚至极端main goroutine一直观察不到done的赋值导致程序永远没办法完成。</p>
+<h2 id="x86的TSO">x86的TSO</h2>
+<p>不同的CPU架构对memory order的处理是不一样的，而Go内存模型保证的是在所有支持的架构下的一致性。有些并发问题在x86是没问题的，但是在ARM架构下可能会有问题。</p>
+<p>我们看看现代的x86的内存模型。下面是它们的一种架构:<br><img src="mem-tso.png" alt=""></p>
+<p>每一个处理器都有自己的写队列，同时都连着一个共享主内存。处理器读的时候先查询自己的写队列，再查询主内存。处理器不会查询其它处理器的写队列。</p>
+<p>虽然处理器会看到自己的写，暂时看不到其它处理器的写，但是到了主内存的时候，所有的写都是顺序的，所有的处理器看到的主内存的写都是有序的，所以x86的内存模型也叫做存储全序模型(TSO,total store order)。</p>
+<p>对于x86内存模型，只要一个值写入了主内存，未来的读会看到它(直到一个新的写覆盖了它)。</p>
+<p>ARM/POWER 使用一种更宽松的内存模型，每个处理器都读写它自己的内存副本，每个写都会独自传播到其它的处理器。在传播的时候允许重排序,并没有像x86 存储全序。<br><img src="mem-weak.png" alt=""></p>
+<p>但是对于ARM/POWER， 不同线程对同一个内存地址的写是全序的，也就是一个线程观察到的同一个内存地址的写和另一个线程观察到的同一个内存地址的写顺序都是一样的，尽管对不同的地址的写观察到的顺序可能不一样，这被称之为<strong>Coherence</strong>。</p>
+<h2 id="分析上面的问题">分析上面的问题</h2>
+<p>啰嗦了这么多，其实还是讲一个memory model的背景,而且这些这些知识也在Russ Cox的硬件内存模型做了介绍，也有很多相关的文章专门介绍memory order等相关的知识。 Russ Cox为了修订Go内存模型，专门对此做了深入的研究，还写了<a href="https://research.swtch.com/mm" target="_blank" rel="external">三篇文章</a>对此进行介绍。</p>
+<p>以上都是理论，但是Go内存模型对真实的并发程序有什么指导呢？那就逐个分析开头我们提出的几个问题吧。</p>
+<h3 id="在另一个goroutine看到的write顺序-1">在另一个goroutine看到的write顺序</h3>
+<p>第一道题，下面这段代码❶是否可能输出<code>1, 0</code>?</p>
+<p>对于x86架构， 答案是: <strong>否</strong>。<br>x86架构保证TSO,存储有序。 对于第一个写goroutine， x,y的写入顺序是保证有序的，写入到第一个线程的write queue保证 x sequenced before y, 又因为TSO存储有序， 其它的goroutine观察到的顺序也是x sequenced before y。</p>
+<p>对于ARM架构， 答案是: <strong>是</strong>。 对于第一个写goroutine， x,y的写入顺序是有序的,但是由于arm架构不是TSO， 对x,y的写在传播到其它处理器时，可能会重排序，所以有可能有的处理器看到x,y write,有的看到y,x write。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> main</div><div class="line"></div><div class="line"><span class="keyword">import</span> (</div><div class="line">	<span class="string">"fmt"</span></div><div class="line">	<span class="string">"sync"</span></div><div class="line">)</div><div class="line"></div><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	<span class="keyword">var</span> wg sync.WaitGroup</div><div class="line">	wg.Add<span class="number">(2</span>)</div><div class="line"></div><div class="line">	<span class="keyword">var</span> x, y <span class="typename">int</span></div><div class="line">	<span class="keyword">go</span> <span class="keyword">func</span>() {</div><div class="line">		x =<span class="number"> 1</span></div><div class="line">		y =<span class="number"> 1</span></div><div class="line">		wg.Done()</div><div class="line">	}()</div><div class="line"></div><div class="line">	<span class="keyword">go</span> <span class="keyword">func</span>() {</div><div class="line">		r1 := y</div><div class="line">		r2 := x</div><div class="line">		</div><div class="line">        fmt.Println(r1, r2)  <span class="comment">// ❶ r1 = 1, r2 = 0 可能吗?</span></div><div class="line">       </div><div class="line">		wg.Done()</div><div class="line">	}()</div><div class="line"></div><div class="line">	wg.Wait()</div><div class="line"></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<h3 id="两个goroutine交叉read/write-1">两个goroutine交叉read/write</h3>
+<p>第二道题，下面这段代码是否可能速出 r1= 0, r2 =0这样的结果？</p>
+<p>正常的理解,  <code>x=1</code>或者<code>y=1</code>先会发生，或者输出结果总会有一个1, 所以<code>r1= 0, r2 =0</code>不太可能发生。</p>
+<p><strong>但是</strong>，在x86架构下，两个goroutine(线程)把它们的write放入write buffer,之后接着读另一个变量，这个时候它们的写可能还没有同步到主内存中，就会导致它们的读到的还是零值。所以在x86下答案是： <strong>是</strong>, 有可能发生。</p>
+<p>对于ARM/POWER, 也类似，goroutine各自的写有可能还未传播到对方的处理器，所以答案也是: <strong>是</strong>， 有可能发生。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> main</div><div class="line"></div><div class="line"><span class="keyword">import</span> (</div><div class="line">	<span class="string">"fmt"</span></div><div class="line">	<span class="string">"sync"</span></div><div class="line">)</div><div class="line"></div><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	<span class="keyword">var</span> wg sync.WaitGroup</div><div class="line">	wg.Add<span class="number">(2</span>)</div><div class="line"></div><div class="line">	<span class="keyword">var</span> x, y <span class="typename">int</span></div><div class="line">	<span class="keyword">go</span> <span class="keyword">func</span>() {</div><div class="line">		x =<span class="number"> 1</span></div><div class="line">		r1 := y</div><div class="line">		fmt.Println(r1) <span class="comment">// ❶</span></div><div class="line"></div><div class="line">		wg.Done()</div><div class="line">	}()</div><div class="line"></div><div class="line">	<span class="keyword">go</span> <span class="keyword">func</span>() {</div><div class="line">		y =<span class="number"> 1</span></div><div class="line">		r2 := x</div><div class="line">		fmt.Println(r2) <span class="comment">// ❷</span></div><div class="line"></div><div class="line">		wg.Done()</div><div class="line">	}()</div><div class="line"></div><div class="line">	wg.Wait()</div><div class="line"></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<h3 id="两个goroutine看到的write顺序-1">两个goroutine看到的write顺序</h3>
+<p>下面这段代码, ❶和❷可能输出<code>1,0</code>和<code>0,1</code>这两种不同的结果吗？</p>
+<p>对于x86架构， 答案是: <strong>否</strong>, 不可能发生。既然第三个goroutine已经观察到了<code>1,0</code>,因为x86是TSO,存储有序，所以<code>x=1</code> sychronized before <code>y=1</code>, 第四个goroutine观察到的只能是<code>0,0</code>、<code>1,0</code>或者<code>1,1</code>,不可能是<code>0,1</code>。</p>
+<p>对于ARM架构，答案是: <strong>是</strong>, 是有可能发生的，不同的线程观察到的对不同的内存地址的写的顺序可能不同。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div><div class="line">35</div><div class="line">36</div><div class="line">37</div><div class="line">38</div><div class="line">39</div><div class="line">40</div><div class="line">41</div><div class="line">42</div><div class="line">43</div><div class="line">44</div><div class="line">45</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> main</div><div class="line"></div><div class="line"><span class="keyword">import</span> (</div><div class="line">	<span class="string">"fmt"</span></div><div class="line">	<span class="string">"sync"</span></div><div class="line">)</div><div class="line"></div><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	<span class="keyword">var</span> wg sync.WaitGroup</div><div class="line">	wg.Add<span class="number">(4</span>)</div><div class="line"></div><div class="line">	<span class="keyword">var</span> x, y <span class="typename">int</span></div><div class="line">	<span class="keyword">go</span> <span class="keyword">func</span>() {</div><div class="line">		x =<span class="number"> 1</span></div><div class="line"></div><div class="line">		wg.Done()</div><div class="line">	}()</div><div class="line"></div><div class="line">	<span class="keyword">go</span> <span class="keyword">func</span>() {</div><div class="line">		y =<span class="number"> 1</span></div><div class="line"></div><div class="line">		wg.Done()</div><div class="line">	}()</div><div class="line"></div><div class="line">	<span class="keyword">go</span> <span class="keyword">func</span>() {</div><div class="line">		r1 := x</div><div class="line">		r2 := y</div><div class="line"></div><div class="line">		fmt.Println(r1, r2) <span class="comment">// ❶ 1,0</span></div><div class="line"></div><div class="line">		wg.Done()</div><div class="line">	}()</div><div class="line"></div><div class="line">	<span class="keyword">go</span> <span class="keyword">func</span>() {</div><div class="line">		r3 := x</div><div class="line">		r4 := y</div><div class="line"></div><div class="line">		fmt.Println(r3, r4) <span class="comment">// ❷ 0,1</span></div><div class="line"></div><div class="line">		wg.Done()</div><div class="line">	}()</div><div class="line"></div><div class="line">	wg.Wait()</div><div class="line"></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<h3 id="sync-Once-1">sync.Once</h3>
+<p>上面都是一些测试例子，为了举例内存同步的复杂性，接下来我们看一下实际标准库中为了内存同步所做的特殊处理。</p>
+<p>下面是Go标准库中<code>sync.Once</code>的实现，虽然很简单的几行代码，你品一品，有没有什么疑问？</p>
+<p>这个简短的几行代码经常会对深入研究Go代码的同学造成困惑，为什么❹处不使用atomic? 那么❶和❺处不使用atomic行不行？</p>
+<p>❹处执行一个double check, ❺处的对o.done执行了一个写，他俩不会data race么？</p>
+<p>假定g1执行了❺, 一个并发的的g2也正好执行到了❷。</p>
+<p>因为根据g1, ❺ sequnenced before ❸, 根据Mutex的保证， g2的❷ synchronized before ❹， 所以当g2获取了获取，执行到4的时候，他是能看到g1已经把o.done标记为1了。</p>
+<p>那么 ❶和❺处不使用atomic行不行？不行！ 严谨的说，为了性能，不行!</p>
+<p>❶和❺处为了实现同步，必须要使用同步原语，这里最简单的就是使用atomic。 ❺处的写一定会被❶处的读看到。</p>
+<p>如果❶和❺处不使用atomic,那么极端情况❶处总是检查o.done==0,然后总是会进入doSlow进行double check,耗费性能。</p>
+<p>对于x86架构， ❶处可以不使用atomic,但是❺处必须使用atomic,以便能把done=1写入到主内存中。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> (o *Once) Do(f <span class="keyword">func</span>()) {</div><div class="line">	<span class="keyword">if</span> atomic.LoadUint32(&o.done) ==<span class="number"> 0</span> { <span class="comment">// ❶</span></div><div class="line">		o.doSlow(f)</div><div class="line">	}</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> (o *Once) doSlow(f <span class="keyword">func</span>()) {</div><div class="line">	o.m.Lock() <span class="comment">// ❷</span></div><div class="line">	<span class="keyword">defer</span> o.m.Unlock() <span class="comment">// ❸</span></div><div class="line">	<span class="keyword">if</span> o.done ==<span class="number"> 0</span> { <span class="comment">// ❹</span></div><div class="line">		<span class="keyword">defer</span> atomic.StoreUint32(&o.done,<span class="number"> 1</span>) <span class="comment">// ❺</span></div><div class="line">		f()</div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<h3 id="sync-WaitGroup-1">sync.WaitGroup</h3>
+<p>下面是一段<code>WaitGroup</code>的示例代码, ❶处需要使用atomic.Load吗？ 如果不使用，一定输出10吗？</p>
+<p>答案是: <strong>不需要</strong>， 一定输出10。</p>
+<p>❶ suquenced before ❷, ❷ synchronized before ❸, ❸ sequenced before ❹, 所以❹一定会看到各个goroutine对count的写， 所以❹处不需要atomic。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	<span class="keyword">var</span> count <span class="typename">int64</span></div><div class="line">	</div><div class="line">    <span class="keyword">var</span> wg sync.WaitGroup</div><div class="line">	wg.Add<span class="number">(10</span>)</div><div class="line">	</div><div class="line">    <span class="keyword">for</span> i :=<span class="number"> 0</span>; i &lt;<span class="number"> 10</span>; i++ {</div><div class="line">		<span class="keyword">go</span> <span class="keyword">func</span>() {</div><div class="line">			atomic.AddInt64(&count,<span class="number"> 1</span>) <span class="comment">// ❶</span></div><div class="line">			wg.Done() <span class="comment">// ❷</span></div><div class="line">		}()</div><div class="line">	}</div><div class="line">	</div><div class="line">    wg.Wait() <span class="comment">// ❸</span></div><div class="line"></div><div class="line">	fmt.Println(count) <span class="comment">// ❹</span></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<h3 id="TryLock-1">TryLock</h3>
+<p>下面这段代码是Mutex的TryLock方法的实现。❶处为什么不使用atomic,会不会导致锁已经释放了但是TryLock获取不到锁？</p>
+<p>答案是: <strong>会</strong>, 在某些CPU架构下，有可能锁已经释放了，但是后续的 goroutine会获取不到锁。</p>
+<blockquote>
+<p>As far as the memory model is concerned, <code>l.TryLock</code> (or <code>l.TryRLock</code>) may be considered to be able to return false even when the mutex l is unlocked.<br>就Go内存模型而言，即使 l 已经释放了锁,  <code>l.TryLock</code> (或者 <code>l.TryRLock</code>) 也可能返回false。</p>
+</blockquote>
+<p>对于我们普通开发者而言，这叫做bug或者data race, 但是对于Go开发组来说，他们称之为为性能优化所做的特殊设计。</p>
+<blockquote>
+<p>The memory model is defining when one event is synchronized before another. That sentence is saying that in a sequence Lock -&gt; Unlock -&gt; TryLock -&gt; Lock there is no promise that the TryLock is synchronized before the Lock. The TryLock can fail to lock the mutex even though the mutex is unlocked.</p>
+<p>From Ian Lance Taylor</p>
+</blockquote>
+<p>但是对于x86来说，这不是一个问题。当一个goroutine释放了锁， ❶处是能及时观察到锁的释放的。但是对于Arm架构， 锁释放后， ❶处不一定能及时的获取到锁的释放，所以即使锁释放了，它依然可能返回false，这只是非常极端极端的情况。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> (m *Mutex) TryLock() <span class="typename">bool</span> {</div><div class="line">	old := m.state <span class="comment">// ❶</span></div><div class="line">	<span class="keyword">if</span> old&(mutexLocked|mutexStarving) !=<span class="number"> 0</span> {</div><div class="line">		<span class="keyword">return</span> <span class="constant">false</span></div><div class="line">	}</div><div class="line"></div><div class="line">	<span class="keyword">if</span> !atomic.CompareAndSwapInt32(&m.state, old, old|mutexLocked) {</div><div class="line">		<span class="keyword">return</span> <span class="constant">false</span></div><div class="line">	}</div><div class="line"></div><div class="line">	<span class="keyword">return</span> <span class="constant">true</span></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<h2 id="参考资料">参考资料</h2>
+<ol>
+<li><a href="https://research.swtch.com/hwmm" target="_blank" rel="external">https://research.swtch.com/hwmm</a></li>
+<li><a href="https://github.com/golang/go/issues/5045" target="_blank" rel="external">https://github.com/golang/go/issues/5045</a></li>
+<li><a href="https://go.dev/ref/mem" target="_blank" rel="external">https://go.dev/ref/mem</a></li>
+<li><a href="https://github.com/golang/go/discussions/47141" target="_blank" rel="external">https://github.com/golang/go/discussions/47141</a></li>
+<li><a href="https://hackmd.io/@vesuppi/Syvoiw1f8" target="_blank" rel="external">https://hackmd.io/@vesuppi/Syvoiw1f8</a></li>
+<li><a href="https://www.chanmufeng.com/posts/concurrency/%E7%BC%93%E5%AD%98%E4%B8%80%E8%87%B4%E6%80%A7%E4%B8%8E%E5%86%85%E5%AD%98%E5%B1%8F%E9%9A%9C.html" target="_blank" rel="external">https://www.chanmufeng.com/posts/concurrency/%E7%BC%93%E5%AD%98%E4%B8%80%E8%87%B4%E6%80%A7%E4%B8%8E%E5%86%85%E5%AD%98%E5%B1%8F%E9%9A%9C.html</a></li>
+</ol>
+
+      
+    </div>
+    <footer class="article-footer">
+      
+
+      
+      <!-- <link rel="stylesheet" href="https://unpkg.com/gitalk/dist/gitalk.css">
+      <script src="https://unpkg.com/gitalk/dist/gitalk.min.js"></script> -->
+      <section id="comments">
+        <script src="https://utteranc.es/client.js"
+                repo="smallnest/gitalk"
+                issue-term="title"
+                theme="github-light"
+                crossorigin="anonymous"
+                async>
+        </script>
+        <!-- <div id="gitalk-container"></div>
+        <script type="text/javascript">
+          var gitalkOpts = {
+            id: '2022/09/12/go-synchronization-is-hard/',
+            owner: 'smallnest',
+            repo: 'gitalk',
+            title: '多年老司机，面对这些Go并发问题，也迟疑了',
+            body: 'https://colobu.com/2022/09/12/go-synchronization-is-hard/',
+            clientID: 'bc02724130ed5b7ee275',
+            clientSecret: '68cb0bae2f93a8b88b09e0eb9b08c844b06a9047',
+            admin: ['smallnest'],
+            distractionFreeMode: false
+          };
+
+          const gitalk = new Gitalk(gitalkOpts)
+          gitalk.render('gitalk-container')
+        </script> -->
+        <noscript> 为正常使用评论功能请激活JavaScript</noscript>
+      </section>
+
+      
+
+    </footer>
+  </div>
+  
+  
+<nav id="article-nav">
+  
+    <a href="/2022/09/29/Inside-the-Go-CPU-profiler/" id="article-nav-newer" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">Newer</strong>
+      <div class="article-nav-title">
+        
+          Go CPU profiler 内幕
+        
+      </div>
+    </a>
+  
+  
+    <a href="/2022/09/06/string-byte-convertion/" id="article-nav-older" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">Older</strong>
+      <div class="article-nav-title">与日俱进，在 Go 1.20 中这种高效转换的方式又变了</div>
+    </a>
+  
+</nav>
+
+  
+</article></section>
+        
+          <aside id="sidebar">
+  
+    <div class="widget-wrap">
+  <h3 class="widget-title">微信公众号</h3>
+  <div class="widget">
+    <img width="100%" src="/images/widgets/gopatterns.jpg">
+  </div>
+</div>
+
+<div class="widget-wrap">
+  <h3 class="widget-title">极客时间专栏</h3>
+  <div class="widget">
+    <a href="https://time.geekbang.org/column/intro/100061801">
+      <img width="100%" src="/images/widgets/geekbang.png">
+    </a>
+  </div>
+</div>
+
+<div class="widget-wrap">
+    <h3 class="widget-title">原创图书</h3>
+    <div class="widget">
+      <a href="/ScalaCollectionsCookbook/">
+        <img width="100%" src="/ScalaCollectionsCookbook/scala_collections_cookbook.jpg">
+        <img width="100%" src="/ScalaCollectionsCookbook/scala_collections_cookbook_tw.png">
+      </a>
+    </div>
+</div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">分类</h3>
+    <div class="widget">
+      <ul class="category-list"><li class="category-list-item"><a class="category-list-link" href="/categories/Android/">Android</a><span class="category-list-count">12</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/C/">C++</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/DOTNET/">DOTNET</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Docker/">Docker</a><span class="category-list-count">5</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Go/">Go</a><span class="category-list-count">208</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Java/">Java</a><span class="category-list-count">64</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Linux/">Linux</a><span class="category-list-count">7</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Rust/">Rust</a><span class="category-list-count">12</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Scala/">Scala</a><span class="category-list-count">18</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/go/">go</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/k8s/">k8s</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/rust/">rust</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/分享/">分享</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/前端开发/">前端开发</a><span class="category-list-count">18</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/区块链/">区块链</a><span class="category-list-count">8</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/大数据/">大数据</a><span class="category-list-count">60</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/工具/">工具</a><span class="category-list-count">28</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/数据库/">数据库</a><span class="category-list-count">3</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/架构/">架构</a><span class="category-list-count">27</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/算法/">算法</a><span class="category-list-count">4</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/管理/">管理</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/网络编程/">网络编程</a><span class="category-list-count">13</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/设计模式/">设计模式</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/读书笔记/">读书笔记</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/运维/">运维</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/高并发编程/">高并发编程</a><span class="category-list-count">20</span></li></ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">标签云</h3>
+    <div class="widget tagcloud">
+      <a href="/tags/Android/" style="font-size: 15.71px;">Android</a><a href="/tags/ApacheBench/" style="font-size: 11.43px;">ApacheBench</a><a href="/tags/Bower/" style="font-size: 10.00px;">Bower</a><a href="/tags/C/" style="font-size: 10.00px;">C#</a><a href="/tags/CDN/" style="font-size: 10.00px;">CDN</a><a href="/tags/CQRS/" style="font-size: 10.00px;">CQRS</a><a href="/tags/CRC/" style="font-size: 10.00px;">CRC</a><a href="/tags/CSS/" style="font-size: 11.43px;">CSS</a><a href="/tags/CompletableFuture/" style="font-size: 10.00px;">CompletableFuture</a><a href="/tags/Comsat/" style="font-size: 10.00px;">Comsat</a><a href="/tags/Curator/" style="font-size: 18.57px;">Curator</a><a href="/tags/DSL/" style="font-size: 10.00px;">DSL</a><a href="/tags/Disruptor/" style="font-size: 10.00px;">Disruptor</a><a href="/tags/Docker/" style="font-size: 11.43px;">Docker</a><a href="/tags/Ember/" style="font-size: 11.43px;">Ember</a><a href="/tags/FastJson/" style="font-size: 10.00px;">FastJson</a><a href="/tags/Fiber/" style="font-size: 10.00px;">Fiber</a><a href="/tags/GAE/" style="font-size: 10.00px;">GAE</a><a href="/tags/GC/" style="font-size: 12.86px;">GC</a><a href="/tags/Gnuplot/" style="font-size: 10.00px;">Gnuplot</a><a href="/tags/Go/" style="font-size: 14.29px;">Go</a><a href="/tags/Gradle/" style="font-size: 10.00px;">Gradle</a><a href="/tags/Grunt/" style="font-size: 10.00px;">Grunt</a><a href="/tags/Gulp/" style="font-size: 10.00px;">Gulp</a><a href="/tags/Hadoop/" style="font-size: 10.00px;">Hadoop</a><a href="/tags/Hazelcast/" style="font-size: 10.00px;">Hazelcast</a><a href="/tags/IPFS/" style="font-size: 10.00px;">IPFS</a><a href="/tags/Ignite/" style="font-size: 10.00px;">Ignite</a><a href="/tags/JVM/" style="font-size: 10.00px;">JVM</a><a href="/tags/Java/" style="font-size: 17.14px;">Java</a><a href="/tags/Kafka/" style="font-size: 20.00px;">Kafka</a><a href="/tags/Lambda/" style="font-size: 14.29px;">Lambda</a><a href="/tags/Linux/" style="font-size: 12.86px;">Linux</a><a href="/tags/LongAdder/" style="font-size: 10.00px;">LongAdder</a><a href="/tags/MathJax/" style="font-size: 10.00px;">MathJax</a><a href="/tags/Maven/" style="font-size: 11.43px;">Maven</a><a href="/tags/Memcached/" style="font-size: 10.00px;">Memcached</a><a href="/tags/Metrics/" style="font-size: 10.00px;">Metrics</a><a href="/tags/Mongo/" style="font-size: 12.86px;">Mongo</a><a href="/tags/Netty/" style="font-size: 15.71px;">Netty</a>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">归档</h3>
+    <div class="widget">
+      <ul class="archive-list"><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/12/">December 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/11/">November 2022</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/10/">October 2022</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/09/">September 2022</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/08/">August 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/07/">July 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/06/">June 2022</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/05/">May 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/04/">April 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/03/">March 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/02/">February 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/01/">January 2022</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/12/">December 2021</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/11/">November 2021</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/10/">October 2021</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/08/">August 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/07/">July 2021</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/06/">June 2021</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/05/">May 2021</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/04/">April 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/03/">March 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/02/">February 2021</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/01/">January 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/12/">December 2020</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/11/">November 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/09/">September 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/08/">August 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/07/">July 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/06/">June 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/05/">May 2020</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/04/">April 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/03/">March 2020</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/02/">February 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/01/">January 2020</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/12/">December 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/11/">November 2019</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/10/">October 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/09/">September 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/08/">August 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/07/">July 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/06/">June 2019</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/05/">May 2019</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/04/">April 2019</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/03/">March 2019</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/02/">February 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/01/">January 2019</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/12/">December 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/11/">November 2018</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/10/">October 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/09/">September 2018</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/08/">August 2018</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/07/">July 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/06/">June 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/05/">May 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/04/">April 2018</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/03/">March 2018</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/02/">February 2018</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/01/">January 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/12/">December 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/11/">November 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/10/">October 2017</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/09/">September 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/08/">August 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/07/">July 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/06/">June 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/05/">May 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/04/">April 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/03/">March 2017</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/02/">February 2017</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/01/">January 2017</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/12/">December 2016</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/11/">November 2016</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/10/">October 2016</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/09/">September 2016</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/08/">August 2016</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/07/">July 2016</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/06/">June 2016</a><span class="archive-list-count">14</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/05/">May 2016</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/04/">April 2016</a><span class="archive-list-count">14</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/03/">March 2016</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/02/">February 2016</a><span class="archive-list-count">8</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/01/">January 2016</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/12/">December 2015</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/11/">November 2015</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/10/">October 2015</a><span class="archive-list-count">9</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/09/">September 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/08/">August 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/07/">July 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/06/">June 2015</a><span class="archive-list-count">8</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/05/">May 2015</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/04/">April 2015</a><span class="archive-list-count">15</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/03/">March 2015</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/02/">February 2015</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/01/">January 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/12/">December 2014</a><span class="archive-list-count">28</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/11/">November 2014</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/10/">October 2014</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/09/">September 2014</a><span class="archive-list-count">28</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/08/">August 2014</a><span class="archive-list-count">19</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/07/">July 2014</a><span class="archive-list-count">1</span></li></ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">近期文章</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+            <a href="/2022/12/21/use-the-builtin-map-hasher/">机智！生抠 map的哈希函数</a>
+          </li>
+        
+          <li>
+            <a href="/2022/12/04/Shopify-monolith-served-1-27-Million-requests-per-second-during-Black-Friday/">没用微服务，Shopify的单体程序居然支撑了127万/秒的请求？</a>
+          </li>
+        
+          <li>
+            <a href="/2022/11/26/some-time-and-cron-libs/">一些关于时间和定时任务的库</a>
+          </li>
+        
+          <li>
+            <a href="/2022/11/21/zero-copy-and-how-to-use-it-in-go-2/">零拷贝技术第二篇：Go语言中的应用</a>
+          </li>
+        
+          <li>
+            <a href="/2022/11/19/zero-copy-and-how-to-use-it-in-go/">零拷贝技术第一篇：综述</a>
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">友情链接</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+			 
+            <a href="http://stackshare.io" target="_blank">技术栈</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://toutiao.io/" target="_blank">开发者头条</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://weekly.manong.io/issues/" target="_blank">码农周刊</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.tuicool.com/mags" target="_blank">编程狂人周刊</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.importnew.com/" target="_blank">importnew</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://ifeve.com/" target="_blank">并发编程网</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://github.com" target="_blank">github</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://stackoverflow.com/" target="_blank">stackoverflow</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.javacodegeeks.com/" target="_blank">javacodegeeks</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.infoq.com/" target="_blank">infoq</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.dzone.com/links/index.html" target="_blank">dzone</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://oj.leetcode.com/problems/" target="_blank">leetcode</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://tutorials.jenkov.com" target="_blank">jenkov</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://howtodoinjava.com" target="_blank">HowToDoInJava</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://java-design-patterns.com/patterns/" target="_blank">java design patterns</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://medium.com/netflix-techblog" target="_blank">Netflix技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://www.techiedelight.com" target="_blank">Techie Delight</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://engineering.linkedin.com/blog" target="_blank">Linkedin技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://blogs.dropbox.com/tech/" target="_blank">Dropbox技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://code.fb.com" target="_blank">Facebook技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://jm.taobao.org" target="_blank">淘宝中间件团队</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://tech.meituan.com" target="_blank">美团技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://blogs.360.cn" target="_blank">360技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://xiaomi-info.github.io" target="_blank">小米信息部技术团队</a>
+			
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+      
+
+  
+</aside>
+        
+      </div>
+      <footer id="footer">
+  
+  <div class="outer">
+    <div id="footer-info" class="inner">
+      &copy; 2022 smallnest<br>
+	  Powered by <a href="http://hexo.io/" target="_blank">Hexo</a>
+    </div>
+  </div>
+</footer>
+    </div>
+    <nav id="mobile-nav">
+  
+    
+      <a href="/" class="mobile-nav-link"><i class="fa fa-home">&nbsp;</i>首页</a>
+    
+  
+    
+      <a href="/archives" class="mobile-nav-link"><i class="fa fa-folder-o">&nbsp;</i>归档</a>
+    
+  
+    
+      <a href="https://github.com/smallnest" class="mobile-nav-link"><i class="fa fa-github">&nbsp;</i>github</a>
+    
+  
+    
+      <a class="mobile-nav-link" href="#"><i class="fa fa-bars">&nbsp;</i>网站群</a>
+    
+      
+            <a class="mobile-nav-link" href="/goasm">&nbsp;&nbsp;<i class="fa fa-language">&nbsp;</i>Go汇编示例</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="https://gowebexamples.com">&nbsp;&nbsp;<i class="fa fa-external-link">&nbsp;</i>Go Web开发示例</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://go-database-sql.org">&nbsp;&nbsp;<i class="fa fa-external-link">&nbsp;</i>Go 数据库开发教程</a>
+          
+          
+    
+      
+            
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://rpcx.io">&nbsp;&nbsp;<i class="fa undefined">&nbsp;</i>RPCX官网</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://cn.doc.rpcx.io">&nbsp;&nbsp;<i class="fa undefined">&nbsp;</i>RPC开发指南</a>
+          
+          
+    
+    
+  
+    
+      <a href="/ScalaCollectionsCookbook" class="mobile-nav-link"><i class="fa fa-book">&nbsp;</i>Scala集合技术手册</a>
+    
+  
+    
+      <a href="/about" class="mobile-nav-link"><i class="fa fa-lemon-o">&nbsp;</i>关于</a>
+    
+  
+</nav>
+    
+<script src="//cdn.staticfile.org/jquery/1.11.1/jquery.min.js"></script>
+<script src="//cdn.bootcss.com/jquery.lazyload/1.9.1/jquery.lazyload.min.js"></script>
+
+<script src="//cdnjs.cloudflare.com/ajax/libs/fancybox/3.2.5/jquery.fancybox.min.js"></script>
+
+
+<script src="/js/script.js" type="text/javascript"></script>
+
+<!-- mathjax config similar to math.stackexchange -->
+<script type="text/x-mathjax-config">
+  MathJax.Hub.Config({
+    tex2jax: {
+      inlineMath: [ ['$','$'], ["\\(","\\)"] ],
+      processEscapes: true,
+      skipTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code']
+    }
+  });
+  MathJax.Hub.Queue(function() {
+      var all = MathJax.Hub.getAllJax(), i;
+      for(i=0; i < all.length; i += 1) {
+        all[i].SourceElement().parentNode.className += ' has-jax';
+      }
+  });
+</script>
+<script type="text/javascript" src="//cdn.bootcss.com/mathjax/2.6.0-beta.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML">
+</script>
+
+<div id="totop" style="position:fixed;bottom:150px;right:10px;cursor: pointer;z-index: 2000;">
+	<a title="返回顶部"><img src="/images/scrollup.png"/></a>
+</div>
+<script src="/js/totop.js" type="text/javascript"></script>
+
+
+
+
+<script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "//hm.baidu.com/hm.js?e085d87993250aab11f3e0c15f1c2785";
+  var s = document.getElementsByTagName("script")[0]; 
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+
+
+  </div>
+</body>
+</html>

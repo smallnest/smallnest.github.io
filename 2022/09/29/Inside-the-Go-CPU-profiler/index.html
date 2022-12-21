@@ -1,0 +1,696 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset="utf-8">
+  
+  <title>Go CPU profiler 内幕</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+  <meta name="description" content="原文: Inside the Go CPU profiler,作者 Sümer Cip。我猜测 Felix Geisendörfer 肯定会进行评论，果不其然。
+Go 是那种自带 profiler (分析器)的语言之一。它的运行时包含强大的自成一派的各种 profiler。其它语言，比如 Ruby、Python 和 Node.js, 它们也包含 profiler或者一些用来编写profiler的A">
+<meta property="og:type" content="article">
+<meta property="og:title" content="Go CPU profiler 内幕">
+<meta property="og:url" content="https://colobu.com/2022/09/29/Inside-the-Go-CPU-profiler/">
+<meta property="og:site_name" content="鸟窝">
+<meta property="og:description" content="原文: Inside the Go CPU profiler,作者 Sümer Cip。我猜测 Felix Geisendörfer 肯定会进行评论，果不其然。
+Go 是那种自带 profiler (分析器)的语言之一。它的运行时包含强大的自成一派的各种 profiler。其它语言，比如 Ruby、Python 和 Node.js, 它们也包含 profiler或者一些用来编写profiler的A">
+<meta property="og:image" content="sigprof.png">
+<meta property="og:image" content="sigprof_handler.png">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="Go CPU profiler 内幕">
+<meta name="twitter:description" content="原文: Inside the Go CPU profiler,作者 Sümer Cip。我猜测 Felix Geisendörfer 肯定会进行评论，果不其然。
+Go 是那种自带 profiler (分析器)的语言之一。它的运行时包含强大的自成一派的各种 profiler。其它语言，比如 Ruby、Python 和 Node.js, 它们也包含 profiler或者一些用来编写profiler的A">
+
+  
+  <link rel="alternative" href="/atom.xml" title="鸟窝" type="application/atom+xml">
+  
+  
+  <link rel="icon" href="/favicon.png">
+  
+  <link rel="stylesheet" href="/css/style.css" type="text/css">
+
+  <link href="//cdn.staticfile.org/font-awesome/4.2.0/css/font-awesome.css" rel="stylesheet">
+  
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/fancybox/2.1.7/css/jquery.fancybox.min.css"
+    media="screen" type="text/css">
+  
+  <link rel="stylesheet" href="//cdnjs.cloudflare.com/ajax/libs/animate.css/3.1.1/animate.min.css" media="screen"
+    type="text/css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/tonsky/FiraCode@1.207/distr/fira_code.css">
+</head>
+<body>
+  <div id="container">
+    <div id="wrap">
+      <header id="header">
+  <div id="banner"></div>
+  <div id="header-outer" class="outer">
+    <div id="header-title" class="inner">
+      <h1 id="logo-wrap" class="animated bounceInLeft">
+        <a href="/" id="logo">鸟窝</a>
+      </h1>
+      
+        <h2 id="subtitle-wrap" class="animated bounceInLeft">
+          <a href="/" id="subtitle">大道至简 Simplicity is the ultimate form of sophistication</a>
+        </h2>
+      
+    </div>
+    <div id="header-inner" class="inner">
+      <nav id="main-nav">
+        <a id="main-nav-toggle" class="nav-icon"></a>
+        
+          
+            <a class="main-nav-link" href="/"><i class="fa fa-home">&nbsp;</i>首页</a>
+          
+          
+          
+            <a class="main-nav-link" href="/archives"><i class="fa fa-folder-o">&nbsp;</i>归档</a>
+          
+          
+          
+            <a class="main-nav-link" href="https://github.com/smallnest"><i class="fa fa-github">&nbsp;</i>github</a>
+          
+          
+          
+            <div class="dropdown main-nav-link"><a class="main-nav-link" href="#"><i class="fa fa-bars">&nbsp;</i>网站群</a>
+              <div class="dropdown-content">
+          
+            
+              <a href="/goasm"><i class="fa fa-language"></i>&nbsp;Go汇编示例</a>
+            
+                
+          
+            
+              <a href="https://gowebexamples.com"><i class="fa fa-external-link"></i>&nbsp;Go Web开发示例</a>
+            
+                
+          
+            
+              <a href="http://go-database-sql.org"><i class="fa fa-external-link"></i>&nbsp;Go 数据库开发教程</a>
+            
+                
+          
+            
+              <hr>
+            
+                
+          
+            
+              <a href="http://rpcx.io"><i class="fa undefined"></i>&nbsp;RPCX官网</a>
+            
+                
+          
+            
+              <a href="http://cn.doc.rpcx.io"><i class="fa undefined"></i>&nbsp;RPC开发指南</a>
+            
+                
+          
+          </div>
+        </div>
+          
+          
+          
+            <a class="main-nav-link" href="/ScalaCollectionsCookbook"><i class="fa fa-book">&nbsp;</i>Scala集合技术手册</a>
+          
+          
+          
+            <a class="main-nav-link" href="/about"><i class="fa fa-lemon-o">&nbsp;</i>关于</a>
+          
+          
+
+
+      </nav>
+      <nav id="sub-nav">
+        
+          <a id="nav-rss-link" class="nav-icon" href="/atom.xml" title="RSS Feed"></a>
+        
+        <a id="nav-search-btn" class="nav-icon" title="Search"></a>
+      </nav>
+      <div id="search-form-wrap">
+        <form action="http://www.baidu.com/baidu" method="get" accept-charset="utf-8" class="search-form">
+          <input type="search" name="word" maxlength="20" class="search-form-input" placeholder="Search">
+          <input type="submit" value="" class="search-form-submit">
+          <input name=tn type=hidden value="bds">
+          <input name=cl type=hidden value="3">
+          <input name=ct type=hidden value="2097152">
+          <input type="hidden" name="si" value="colobu.com">
+        </form>
+      </div>
+    </div>
+  </div>
+</header>
+      <div class="outer">
+        <section id="main"><article id="post-Inside-the-Go-CPU-profiler" class="article article-type-post" itemscope
+  itemprop="blogPost">
+  <div class="article-meta">
+    <a href="/2022/09/29/Inside-the-Go-CPU-profiler/" class="article-date">
+  <time datetime="2022-09-29T12:06:41.000Z" itemprop="datePublished">2022年09月29日</time>
+</a>
+    
+  <div class="article-category">
+    <a class="article-category-link" href="/categories/Go/">Go</a>
+  </div>
+
+    
+  <div class="article-author"> by smallnest</div>
+
+  </div>
+  <div class="article-inner">
+    
+    
+    <header class="article-header">
+      
+  
+    <h1 class="article-title" itemprop="name">
+      Go CPU profiler 内幕
+	  
+    </h1>
+  
+
+    </header>
+    
+    <div class="article-entry" itemprop="articleBody">
+      
+      
+      
+      <script>function show_answer(btn, x) { if (btn.value === "显示答案") { btn.value = "隐藏答案" } else { btn.value = "显示答案" } var as = document.getElementById(x); if (as.style.display === "none") { as.style.display = "block" } else { as.style.display = "none" } }</script>
+      <p>原文: <a href="https://sumercip.com/posts/inside-the-go-cpu-profiler/" target="_blank" rel="external">Inside the Go CPU profiler</a>,作者 Sümer Cip。我猜测 Felix Geisendörfer 肯定会进行评论，果不其然。</p>
+<p>Go 是那种自带 profiler (分析器)的语言之一。它的运行时包含强大的自成一派的各种 profiler。其它语言，比如 Ruby、Python 和 Node.js, 它们也包含 profiler或者一些用来编写profiler的API，但是与Go的开箱即用的 profiler相比，它们提供的profiler功能有限。如果你想多了解Go提供的这些可观察工具的情况，我强烈推荐你阅读 Felix Geisendörfer的 <a href="https://github.com/DataDog/go-profiler-notes/blob/main/guide/README.md" target="_blank" rel="external">The Busy Developer’s Guide to Go Profiling, Tracing and Observability</a>。</p>
+<p>作为一个好奇的工程师，我喜欢挖掘事物在底层上的工作方式，我一直想去学习Go CPU profiler底层·是怎么工作的。这篇文章就是此次探索的结果。每当我阅读Go运行时代码时，我总是学到到一些新东西，这次也不例外。</p>
+<a id="more"></a>
+<h2 id="基本知识">基本知识</h2>
+<p>当前市面上存在两种类型的profiler:</p>
+<ul>
+<li><strong>tracing</strong>(跟踪): 当预定义的事件发生时进行测量。例如，函数被调用，函数退出等等。</li>
+<li><strong>Sampling</strong>(采样): 定期进行测量。</li>
+</ul>
+<p>Go CPU profiler 是一个采样分析器。当然Go还有一个执行跟踪器（execution tracer），它是 tracing profiler, 跟踪某些事件，例如请求锁，GC相关事件等等。</p>
+<p>sampling profiler 通常由两个基本部分组成：</p>
+<ul>
+<li>采样器(sampler)：定期调用回调，并且通常分析数据收集堆栈跟踪(stack trace)。不同的profiler使用不同的策略来触发回调。</li>
+<li>数据收集：这是profiler收集其数据的地方：它可能会消耗内存或调用计数，基本上是与堆栈跟踪关联的一些指标。</li>
+</ul>
+<h2 id="关于其它profiler如何工作的小调查">关于其它profiler如何工作的小调查</h2>
+<p>Linux <strong>perf</strong> 使用 PMU(Performance Monitor Unit)计数器进行采样。你可以指示PMU 在某些事件发生 N 次后生成中断，例如，每 1000 个 CPU 时钟周期执行一次。<br>丹尼斯·巴赫瓦洛夫（Denis Bakhvalov）撰写的一篇<a href="https://easyperf.net/blog/2018/06/01/PMU-counters-and-profiling-basics" target="_blank" rel="external">详细文章</a>解释了如何像 perf 和 VTune 工具使用PMU计数器来实现这一目标。一旦定期触发数据收集回调函数，剩下的工作就是收集堆栈跟踪并正确聚合它们。为了完整起见，Linux <strong>perf</strong> 使用 perf_event_open(PERF_SAMPLE_STACK_USER,...) 收集堆栈信息。捕获的堆栈跟踪通过 mmap 环形缓冲区写入用户空间。</p>
+<p><a href="https://github.com/benfred/py-spy" target="_blank" rel="external">pyspy</a>和<a href="https://github.com/rbspy/rbspy" target="_blank" rel="external">rbspy</a>是著名的Python和Ruby的sampling profiler。它们都作为外部进程运行，并定期读取目标应用程序内存以捕获正在运行的线程的堆栈跟踪。在Linux中，他们使用process_vm_readv方法收集数据，如果我没有记错的话，这个API在内存读取期间会将目标应用程序暂停几毫秒。然后，它们在读取的内存中跟踪指针，以查找当前正在运行的线程结构和堆栈跟踪信息。正如人们可能猜到的那样，这是一种容易出错且复杂的方法，但效果非常好。如果我没记错的话，<a href="https://github.com/uber-archive/pyflame" target="_blank" rel="external">pyflame</a>也使用类似的方法。</p>
+<p>最近的profiler，如<a href="https://sumercip.com/posts/inside-the-go-cpu-profiler/parca.dev" target="_blank" rel="external">Parca</a>（还有其它几个）使用 <a href="https://ebpf.io/" target="_blank" rel="external">eBPF</a>。eBPF 是一项最新的技术，允许在内核 VM 中运行用户空间代码。这是一项出色的技术，用于安全、网络和可观察性等许多领域。我强烈建议阅读有关eBPF的一些信息，这是一个非常大的话题，远远超出了这篇文章的范围。</p>
+<h2 id="如何定期触发探查器？">如何定期触发探查器？</h2>
+<p>Go CPU profiler 是一个采样分析器。在 Linux 中，Go 运行时使用 <strong>setitimer/timer_create/timer_settime</strong> 来设置 <strong>SIGPROF</strong> 信号处理器。此处理器按<strong>runtime.SetCPUProfileRate</strong>设置的周期间隔触发，默认情况下是100Mz(10毫秒)。顺便说一句，在Go 1.18之前，Go CPU profiler的采样器存在一些严重的问题，你可以在<a href="https://www.datadoghq.com/blog/engineering/profiling-improvements-in-go-1-18/" target="_blank" rel="external">这里</a>看到这些问题的细节。我们记错的话，<strong>settimer</strong> API 是Linux中每个线程触发基于时间的信号的推荐方法: 从技术上讲，它的工作原理就像你期望的进程信号处理机制一样。但它并不是多核分析的良好机制。</p>
+<p>让我们看看如何手动启用 Go CPU profiler：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div></pre></td><td class="code"><pre><div class="line">f, err := os.Create(<span class="string">"profile.pb.gz"</span>)</div><div class="line"><span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">    ...</div><div class="line">}</div><div class="line"><span class="keyword">if</span> err := pprof.StartCPUProfile(f); err != <span class="constant">nil</span> {</div><div class="line">    ...</div><div class="line">}</div><div class="line"><span class="keyword">defer</span> pprof.StopCPUProfile()</div></pre></td></tr></table></figure>
+
+<p>一旦<strong>pprof.StartCPUProfile</strong>被调用，Go运行时就可以按照指定的时间间隔产生<strong>SIGPROF</strong>信号。Linux内核向应用程序中正在运行的线程之一发送<strong>SIGPROF</strong>信号。由于 Go 使用非阻塞 I/O，等待I/O的goroutine不会被统计为running的goroutine，Go CPU profiler 不会捕获这类goroutine的数据。顺便说一句：这是实现<a href="https://github.com/felixge/fgprof" target="_blank" rel="external">fgprof</a>的基本原因。 fgprof使用<strong>runtime.GoroutineProfile</strong>获取 on-CPU 和 off-CPU的数据。</p>
+<p>A picture is worth a thousand words; below is how Go runtime handles SIGPROF signal:</p>
+<p>一图胜千言。以下是 Go 运行时处理SIGPROF信号的方式：</p>
+<p><img src="sigprof.png" alt=""></p>
+<h2 id="profiler_如何收集数据？">profiler 如何收集数据？</h2>
+<p>一个一个随机的运行的goroutine收到<strong>SIGPROF</strong>信号，它会被中断并执行信号处理程序。中断的 goroutine 的堆栈跟踪在此信号处理程序的上下文中获取到，然后与当前<a href="https://rakyll.org/profiler-labels/" target="_blank" rel="external">profiler标签</a>一起保存到<a href="https://preshing.com/20120612/an-introduction-to-lock-free-programming/" target="_blank" rel="external">lock-free</a>日志结构中（每个捕获的堆栈跟踪都可以与自定义标签相关联，您可以稍后对其进行过滤）。这个特殊的lock-free结构被命名为<strong>profBuf</strong>，它在 <a href="https://github.com/golang/go/blob/master/src/runtime/profbuf.go" target="_blank" rel="external">runtime/profbuf.go</a> 定义，并详细解释了它是如何工作的。它是一个单写单读(single-writer,single-reader)的lock-free的ringbuffer，类似于此处<a href="http://www.cse.cuhk.edu.hk/~pclee/www/pubs/ancs09poster.pdf" target="_blank" rel="external">介绍</a>的数据结构。Writer是信号处理器，而reader是 <strong>profileWriter</strong> goroutine，profileWriter goroutine定期的读取此缓冲区并将结果聚合到最终的hashmap。这个最终的hashmap被命名为<strong>profMap</strong>, 定义在<a href="https://github.com/golang/go/blob/master/src/runtime/pprof/map.go" target="_blank" rel="external">runtime/pprof/map.go</a>。</p>
+<p>以下是把刚才介绍的组合在一起的一个可视化图：</p>
+<p><img src="sigprof_handler.png" alt=""></p>
+<p>可以看到，最终的结构与常规的<strong>pprof.Profile</strong>对象非常相似：它是一个hashmap,其中的键是堆栈跟踪+标签，值是在应用程序中观察到此调用堆栈的次数。当<strong>pprof.StopCPUProfile()</strong>被调用时，分析就会停止，profileWriter goroutine调用<a href="https://github.com/golang/go/blob/aa4299735b78189eeac1e2c4edafb9d014cc62d7/src/runtime/pprof/proto.go#L348" target="_blank" rel="external">build()</a>。这个函数负责写<strong>profMap</strong>结构到<strong>io.Writer</strong>，此Writer由pprof.StartCPUProfile初始调用的时候提供。基本上这就是最终的<a href="https://pkg.go.dev/runtime/pprof#Profile" target="_blank" rel="external">pprof.Profile</a>产生的过程。</p>
+<p>profileWriter的伪代码可能对你理解这个过程更有帮助:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> profileWriter(w io.Writer) {</div><div class="line">    ...</div><div class="line">    <span class="keyword">for</span> {</div><div class="line">        time.Sleep<span class="number">(100</span> * time.Millisecond)</div><div class="line"></div><div class="line">        data, tags := readProfile()</div><div class="line">        <span class="keyword">if</span> e := b.addCPUData(data, tags); e != <span class="constant">nil</span> {</div><div class="line">            ...</div><div class="line">        }</div><div class="line"></div><div class="line">        <span class="keyword">if</span> profilerStopped {</div><div class="line">            <span class="keyword">break</span></div><div class="line">        }</div><div class="line">    }</div><div class="line">    ...</div><div class="line">    b.build() <span class="comment">// -&gt; generates final pprof.Profile</span></div><div class="line">    ...</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>一旦我对设计有了高层次的了解，我就会问自己以下问题：<br><strong>为什么 Go 为了实现一个独特的lock-free结构而花费了那么大精力只为了保存临时分析数据？为什么不定期将所有内容写入hashmap？</strong></p>
+<p>答案就在设计本身。</p>
+<p>首先看的第一件事就是<strong>SIGPROF</strong>处理器就是禁用内存分派。此外，profiler代码不包含热门和锁，甚至堆栈的最大深度也是硬编码的。截止<strong>Go 1.19</strong>, 最大深度是<a href="https://github.com/golang/go/blob/54cf1b107d24e135990314b56b02264dba8620fc/src/runtime/cpuprof.go#L22" target="_blank" rel="external">64</a>。所有这些细节都可以为profiler提供更高效、更可预测的开销。低且可预测的性能是生产就绪型profiler的关键。</p>
+<h2 id="开销">开销</h2>
+<p>根据设计，profiler开销是恒定的？嗯，这要视情况而定。让我解释一下原因：在单个profiler中断中，会发生以下情况：</p>
+<ul>
+<li>一个随机运行的goroutine执行上下文切换来运行SIGPROF处理器，</li>
+<li>执行堆栈遍历，并且 Go 运行时将堆栈跟踪保存到lock-free ring buffer中，</li>
+<li>goroutine 恢复。</li>
+</ul>
+<p>从理论上讲，似乎上述所有内容都应该在恒定时间内运行，因为没有发生内存分配和锁竞争。我记得所有的这是真的：以上所有事情都发生在大约1微秒（在典型的CPU上）。但是，在实践中，情况变得更糟。如果您搜索“Go CPU profiler的开销”，您将看到从 <strong>%0.5</strong> 到 <strong>%1-%5</strong> 的数字（没有发现关于这个数字的公开提及，也没有适当的证据）。这背后的原因主要与CPU的工作方式有关。现代CPU是复杂的怪兽。它们会积极地使用缓存。典型的单 CPU 内核具有三层缓存：L1、L2 和 L3。当特定的 CPU 密集型代码正在运行时，这些缓存将得到充分利用。对于某些应用程序而言，高缓存利用率尤其如此，在这些应用程序中，小（可以放入缓存中的数据）和顺序数据被大量读取。</p>
+<p>一个很好的例子是矩阵乘法：在矩阵乘法期间，CPU大量访问内存中顺序存储的独立单元格。这些缓存友好型应用程序可能会为采样profiler产生严重的开销。虽然很容易使用<strong>prof</strong>做一些基准测试来验证这一说法，但这超出了这篇文章的范围。</p>
+<p>综上所述，Go 运行时在保持profiler开销尽可能可预测和尽可能低方面做得很好。如果你不相信我，你有所质疑，也许下面引用的一个<a href="https://groups.google.com/g/golang-nuts/c/e6lB8ENbIw8/m/azeTCGj7AgAJ" target="_blank" rel="external">讨论对话</a>可以说服你：</p>
+<blockquote>
+<p>在谷歌，我们持续分析Go生产服务，这样做是安全的。</p>
+</blockquote>
+<p>另一个来自datadog的持续profiler的<a href="https://github.com/DataDog/dd-trace-go/commit/54604a13335b9c5e4ac18a898e4d5971b6b6fc8c" target="_blank" rel="external">代码提交</a>也可以印证这一点：</p>
+<blockquote>
+<p>在许多高容量内部工作负荷上测试此默认值后(默认开启profiler)，我们已确定此默认值对生产是安全的。</p>
+</blockquote>
+<p>最后，基于上述理论，我们可以进行以下观察结果：</p>
+<p><strong>在典型的 I/O 密集型应用程序上，profiler的开销将非常小。</strong></p>
+<p>这是因为当有许多休眠/空闲的 goroutine 时，CPU 缓存丢弃没有太大区别。在 Go CPU profiler基准测试期间，我们一遍又一遍地观察到这一点：在典型的 I/O 密集型应用程序上，开销实际上为零（或统计上微不足道）。但是，同样，提供经验证据超出了这篇文章的范围，人们可以通过在profiler打开和关闭时，观察Go Web应用程序的负载测试期间的吞吐量来做到这一点。</p>
+<h2 id="结论">结论</h2>
+<p>我喜欢这种设计的一点是，它证明了你可以根据你对底层数据结构的访问模式的理解程度来优化代码。在这种情况下，Go 运行时使用lock-free结构，即使在大多数情况下这完全是矫枉过正。Go运行时充满了像这样的聪明优化，我强烈建议你花时间深入研究你觉得有趣的部分。</p>
+<p>我希望你喜欢它！</p>
+<h2 id="参考资料">参考资料</h2>
+<ol>
+<li><a href="https://github.com/DataDog/go-profiler-notes/blob/main/guide/README.md" target="_blank" rel="external">https://github.com/DataDog/go-profiler-notes/blob/main/guide/README.md</a></li>
+<li><a href="https://easyperf.net/blog/2018/06/01/PMU-counters-and-profiling-basics" target="_blank" rel="external">https://easyperf.net/blog/2018/06/01/PMU-counters-and-profiling-basics</a></li>
+<li><a href="https://www.instana.com/blog/go-profiler-internals/" target="_blank" rel="external">https://www.instana.com/blog/go-profiler-internals/</a></li>
+<li><a href="https://www.datadoghq.com/blog/engineering/profiling-improvements-in-go-1-18/" target="_blank" rel="external">https://www.datadoghq.com/blog/engineering/profiling-improvements-in-go-1-18/</a></li>
+<li><a href="http://www.cse.cuhk.edu.hk/~pclee/www/pubs/ancs09poster.pdf" target="_blank" rel="external">http://www.cse.cuhk.edu.hk/~pclee/www/pubs/ancs09poster.pdf</a></li>
+<li><a href="https://easyperf.net/blog/2018/06/01/PMU-counters-and-profiling-basics" target="_blank" rel="external">https://easyperf.net/blog/2018/06/01/PMU-counters-and-profiling-basics</a></li>
+</ol>
+
+      
+    </div>
+    <footer class="article-footer">
+      
+
+      
+      <!-- <link rel="stylesheet" href="https://unpkg.com/gitalk/dist/gitalk.css">
+      <script src="https://unpkg.com/gitalk/dist/gitalk.min.js"></script> -->
+      <section id="comments">
+        <script src="https://utteranc.es/client.js"
+                repo="smallnest/gitalk"
+                issue-term="title"
+                theme="github-light"
+                crossorigin="anonymous"
+                async>
+        </script>
+        <!-- <div id="gitalk-container"></div>
+        <script type="text/javascript">
+          var gitalkOpts = {
+            id: '2022/09/29/Inside-the-Go-CPU-profiler/',
+            owner: 'smallnest',
+            repo: 'gitalk',
+            title: 'Go CPU profiler 内幕',
+            body: 'https://colobu.com/2022/09/29/Inside-the-Go-CPU-profiler/',
+            clientID: 'bc02724130ed5b7ee275',
+            clientSecret: '68cb0bae2f93a8b88b09e0eb9b08c844b06a9047',
+            admin: ['smallnest'],
+            distractionFreeMode: false
+          };
+
+          const gitalk = new Gitalk(gitalkOpts)
+          gitalk.render('gitalk-container')
+        </script> -->
+        <noscript> 为正常使用评论功能请激活JavaScript</noscript>
+      </section>
+
+      
+
+    </footer>
+  </div>
+  
+  
+<nav id="article-nav">
+  
+    <a href="/2022/10/04/redefining-for-loop-variable-semantics/" id="article-nav-newer" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">Newer</strong>
+      <div class="article-nav-title">
+        
+          十多年了，这个最容易犯错的Go语法终于要改了
+        
+      </div>
+    </a>
+  
+  
+    <a href="/2022/09/12/go-synchronization-is-hard/" id="article-nav-older" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">Older</strong>
+      <div class="article-nav-title">多年老司机，面对这些Go并发问题，也迟疑了</div>
+    </a>
+  
+</nav>
+
+  
+</article></section>
+        
+          <aside id="sidebar">
+  
+    <div class="widget-wrap">
+  <h3 class="widget-title">微信公众号</h3>
+  <div class="widget">
+    <img width="100%" src="/images/widgets/gopatterns.jpg">
+  </div>
+</div>
+
+<div class="widget-wrap">
+  <h3 class="widget-title">极客时间专栏</h3>
+  <div class="widget">
+    <a href="https://time.geekbang.org/column/intro/100061801">
+      <img width="100%" src="/images/widgets/geekbang.png">
+    </a>
+  </div>
+</div>
+
+<div class="widget-wrap">
+    <h3 class="widget-title">原创图书</h3>
+    <div class="widget">
+      <a href="/ScalaCollectionsCookbook/">
+        <img width="100%" src="/ScalaCollectionsCookbook/scala_collections_cookbook.jpg">
+        <img width="100%" src="/ScalaCollectionsCookbook/scala_collections_cookbook_tw.png">
+      </a>
+    </div>
+</div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">分类</h3>
+    <div class="widget">
+      <ul class="category-list"><li class="category-list-item"><a class="category-list-link" href="/categories/Android/">Android</a><span class="category-list-count">12</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/C/">C++</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/DOTNET/">DOTNET</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Docker/">Docker</a><span class="category-list-count">5</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Go/">Go</a><span class="category-list-count">208</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Java/">Java</a><span class="category-list-count">64</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Linux/">Linux</a><span class="category-list-count">7</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Rust/">Rust</a><span class="category-list-count">12</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Scala/">Scala</a><span class="category-list-count">18</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/go/">go</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/k8s/">k8s</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/rust/">rust</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/分享/">分享</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/前端开发/">前端开发</a><span class="category-list-count">18</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/区块链/">区块链</a><span class="category-list-count">8</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/大数据/">大数据</a><span class="category-list-count">60</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/工具/">工具</a><span class="category-list-count">28</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/数据库/">数据库</a><span class="category-list-count">3</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/架构/">架构</a><span class="category-list-count">27</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/算法/">算法</a><span class="category-list-count">4</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/管理/">管理</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/网络编程/">网络编程</a><span class="category-list-count">13</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/设计模式/">设计模式</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/读书笔记/">读书笔记</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/运维/">运维</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/高并发编程/">高并发编程</a><span class="category-list-count">20</span></li></ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">标签云</h3>
+    <div class="widget tagcloud">
+      <a href="/tags/Android/" style="font-size: 15.71px;">Android</a><a href="/tags/ApacheBench/" style="font-size: 11.43px;">ApacheBench</a><a href="/tags/Bower/" style="font-size: 10.00px;">Bower</a><a href="/tags/C/" style="font-size: 10.00px;">C#</a><a href="/tags/CDN/" style="font-size: 10.00px;">CDN</a><a href="/tags/CQRS/" style="font-size: 10.00px;">CQRS</a><a href="/tags/CRC/" style="font-size: 10.00px;">CRC</a><a href="/tags/CSS/" style="font-size: 11.43px;">CSS</a><a href="/tags/CompletableFuture/" style="font-size: 10.00px;">CompletableFuture</a><a href="/tags/Comsat/" style="font-size: 10.00px;">Comsat</a><a href="/tags/Curator/" style="font-size: 18.57px;">Curator</a><a href="/tags/DSL/" style="font-size: 10.00px;">DSL</a><a href="/tags/Disruptor/" style="font-size: 10.00px;">Disruptor</a><a href="/tags/Docker/" style="font-size: 11.43px;">Docker</a><a href="/tags/Ember/" style="font-size: 11.43px;">Ember</a><a href="/tags/FastJson/" style="font-size: 10.00px;">FastJson</a><a href="/tags/Fiber/" style="font-size: 10.00px;">Fiber</a><a href="/tags/GAE/" style="font-size: 10.00px;">GAE</a><a href="/tags/GC/" style="font-size: 12.86px;">GC</a><a href="/tags/Gnuplot/" style="font-size: 10.00px;">Gnuplot</a><a href="/tags/Go/" style="font-size: 14.29px;">Go</a><a href="/tags/Gradle/" style="font-size: 10.00px;">Gradle</a><a href="/tags/Grunt/" style="font-size: 10.00px;">Grunt</a><a href="/tags/Gulp/" style="font-size: 10.00px;">Gulp</a><a href="/tags/Hadoop/" style="font-size: 10.00px;">Hadoop</a><a href="/tags/Hazelcast/" style="font-size: 10.00px;">Hazelcast</a><a href="/tags/IPFS/" style="font-size: 10.00px;">IPFS</a><a href="/tags/Ignite/" style="font-size: 10.00px;">Ignite</a><a href="/tags/JVM/" style="font-size: 10.00px;">JVM</a><a href="/tags/Java/" style="font-size: 17.14px;">Java</a><a href="/tags/Kafka/" style="font-size: 20.00px;">Kafka</a><a href="/tags/Lambda/" style="font-size: 14.29px;">Lambda</a><a href="/tags/Linux/" style="font-size: 12.86px;">Linux</a><a href="/tags/LongAdder/" style="font-size: 10.00px;">LongAdder</a><a href="/tags/MathJax/" style="font-size: 10.00px;">MathJax</a><a href="/tags/Maven/" style="font-size: 11.43px;">Maven</a><a href="/tags/Memcached/" style="font-size: 10.00px;">Memcached</a><a href="/tags/Metrics/" style="font-size: 10.00px;">Metrics</a><a href="/tags/Mongo/" style="font-size: 12.86px;">Mongo</a><a href="/tags/Netty/" style="font-size: 15.71px;">Netty</a>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">归档</h3>
+    <div class="widget">
+      <ul class="archive-list"><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/12/">December 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/11/">November 2022</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/10/">October 2022</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/09/">September 2022</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/08/">August 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/07/">July 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/06/">June 2022</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/05/">May 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/04/">April 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/03/">March 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/02/">February 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/01/">January 2022</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/12/">December 2021</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/11/">November 2021</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/10/">October 2021</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/08/">August 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/07/">July 2021</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/06/">June 2021</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/05/">May 2021</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/04/">April 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/03/">March 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/02/">February 2021</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/01/">January 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/12/">December 2020</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/11/">November 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/09/">September 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/08/">August 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/07/">July 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/06/">June 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/05/">May 2020</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/04/">April 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/03/">March 2020</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/02/">February 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/01/">January 2020</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/12/">December 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/11/">November 2019</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/10/">October 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/09/">September 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/08/">August 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/07/">July 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/06/">June 2019</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/05/">May 2019</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/04/">April 2019</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/03/">March 2019</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/02/">February 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/01/">January 2019</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/12/">December 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/11/">November 2018</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/10/">October 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/09/">September 2018</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/08/">August 2018</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/07/">July 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/06/">June 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/05/">May 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/04/">April 2018</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/03/">March 2018</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/02/">February 2018</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/01/">January 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/12/">December 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/11/">November 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/10/">October 2017</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/09/">September 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/08/">August 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/07/">July 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/06/">June 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/05/">May 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/04/">April 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/03/">March 2017</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/02/">February 2017</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/01/">January 2017</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/12/">December 2016</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/11/">November 2016</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/10/">October 2016</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/09/">September 2016</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/08/">August 2016</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/07/">July 2016</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/06/">June 2016</a><span class="archive-list-count">14</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/05/">May 2016</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/04/">April 2016</a><span class="archive-list-count">14</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/03/">March 2016</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/02/">February 2016</a><span class="archive-list-count">8</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/01/">January 2016</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/12/">December 2015</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/11/">November 2015</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/10/">October 2015</a><span class="archive-list-count">9</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/09/">September 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/08/">August 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/07/">July 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/06/">June 2015</a><span class="archive-list-count">8</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/05/">May 2015</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/04/">April 2015</a><span class="archive-list-count">15</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/03/">March 2015</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/02/">February 2015</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/01/">January 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/12/">December 2014</a><span class="archive-list-count">28</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/11/">November 2014</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/10/">October 2014</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/09/">September 2014</a><span class="archive-list-count">28</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/08/">August 2014</a><span class="archive-list-count">19</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/07/">July 2014</a><span class="archive-list-count">1</span></li></ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">近期文章</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+            <a href="/2022/12/21/use-the-builtin-map-hasher/">机智！生抠 map的哈希函数</a>
+          </li>
+        
+          <li>
+            <a href="/2022/12/04/Shopify-monolith-served-1-27-Million-requests-per-second-during-Black-Friday/">没用微服务，Shopify的单体程序居然支撑了127万/秒的请求？</a>
+          </li>
+        
+          <li>
+            <a href="/2022/11/26/some-time-and-cron-libs/">一些关于时间和定时任务的库</a>
+          </li>
+        
+          <li>
+            <a href="/2022/11/21/zero-copy-and-how-to-use-it-in-go-2/">零拷贝技术第二篇：Go语言中的应用</a>
+          </li>
+        
+          <li>
+            <a href="/2022/11/19/zero-copy-and-how-to-use-it-in-go/">零拷贝技术第一篇：综述</a>
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">友情链接</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+			 
+            <a href="http://stackshare.io" target="_blank">技术栈</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://toutiao.io/" target="_blank">开发者头条</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://weekly.manong.io/issues/" target="_blank">码农周刊</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.tuicool.com/mags" target="_blank">编程狂人周刊</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.importnew.com/" target="_blank">importnew</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://ifeve.com/" target="_blank">并发编程网</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://github.com" target="_blank">github</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://stackoverflow.com/" target="_blank">stackoverflow</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.javacodegeeks.com/" target="_blank">javacodegeeks</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.infoq.com/" target="_blank">infoq</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.dzone.com/links/index.html" target="_blank">dzone</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://oj.leetcode.com/problems/" target="_blank">leetcode</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://tutorials.jenkov.com" target="_blank">jenkov</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://howtodoinjava.com" target="_blank">HowToDoInJava</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://java-design-patterns.com/patterns/" target="_blank">java design patterns</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://medium.com/netflix-techblog" target="_blank">Netflix技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://www.techiedelight.com" target="_blank">Techie Delight</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://engineering.linkedin.com/blog" target="_blank">Linkedin技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://blogs.dropbox.com/tech/" target="_blank">Dropbox技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://code.fb.com" target="_blank">Facebook技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://jm.taobao.org" target="_blank">淘宝中间件团队</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://tech.meituan.com" target="_blank">美团技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://blogs.360.cn" target="_blank">360技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://xiaomi-info.github.io" target="_blank">小米信息部技术团队</a>
+			
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+      
+
+  
+</aside>
+        
+      </div>
+      <footer id="footer">
+  
+  <div class="outer">
+    <div id="footer-info" class="inner">
+      &copy; 2022 smallnest<br>
+	  Powered by <a href="http://hexo.io/" target="_blank">Hexo</a>
+    </div>
+  </div>
+</footer>
+    </div>
+    <nav id="mobile-nav">
+  
+    
+      <a href="/" class="mobile-nav-link"><i class="fa fa-home">&nbsp;</i>首页</a>
+    
+  
+    
+      <a href="/archives" class="mobile-nav-link"><i class="fa fa-folder-o">&nbsp;</i>归档</a>
+    
+  
+    
+      <a href="https://github.com/smallnest" class="mobile-nav-link"><i class="fa fa-github">&nbsp;</i>github</a>
+    
+  
+    
+      <a class="mobile-nav-link" href="#"><i class="fa fa-bars">&nbsp;</i>网站群</a>
+    
+      
+            <a class="mobile-nav-link" href="/goasm">&nbsp;&nbsp;<i class="fa fa-language">&nbsp;</i>Go汇编示例</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="https://gowebexamples.com">&nbsp;&nbsp;<i class="fa fa-external-link">&nbsp;</i>Go Web开发示例</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://go-database-sql.org">&nbsp;&nbsp;<i class="fa fa-external-link">&nbsp;</i>Go 数据库开发教程</a>
+          
+          
+    
+      
+            
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://rpcx.io">&nbsp;&nbsp;<i class="fa undefined">&nbsp;</i>RPCX官网</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://cn.doc.rpcx.io">&nbsp;&nbsp;<i class="fa undefined">&nbsp;</i>RPC开发指南</a>
+          
+          
+    
+    
+  
+    
+      <a href="/ScalaCollectionsCookbook" class="mobile-nav-link"><i class="fa fa-book">&nbsp;</i>Scala集合技术手册</a>
+    
+  
+    
+      <a href="/about" class="mobile-nav-link"><i class="fa fa-lemon-o">&nbsp;</i>关于</a>
+    
+  
+</nav>
+    
+<script src="//cdn.staticfile.org/jquery/1.11.1/jquery.min.js"></script>
+<script src="//cdn.bootcss.com/jquery.lazyload/1.9.1/jquery.lazyload.min.js"></script>
+
+<script src="//cdnjs.cloudflare.com/ajax/libs/fancybox/3.2.5/jquery.fancybox.min.js"></script>
+
+
+<script src="/js/script.js" type="text/javascript"></script>
+
+<!-- mathjax config similar to math.stackexchange -->
+<script type="text/x-mathjax-config">
+  MathJax.Hub.Config({
+    tex2jax: {
+      inlineMath: [ ['$','$'], ["\\(","\\)"] ],
+      processEscapes: true,
+      skipTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code']
+    }
+  });
+  MathJax.Hub.Queue(function() {
+      var all = MathJax.Hub.getAllJax(), i;
+      for(i=0; i < all.length; i += 1) {
+        all[i].SourceElement().parentNode.className += ' has-jax';
+      }
+  });
+</script>
+<script type="text/javascript" src="//cdn.bootcss.com/mathjax/2.6.0-beta.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML">
+</script>
+
+<div id="totop" style="position:fixed;bottom:150px;right:10px;cursor: pointer;z-index: 2000;">
+	<a title="返回顶部"><img src="/images/scrollup.png"/></a>
+</div>
+<script src="/js/totop.js" type="text/javascript"></script>
+
+
+
+
+<script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "//hm.baidu.com/hm.js?e085d87993250aab11f3e0c15f1c2785";
+  var s = document.getElementsByTagName("script")[0]; 
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+
+
+  </div>
+</body>
+</html>
