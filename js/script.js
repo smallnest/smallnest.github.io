@@ -6,7 +6,7 @@
 
 var $searchWord = $('#search-word');
 
-$('#search-form-wrap').on('click', function(){
+$('#search-submit').on('click', function(){
     $searchWord.text = $searchWord.text + " site:colobu.com";
 });
 
