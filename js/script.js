@@ -4,6 +4,13 @@
     isSearchAnim = false,
     searchAnimDuration = 200;
 
+var $searchWord = $('#search-word');
+
+$('#search-form-wrap').on('click', function(){
+    $searchWord.text = $searchWord.text + " site:colobu.com";
+});
+
+
   var startSearchAnim = function(){
     isSearchAnim = true;
   };
