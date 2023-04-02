@@ -4,7 +4,7 @@
   <subtitle><![CDATA[大道至简 Simplicity is the ultimate form of sophistication]]></subtitle>
   <link href="/atom.xml" rel="self"/>
   <link href="https://colobu.com/"/>
-  <updated>2023-03-20T09:44:54.518Z</updated>
+  <updated>2023-04-02T11:42:30.444Z</updated>
   <id>https://colobu.com/</id>
   
   <author>
@@ -13,6 +13,147 @@
   </author>
   
   <generator uri="http://zespia.tw/hexo/">Hexo</generator>
+  
+  <entry>
+    <title><![CDATA[每秒1百万的包传输，几乎不耗CPU的那种]]></title>
+    <link href="https://colobu.com/2023/04/02/support-1m-pps-with-zero-cpu-usage/"/>
+    <id>https://colobu.com/2023/04/02/support-1m-pps-with-zero-cpu-usage/</id>
+    <published>2023-04-02T05:45:17.000Z</published>
+    <updated>2023-04-02T11:41:12.754Z</updated>
+    <content type="html"><![CDATA[<p>这两年来我一直在做网络故障监控的工作，经常使用的一个手段就是发送一些探测包进行网络的探测，根据丢包和时延，再结合网络拓扑等手段分析现网网络故障。因为要监控的是度厂全部网络的质量状况，并且需要很高的精度去覆盖网络设备、板卡、端口以及他们之间映射等所有的路径，所以需要尽量发送高频的探测包去快准狠的感知到故障并发现。<br>同时，和业务网络程序的不一样，业务程序一般是业务层代码，TCP的重传的机制，或者业务换个五元组重连一次，就会绕过网络中的故障，而网络监控也需要把这个链路中这些故障找出来，经常我会使用UDP或者TCP的握手包进行网络的探测，再不济使用ICMP协议进行网络的探测。</p>
+<p>经常有人会说，现在都两个服务器间都能实现几十上百万的requests/second了，比如我们访问Redis节点，但是『达到』和『产品化可用』是两回事，也很少有人将redis节点在几十万的qps之下常态运行，我们还得考虑丢包的情况和时延的情况。</p>
+<p>但是不管怎样，benchmark的工作我们还是要做的，这是我们评价我们的程序的一个基准，实际运行中我们可能使用这个基本的1/10的能力，以便保证程序的稳定性和CPU、内存、时延要求等。我写本文的目的，也是在测试机上进行这样的benchmark，检查网络方案的能力。</p>
+<ul>
+<li>首先使用一个普通的UDP程序进行百万pps (packets per second)的测试</li>
+<li>介绍XDP技术,实现一个简单的网络统计程序</li>
+<li>使用XDP技术实现echo能力，替换原来的UDP server, 将CPU使用率几乎降为0</li>
+</ul>
+<a id="more"></a>
+<h2 id="背景">背景</h2>
+<p>普通的网络测试程序代码在<a href="https://github.com/smallnest/network_benchmark" target="_blank" rel="external">network_benchmark</a>，除了UDP的探测外，我还实现了一个TCP程序的探测。</p>
+<p>client和server连接到同一台交换机上，尽量减少网络的干扰。</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div></pre></td><td class="code"><pre><div class="line">客户端机器<span class="value">: xxx.xxx.xxx.<span class="number">176</span></span></div><div class="line"><span class="function">Intel</span>(R) <span class="function">Xeon</span>(R) Gold <span class="number">5118</span> CPU @ <span class="number">2.30</span>GHz 两颗</div><div class="line"><span class="number">12</span>物理核 <span class="number">48</span>个逻辑核</div><div class="line"><span class="number">187</span>GB内存</div><div class="line"></div><div class="line">服务端机器: xxx.xxx.xxx.<span class="number">175</span></div><div class="line"><span class="function">Intel</span>(R) <span class="function">Xeon</span>(R) Gold <span class="number">5118</span> CPU @ <span class="number">2.30</span>GHz 两颗</div><div class="line"><span class="number">12</span>物理核 <span class="number">48</span>个逻辑核</div><div class="line"><span class="number">187</span>GB内存</div></pre></td></tr></table></figure>
+
+<p>客户机和服务器都设置了网卡多队列：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div></pre></td><td class="code"><pre><div class="line"># ethtool -l  xgbe0</div><div class="line">Channel parameters <span class="keyword">for</span> xgbe0:</div><div class="line">Pre-set maximums:</div><div class="line">RX:	<span class="number">	74</span></div><div class="line">TX:	<span class="number">	74</span></div><div class="line">Other:	<span class="number">	0</span></div><div class="line">Combined:<span class="number">	148</span></div><div class="line">Current hardware settings:</div><div class="line">RX:	<span class="number">	0</span></div><div class="line">TX:	<span class="number">	0</span></div><div class="line">Other:	<span class="number">	0</span></div><div class="line">Combined:<span class="number">	48</span></div></pre></td></tr></table></figure>
+
+<p>相关的网络参数也做了设置，比如read/write buffer, net.core.netdev_max_backlog等。</p>
+<h2 id="普通UDP_benchmark">普通UDP benchmark</h2>
+<p>为了充分利用网卡多队列的优势，我们使用了多个端口，建立多条流进行测试。</p>
+<p>UDP client 匀速按照指定的rate发送数据：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div></pre></td><td class="code"><pre><div class="line">conn, err := net.DialUDP(<span class="string">"udp"</span>, srcAddr, dstAddr)</div><div class="line"><span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">	log.Fatal(err)</div><div class="line">}</div><div class="line">c.conn = conn</div><div class="line">conn.SetWriteBuffer<span class="number">(1024</span> *<span class="number"> 1024</span> *<span class="number"> 1024</span>)</div><div class="line">conn.SetReadBuffer<span class="number">(1024</span> *<span class="number"> 1024</span> *<span class="number"> 1024</span>)</div><div class="line"></div><div class="line"><span class="keyword">go</span> c.read()</div><div class="line"></div><div class="line">data := bytes.Repeat([]<span class="typename">byte</span>(<span class="string">"a"</span>), c.pktSize)</div><div class="line"></div><div class="line">rateLimter := ratelimit.New(c.rate, ratelimit.Per(time.Second))</div><div class="line"></div><div class="line"><span class="keyword">for</span> seq := <span class="typename">uint64</span><span class="number">(0</span>); ; seq++ {</div><div class="line">	rateLimter.Take()</div><div class="line">	ts := time.Now().UnixNano()</div><div class="line">	binary.LittleEndian.PutUint64(data[<span class="number">:8</span>], seq)</div><div class="line">	binary.LittleEndian.PutUint64(data<span class="number">[8</span><span class="number">:16</span>], <span class="typename">uint64</span>(ts))</div><div class="line">	c.stats.AddSent(seq, ts)</div><div class="line">	_, err = conn.Write(data)</div><div class="line">	<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">		<span class="keyword">return</span></div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>client将接收到的回包进行统计，按照每秒一个周期聚合数据:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> (c *Client) read() {</div><div class="line">	data := <span class="built_in">make</span>([]<span class="typename">byte</span>, c.pktSize)</div><div class="line"></div><div class="line">	<span class="keyword">for</span> {</div><div class="line">		n, err := c.conn.Read(data)</div><div class="line">		<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">			<span class="keyword">return</span></div><div class="line">		}</div><div class="line">		<span class="keyword">if</span> n &lt; c.pktSize {</div><div class="line">			<span class="keyword">continue</span></div><div class="line">		}</div><div class="line"></div><div class="line">		seq := binary.LittleEndian.Uint64(data[<span class="number">:8</span>])</div><div class="line">		<span class="comment">//ts := binary.LittleEndian.Uint64(data[8:16])</span></div><div class="line"></div><div class="line">		c.stats.AddRecv(seq, time.Now().UnixNano())</div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>服务端将收到的数据原封不动的返回:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div></pre></td><td class="code"><pre><div class="line">	conn, err := net.ListenUDP(<span class="string">"udp"</span>, &net.UDPAddr{</div><div class="line">		IP:   net.ParseIP(s.addr),</div><div class="line">		Port: port,</div><div class="line">	})</div><div class="line"></div><div class="line">	<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">		<span class="built_in">panic</span>(err)</div><div class="line">	}</div><div class="line"></div><div class="line">	conn.SetReadBuffer<span class="number">(1024</span> *<span class="number"> 1024</span> *<span class="number"> 1024</span>)</div><div class="line">	conn.SetWriteBuffer<span class="number">(1024</span> *<span class="number"> 1024</span> *<span class="number"> 1024</span>)</div><div class="line"></div><div class="line">	data := <span class="built_in">make</span>([]<span class="typename">byte</span>,<span class="number"> 2048</span>)</div><div class="line">	<span class="keyword">for</span> {</div><div class="line">		n, remote, err := conn.ReadFromUDP(data)</div><div class="line">		<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">			log.Fatalf(<span class="string">"failed to read: %v"</span>, err)</div><div class="line">		}</div><div class="line">		<span class="keyword">if</span> n &lt;=<span class="number"> 0</span> {</div><div class="line">			<span class="keyword">continue</span></div><div class="line">		}</div><div class="line"></div><div class="line">		conn.WriteToUDP(data[:n], remote)</div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>我们在测试机上运行这个测试程序，让客户端每秒1百万个包的速率发送，可以看到基本接近每秒百万的pps，时延0.2ms:<br><img src="udp_client.jpg" alt=""></p>
+<p>客户端的资源使用情况, CPU占用很多， idle 基本在36%左右:<br><img src="udp_client_dstat.jpg" alt=""></p>
+<p>服务端的资源占用如下， CPU idle在 62%左右:<br><img src="udp_server_dstat.jpg" alt=""></p>
+<h2 id="XDP_技术">XDP 技术</h2>
+<p>上面的程序是中规中矩的UDP程序。如果分析我们的需求，你会发现我们的程序，尤其是服务端的程序非常的简单，基本就是实现一个<a href="https://www.rfc-editor.org/rfc/rfc862.txt" target="_blank" rel="external">rfc862</a>的echo程序。</p>
+<p>首先，我们先聊一聊bpf、ebpf和xdp。</p>
+<p>在 1992 年 USENIX 会议上，论文“The BSD Packet Filter: A New Architecture for User-level Packet Capture”提出了革命性的包过滤机制 BSD Packet Filter（简称为 BPF），这比当时最先进的数据包过滤技术还快 20 倍。在 Linux 2.1.75 中，首次引入了 BPF 技术。在 Linux 3.0 中，增加了 BPF 即时编译器，它替换掉了原本性能更差的解释器，进一步优化了 BPF 指令运行的效率。</p>
+<p>2014 年，Alexei Starovoitov 将 BPF 扩展为一个通用的虚拟机，也就是 eBPF。eBPF 不仅扩展了寄存器的数量，引入了全新的 BPF 映射存储，还在 4.x 内核中将原本单一的数据包过滤事件逐步扩展到了内核态函数、用户态函数、跟踪点、性能事件（perf_events）以及安全控制等。eBPF 的诞生是 BPF 技术的一个转折点，使得 BPF 不再仅限于网络栈，而是成为内核的一个顶级子系统。</p>
+<p>XDP全称eXpress Data Path，即快速数据路径，XDP是Linux网络处理流程中的一个eBPF钩子，能够挂载eBPF程序，它能够在网络数据包到达网卡驱动层时对其进行处理，具有非常优秀的数据面处理性能，打通了Linux网络处理的高速公路。<br><img src="xdp.png" alt=""></p>
+<p>传统的Linux内核网络协议栈由于更加注重通用性，其网络处理存在着固有的性能瓶颈，随着10G、25G、40G、100G甚至更高速率的网卡出现，这种性能瓶颈变得更加突出，传统内核网络协议栈已经难以满足高性能网络处理的要求。在2010年，开发出了DPDK内核旁路(Kernel Bypass)技术，并逐渐成为网络处理加速的一种成熟方案。然而这种方案也有自己的一些固有缺陷，且始终是独立于linux内核的，在2016年的Linux Netdev会议上，David S. Miller让下面人和他一起念“DPDK is not Linux”。同年，伴随着eBPF技术的成熟，Linux也终于合入了属于自己的网络处理高速公路——XDP。</p>
+<p>XDP能够在网络数据包到达网卡驱动层时对其进行快速处理，比如转发、重定向等。避免深陷linux协议栈的复杂处理流程，极大地提升网络传输性能，所以如果采用XDP技术，在服务区收到一个UDP包的，立即将其返回，不再经过后面的协议栈的处理，岂不是能够有更好的性能？</p>
+<p>ebpf/XDP等技术和特性一直在发展，好处是我们能够使用越来越多的新功能，坏处就是你在写一个ebpf/XDP程序的时候，甚至找不到一个可运行的例子，会遇到不同的Linux版本、不同版本的库、不同厂商的提供的库、不同的编程语言等等。我使用ChatGPT生成一个XDP的例子都跑不起来，这也阻碍了XDP更广泛的采用，当然这也不方案一些大厂或者创业公司开始广泛的使用ebpf/XDP等技术开发了性能优异的产品，比如Facebook的四层负载均衡器Katran、Cilium的各个云原生网络产品、IOVisor的bcc、CloudFlare的bpf-tools等工具。</p>
+<p>在这一节，我介绍一个XDP的简单的程序，把XDP程序的开发讨论和编译流程介绍一下，下一节在介绍基于XDP改成我们的UDP benchmark程序。</p>
+<p>首先写一个XDP程序：</p>
+<figure class="highlight c"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div><div class="line">35</div><div class="line">36</div><div class="line">37</div><div class="line">38</div><div class="line">39</div><div class="line">40</div><div class="line">41</div><div class="line">42</div><div class="line">43</div></pre></td><td class="code"><pre><div class="line"><span class="preprocessor">#<span class="keyword">include</span> &lt;linux/bpf.h&gt;</span></div><div class="line"><span class="preprocessor">#<span class="keyword">include</span> &lt;linux/if_ether.h&gt;</span></div><div class="line"><span class="preprocessor">#<span class="keyword">include</span> &lt;linux/in.h&gt;</span></div><div class="line"><span class="preprocessor">#<span class="keyword">include</span> &lt;bpf/bpf_helpers.h&gt;</span></div><div class="line"></div><div class="line"></div><div class="line"><span class="comment">/* Common stats data record (shared with userspace) */</span></div><div class="line"><span class="keyword">struct</span> datarec {</div><div class="line">	__u64 processed;</div><div class="line">	__u64 issue;</div><div class="line">};</div><div class="line"></div><div class="line"><span class="keyword">struct</span> {</div><div class="line">	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);</div><div class="line">	__type(key, __u32);</div><div class="line">	__type(value, <span class="keyword">struct</span> datarec);</div><div class="line">	__uint(max_entries, <span class="number">1</span>);</div><div class="line">} stats_global_map SEC(<span class="string">".maps"</span>);</div><div class="line"></div><div class="line"></div><div class="line">SEC(<span class="string">"xdp_prog0"</span>)</div><div class="line"><span class="keyword">int</span>  xdp_prognum0(<span class="keyword">struct</span> xdp_md *ctx)</div><div class="line">{</div><div class="line">	<span class="keyword">void</span> *data_end = (<span class="keyword">void</span> *)(<span class="keyword">long</span>)ctx-&gt;data_end;</div><div class="line">	<span class="keyword">void</span> *data     = (<span class="keyword">void</span> *)(<span class="keyword">long</span>)ctx-&gt;data;</div><div class="line">	<span class="keyword">struct</span> datarec *rec, *rxq_rec;</div><div class="line">	<span class="keyword">int</span> ingress_ifindex;</div><div class="line">	<span class="keyword">struct</span> config *config;</div><div class="line">	__u32 key = <span class="number">0</span>;</div><div class="line"></div><div class="line">	<span class="comment">/* Global stats record */</span></div><div class="line">	rec = bpf_map_lookup_elem(&stats_global_map, &key);</div><div class="line">	<span class="keyword">if</span> (!rec)</div><div class="line">		<span class="keyword">return</span> XDP_PASS;</div><div class="line">	rec-&gt;processed++;</div><div class="line"></div><div class="line">	</div><div class="line">	</div><div class="line"></div><div class="line">	<span class="keyword">return</span> XDP_PASS;</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">char</span> _license[] SEC(<span class="string">"license"</span>) = <span class="string">"GPL"</span>;</div></pre></td></tr></table></figure>
+
+<p>我们定义了一个用来统计用的数据结构<code>datarec</code>，用来记录处理的packet的数量和有问题的包的数量(为了简单，这个字段我们没有使用)。定义了一个映射<code>stats_global_map</code>用来传给用户态的程序查询这个统计结果。</p>
+<p>然后定义<code>xdp_prognum0</code>处理逻辑。这里通过<code>bpf_map_lookup_elem</code>查询到统计map,然后对它的processed加一。<br>我们总是返回XDP_PASS, 让包继续往下处理。</p>
+<p>对了，为了编写XDP程序，我专门购买了也给腾讯云的轻量级服务器，新人第一年不到100块钱，不是打广告啊，的的确确发现ebpf/XDP有时候必须需要新的内核和通用的Linux版本才更容易编译和运行。</p>
+<p><img src="ubuntu.jpg" alt=""></p>
+<p>可能你需要安装一些编译工具和libbpf库等。</p>
+<p>1、 安装gcc和clang编译器：</p>
+<figure class="highlight shell"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line"><span class="built_in">sudo</span> apt-get install gcc clang</div></pre></td></tr></table></figure>
+
+<p>2、安装LLVM工具链：</p>
+<figure class="highlight shell"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line"><span class="built_in">sudo</span> apt-get install llvm-dev libelf-dev libclang-dev</div></pre></td></tr></table></figure>
+
+<p>3、安装Linux内核头文件：</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">sudo apt-<span class="keyword">get</span> install linux-headers-$(uname -r)</div></pre></td></tr></table></figure>
+
+<p>4、下载并安装libbpf库：</p>
+<figure class="highlight shell"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line">git clone http<span class="variable">s:</span>//github.<span class="keyword">com</span>/libbpf/libbpf.git</div><div class="line"><span class="keyword">cd</span> libbpf/src</div><div class="line"><span class="keyword">make</span></div><div class="line">sudo <span class="keyword">make</span> install</div></pre></td></tr></table></figure>
+
+<p>总之，环境准备好后，我们可以使用下面的命令编译这个XDP程序：</p>
+<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">clang -O2 -target bpf -c stat.c -o stat.o</div></pre></td></tr></table></figure>
+
+<p>使用ip命令加载XDP程序并传入参数。例如，假设要加载的程序为my_xdp_prog.o，参数为param1和param2，并且要将程序绑定到接口eth0：</p>
+<figure class="highlight shell"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line"><span class="built_in">sudo</span> ip link <span class="keyword">set</span> dev eth0 xdp obj my_xdp_prog.o sec my_xdp_sec param1 param2</div></pre></td></tr></table></figure>
+
+<p>但是呢，我不像这么做，而是想使用Go程序进行加在，并且每秒一次查询stat的统计数据打印出来。</p>
+<p>Go语言有几个ebpf相关的库：</p>
+<ul>
+<li><a href="https://github.com/cilium/ebpf" target="_blank" rel="external">cilium ebpf</a></li>
+<li><a href="https://github.com/iovisor/gobpf" target="_blank" rel="external">iovisor gobpf</a></li>
+<li><a href="https://github.com/aquasecurity/libbpfgo" target="_blank" rel="external">libbpfgo</a></li>
+</ul>
+<p>这里我使用cilium ebpf库， 活跃，而且cilium做出了产品，而且，还提供bpf2go工具，可以把XDP程序的C代码编译成字节码，嵌入到Go语言中，并且生成Go语言的辅助方法，收到bpftool gen skeleton工具的启发。</p>
+<p>首先安装bpf2go工具：</p>
+<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">go install github.com/cilium/ebpf/cmd/bpf2go@latest</div></pre></td></tr></table></figure>
+
+<p>然后写一个main.go文件，先准备好程序框架，在package上面加上go generate:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line"><span class="comment">//go:generate go run github.com/cilium/ebpf/cmd/bpf2go stat ebpf/stat.c</span></div><div class="line"><span class="keyword">package</span> main</div><div class="line"></div><div class="line">......</div></pre></td></tr></table></figure>
+
+<p>它就会编译stat.c这个XDP程序，并生成辅助的方法:<br><img src="stat.jpg" alt=""></p>
+<p>对了，我开发是MacPro或者Mac mini上使用vscode做开发的，通过vscode ssh插件连接到我购买的这个腾讯云节点上，这样就方便使用Linux环境做编译了。</p>
+<p>接下来晚上main.go，实现加在XDP程序，并请示访问map查询处理的包的数量：<br><img src="stat-running.jpg" alt=""></p>
+<p>编译顺利，运行运行。</p>
+<h2 id="利用XDP实现网络程序的服务端">利用XDP实现网络程序的服务端</h2>
+<p>有了上面开发XDP程序的经验，我们就可以实现那个UDP的服务器端了。在开发之前，我们想想我们到底要做什么？</p>
+<p>这个程序服务器基本就是个echo的功能，没有统计信息，没有额外的业务逻辑，只是把它收到的UDP包返回回去,所以我们XDP程序需要：</p>
+<ul>
+<li>处理特定UDP目标端口的packet</li>
+<li>把Mac地址(二层的数据帧)、IP地址(三层IP)、UDP(UDP端口)中的数据交换，再发包返回</li>
+<li>从哪个网卡接收，就从哪个网卡中返回</li>
+</ul>
+<p>这个程序我们我们定义我们要处理的端口范围是20000到20016, 凡事目的端口是这个范围的数据包，我们原封不动的把数据返回。<br>在数据返回时，我们交换了mac地址、IP地址和端口，把包改造成了返回包，这里我们偷了个懒，没用重新计算checksum。</p>
+<p>最后我们返回<strong>XDP_TX</strong>, 也就是从哪个网卡队列接收的，再通过这个网卡队列返回和客户端:</p>
+<figure class="highlight c"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div><div class="line">35</div><div class="line">36</div><div class="line">37</div><div class="line">38</div><div class="line">39</div><div class="line">40</div><div class="line">41</div><div class="line">42</div><div class="line">43</div><div class="line">44</div><div class="line">45</div><div class="line">46</div><div class="line">47</div><div class="line">48</div><div class="line">49</div><div class="line">50</div><div class="line">51</div><div class="line">52</div><div class="line">53</div><div class="line">54</div><div class="line">55</div><div class="line">56</div><div class="line">57</div><div class="line">58</div><div class="line">59</div><div class="line">60</div><div class="line">61</div><div class="line">62</div><div class="line">63</div><div class="line">64</div><div class="line">65</div><div class="line">66</div><div class="line">67</div><div class="line">68</div><div class="line">69</div><div class="line">70</div><div class="line">71</div><div class="line">72</div><div class="line">73</div><div class="line">74</div><div class="line">75</div><div class="line">76</div><div class="line">77</div><div class="line">78</div><div class="line">79</div><div class="line">80</div><div class="line">81</div><div class="line">82</div></pre></td><td class="code"><pre><div class="line"><span class="preprocessor">#<span class="keyword">include</span> &lt;linux/bpf.h&gt;</span></div><div class="line"><span class="preprocessor">#<span class="keyword">include</span> &lt;bpf/bpf_helpers.h&gt;</span></div><div class="line"><span class="preprocessor">#<span class="keyword">include</span> &lt;linux/if_ether.h&gt;</span></div><div class="line"><span class="preprocessor">#<span class="keyword">include</span> &lt;linux/ip.h&gt;</span></div><div class="line"><span class="preprocessor">#<span class="keyword">include</span> &lt;netinet/in.h&gt;</span></div><div class="line"><span class="preprocessor">#<span class="keyword">include</span> &lt;linux/udp.h&gt;</span></div><div class="line"><span class="preprocessor">#<span class="keyword">include</span> &lt;string.h&gt;</span></div><div class="line"></div><div class="line"></div><div class="line"></div><div class="line"><span class="comment">// 定义默认的UDP端口范围</span></div><div class="line"><span class="preprocessor">#<span class="keyword">define</span> UDP_PORT_START 20000</span></div><div class="line"><span class="preprocessor">#<span class="keyword">define</span> UDP_PORT_END   20016</span></div><div class="line"></div><div class="line"></div><div class="line">SEC(<span class="string">"xdp"</span>)</div><div class="line"><span class="keyword">int</span> xdp_echo(<span class="keyword">struct</span> xdp_md *ctx) {</div><div class="line">    <span class="keyword">void</span> *data_end = (<span class="keyword">void</span> *)(<span class="keyword">long</span>)ctx-&gt;data_end;</div><div class="line">    <span class="keyword">void</span> *data     = (<span class="keyword">void</span> *)(<span class="keyword">long</span>)ctx-&gt;data;</div><div class="line">    </div><div class="line">    <span class="keyword">struct</span> ethhdr *eth = data;</div><div class="line">    <span class="keyword">if</span> ((<span class="keyword">void</span>*)eth + <span class="keyword">sizeof</span>(*eth) &gt; data_end) {</div><div class="line">        <span class="keyword">return</span> XDP_ABORTED;</div><div class="line">    }</div><div class="line"></div><div class="line">    <span class="comment">// 如果不是IPv4包，则直接返回</span></div><div class="line">    <span class="keyword">if</span> (eth-&gt;h_proto != htons(ETH_P_IP)) {</div><div class="line">        <span class="keyword">return</span> XDP_PASS;</div><div class="line">    }</div><div class="line"></div><div class="line">    <span class="keyword">struct</span> iphdr *ip = data + <span class="keyword">sizeof</span>(*eth);</div><div class="line">    <span class="keyword">if</span> ((<span class="keyword">void</span>*)ip + <span class="keyword">sizeof</span>(*ip) &gt; data_end) {</div><div class="line">        <span class="keyword">return</span> XDP_ABORTED;</div><div class="line">    }</div><div class="line"></div><div class="line">    <span class="comment">// 如果不是UDP包，则直接返回</span></div><div class="line">    <span class="keyword">if</span> (ip-&gt;protocol != IPPROTO_UDP) {</div><div class="line">        <span class="keyword">return</span> XDP_PASS;</div><div class="line">    }</div><div class="line"></div><div class="line"></div><div class="line">    <span class="keyword">struct</span> udphdr *udp = data + <span class="keyword">sizeof</span>(*eth) + <span class="keyword">sizeof</span>(*ip);</div><div class="line">    <span class="keyword">if</span> ((<span class="keyword">void</span>*)udp + <span class="keyword">sizeof</span>(*udp) &gt; data_end) {</div><div class="line">        <span class="keyword">return</span> XDP_ABORTED;</div><div class="line">    }</div><div class="line"></div><div class="line"></div><div class="line"></div><div class="line">    <span class="comment">// 获取端口范围</span></div><div class="line">    <span class="keyword">struct</span> port_range *port_range = bpf_map_lookup_elem(&port_range_map, &(<span class="keyword">int</span>){<span class="number">0</span>});</div><div class="line">    <span class="keyword">if</span> (!port_range) {</div><div class="line">        <span class="comment">// 如果没有找到映射对象，则使用默认值</span></div><div class="line">        port_range = &(<span class="keyword">struct</span> port_range){ UDP_PORT_START, UDP_PORT_END };</div><div class="line">    }</div><div class="line"></div><div class="line">    <span class="comment">// 检查UDP端口是否在指定的范围内</span></div><div class="line">    <span class="keyword">if</span> (ntohs(udp-&gt;dest) &lt; port_range-&gt;start || ntohs(udp-&gt;dest) &gt; port_range-&gt;end) {</div><div class="line">        <span class="keyword">return</span> XDP_PASS;</div><div class="line">    }</div><div class="line"></div><div class="line"></div><div class="line">    <span class="comment">// Swap source and destination MAC addresses</span></div><div class="line">    <span class="keyword">struct</span> ethhdr tmp_eth = *eth;</div><div class="line">    <span class="built_in">memcpy</span>(eth-&gt;h_dest, tmp_eth.h_source, ETH_ALEN);</div><div class="line">    <span class="built_in">memcpy</span>(eth-&gt;h_source, tmp_eth.h_dest, ETH_ALEN);</div><div class="line"></div><div class="line">     <span class="comment">// Swap source and destination addresses</span></div><div class="line">    __be32 tmp_addr = ip-&gt;saddr;</div><div class="line">    ip-&gt;saddr = ip-&gt;daddr;</div><div class="line">    ip-&gt;daddr = tmp_addr;</div><div class="line"></div><div class="line">    <span class="comment">// Swap source and destination ports</span></div><div class="line">    __be16 tmp_port = udp-&gt;source;</div><div class="line">    udp-&gt;source = udp-&gt;dest;</div><div class="line">    udp-&gt;dest = tmp_port;</div><div class="line"></div><div class="line"></div><div class="line">    </div><div class="line">    <span class="keyword">return</span> XDP_TX;</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">char</span> _license[] SEC(<span class="string">"license"</span>) = <span class="string">"GPL"</span>;</div></pre></td></tr></table></figure>
+
+<p>接下来就是正常的套路，使用bpf2go生成辅助代码，使用cilium/ebpf加在：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div><div class="line">35</div><div class="line">36</div><div class="line">37</div><div class="line">38</div><div class="line">39</div><div class="line">40</div><div class="line">41</div><div class="line">42</div><div class="line">43</div><div class="line">44</div><div class="line">45</div><div class="line">46</div><div class="line">47</div><div class="line">48</div><div class="line">49</div><div class="line">50</div></pre></td><td class="code"><pre><div class="line"><span class="comment">//go:generate go run github.com/cilium/ebpf/cmd/bpf2go echo ebpf/echo.c</span></div><div class="line"><span class="keyword">package</span> main</div><div class="line"></div><div class="line"><span class="keyword">import</span> (</div><div class="line">	<span class="string">"flag"</span></div><div class="line">	<span class="string">"fmt"</span></div><div class="line">	<span class="string">"log"</span></div><div class="line">	<span class="string">"net"</span></div><div class="line">	<span class="string">"os"</span></div><div class="line">	<span class="string">"os/signal"</span></div><div class="line">	<span class="string">"syscall"</span></div><div class="line">	<span class="string">"unsafe"</span></div><div class="line"></div><div class="line">	<span class="string">"github.com/cilium/ebpf"</span></div><div class="line">	<span class="string">"github.com/cilium/ebpf/link"</span></div><div class="line">)</div><div class="line"></div><div class="line"></div><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	ifaceName := flag.String(<span class="string">"iface"</span>, <span class="string">"eth0"</span>, <span class="string">"Network interface name"</span>)</div><div class="line">	flag.Parse()</div><div class="line"></div><div class="line">	<span class="comment">// Look up the network interface by name.</span></div><div class="line">	iface, err := net.InterfaceByName(*ifaceName)</div><div class="line">	<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">		log.Fatalf(<span class="string">"lookup network iface %q: %s"</span>, *ifaceName, err)</div><div class="line">	}</div><div class="line"></div><div class="line">	<span class="comment">// load pre-compiled programs into the kernel.</span></div><div class="line">	objs := echoObjects{}</div><div class="line">	<span class="keyword">if</span> err := loadEchoObjects(&objs, <span class="constant">nil</span>); err != <span class="constant">nil</span> {</div><div class="line">		log.Fatalf(<span class="string">"loading objects: %s"</span>, err)</div><div class="line">	}</div><div class="line">	<span class="keyword">defer</span> objs.Close()</div><div class="line"></div><div class="line">	<span class="comment">// Attach the program.</span></div><div class="line">	l, err := link.AttachXDP(link.XDPOptions{</div><div class="line">		Program:   objs.XdpEcho,</div><div class="line">		Interface: iface.Index,</div><div class="line">	})</div><div class="line">	<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">		log.Fatalf(<span class="string">"could not attach XDP program: %s"</span>, err)</div><div class="line">	}</div><div class="line">	<span class="keyword">defer</span> l.Close()</div><div class="line"></div><div class="line">	sigs := <span class="built_in">make</span>(<span class="keyword">chan</span> os.Signal,<span class="number"> 1</span>)</div><div class="line">	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)</div><div class="line">	&lt;-sigs</div><div class="line"></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>运行<code>go generate</code>,在运行<code>CGO_ENABLED=0 go build .</code>编译出echo程序，直接把这个echo程序复制到你的目的服务器中(最好5.15.x以上的内核)，然后运行</p>
+<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">./<span class="built_in">echo</span> -iface eth0</div></pre></td></tr></table></figure>
+
+<p>在另外一台机器上 <code>nc -u xxx.xxx.xxx.175</code>测试一下，可以看到发送的数据又直接返回回来了，符合期望：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line"># nc -u xxx.xxx.xxx<span class="number">.75</span><span class="number"> 20000</span></div><div class="line">hello</div><div class="line">hello</div></pre></td></tr></table></figure>
+
+<p>一切准备妥当，我们在另外一台机器上，还是运行我们的udp程序，可以看到也是轻轻松松达到每秒百万个packet:<br><img src="xdp_client.jpg" alt=""></p>
+<p>可以看到时延明显是变低了，在0.1ms ~0.2ms，这也是符合预期的，因为服务器根本就没有走到协议栈，在网卡驱动那里就把结果返回了。</p>
+<p>在看看服务端资源占用情况:<br><img src="xdp_server_dstat.jpg" alt=""></p>
+<p>服务器CPU几乎没有占用，10%不到是用在了软中断上面, usr占用几乎为0， 这是XDP程序带来的巨大的好处。</p>
+<h2 id="参考文档">参考文档</h2>
+<ul>
+<li><a href="https://www.infoq.cn/article/5xvC1Ic6BdLQYju6YWV0" target="_blank" rel="external">https://www.infoq.cn/article/5xvC1Ic6BdLQYju6YWV0</a></li>
+<li><a href="https://github.com/DavadDi/bpf_study" target="_blank" rel="external">https://github.com/DavadDi/bpf_study</a></li>
+<li><a href="https://github.com/xdp-project/xdp-tutorial" target="_blank" rel="external">https://github.com/xdp-project/xdp-tutorial</a></li>
+</ul>
+]]></content>
+    <summary type="html">
+    <![CDATA[<p>这两年来我一直在做网络故障监控的工作，经常使用的一个手段就是发送一些探测包进行网络的探测，根据丢包和时延，再结合网络拓扑等手段分析现网网络故障。因为要监控的是度厂全部网络的质量状况，并且需要很高的精度去覆盖网络设备、板卡、端口以及他们之间映射等所有的路径，所以需要尽量发送高频的探测包去快准狠的感知到故障并发现。<br>同时，和业务网络程序的不一样，业务程序一般是业务层代码，TCP的重传的机制，或者业务换个五元组重连一次，就会绕过网络中的故障，而网络监控也需要把这个链路中这些故障找出来，经常我会使用UDP或者TCP的握手包进行网络的探测，再不济使用ICMP协议进行网络的探测。</p>
+<p>经常有人会说，现在都两个服务器间都能实现几十上百万的requests/second了，比如我们访问Redis节点，但是『达到』和『产品化可用』是两回事，也很少有人将redis节点在几十万的qps之下常态运行，我们还得考虑丢包的情况和时延的情况。</p>
+<p>但是不管怎样，benchmark的工作我们还是要做的，这是我们评价我们的程序的一个基准，实际运行中我们可能使用这个基本的1/10的能力，以便保证程序的稳定性和CPU、内存、时延要求等。我写本文的目的，也是在测试机上进行这样的benchmark，检查网络方案的能力。</p>
+<ul>
+<li>首先使用一个普通的UDP程序进行百万pps (packets per second)的测试</li>
+<li>介绍XDP技术,实现一个简单的网络统计程序</li>
+<li>使用XDP技术实现echo能力，替换原来的UDP server, 将CPU使用率几乎降为0</li>
+</ul>
+]]>
+    
+    </summary>
+    
+      <category term="Go" scheme="https://colobu.com/categories/Go/"/>
+    
+  </entry>
   
   <entry>
     <title><![CDATA[像闪电一样快速扫描全网的IP地址]]></title>
@@ -1760,118 +1901,6 @@
     </summary>
     
       <category term="Go" scheme="https://colobu.com/categories/Go/"/>
-    
-  </entry>
-  
-  <entry>
-    <title><![CDATA[分布式系统设计模式]]></title>
-    <link href="https://colobu.com/2022/06/26/distributed-system-design-patterns/"/>
-    <id>https://colobu.com/2022/06/26/distributed-system-design-patterns/</id>
-    <published>2022-06-26T10:27:32.000Z</published>
-    <updated>2022-06-26T11:19:54.168Z</updated>
-    <content type="html"><![CDATA[<p>原文:<a href="https://medium.com/@nishantparmar/distributed-system-design-patterns-2d20908fecfc" target="_blank" rel="external">Distributed System Design Patterns</a> </p>
-<p>与分布式系统相关的常见问题的关键设计模式。<br><a id="more"></a></p>
-<h2 id="布隆过滤器">布隆过滤器</h2>
-<p>Bloom 过滤器是一种节省空间的概率数据结构，用于测试元素是否为某集合的成员。它用于我们只需要检查元素是否属于对象的场景。</p>
-<p><img src="bloom-filter.png" alt=""></p>
-<p>在BigTable（和Cassandra）中，任何读取操作都必须从组成Tablet的SSTable中读取。如果这些 SSTable 不在内存中，则读取操作可能最终会执行许多磁盘访问以便读取所需的SSTable。为了减少磁盘访问次数，BigTable 使用 Bloom 过滤器。</p>
-<h2 id="一致性哈希">一致性哈希</h2>
-<p>一致的哈希允许您轻松扩展，从而允许以有效的方式复制数据，从而实现更好的可用性和容错能力。</p>
-<p>通过对数据项的键进行哈希处理以产生其在环上的位置，然后顺时针遍历环以查找位置大于该项位置的第一个节点，将每个由键标识的数据项分配给节点。与节点关联的节点是数据项的位置。</p>
-<p><img src="chash.png" alt=""></p>
-<p>一致散列的主要优点是增量稳定性;节点离开或到达集群仅影响其直接邻居，其他节点不受影响。</p>
-<h2 id="Quorum">Quorum</h2>
-<p>在分布式环境中，quorum是在确认操作成功之前需要成功执行此分布式操作的最小服务器数。</p>
-<p><img src="quorum.png" alt=""></p>
-<p>Cassandra，为了确保数据一致性，每个写入请求都可以配置为仅当数据已写入至少一个quorum（或大多数）副本节点时才成功。</p>
-<p>对于领导者选举，Chubby使用Paxos，它使用quorum来确保强大的一致性。</p>
-<p>Dynamo 将写入复制到系统中其他节点的草率quorum，而不是像 Paxos 那样的严格多数quorum。所有读/写操作都在首选项列表中的第一个 NN 正常节点上执行，该节点可能并不总是在遍历一致哈希环时遇到的第一个 NN 节点。</p>
-<h2 id="领导者(Leader)和追随者(Follower)">领导者(Leader)和追随者(Follower)</h2>
-<p>为了在管理数据的系统中实现容错，需要在多个服务器上复制数据。</p>
-<p>在集群中选择一个服务器作为领导者。领导者负责代表整个集群做出决策，并将决策传播到所有其他服务器。</p>
-<p>三到五个节点的集群，就像在实现共识的系统中一样，领导者选举可以在数据集群本身内实施，而不依赖于任何外部系统。领导者选举在服务器启动时进行。每个服务器在启动时都会启动领导者选举，并尝试选举领导者。除非选出领导者，否则系统不接受任何客户端请求。</p>
-<h2 id="心跳">心跳</h2>
-<p>心跳机制用于检测现有领导者是否失败，以便可以启动新的领导者选举。</p>
-<h2 id="Fencing">Fencing</h2>
-<p>在领导者-追随者模式中，当领导者失败时，不可能确定领导者已停止工作。例如，慢速网络或网络分区可能会触发新的领导者选举，即使前一个领导者仍在运行并认为它仍然是活动的领导者。</p>
-<p>屏蔽是指在以前处于活动状态的领导者周围设置围栏，使其无法访问集群资源，从而停止为任何读/写请求提供服务。</p>
-<p>使用以下两种技术：</p>
-<ul>
-<li><strong>资源屏蔽</strong>：系统会阻止以前处于活动状态的领导者访问执行基本任务所需的资源。</li>
-<li><strong>节点屏蔽</strong>：系统会阻止以前处于活动状态的领导者访问所有资源。执行此操作的常见方法是关闭节点电源或重置节点。</li>
-</ul>
-<h2 id="WAL_(预写日志_Write-ahead_Log)">WAL (预写日志 Write-ahead Log)</h2>
-<p>预写日志记录是解决操作系统中<a href="https://www.geeksforgeeks.org/file-system-inconsistency/" target="_blank" rel="external">文件系统不一致</a>的问题的高级解决方案。受数据库管理系统的启发，此方法首先将要执行的操作的摘要记入“日志”中，然后再将其实际写入磁盘。在发生崩溃的情况下，操作系统只需检查此日志并从中断的位置继续。</p>
-<h2 id="分段日志">分段日志</h2>
-<p>将日志拆分为多个较小的文件，而不是单个大文件，以便于操作。</p>
-<p>单个日志文件在启动时读取时可能会增长并成为性能瓶颈。较旧的日志会定期清理，并且很难对单个大文件执行清理操作。</p>
-<p>单个日志拆分为多个段。日志文件在指定的大小限制后滚动。使用日志分段，需要有一种将逻辑日志偏移量（或日志序列号）映射到日志段文件的简单方法。</p>
-<h2 id="高水位线_(High-Water_mark)">高水位线 (High-Water mark)</h2>
-<p>跟踪领导者上的最后一个日志条目，该条目已成功复制到追随者的quorum。日志中此条目的索引称为高水位线索引。领导者仅公开到高水位线索引的数据。</p>
-<p>Kafka：为了处理非可重复读取并确保数据一致性，Kafka broker会跟踪高水位线，这是特定分区的最大偏移量。使用者只能看到高水位线之前的消息。</p>
-<h2 id="租约(Lease)">租约(Lease)</h2>
-<p>租约就像一个锁，但即使客户端离开，它也能工作。客户端请求有限期限的租约，之后租约到期。如果客户端想要延长租约，它可以在租约到期之前续订租约。</p>
-<p>Chubby 客户端与领导者保持有时限的会话租约。在此时间间隔内，领导者保证不会单方面终止会话。</p>
-<h2 id="Gossip_协议">Gossip 协议</h2>
-<p>Gossip协议是点对点通信机制，其中节点定期交换有关自己和他们所知道的其他节点的状态信息。</p>
-<p>每个节点每秒启动一轮Gossip回合，以与另一个随机节点交换有关自己和其他节点的状态信息。</p>
-<p><img src="gossip.png" alt=""></p>
-<h2 id="Phi_累计故障检测（Phi_Accrual_Failure_Detection）">Phi 累计故障检测（Phi Accrual Failure Detection）</h2>
-<p>此算法使用历史检测信号信息使阈值自适应。通用的应计故障检测器不会判断服务器是否处于活动状态，而是输出有关服务器的可疑级别。</p>
-<p>Cassandra 使用 Phi 应计故障检测器算法来确定群集中节点的状态。</p>
-<h2 id="脑裂">脑裂</h2>
-<p>分布式系统具有两个或多个活动领导者的场景称为脑裂。</p>
-<p>通过使用生成时钟(Generation Clock)可以解决脑裂问题，生成时钟只是一个单调递增的数字，用于指示服务器的生成。</p>
-<p>每次选出新领导者时，时钟数字(generation number)都会增加。这意味着，如果旧领导者的时钟数为“1”，则新领导人的时钟数将为“2”。此时钟号包含在从领导发送到其他节点的每个请求中。通过这种方式，节点现在可以通过简单地信任具有最高数字的领导者来轻松区分真正的领导者。</p>
-<p>Kafka：为了处理脑裂（我们可以有多个active controller broker），Kafka使用“纪元数”（Epoch number），这只是一个单调增加的数字来表示服务器的代次(generation)。</p>
-<p>HDFS：ZooKeeper用于确保任何时候只有一个NameNode处于活动状态。epoch 编号作为每个事务 ID 的一部分进行维护，以反映 NameNode 的代次。</p>
-<h2 id="校验和_(checksum)">校验和 (checksum)</h2>
-<p>在分布式系统中，在组件之间移动数据时，从节点获取的数据可能会损坏。</p>
-<p>计算校验和并将其与数据一起存储。</p>
-<p>要计算校验和，请使用 MD5、SHA-1、SHA-256 或 SHA-512 等加密哈希函数。哈希函数获取输入数据并生成固定长度的字符串（包含字母和数字）;此字符串称为校验和。</p>
-<p>当系统存储某些数据时，它会计算数据的校验和，并将校验和与数据一起存储。当客户端检索数据时，它会验证从服务器接收的数据是否与存储的校验和匹配。如果没有，则客户端可以选择从另一个副本检索该数据。</p>
-<p>HDFS和Chubby将每个文件的校验和与数据一起存储。</p>
-<h2 id="CAP定理">CAP定理</h2>
-<p>CAP定理指出，分布式系统不可能同时提供以下所有三个理想属性：</p>
-<p>一致性(C)、可用性(A) 和分区容差(P)。</p>
-<p>根据CAP定理，任何分布式系统都需要从三个属性中选择两个。这三个选项是 CA、CP 和 AP。</p>
-<p>Dynamo：在CAP定理术语中，Dynamo属于AP系统的类别，旨在牺牲强一致性为代价实现高可用性。</p>
-<p>BigTable：就CAP定理而言，BigTable是一个CP系统，即它具有严格一致的读取和写入。</p>
-<h2 id="PACELEC_定理">PACELEC 定理</h2>
-<p>PACELC定理指出，在复制数据的系统中：</p>
-<ul>
-<li>如果有一个分区（&#39;P&#39;），分布式系统可以在可用性和一致性（即&#39;A&#39;和&#39;C&#39;）之间进行权衡;</li>
-<li>否则（&#39;E&#39;），当系统在没有分区的情况下正常运行时，系统可以在延迟（&#39;L&#39;）和一致性（&#39;C&#39;）之间进行权衡。</li>
-</ul>
-<p><img src="PACELEC.png" alt=""></p>
-<p>定理（PAC）的第一部分与CAP定理相同，ELC是扩展。整个论点假设我们通过复制来保持高可用性。因此，当失败时，CAP定理占上风。但如果没有，我们仍然必须考虑复制系统的一致性和延迟之间的权衡。</p>
-<h2 id="提示交接_(Hinted_Handoff)">提示交接 (Hinted Handoff)</h2>
-<p>如果节点关闭，系统会保留它们错过的所有请求的提示（或注释）。故障节点恢复后，将根据存储的提示将请求转发给它们。</p>
-<p>当节点关闭时，领导者会在本地磁盘上的文本文件中写入提示。此提示包含数据及其所属的节点信息。当领导者意识到它为其保留提示的节点已恢复时，它会将每个提示的写入请求转发到该节点。</p>
-<h2 id="读取时修复">读取时修复</h2>
-<p>在分布式系统中，数据跨多个节点复制，某些节点最终可能会拥有过时的数据。</p>
-<p>在读取操作期间修复过时的数据，因为此时，我们可以从多个节点读取数据以进行比较并找到具有过时数据的节点。此机制称为读取修复。一旦已知具有旧数据的节点，读取修复操作就会将较新版本的数据推送到具有较旧版本的节点。</p>
-<p>Cassandra和Dynamo使用“读取修复”将最新版本的数据推送到具有旧版本的节点。</p>
-<h2 id="默克尔树_(Merkle_Trees)">默克尔树 (Merkle Trees)</h2>
-<p>“读取修复”可在处理读取请求时消除冲突。但是，如果某个副本明显落后于其他副本，则可能需要很长时间才能解决冲突。</p>
-<p>副本可以包含大量数据。单纯地拆分整个范围来计算校验和进行比较并不是很可行;有太多的数据需要传输。相反，我们可以使用Merkle树来比较一个范围的副本。</p>
-<p>Merkle 树是哈希的二叉树，其中每个内部节点是其两个子节点的哈希，每个叶节点是原始数据一部分的哈希。</p>
-<p><img src="merkle-tree.png" alt=""></p>
-<p>比较Merkle树在概念上很简单：</p>
-<ul>
-<li>比较两个树的根哈希。</li>
-<li>如果它们相等，请停止。</li>
-<li>在左边和右边的孩子上递归检查。</li>
-</ul>
-<p>为了实现反熵和在后台解决冲突，Dynamo使用Merkle树。</p>
-]]></content>
-    <summary type="html">
-    <![CDATA[<p>原文:<a href="https://medium.com/@nishantparmar/distributed-system-design-patterns-2d20908fecfc" target="_blank" rel="external">Distributed System Design Patterns</a> </p>
-<p>与分布式系统相关的常见问题的关键设计模式。<br>]]>
-    
-    </summary>
-    
-      <category term="设计模式" scheme="https://colobu.com/categories/%E8%AE%BE%E8%AE%A1%E6%A8%A1%E5%BC%8F/"/>
     
   </entry>
   

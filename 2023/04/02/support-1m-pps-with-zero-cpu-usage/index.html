@@ -1,0 +1,735 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset="utf-8">
+  
+  <title>每秒1百万的包传输，几乎不耗CPU的那种</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+  <meta name="description" content="这两年来我一直在做网络故障监控的工作，经常使用的一个手段就是发送一些探测包进行网络的探测，根据丢包和时延，再结合网络拓扑等手段分析现网网络故障。因为要监控的是度厂全部网络的质量状况，并且需要很高的精度去覆盖网络设备、板卡、端口以及他们之间映射等所有的路径，所以需要尽量发送高频的探测包去快准狠的感知到故障并发现。同时，和业务网络程序的不一样，业务程序一般是业务层代码，TCP的重传的机制，或者业务换个">
+<meta property="og:type" content="article">
+<meta property="og:title" content="每秒1百万的包传输，几乎不耗CPU的那种">
+<meta property="og:url" content="https://colobu.com/2023/04/02/support-1m-pps-with-zero-cpu-usage/">
+<meta property="og:site_name" content="鸟窝">
+<meta property="og:description" content="这两年来我一直在做网络故障监控的工作，经常使用的一个手段就是发送一些探测包进行网络的探测，根据丢包和时延，再结合网络拓扑等手段分析现网网络故障。因为要监控的是度厂全部网络的质量状况，并且需要很高的精度去覆盖网络设备、板卡、端口以及他们之间映射等所有的路径，所以需要尽量发送高频的探测包去快准狠的感知到故障并发现。同时，和业务网络程序的不一样，业务程序一般是业务层代码，TCP的重传的机制，或者业务换个">
+<meta property="og:image" content="udp_client.jpg">
+<meta property="og:image" content="udp_client_dstat.jpg">
+<meta property="og:image" content="udp_server_dstat.jpg">
+<meta property="og:image" content="xdp.png">
+<meta property="og:image" content="ubuntu.jpg">
+<meta property="og:image" content="stat.jpg">
+<meta property="og:image" content="stat-running.jpg">
+<meta property="og:image" content="xdp_client.jpg">
+<meta property="og:image" content="xdp_server_dstat.jpg">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="每秒1百万的包传输，几乎不耗CPU的那种">
+<meta name="twitter:description" content="这两年来我一直在做网络故障监控的工作，经常使用的一个手段就是发送一些探测包进行网络的探测，根据丢包和时延，再结合网络拓扑等手段分析现网网络故障。因为要监控的是度厂全部网络的质量状况，并且需要很高的精度去覆盖网络设备、板卡、端口以及他们之间映射等所有的路径，所以需要尽量发送高频的探测包去快准狠的感知到故障并发现。同时，和业务网络程序的不一样，业务程序一般是业务层代码，TCP的重传的机制，或者业务换个">
+
+  
+  <link rel="alternative" href="/atom.xml" title="鸟窝" type="application/atom+xml">
+  
+  
+  <link rel="icon" href="/favicon.png">
+  
+  <link rel="stylesheet" href="/css/style.css" type="text/css">
+
+  <link href="//cdn.staticfile.org/font-awesome/4.2.0/css/font-awesome.css" rel="stylesheet">
+  
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/fancybox/2.1.7/css/jquery.fancybox.min.css"
+    media="screen" type="text/css">
+  
+  <link rel="stylesheet" href="//cdnjs.cloudflare.com/ajax/libs/animate.css/3.1.1/animate.min.css" media="screen"
+    type="text/css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/tonsky/FiraCode@1.207/distr/fira_code.css">
+</head>
+<body>
+  <div id="container">
+    <div id="wrap">
+      <header id="header">
+  <div id="banner"></div>
+  <div id="header-outer" class="outer">
+    <div id="header-title" class="inner">
+      <h1 id="logo-wrap" class="animated bounceInLeft">
+        <a href="/" id="logo">鸟窝</a>
+      </h1>
+      
+        <h2 id="subtitle-wrap" class="animated bounceInLeft">
+          <a href="/" id="subtitle">大道至简 Simplicity is the ultimate form of sophistication</a>
+        </h2>
+      
+    </div>
+    <div id="header-inner" class="inner">
+      <nav id="main-nav">
+        <a id="main-nav-toggle" class="nav-icon"></a>
+        
+          
+            <a class="main-nav-link" href="/"><i class="fa fa-home">&nbsp;</i>首页</a>
+          
+          
+          
+            <a class="main-nav-link" href="/archives"><i class="fa fa-folder-o">&nbsp;</i>归档</a>
+          
+          
+          
+            <a class="main-nav-link" href="https://github.com/smallnest"><i class="fa fa-github">&nbsp;</i>github</a>
+          
+          
+          
+            <div class="dropdown main-nav-link"><a class="main-nav-link" href="#"><i class="fa fa-bars">&nbsp;</i>网站群</a>
+              <div class="dropdown-content">
+          
+            
+              <a href="/goasm"><i class="fa fa-language"></i>&nbsp;Go汇编示例</a>
+            
+                
+          
+            
+              <a href="https://gowebexamples.com"><i class="fa fa-external-link"></i>&nbsp;Go Web开发示例</a>
+            
+                
+          
+            
+              <a href="http://go-database-sql.org"><i class="fa fa-external-link"></i>&nbsp;Go 数据库开发教程</a>
+            
+                
+          
+            
+              <hr>
+            
+                
+          
+            
+              <a href="http://rpcx.io"><i class="fa undefined"></i>&nbsp;RPCX官网</a>
+            
+                
+          
+            
+              <a href="http://cn.doc.rpcx.io"><i class="fa undefined"></i>&nbsp;RPC开发指南</a>
+            
+                
+          
+          </div>
+        </div>
+          
+          
+          
+            <a class="main-nav-link" href="/ScalaCollectionsCookbook"><i class="fa fa-book">&nbsp;</i>Scala集合技术手册</a>
+          
+          
+          
+            <a class="main-nav-link" href="/about"><i class="fa fa-lemon-o">&nbsp;</i>关于</a>
+          
+          
+
+
+      </nav>
+      <nav id="sub-nav">
+        
+          <a id="nav-rss-link" class="nav-icon" href="/atom.xml" title="RSS Feed"></a>
+        
+        <a id="nav-search-btn" class="nav-icon" title="Search"></a>
+      </nav>
+      <div id="search-form-wrap">
+        <form action="https://www.google.com/search" method="get" accept-charset="utf-8" class="search-form">
+          <input type="search" id="search-word" name="q" maxlength="20" class="search-form-input" placeholder="Search">
+          <input type=hidden name=ie value="utf-8">
+          <input type=hidden name=oe value="utf-8">
+          <input type=hidden name=hl value="zh-CN">
+          <input type="submit" id="search-submit" value="" class="search-form-submit">
+        </form>
+      </div>
+    </div>
+  </div>
+</header>
+      <div class="outer">
+        <section id="main"><article id="post-support-1m-pps-with-zero-cpu-usage" class="article article-type-post" itemscope
+  itemprop="blogPost">
+  <div class="article-meta">
+    <a href="/2023/04/02/support-1m-pps-with-zero-cpu-usage/" class="article-date">
+  <time datetime="2023-04-02T05:45:17.000Z" itemprop="datePublished">2023年04月02日</time>
+</a>
+    
+  <div class="article-category">
+    <a class="article-category-link" href="/categories/Go/">Go</a>
+  </div>
+
+    
+  <div class="article-author"> by smallnest</div>
+
+  </div>
+  <div class="article-inner">
+    
+    
+    <header class="article-header">
+      
+  
+    <h1 class="article-title" itemprop="name">
+      每秒1百万的包传输，几乎不耗CPU的那种
+	  
+    </h1>
+  
+
+    </header>
+    
+    <div class="article-entry" itemprop="articleBody">
+      
+      
+      
+      <script>function show_answer(btn, x) { if (btn.value === "显示答案") { btn.value = "隐藏答案" } else { btn.value = "显示答案" } var as = document.getElementById(x); if (as.style.display === "none") { as.style.display = "block" } else { as.style.display = "none" } }</script>
+      <p>这两年来我一直在做网络故障监控的工作，经常使用的一个手段就是发送一些探测包进行网络的探测，根据丢包和时延，再结合网络拓扑等手段分析现网网络故障。因为要监控的是度厂全部网络的质量状况，并且需要很高的精度去覆盖网络设备、板卡、端口以及他们之间映射等所有的路径，所以需要尽量发送高频的探测包去快准狠的感知到故障并发现。<br>同时，和业务网络程序的不一样，业务程序一般是业务层代码，TCP的重传的机制，或者业务换个五元组重连一次，就会绕过网络中的故障，而网络监控也需要把这个链路中这些故障找出来，经常我会使用UDP或者TCP的握手包进行网络的探测，再不济使用ICMP协议进行网络的探测。</p>
+<p>经常有人会说，现在都两个服务器间都能实现几十上百万的requests/second了，比如我们访问Redis节点，但是『达到』和『产品化可用』是两回事，也很少有人将redis节点在几十万的qps之下常态运行，我们还得考虑丢包的情况和时延的情况。</p>
+<p>但是不管怎样，benchmark的工作我们还是要做的，这是我们评价我们的程序的一个基准，实际运行中我们可能使用这个基本的1/10的能力，以便保证程序的稳定性和CPU、内存、时延要求等。我写本文的目的，也是在测试机上进行这样的benchmark，检查网络方案的能力。</p>
+<ul>
+<li>首先使用一个普通的UDP程序进行百万pps (packets per second)的测试</li>
+<li>介绍XDP技术,实现一个简单的网络统计程序</li>
+<li>使用XDP技术实现echo能力，替换原来的UDP server, 将CPU使用率几乎降为0</li>
+</ul>
+<a id="more"></a>
+<h2 id="背景">背景</h2>
+<p>普通的网络测试程序代码在<a href="https://github.com/smallnest/network_benchmark" target="_blank" rel="external">network_benchmark</a>，除了UDP的探测外，我还实现了一个TCP程序的探测。</p>
+<p>client和server连接到同一台交换机上，尽量减少网络的干扰。</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div></pre></td><td class="code"><pre><div class="line">客户端机器<span class="value">: xxx.xxx.xxx.<span class="number">176</span></span></div><div class="line"><span class="function">Intel</span>(R) <span class="function">Xeon</span>(R) Gold <span class="number">5118</span> CPU @ <span class="number">2.30</span>GHz 两颗</div><div class="line"><span class="number">12</span>物理核 <span class="number">48</span>个逻辑核</div><div class="line"><span class="number">187</span>GB内存</div><div class="line"></div><div class="line">服务端机器: xxx.xxx.xxx.<span class="number">175</span></div><div class="line"><span class="function">Intel</span>(R) <span class="function">Xeon</span>(R) Gold <span class="number">5118</span> CPU @ <span class="number">2.30</span>GHz 两颗</div><div class="line"><span class="number">12</span>物理核 <span class="number">48</span>个逻辑核</div><div class="line"><span class="number">187</span>GB内存</div></pre></td></tr></table></figure>
+
+<p>客户机和服务器都设置了网卡多队列：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div></pre></td><td class="code"><pre><div class="line"># ethtool -l  xgbe0</div><div class="line">Channel parameters <span class="keyword">for</span> xgbe0:</div><div class="line">Pre-set maximums:</div><div class="line">RX:	<span class="number">	74</span></div><div class="line">TX:	<span class="number">	74</span></div><div class="line">Other:	<span class="number">	0</span></div><div class="line">Combined:<span class="number">	148</span></div><div class="line">Current hardware settings:</div><div class="line">RX:	<span class="number">	0</span></div><div class="line">TX:	<span class="number">	0</span></div><div class="line">Other:	<span class="number">	0</span></div><div class="line">Combined:<span class="number">	48</span></div></pre></td></tr></table></figure>
+
+<p>相关的网络参数也做了设置，比如read/write buffer, net.core.netdev_max_backlog等。</p>
+<h2 id="普通UDP_benchmark">普通UDP benchmark</h2>
+<p>为了充分利用网卡多队列的优势，我们使用了多个端口，建立多条流进行测试。</p>
+<p>UDP client 匀速按照指定的rate发送数据：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div></pre></td><td class="code"><pre><div class="line">conn, err := net.DialUDP(<span class="string">"udp"</span>, srcAddr, dstAddr)</div><div class="line"><span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">	log.Fatal(err)</div><div class="line">}</div><div class="line">c.conn = conn</div><div class="line">conn.SetWriteBuffer<span class="number">(1024</span> *<span class="number"> 1024</span> *<span class="number"> 1024</span>)</div><div class="line">conn.SetReadBuffer<span class="number">(1024</span> *<span class="number"> 1024</span> *<span class="number"> 1024</span>)</div><div class="line"></div><div class="line"><span class="keyword">go</span> c.read()</div><div class="line"></div><div class="line">data := bytes.Repeat([]<span class="typename">byte</span>(<span class="string">"a"</span>), c.pktSize)</div><div class="line"></div><div class="line">rateLimter := ratelimit.New(c.rate, ratelimit.Per(time.Second))</div><div class="line"></div><div class="line"><span class="keyword">for</span> seq := <span class="typename">uint64</span><span class="number">(0</span>); ; seq++ {</div><div class="line">	rateLimter.Take()</div><div class="line">	ts := time.Now().UnixNano()</div><div class="line">	binary.LittleEndian.PutUint64(data[<span class="number">:8</span>], seq)</div><div class="line">	binary.LittleEndian.PutUint64(data<span class="number">[8</span><span class="number">:16</span>], <span class="typename">uint64</span>(ts))</div><div class="line">	c.stats.AddSent(seq, ts)</div><div class="line">	_, err = conn.Write(data)</div><div class="line">	<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">		<span class="keyword">return</span></div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>client将接收到的回包进行统计，按照每秒一个周期聚合数据:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> (c *Client) read() {</div><div class="line">	data := <span class="built_in">make</span>([]<span class="typename">byte</span>, c.pktSize)</div><div class="line"></div><div class="line">	<span class="keyword">for</span> {</div><div class="line">		n, err := c.conn.Read(data)</div><div class="line">		<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">			<span class="keyword">return</span></div><div class="line">		}</div><div class="line">		<span class="keyword">if</span> n &lt; c.pktSize {</div><div class="line">			<span class="keyword">continue</span></div><div class="line">		}</div><div class="line"></div><div class="line">		seq := binary.LittleEndian.Uint64(data[<span class="number">:8</span>])</div><div class="line">		<span class="comment">//ts := binary.LittleEndian.Uint64(data[8:16])</span></div><div class="line"></div><div class="line">		c.stats.AddRecv(seq, time.Now().UnixNano())</div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>服务端将收到的数据原封不动的返回:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div></pre></td><td class="code"><pre><div class="line">	conn, err := net.ListenUDP(<span class="string">"udp"</span>, &net.UDPAddr{</div><div class="line">		IP:   net.ParseIP(s.addr),</div><div class="line">		Port: port,</div><div class="line">	})</div><div class="line"></div><div class="line">	<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">		<span class="built_in">panic</span>(err)</div><div class="line">	}</div><div class="line"></div><div class="line">	conn.SetReadBuffer<span class="number">(1024</span> *<span class="number"> 1024</span> *<span class="number"> 1024</span>)</div><div class="line">	conn.SetWriteBuffer<span class="number">(1024</span> *<span class="number"> 1024</span> *<span class="number"> 1024</span>)</div><div class="line"></div><div class="line">	data := <span class="built_in">make</span>([]<span class="typename">byte</span>,<span class="number"> 2048</span>)</div><div class="line">	<span class="keyword">for</span> {</div><div class="line">		n, remote, err := conn.ReadFromUDP(data)</div><div class="line">		<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">			log.Fatalf(<span class="string">"failed to read: %v"</span>, err)</div><div class="line">		}</div><div class="line">		<span class="keyword">if</span> n &lt;=<span class="number"> 0</span> {</div><div class="line">			<span class="keyword">continue</span></div><div class="line">		}</div><div class="line"></div><div class="line">		conn.WriteToUDP(data[:n], remote)</div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>我们在测试机上运行这个测试程序，让客户端每秒1百万个包的速率发送，可以看到基本接近每秒百万的pps，时延0.2ms:<br><img src="udp_client.jpg" alt=""></p>
+<p>客户端的资源使用情况, CPU占用很多， idle 基本在36%左右:<br><img src="udp_client_dstat.jpg" alt=""></p>
+<p>服务端的资源占用如下， CPU idle在 62%左右:<br><img src="udp_server_dstat.jpg" alt=""></p>
+<h2 id="XDP_技术">XDP 技术</h2>
+<p>上面的程序是中规中矩的UDP程序。如果分析我们的需求，你会发现我们的程序，尤其是服务端的程序非常的简单，基本就是实现一个<a href="https://www.rfc-editor.org/rfc/rfc862.txt" target="_blank" rel="external">rfc862</a>的echo程序。</p>
+<p>首先，我们先聊一聊bpf、ebpf和xdp。</p>
+<p>在 1992 年 USENIX 会议上，论文“The BSD Packet Filter: A New Architecture for User-level Packet Capture”提出了革命性的包过滤机制 BSD Packet Filter（简称为 BPF），这比当时最先进的数据包过滤技术还快 20 倍。在 Linux 2.1.75 中，首次引入了 BPF 技术。在 Linux 3.0 中，增加了 BPF 即时编译器，它替换掉了原本性能更差的解释器，进一步优化了 BPF 指令运行的效率。</p>
+<p>2014 年，Alexei Starovoitov 将 BPF 扩展为一个通用的虚拟机，也就是 eBPF。eBPF 不仅扩展了寄存器的数量，引入了全新的 BPF 映射存储，还在 4.x 内核中将原本单一的数据包过滤事件逐步扩展到了内核态函数、用户态函数、跟踪点、性能事件（perf_events）以及安全控制等。eBPF 的诞生是 BPF 技术的一个转折点，使得 BPF 不再仅限于网络栈，而是成为内核的一个顶级子系统。</p>
+<p>XDP全称eXpress Data Path，即快速数据路径，XDP是Linux网络处理流程中的一个eBPF钩子，能够挂载eBPF程序，它能够在网络数据包到达网卡驱动层时对其进行处理，具有非常优秀的数据面处理性能，打通了Linux网络处理的高速公路。<br><img src="xdp.png" alt=""></p>
+<p>传统的Linux内核网络协议栈由于更加注重通用性，其网络处理存在着固有的性能瓶颈，随着10G、25G、40G、100G甚至更高速率的网卡出现，这种性能瓶颈变得更加突出，传统内核网络协议栈已经难以满足高性能网络处理的要求。在2010年，开发出了DPDK内核旁路(Kernel Bypass)技术，并逐渐成为网络处理加速的一种成熟方案。然而这种方案也有自己的一些固有缺陷，且始终是独立于linux内核的，在2016年的Linux Netdev会议上，David S. Miller让下面人和他一起念“DPDK is not Linux”。同年，伴随着eBPF技术的成熟，Linux也终于合入了属于自己的网络处理高速公路——XDP。</p>
+<p>XDP能够在网络数据包到达网卡驱动层时对其进行快速处理，比如转发、重定向等。避免深陷linux协议栈的复杂处理流程，极大地提升网络传输性能，所以如果采用XDP技术，在服务区收到一个UDP包的，立即将其返回，不再经过后面的协议栈的处理，岂不是能够有更好的性能？</p>
+<p>ebpf/XDP等技术和特性一直在发展，好处是我们能够使用越来越多的新功能，坏处就是你在写一个ebpf/XDP程序的时候，甚至找不到一个可运行的例子，会遇到不同的Linux版本、不同版本的库、不同厂商的提供的库、不同的编程语言等等。我使用ChatGPT生成一个XDP的例子都跑不起来，这也阻碍了XDP更广泛的采用，当然这也不方案一些大厂或者创业公司开始广泛的使用ebpf/XDP等技术开发了性能优异的产品，比如Facebook的四层负载均衡器Katran、Cilium的各个云原生网络产品、IOVisor的bcc、CloudFlare的bpf-tools等工具。</p>
+<p>在这一节，我介绍一个XDP的简单的程序，把XDP程序的开发讨论和编译流程介绍一下，下一节在介绍基于XDP改成我们的UDP benchmark程序。</p>
+<p>首先写一个XDP程序：</p>
+<figure class="highlight c"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div><div class="line">35</div><div class="line">36</div><div class="line">37</div><div class="line">38</div><div class="line">39</div><div class="line">40</div><div class="line">41</div><div class="line">42</div><div class="line">43</div></pre></td><td class="code"><pre><div class="line"><span class="preprocessor">#<span class="keyword">include</span> &lt;linux/bpf.h&gt;</span></div><div class="line"><span class="preprocessor">#<span class="keyword">include</span> &lt;linux/if_ether.h&gt;</span></div><div class="line"><span class="preprocessor">#<span class="keyword">include</span> &lt;linux/in.h&gt;</span></div><div class="line"><span class="preprocessor">#<span class="keyword">include</span> &lt;bpf/bpf_helpers.h&gt;</span></div><div class="line"></div><div class="line"></div><div class="line"><span class="comment">/* Common stats data record (shared with userspace) */</span></div><div class="line"><span class="keyword">struct</span> datarec {</div><div class="line">	__u64 processed;</div><div class="line">	__u64 issue;</div><div class="line">};</div><div class="line"></div><div class="line"><span class="keyword">struct</span> {</div><div class="line">	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);</div><div class="line">	__type(key, __u32);</div><div class="line">	__type(value, <span class="keyword">struct</span> datarec);</div><div class="line">	__uint(max_entries, <span class="number">1</span>);</div><div class="line">} stats_global_map SEC(<span class="string">".maps"</span>);</div><div class="line"></div><div class="line"></div><div class="line">SEC(<span class="string">"xdp_prog0"</span>)</div><div class="line"><span class="keyword">int</span>  xdp_prognum0(<span class="keyword">struct</span> xdp_md *ctx)</div><div class="line">{</div><div class="line">	<span class="keyword">void</span> *data_end = (<span class="keyword">void</span> *)(<span class="keyword">long</span>)ctx-&gt;data_end;</div><div class="line">	<span class="keyword">void</span> *data     = (<span class="keyword">void</span> *)(<span class="keyword">long</span>)ctx-&gt;data;</div><div class="line">	<span class="keyword">struct</span> datarec *rec, *rxq_rec;</div><div class="line">	<span class="keyword">int</span> ingress_ifindex;</div><div class="line">	<span class="keyword">struct</span> config *config;</div><div class="line">	__u32 key = <span class="number">0</span>;</div><div class="line"></div><div class="line">	<span class="comment">/* Global stats record */</span></div><div class="line">	rec = bpf_map_lookup_elem(&stats_global_map, &key);</div><div class="line">	<span class="keyword">if</span> (!rec)</div><div class="line">		<span class="keyword">return</span> XDP_PASS;</div><div class="line">	rec-&gt;processed++;</div><div class="line"></div><div class="line">	</div><div class="line">	</div><div class="line"></div><div class="line">	<span class="keyword">return</span> XDP_PASS;</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">char</span> _license[] SEC(<span class="string">"license"</span>) = <span class="string">"GPL"</span>;</div></pre></td></tr></table></figure>
+
+<p>我们定义了一个用来统计用的数据结构<code>datarec</code>，用来记录处理的packet的数量和有问题的包的数量(为了简单，这个字段我们没有使用)。定义了一个映射<code>stats_global_map</code>用来传给用户态的程序查询这个统计结果。</p>
+<p>然后定义<code>xdp_prognum0</code>处理逻辑。这里通过<code>bpf_map_lookup_elem</code>查询到统计map,然后对它的processed加一。<br>我们总是返回XDP_PASS, 让包继续往下处理。</p>
+<p>对了，为了编写XDP程序，我专门购买了也给腾讯云的轻量级服务器，新人第一年不到100块钱，不是打广告啊，的的确确发现ebpf/XDP有时候必须需要新的内核和通用的Linux版本才更容易编译和运行。</p>
+<p><img src="ubuntu.jpg" alt=""></p>
+<p>可能你需要安装一些编译工具和libbpf库等。</p>
+<p>1、 安装gcc和clang编译器：</p>
+<figure class="highlight shell"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line"><span class="built_in">sudo</span> apt-get install gcc clang</div></pre></td></tr></table></figure>
+
+<p>2、安装LLVM工具链：</p>
+<figure class="highlight shell"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line"><span class="built_in">sudo</span> apt-get install llvm-dev libelf-dev libclang-dev</div></pre></td></tr></table></figure>
+
+<p>3、安装Linux内核头文件：</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">sudo apt-<span class="keyword">get</span> install linux-headers-$(uname -r)</div></pre></td></tr></table></figure>
+
+<p>4、下载并安装libbpf库：</p>
+<figure class="highlight shell"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line">git clone http<span class="variable">s:</span>//github.<span class="keyword">com</span>/libbpf/libbpf.git</div><div class="line"><span class="keyword">cd</span> libbpf/src</div><div class="line"><span class="keyword">make</span></div><div class="line">sudo <span class="keyword">make</span> install</div></pre></td></tr></table></figure>
+
+<p>总之，环境准备好后，我们可以使用下面的命令编译这个XDP程序：</p>
+<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">clang -O2 -target bpf -c stat.c -o stat.o</div></pre></td></tr></table></figure>
+
+<p>使用ip命令加载XDP程序并传入参数。例如，假设要加载的程序为my_xdp_prog.o，参数为param1和param2，并且要将程序绑定到接口eth0：</p>
+<figure class="highlight shell"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line"><span class="built_in">sudo</span> ip link <span class="keyword">set</span> dev eth0 xdp obj my_xdp_prog.o sec my_xdp_sec param1 param2</div></pre></td></tr></table></figure>
+
+<p>但是呢，我不像这么做，而是想使用Go程序进行加在，并且每秒一次查询stat的统计数据打印出来。</p>
+<p>Go语言有几个ebpf相关的库：</p>
+<ul>
+<li><a href="https://github.com/cilium/ebpf" target="_blank" rel="external">cilium ebpf</a></li>
+<li><a href="https://github.com/iovisor/gobpf" target="_blank" rel="external">iovisor gobpf</a></li>
+<li><a href="https://github.com/aquasecurity/libbpfgo" target="_blank" rel="external">libbpfgo</a></li>
+</ul>
+<p>这里我使用cilium ebpf库， 活跃，而且cilium做出了产品，而且，还提供bpf2go工具，可以把XDP程序的C代码编译成字节码，嵌入到Go语言中，并且生成Go语言的辅助方法，收到bpftool gen skeleton工具的启发。</p>
+<p>首先安装bpf2go工具：</p>
+<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">go install github.com/cilium/ebpf/cmd/bpf2go@latest</div></pre></td></tr></table></figure>
+
+<p>然后写一个main.go文件，先准备好程序框架，在package上面加上go generate:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line"><span class="comment">//go:generate go run github.com/cilium/ebpf/cmd/bpf2go stat ebpf/stat.c</span></div><div class="line"><span class="keyword">package</span> main</div><div class="line"></div><div class="line">......</div></pre></td></tr></table></figure>
+
+<p>它就会编译stat.c这个XDP程序，并生成辅助的方法:<br><img src="stat.jpg" alt=""></p>
+<p>对了，我开发是MacPro或者Mac mini上使用vscode做开发的，通过vscode ssh插件连接到我购买的这个腾讯云节点上，这样就方便使用Linux环境做编译了。</p>
+<p>接下来晚上main.go，实现加在XDP程序，并请示访问map查询处理的包的数量：<br><img src="stat-running.jpg" alt=""></p>
+<p>编译顺利，运行运行。</p>
+<h2 id="利用XDP实现网络程序的服务端">利用XDP实现网络程序的服务端</h2>
+<p>有了上面开发XDP程序的经验，我们就可以实现那个UDP的服务器端了。在开发之前，我们想想我们到底要做什么？</p>
+<p>这个程序服务器基本就是个echo的功能，没有统计信息，没有额外的业务逻辑，只是把它收到的UDP包返回回去,所以我们XDP程序需要：</p>
+<ul>
+<li>处理特定UDP目标端口的packet</li>
+<li>把Mac地址(二层的数据帧)、IP地址(三层IP)、UDP(UDP端口)中的数据交换，再发包返回</li>
+<li>从哪个网卡接收，就从哪个网卡中返回</li>
+</ul>
+<p>这个程序我们我们定义我们要处理的端口范围是20000到20016, 凡事目的端口是这个范围的数据包，我们原封不动的把数据返回。<br>在数据返回时，我们交换了mac地址、IP地址和端口，把包改造成了返回包，这里我们偷了个懒，没用重新计算checksum。</p>
+<p>最后我们返回<strong>XDP_TX</strong>, 也就是从哪个网卡队列接收的，再通过这个网卡队列返回和客户端:</p>
+<figure class="highlight c"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div><div class="line">35</div><div class="line">36</div><div class="line">37</div><div class="line">38</div><div class="line">39</div><div class="line">40</div><div class="line">41</div><div class="line">42</div><div class="line">43</div><div class="line">44</div><div class="line">45</div><div class="line">46</div><div class="line">47</div><div class="line">48</div><div class="line">49</div><div class="line">50</div><div class="line">51</div><div class="line">52</div><div class="line">53</div><div class="line">54</div><div class="line">55</div><div class="line">56</div><div class="line">57</div><div class="line">58</div><div class="line">59</div><div class="line">60</div><div class="line">61</div><div class="line">62</div><div class="line">63</div><div class="line">64</div><div class="line">65</div><div class="line">66</div><div class="line">67</div><div class="line">68</div><div class="line">69</div><div class="line">70</div><div class="line">71</div><div class="line">72</div><div class="line">73</div><div class="line">74</div><div class="line">75</div><div class="line">76</div><div class="line">77</div><div class="line">78</div><div class="line">79</div><div class="line">80</div><div class="line">81</div><div class="line">82</div></pre></td><td class="code"><pre><div class="line"><span class="preprocessor">#<span class="keyword">include</span> &lt;linux/bpf.h&gt;</span></div><div class="line"><span class="preprocessor">#<span class="keyword">include</span> &lt;bpf/bpf_helpers.h&gt;</span></div><div class="line"><span class="preprocessor">#<span class="keyword">include</span> &lt;linux/if_ether.h&gt;</span></div><div class="line"><span class="preprocessor">#<span class="keyword">include</span> &lt;linux/ip.h&gt;</span></div><div class="line"><span class="preprocessor">#<span class="keyword">include</span> &lt;netinet/in.h&gt;</span></div><div class="line"><span class="preprocessor">#<span class="keyword">include</span> &lt;linux/udp.h&gt;</span></div><div class="line"><span class="preprocessor">#<span class="keyword">include</span> &lt;string.h&gt;</span></div><div class="line"></div><div class="line"></div><div class="line"></div><div class="line"><span class="comment">// 定义默认的UDP端口范围</span></div><div class="line"><span class="preprocessor">#<span class="keyword">define</span> UDP_PORT_START 20000</span></div><div class="line"><span class="preprocessor">#<span class="keyword">define</span> UDP_PORT_END   20016</span></div><div class="line"></div><div class="line"></div><div class="line">SEC(<span class="string">"xdp"</span>)</div><div class="line"><span class="keyword">int</span> xdp_echo(<span class="keyword">struct</span> xdp_md *ctx) {</div><div class="line">    <span class="keyword">void</span> *data_end = (<span class="keyword">void</span> *)(<span class="keyword">long</span>)ctx-&gt;data_end;</div><div class="line">    <span class="keyword">void</span> *data     = (<span class="keyword">void</span> *)(<span class="keyword">long</span>)ctx-&gt;data;</div><div class="line">    </div><div class="line">    <span class="keyword">struct</span> ethhdr *eth = data;</div><div class="line">    <span class="keyword">if</span> ((<span class="keyword">void</span>*)eth + <span class="keyword">sizeof</span>(*eth) &gt; data_end) {</div><div class="line">        <span class="keyword">return</span> XDP_ABORTED;</div><div class="line">    }</div><div class="line"></div><div class="line">    <span class="comment">// 如果不是IPv4包，则直接返回</span></div><div class="line">    <span class="keyword">if</span> (eth-&gt;h_proto != htons(ETH_P_IP)) {</div><div class="line">        <span class="keyword">return</span> XDP_PASS;</div><div class="line">    }</div><div class="line"></div><div class="line">    <span class="keyword">struct</span> iphdr *ip = data + <span class="keyword">sizeof</span>(*eth);</div><div class="line">    <span class="keyword">if</span> ((<span class="keyword">void</span>*)ip + <span class="keyword">sizeof</span>(*ip) &gt; data_end) {</div><div class="line">        <span class="keyword">return</span> XDP_ABORTED;</div><div class="line">    }</div><div class="line"></div><div class="line">    <span class="comment">// 如果不是UDP包，则直接返回</span></div><div class="line">    <span class="keyword">if</span> (ip-&gt;protocol != IPPROTO_UDP) {</div><div class="line">        <span class="keyword">return</span> XDP_PASS;</div><div class="line">    }</div><div class="line"></div><div class="line"></div><div class="line">    <span class="keyword">struct</span> udphdr *udp = data + <span class="keyword">sizeof</span>(*eth) + <span class="keyword">sizeof</span>(*ip);</div><div class="line">    <span class="keyword">if</span> ((<span class="keyword">void</span>*)udp + <span class="keyword">sizeof</span>(*udp) &gt; data_end) {</div><div class="line">        <span class="keyword">return</span> XDP_ABORTED;</div><div class="line">    }</div><div class="line"></div><div class="line"></div><div class="line"></div><div class="line">    <span class="comment">// 获取端口范围</span></div><div class="line">    <span class="keyword">struct</span> port_range *port_range = bpf_map_lookup_elem(&port_range_map, &(<span class="keyword">int</span>){<span class="number">0</span>});</div><div class="line">    <span class="keyword">if</span> (!port_range) {</div><div class="line">        <span class="comment">// 如果没有找到映射对象，则使用默认值</span></div><div class="line">        port_range = &(<span class="keyword">struct</span> port_range){ UDP_PORT_START, UDP_PORT_END };</div><div class="line">    }</div><div class="line"></div><div class="line">    <span class="comment">// 检查UDP端口是否在指定的范围内</span></div><div class="line">    <span class="keyword">if</span> (ntohs(udp-&gt;dest) &lt; port_range-&gt;start || ntohs(udp-&gt;dest) &gt; port_range-&gt;end) {</div><div class="line">        <span class="keyword">return</span> XDP_PASS;</div><div class="line">    }</div><div class="line"></div><div class="line"></div><div class="line">    <span class="comment">// Swap source and destination MAC addresses</span></div><div class="line">    <span class="keyword">struct</span> ethhdr tmp_eth = *eth;</div><div class="line">    <span class="built_in">memcpy</span>(eth-&gt;h_dest, tmp_eth.h_source, ETH_ALEN);</div><div class="line">    <span class="built_in">memcpy</span>(eth-&gt;h_source, tmp_eth.h_dest, ETH_ALEN);</div><div class="line"></div><div class="line">     <span class="comment">// Swap source and destination addresses</span></div><div class="line">    __be32 tmp_addr = ip-&gt;saddr;</div><div class="line">    ip-&gt;saddr = ip-&gt;daddr;</div><div class="line">    ip-&gt;daddr = tmp_addr;</div><div class="line"></div><div class="line">    <span class="comment">// Swap source and destination ports</span></div><div class="line">    __be16 tmp_port = udp-&gt;source;</div><div class="line">    udp-&gt;source = udp-&gt;dest;</div><div class="line">    udp-&gt;dest = tmp_port;</div><div class="line"></div><div class="line"></div><div class="line">    </div><div class="line">    <span class="keyword">return</span> XDP_TX;</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">char</span> _license[] SEC(<span class="string">"license"</span>) = <span class="string">"GPL"</span>;</div></pre></td></tr></table></figure>
+
+<p>接下来就是正常的套路，使用bpf2go生成辅助代码，使用cilium/ebpf加在：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div><div class="line">35</div><div class="line">36</div><div class="line">37</div><div class="line">38</div><div class="line">39</div><div class="line">40</div><div class="line">41</div><div class="line">42</div><div class="line">43</div><div class="line">44</div><div class="line">45</div><div class="line">46</div><div class="line">47</div><div class="line">48</div><div class="line">49</div><div class="line">50</div></pre></td><td class="code"><pre><div class="line"><span class="comment">//go:generate go run github.com/cilium/ebpf/cmd/bpf2go echo ebpf/echo.c</span></div><div class="line"><span class="keyword">package</span> main</div><div class="line"></div><div class="line"><span class="keyword">import</span> (</div><div class="line">	<span class="string">"flag"</span></div><div class="line">	<span class="string">"fmt"</span></div><div class="line">	<span class="string">"log"</span></div><div class="line">	<span class="string">"net"</span></div><div class="line">	<span class="string">"os"</span></div><div class="line">	<span class="string">"os/signal"</span></div><div class="line">	<span class="string">"syscall"</span></div><div class="line">	<span class="string">"unsafe"</span></div><div class="line"></div><div class="line">	<span class="string">"github.com/cilium/ebpf"</span></div><div class="line">	<span class="string">"github.com/cilium/ebpf/link"</span></div><div class="line">)</div><div class="line"></div><div class="line"></div><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	ifaceName := flag.String(<span class="string">"iface"</span>, <span class="string">"eth0"</span>, <span class="string">"Network interface name"</span>)</div><div class="line">	flag.Parse()</div><div class="line"></div><div class="line">	<span class="comment">// Look up the network interface by name.</span></div><div class="line">	iface, err := net.InterfaceByName(*ifaceName)</div><div class="line">	<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">		log.Fatalf(<span class="string">"lookup network iface %q: %s"</span>, *ifaceName, err)</div><div class="line">	}</div><div class="line"></div><div class="line">	<span class="comment">// load pre-compiled programs into the kernel.</span></div><div class="line">	objs := echoObjects{}</div><div class="line">	<span class="keyword">if</span> err := loadEchoObjects(&objs, <span class="constant">nil</span>); err != <span class="constant">nil</span> {</div><div class="line">		log.Fatalf(<span class="string">"loading objects: %s"</span>, err)</div><div class="line">	}</div><div class="line">	<span class="keyword">defer</span> objs.Close()</div><div class="line"></div><div class="line">	<span class="comment">// Attach the program.</span></div><div class="line">	l, err := link.AttachXDP(link.XDPOptions{</div><div class="line">		Program:   objs.XdpEcho,</div><div class="line">		Interface: iface.Index,</div><div class="line">	})</div><div class="line">	<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">		log.Fatalf(<span class="string">"could not attach XDP program: %s"</span>, err)</div><div class="line">	}</div><div class="line">	<span class="keyword">defer</span> l.Close()</div><div class="line"></div><div class="line">	sigs := <span class="built_in">make</span>(<span class="keyword">chan</span> os.Signal,<span class="number"> 1</span>)</div><div class="line">	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)</div><div class="line">	&lt;-sigs</div><div class="line"></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>运行<code>go generate</code>,在运行<code>CGO_ENABLED=0 go build .</code>编译出echo程序，直接把这个echo程序复制到你的目的服务器中(最好5.15.x以上的内核)，然后运行</p>
+<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">./<span class="built_in">echo</span> -iface eth0</div></pre></td></tr></table></figure>
+
+<p>在另外一台机器上 <code>nc -u xxx.xxx.xxx.175</code>测试一下，可以看到发送的数据又直接返回回来了，符合期望：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line"># nc -u xxx.xxx.xxx<span class="number">.75</span><span class="number"> 20000</span></div><div class="line">hello</div><div class="line">hello</div></pre></td></tr></table></figure>
+
+<p>一切准备妥当，我们在另外一台机器上，还是运行我们的udp程序，可以看到也是轻轻松松达到每秒百万个packet:<br><img src="xdp_client.jpg" alt=""></p>
+<p>可以看到时延明显是变低了，在0.1ms ~0.2ms，这也是符合预期的，因为服务器根本就没有走到协议栈，在网卡驱动那里就把结果返回了。</p>
+<p>在看看服务端资源占用情况:<br><img src="xdp_server_dstat.jpg" alt=""></p>
+<p>服务器CPU几乎没有占用，10%不到是用在了软中断上面, usr占用几乎为0， 这是XDP程序带来的巨大的好处。</p>
+<h2 id="参考文档">参考文档</h2>
+<ul>
+<li><a href="https://www.infoq.cn/article/5xvC1Ic6BdLQYju6YWV0" target="_blank" rel="external">https://www.infoq.cn/article/5xvC1Ic6BdLQYju6YWV0</a></li>
+<li><a href="https://github.com/DavadDi/bpf_study" target="_blank" rel="external">https://github.com/DavadDi/bpf_study</a></li>
+<li><a href="https://github.com/xdp-project/xdp-tutorial" target="_blank" rel="external">https://github.com/xdp-project/xdp-tutorial</a></li>
+</ul>
+
+      
+    </div>
+    <footer class="article-footer">
+      
+
+      
+      <!-- <link rel="stylesheet" href="https://unpkg.com/gitalk/dist/gitalk.css">
+      <script src="https://unpkg.com/gitalk/dist/gitalk.min.js"></script> -->
+      <section id="comments">
+        <script src="https://utteranc.es/client.js"
+                repo="smallnest/gitalk"
+                issue-term="title"
+                theme="github-light"
+                crossorigin="anonymous"
+                async>
+        </script>
+        <!-- <div id="gitalk-container"></div>
+        <script type="text/javascript">
+          var gitalkOpts = {
+            id: '2023/04/02/support-1m-pps-with-zero-cpu-usage/',
+            owner: 'smallnest',
+            repo: 'gitalk',
+            title: '每秒1百万的包传输，几乎不耗CPU的那种',
+            body: 'https://colobu.com/2023/04/02/support-1m-pps-with-zero-cpu-usage/',
+            clientID: 'bc02724130ed5b7ee275',
+            clientSecret: '68cb0bae2f93a8b88b09e0eb9b08c844b06a9047',
+            admin: ['smallnest'],
+            distractionFreeMode: false
+          };
+
+          const gitalk = new Gitalk(gitalkOpts)
+          gitalk.render('gitalk-container')
+        </script> -->
+        <noscript> 为正常使用评论功能请激活JavaScript</noscript>
+      </section>
+
+      
+
+    </footer>
+  </div>
+  
+  
+<nav id="article-nav">
+  
+  
+    <a href="/2023/03/19/scan-all-IP-addresses-of-mainland-fastly-like-lightning/" id="article-nav-older" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">Older</strong>
+      <div class="article-nav-title">像闪电一样快速扫描全网的IP地址</div>
+    </a>
+  
+</nav>
+
+  
+</article></section>
+        
+          <aside id="sidebar">
+  
+    <div class="widget-wrap">
+  <h3 class="widget-title">微信公众号</h3>
+  <div class="widget">
+    <img width="100%" src="/images/widgets/gopatterns.jpg">
+  </div>
+</div>
+
+<div class="widget-wrap">
+  <h3 class="widget-title">极客时间专栏</h3>
+  <div class="widget">
+    <a href="https://time.geekbang.org/column/intro/100061801">
+      <img width="100%" src="/images/widgets/geekbang.png">
+    </a>
+  </div>
+</div>
+
+<div class="widget-wrap">
+    <h3 class="widget-title">原创图书</h3>
+    <div class="widget">
+      <a href="/ScalaCollectionsCookbook/">
+        <img width="100%" src="/ScalaCollectionsCookbook/scala_collections_cookbook.jpg">
+        <img width="100%" src="/ScalaCollectionsCookbook/scala_collections_cookbook_tw.png">
+      </a>
+    </div>
+</div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">分类</h3>
+    <div class="widget">
+      <ul class="category-list"><li class="category-list-item"><a class="category-list-link" href="/categories/Android/">Android</a><span class="category-list-count">12</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/C/">C++</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/DOTNET/">DOTNET</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Docker/">Docker</a><span class="category-list-count">5</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Go/">Go</a><span class="category-list-count">211</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Java/">Java</a><span class="category-list-count">64</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Linux/">Linux</a><span class="category-list-count">7</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Rust/">Rust</a><span class="category-list-count">12</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Scala/">Scala</a><span class="category-list-count">18</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/go/">go</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/k8s/">k8s</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/rust/">rust</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/分享/">分享</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/前端开发/">前端开发</a><span class="category-list-count">18</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/区块链/">区块链</a><span class="category-list-count">8</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/大数据/">大数据</a><span class="category-list-count">60</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/工具/">工具</a><span class="category-list-count">28</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/数据库/">数据库</a><span class="category-list-count">3</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/架构/">架构</a><span class="category-list-count">27</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/算法/">算法</a><span class="category-list-count">4</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/管理/">管理</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/网络编程/">网络编程</a><span class="category-list-count">13</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/设计模式/">设计模式</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/读书笔记/">读书笔记</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/运维/">运维</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/高并发编程/">高并发编程</a><span class="category-list-count">20</span></li></ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">标签云</h3>
+    <div class="widget tagcloud">
+      <a href="/tags/Android/" style="font-size: 15.71px;">Android</a><a href="/tags/ApacheBench/" style="font-size: 11.43px;">ApacheBench</a><a href="/tags/Bower/" style="font-size: 10.00px;">Bower</a><a href="/tags/C/" style="font-size: 10.00px;">C#</a><a href="/tags/CDN/" style="font-size: 10.00px;">CDN</a><a href="/tags/CQRS/" style="font-size: 10.00px;">CQRS</a><a href="/tags/CRC/" style="font-size: 10.00px;">CRC</a><a href="/tags/CSS/" style="font-size: 11.43px;">CSS</a><a href="/tags/CompletableFuture/" style="font-size: 10.00px;">CompletableFuture</a><a href="/tags/Comsat/" style="font-size: 10.00px;">Comsat</a><a href="/tags/Curator/" style="font-size: 18.57px;">Curator</a><a href="/tags/DSL/" style="font-size: 10.00px;">DSL</a><a href="/tags/Disruptor/" style="font-size: 10.00px;">Disruptor</a><a href="/tags/Docker/" style="font-size: 11.43px;">Docker</a><a href="/tags/Ember/" style="font-size: 11.43px;">Ember</a><a href="/tags/FastJson/" style="font-size: 10.00px;">FastJson</a><a href="/tags/Fiber/" style="font-size: 10.00px;">Fiber</a><a href="/tags/GAE/" style="font-size: 10.00px;">GAE</a><a href="/tags/GC/" style="font-size: 12.86px;">GC</a><a href="/tags/Gnuplot/" style="font-size: 10.00px;">Gnuplot</a><a href="/tags/Go/" style="font-size: 14.29px;">Go</a><a href="/tags/Gradle/" style="font-size: 10.00px;">Gradle</a><a href="/tags/Grunt/" style="font-size: 10.00px;">Grunt</a><a href="/tags/Gulp/" style="font-size: 10.00px;">Gulp</a><a href="/tags/Hadoop/" style="font-size: 10.00px;">Hadoop</a><a href="/tags/Hazelcast/" style="font-size: 10.00px;">Hazelcast</a><a href="/tags/IPFS/" style="font-size: 10.00px;">IPFS</a><a href="/tags/Ignite/" style="font-size: 10.00px;">Ignite</a><a href="/tags/JVM/" style="font-size: 10.00px;">JVM</a><a href="/tags/Java/" style="font-size: 17.14px;">Java</a><a href="/tags/Kafka/" style="font-size: 20.00px;">Kafka</a><a href="/tags/Lambda/" style="font-size: 14.29px;">Lambda</a><a href="/tags/Linux/" style="font-size: 12.86px;">Linux</a><a href="/tags/LongAdder/" style="font-size: 10.00px;">LongAdder</a><a href="/tags/MathJax/" style="font-size: 10.00px;">MathJax</a><a href="/tags/Maven/" style="font-size: 11.43px;">Maven</a><a href="/tags/Memcached/" style="font-size: 10.00px;">Memcached</a><a href="/tags/Metrics/" style="font-size: 10.00px;">Metrics</a><a href="/tags/Mongo/" style="font-size: 12.86px;">Mongo</a><a href="/tags/Netty/" style="font-size: 15.71px;">Netty</a>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">归档</h3>
+    <div class="widget">
+      <ul class="archive-list"><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/04/">April 2023</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/03/">March 2023</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/01/">January 2023</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/12/">December 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/11/">November 2022</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/10/">October 2022</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/09/">September 2022</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/08/">August 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/07/">July 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/06/">June 2022</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/05/">May 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/04/">April 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/03/">March 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/02/">February 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/01/">January 2022</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/12/">December 2021</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/11/">November 2021</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/10/">October 2021</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/08/">August 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/07/">July 2021</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/06/">June 2021</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/05/">May 2021</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/04/">April 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/03/">March 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/02/">February 2021</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/01/">January 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/12/">December 2020</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/11/">November 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/09/">September 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/08/">August 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/07/">July 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/06/">June 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/05/">May 2020</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/04/">April 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/03/">March 2020</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/02/">February 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/01/">January 2020</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/12/">December 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/11/">November 2019</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/10/">October 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/09/">September 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/08/">August 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/07/">July 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/06/">June 2019</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/05/">May 2019</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/04/">April 2019</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/03/">March 2019</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/02/">February 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/01/">January 2019</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/12/">December 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/11/">November 2018</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/10/">October 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/09/">September 2018</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/08/">August 2018</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/07/">July 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/06/">June 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/05/">May 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/04/">April 2018</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/03/">March 2018</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/02/">February 2018</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/01/">January 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/12/">December 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/11/">November 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/10/">October 2017</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/09/">September 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/08/">August 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/07/">July 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/06/">June 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/05/">May 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/04/">April 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/03/">March 2017</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/02/">February 2017</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/01/">January 2017</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/12/">December 2016</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/11/">November 2016</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/10/">October 2016</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/09/">September 2016</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/08/">August 2016</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/07/">July 2016</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/06/">June 2016</a><span class="archive-list-count">14</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/05/">May 2016</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/04/">April 2016</a><span class="archive-list-count">14</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/03/">March 2016</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/02/">February 2016</a><span class="archive-list-count">8</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/01/">January 2016</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/12/">December 2015</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/11/">November 2015</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/10/">October 2015</a><span class="archive-list-count">9</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/09/">September 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/08/">August 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/07/">July 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/06/">June 2015</a><span class="archive-list-count">8</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/05/">May 2015</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/04/">April 2015</a><span class="archive-list-count">15</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/03/">March 2015</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/02/">February 2015</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/01/">January 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/12/">December 2014</a><span class="archive-list-count">28</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/11/">November 2014</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/10/">October 2014</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/09/">September 2014</a><span class="archive-list-count">28</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/08/">August 2014</a><span class="archive-list-count">19</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/07/">July 2014</a><span class="archive-list-count">1</span></li></ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">近期文章</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+            <a href="/2023/04/02/support-1m-pps-with-zero-cpu-usage/">每秒1百万的包传输，几乎不耗CPU的那种</a>
+          </li>
+        
+          <li>
+            <a href="/2023/03/19/scan-all-IP-addresses-of-mainland-fastly-like-lightning/">像闪电一样快速扫描全网的IP地址</a>
+          </li>
+        
+          <li>
+            <a href="/2023/01/20/The-refactoring-of-the-“Very-efficient-Code”-from-Dutch-DigiD-App/">重构荷兰政府那个非常有效的代码</a>
+          </li>
+        
+          <li>
+            <a href="/2022/12/21/use-the-builtin-map-hasher/">机智！生抠 map的哈希函数</a>
+          </li>
+        
+          <li>
+            <a href="/2022/12/04/Shopify-monolith-served-1-27-Million-requests-per-second-during-Black-Friday/">没用微服务，Shopify的单体程序居然支撑了127万/秒的请求？</a>
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">友情链接</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+			 
+            <a href="http://stackshare.io" target="_blank">技术栈</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://toutiao.io/" target="_blank">开发者头条</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://weekly.manong.io/issues/" target="_blank">码农周刊</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.tuicool.com/mags" target="_blank">编程狂人周刊</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.importnew.com/" target="_blank">importnew</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://ifeve.com/" target="_blank">并发编程网</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://github.com" target="_blank">github</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://stackoverflow.com/" target="_blank">stackoverflow</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.javacodegeeks.com/" target="_blank">javacodegeeks</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.infoq.com/" target="_blank">infoq</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.dzone.com/links/index.html" target="_blank">dzone</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://oj.leetcode.com/problems/" target="_blank">leetcode</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://tutorials.jenkov.com" target="_blank">jenkov</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://howtodoinjava.com" target="_blank">HowToDoInJava</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://java-design-patterns.com/patterns/" target="_blank">java design patterns</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://medium.com/netflix-techblog" target="_blank">Netflix技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://www.techiedelight.com" target="_blank">Techie Delight</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://engineering.linkedin.com/blog" target="_blank">Linkedin技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://blogs.dropbox.com/tech/" target="_blank">Dropbox技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://code.fb.com" target="_blank">Facebook技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://jm.taobao.org" target="_blank">淘宝中间件团队</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://tech.meituan.com" target="_blank">美团技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://blogs.360.cn" target="_blank">360技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://xiaomi-info.github.io" target="_blank">小米信息部技术团队</a>
+			
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+      
+
+  
+</aside>
+        
+      </div>
+      <footer id="footer">
+  
+  <div class="outer">
+    <div id="footer-info" class="inner">
+      &copy; 2023 smallnest<br>
+	  Powered by <a href="http://hexo.io/" target="_blank">Hexo</a>
+    </div>
+  </div>
+</footer>
+    </div>
+    <nav id="mobile-nav">
+  
+    
+      <a href="/" class="mobile-nav-link"><i class="fa fa-home">&nbsp;</i>首页</a>
+    
+  
+    
+      <a href="/archives" class="mobile-nav-link"><i class="fa fa-folder-o">&nbsp;</i>归档</a>
+    
+  
+    
+      <a href="https://github.com/smallnest" class="mobile-nav-link"><i class="fa fa-github">&nbsp;</i>github</a>
+    
+  
+    
+      <a class="mobile-nav-link" href="#"><i class="fa fa-bars">&nbsp;</i>网站群</a>
+    
+      
+            <a class="mobile-nav-link" href="/goasm">&nbsp;&nbsp;<i class="fa fa-language">&nbsp;</i>Go汇编示例</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="https://gowebexamples.com">&nbsp;&nbsp;<i class="fa fa-external-link">&nbsp;</i>Go Web开发示例</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://go-database-sql.org">&nbsp;&nbsp;<i class="fa fa-external-link">&nbsp;</i>Go 数据库开发教程</a>
+          
+          
+    
+      
+            
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://rpcx.io">&nbsp;&nbsp;<i class="fa undefined">&nbsp;</i>RPCX官网</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://cn.doc.rpcx.io">&nbsp;&nbsp;<i class="fa undefined">&nbsp;</i>RPC开发指南</a>
+          
+          
+    
+    
+  
+    
+      <a href="/ScalaCollectionsCookbook" class="mobile-nav-link"><i class="fa fa-book">&nbsp;</i>Scala集合技术手册</a>
+    
+  
+    
+      <a href="/about" class="mobile-nav-link"><i class="fa fa-lemon-o">&nbsp;</i>关于</a>
+    
+  
+</nav>
+    
+<script src="//cdn.staticfile.org/jquery/1.11.1/jquery.min.js"></script>
+<script src="//cdn.bootcss.com/jquery.lazyload/1.9.1/jquery.lazyload.min.js"></script>
+
+<script src="//cdnjs.cloudflare.com/ajax/libs/fancybox/3.2.5/jquery.fancybox.min.js"></script>
+
+
+<script src="/js/script.js" type="text/javascript"></script>
+
+<!-- mathjax config similar to math.stackexchange -->
+<script type="text/x-mathjax-config">
+  MathJax.Hub.Config({
+    tex2jax: {
+      inlineMath: [ ['$','$'], ["\\(","\\)"] ],
+      processEscapes: true,
+      skipTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code']
+    }
+  });
+  MathJax.Hub.Queue(function() {
+      var all = MathJax.Hub.getAllJax(), i;
+      for(i=0; i < all.length; i += 1) {
+        all[i].SourceElement().parentNode.className += ' has-jax';
+      }
+  });
+</script>
+<script type="text/javascript" src="//cdn.bootcss.com/mathjax/2.6.0-beta.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML">
+</script>
+
+<div id="totop" style="position:fixed;bottom:150px;right:10px;cursor: pointer;z-index: 2000;">
+	<a title="返回顶部"><img src="/images/scrollup.png"/></a>
+</div>
+<script src="/js/totop.js" type="text/javascript"></script>
+
+
+
+
+<script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "//hm.baidu.com/hm.js?e085d87993250aab11f3e0c15f1c2785";
+  var s = document.getElementsByTagName("script")[0]; 
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+
+
+  </div>
+</body>
+</html>
