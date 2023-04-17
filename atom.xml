@@ -4,7 +4,7 @@
   <subtitle><![CDATA[大道至简 Simplicity is the ultimate form of sophistication]]></subtitle>
   <link href="/atom.xml" rel="self"/>
   <link href="https://colobu.com/"/>
-  <updated>2023-04-09T13:55:01.966Z</updated>
+  <updated>2023-04-17T14:11:19.318Z</updated>
   <id>https://colobu.com/</id>
   
   <author>
@@ -13,6 +13,91 @@
   </author>
   
   <generator uri="http://zespia.tw/hexo/">Hexo</generator>
+  
+  <entry>
+    <title><![CDATA[使用AF_XDP Socket更高效的网络传输]]></title>
+    <link href="https://colobu.com/2023/04/17/use-af-xdp-socket/"/>
+    <id>https://colobu.com/2023/04/17/use-af-xdp-socket/</id>
+    <published>2023-04-17T12:55:19.000Z</published>
+    <updated>2023-04-17T14:10:49.208Z</updated>
+    <content type="html"><![CDATA[<p>Linux 网络栈并不缺乏功能，它的表现也很好 足以满足大多数用途。但是，在高速网络下，传统网络编程的额外开销占比太大了。在前一篇关于syscall.Socket的文章中，我们介绍了AF_PACKET类型的socket，它的性能着实一般，所有的数据都得在用户态和内核态之间做转换，而且在高并发的情况下还有大量的中断。使用eBPF XDP可以完美解决高性能的问题，我们在更早的文章中介绍了XDP的技术，Björn Töpel在Linux 4.18版本中诶Socket增加了一个协议族 <code>AF_XDP</code>,可以利用Socket接口和XDP技术实现高性能的网络读写。</p>
+<a id="more"></a>
+<p>2019年 Intel的Björn Töpel, 也是他主要实现的AF_XDP Socket,在一次分享中介绍了AF_XDP和普通的AF_PACKET的三个场景下的性能对比:<br><img src="af-xdp-vs-af-packet.png" alt=""></p>
+<p>没有对比就没有伤害，可以看到AF_XDP的性能远远大于AF_PACKET。</p>
+<h2 id="AF_XDP_Socket介绍">AF_XDP Socket介绍</h2>
+<p>AF_XDP（eXpress Data Path）是一种高性能网络协议栈，可用于实现零拷贝数据传输和零中断数据接收。AF_XDP socket是一种Linux内核中支持AF_XDP协议的socket类型。</p>
+<p>相较于传统的socket，AF_XDP socket具有以下几个显著的特点：</p>
+<ul>
+<li>零拷贝传输：在使用AF_XDP socket传输数据时，数据可以直接在内存中进行传输，而无需将数据从用户空间复制到内核空间，从而减少了数据传输过程中的内存复制次数，提高了数据传输效率。</li>
+<li>零中断接收：在使用AF_XDP socket接收数据时，数据可以直接从网卡中接收，而无需通过中断通知内核，从而减少了中断处理的次数，提高了接收数据的效率。</li>
+<li>支持多队列：AF_XDP socket支持多个队列，可以将不同的网络流量路由到不同的队列中，从而实现更好的负载均衡和多核利用。</li>
+<li>支持用户空间协议栈：AF_XDP socket可以与用户空间中的协议栈结合使用，从而可以在用户空间中实现网络协议栈，提高了网络应用程序的性能和灵活性。</li>
+</ul>
+<p>总之，AF_XDP socket是一种高性能的网络数据传输方式，适用于需要处理大量数据的高性能网络应用程序。<br><img src="the-big-picture.png" alt=""></p>
+<p>我们使用普通的 <code>socket()</code> 系统调用创建一个AF_XDP套接字（XSK）。每个XSK都有两个ring：<code>RX RING</code> 和 <code>TX RING</code>。套接字可以在 RX RING 上接收数据包，并且可以在 TX RING 环上发送数据包。这些环分别通过 setockopts() 的 XDP_RX_RING 和 XDP_TX_RING 进行注册和调整大小。每个 socket 必须至少有一个这样的环。RX或TX描述符环指向存储区域（称为<strong>UMEM</strong>）中的数据缓冲区。RX和TX可以共享同一UMEM，因此不必在RX和TX之间复制数据包。</p>
+<p>UMEM也有两个 ring：<code>FILL RING</code> 和 <code>COMPLETION RING</code>。应用程序使用 <code>FILL RING</code> 向内核发送可以承载报文的 <code>addr</code> (该 addr 指向UMEM中某个chunk)，以供内核填充RX数据包数据。每当收到数据包，对这些 chunks 的引用就会出现在RX环中。另一方面，<code>COMPLETION RING</code>包含内核已完全传输的 chunks 地址，可以由用户空间再次用于 TX 或 RX。</p>
+<p>可以看到，这里有四个环，<code>RX RING</code> 和 <code>TX RING</code>环中的数据是描述符(xdp_desc)，而<code>FILL RING</code> 和 <code>COMPLETION RING</code>是地址(u64)。</p>
+<p><img src="rings.png" alt=""></p>
+<ol>
+<li>Rx Ring：接收环（Receive Ring）是由硬件网卡或AF_XDP驱动程序生成的，它存储待处理的接收数据帧描述符（Receive Descriptor），并将这些描述符传递给内核或用户空间程序。接收环通常由多个队列组成，每个队列都有一个独立的Rx Ring。Rx Ring的生产者是XDP程序，消费者是用户态程序；XDP程序消耗 Fill Ring，获取可以承载报文的desc并将报文拷贝到desc中指定的地址，然后将desc填充到 Rx Ring 中，并通过socket IO机制通知用户态程序从 Rx Ring 中接收报文</li>
+<li>Fill Ring：填充环（Fill Ring）是用户空间程序为接收环生成新描述符的环，以便接收环始终有足够的描述符可供使用。填充环也可以由多个队列组成，每个队列都有一个独立的Fill Ring。Fill Ring 的生产者是用户态程序，消费者是内核态中的XDP程序；用户态程序通过Fill Ring 将可以用来承载报文的 UMEM frames 传到内核，然后内核消耗Fill Ring 中的描述符desc，并将报文拷贝到desc中指定地址（该地址即UMEM frame的地址）</li>
+<li>Tx Ring：发送环（Transmit Ring）由用户空间程序生成，用于存储要发送的数据帧描述符（Transmit Descriptor）。发送环也可以由多个队列组成，每个队列都有一个独立的Tx Ring。Tx Ring的生产者是用户态程序，消费者是XDP程序；用户态程序将要发送的报文拷贝 Tx Ring 中 desc指定的地址中，然后 XDP程序 消耗 Tx Ring 中的desc，将报文发送出去，并通过 Completion Ring 将成功发送的报文的desc告诉用户态程序；</li>
+<li>Completion Ring：完成环（Completion Ring）是用于接收已经处理完的数据帧描述符的环。完成环由内核或用户空间程序创建，可以由多个队列组成，每个队列都有一个独立的Completion Ring。Completion Ring的生产者是XDP程序，消费者是用户态程序</li>
+</ol>
+<p>当内核完成XDP报文的发送，会通过 completion_ring 来通知用户态程序，哪些报文已经成功发送，然后用户态程序消耗 completion_ring 中 desc(只是更新consumer计数相当于确认)；</p>
+<p>通过这四个ring的协同工作，AF_XDP可以实现高性能的网络数据传输，以及在用户空间实现网络协议栈的功能。用户空间程序可以通过Fill Ring为Rx Ring生成新的接收数据描述符，然后使用Tx Ring将处理过的数据发送出去。内核或用户空间程序可以从Completion Ring中获取已经处理完的描述符，以便进行后续的处理。这些ring可以实现高效的数据处理和网络负载均衡，从而提高了网络应用程序的性能和吞吐量。</p>
+<p>AF_XDP Socket在高性能网络应用中的应用场景，包括DDoS攻击防御、网络流量监控、负载均衡等。在这些应用场景中，AF_XDP可以通过实时处理大量网络流量数据，快速识别恶意流量和负载均衡，提高网络应用的性能和安全性。</p>
+<h2 id="Go_AF_XDP_实战">Go AF_XDP 实战</h2>
+<p>AF_XDP Socket相对于传统的AF_PACKET的使用的复杂程序至少要高一个数量级，因为复杂，所以容易出错，不过幸运的是，有一个第三方的库对它进行了封装，更方便我们使用，这个库就是<a href="https://github.com/asavie/xdp" target="_blank" rel="external">asavie/xdp</a>。</p>
+<p>它将XSK进行了封装，提供了非常方便的方法进行数据的读取和发送。</p>
+<p><img src="xdp.png" alt=""></p>
+<p>我们用它的两个例子介绍它的功能。</p>
+<h3 id="发送的例子">发送的例子</h3>
+<p>下面是一个不断发送DNS查询的示例:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div><div class="line">35</div><div class="line">36</div><div class="line">37</div><div class="line">38</div><div class="line">39</div><div class="line">40</div><div class="line">41</div><div class="line">42</div><div class="line">43</div><div class="line">44</div><div class="line">45</div><div class="line">46</div><div class="line">47</div><div class="line">48</div><div class="line">49</div><div class="line">50</div><div class="line">51</div><div class="line">52</div><div class="line">53</div><div class="line">54</div><div class="line">55</div><div class="line">56</div><div class="line">57</div><div class="line">58</div><div class="line">59</div><div class="line">60</div><div class="line">61</div><div class="line">62</div><div class="line">63</div><div class="line">64</div><div class="line">65</div><div class="line">66</div><div class="line">67</div><div class="line">68</div><div class="line">69</div><div class="line">70</div><div class="line">71</div><div class="line">72</div><div class="line">73</div><div class="line">74</div><div class="line">75</div><div class="line">76</div><div class="line">77</div><div class="line">78</div><div class="line">79</div><div class="line">80</div><div class="line">81</div><div class="line">82</div><div class="line">83</div><div class="line">84</div><div class="line">85</div><div class="line">86</div><div class="line">87</div><div class="line">88</div><div class="line">89</div><div class="line">90</div><div class="line">91</div><div class="line">92</div><div class="line">93</div><div class="line">94</div><div class="line">95</div><div class="line">96</div><div class="line">97</div><div class="line">98</div><div class="line">99</div><div class="line">100</div><div class="line">101</div><div class="line">102</div><div class="line">103</div><div class="line">104</div><div class="line">105</div><div class="line">106</div><div class="line">107</div><div class="line">108</div><div class="line">109</div><div class="line">110</div><div class="line">111</div><div class="line">112</div><div class="line">113</div><div class="line">114</div><div class="line">115</div><div class="line">116</div><div class="line">117</div><div class="line">118</div><div class="line">119</div><div class="line">120</div><div class="line">121</div><div class="line">122</div><div class="line">123</div><div class="line">124</div><div class="line">125</div><div class="line">126</div><div class="line">127</div><div class="line">128</div><div class="line">129</div><div class="line">130</div><div class="line">131</div><div class="line">132</div><div class="line">133</div><div class="line">134</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> main</div><div class="line"></div><div class="line"><span class="keyword">import</span> (</div><div class="line">	<span class="string">"encoding/hex"</span></div><div class="line">	<span class="string">"flag"</span></div><div class="line">	<span class="string">"fmt"</span></div><div class="line">	<span class="string">"math"</span></div><div class="line">	<span class="string">"net"</span></div><div class="line">	<span class="string">"time"</span></div><div class="line"></div><div class="line">	<span class="string">"github.com/asavie/xdp"</span></div><div class="line">	<span class="string">"github.com/google/gopacket"</span></div><div class="line">	<span class="string">"github.com/google/gopacket/layers"</span></div><div class="line">	<span class="string">"github.com/miekg/dns"</span></div><div class="line">	<span class="string">"github.com/vishvananda/netlink"</span></div><div class="line">)</div><div class="line"></div><div class="line"><span class="comment">// ...</span></div><div class="line"><span class="keyword">var</span> (</div><div class="line">	NIC        <span class="typename">string</span></div><div class="line">	QueueID    <span class="typename">int</span></div><div class="line">	SrcMAC     <span class="typename">string</span></div><div class="line">	DstMAC     <span class="typename">string</span></div><div class="line">	SrcIP      <span class="typename">string</span></div><div class="line">	DstIP      <span class="typename">string</span></div><div class="line">	DomainName <span class="typename">string</span></div><div class="line">)</div><div class="line"></div><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	flag.StringVar(&NIC, <span class="string">"interface"</span>, <span class="string">"enp3s0"</span>, <span class="string">"Network interface to attach to."</span>)</div><div class="line">	flag.IntVar(&QueueID, <span class="string">"queue"</span>,<span class="number"> 0</span>, <span class="string">"The queue on the network interface to attach to."</span>)</div><div class="line">	flag.StringVar(&SrcMAC, <span class="string">"srcmac"</span>, <span class="string">"b2968175b211"</span>, <span class="string">"Source MAC address to use in sent frames."</span>)</div><div class="line">	flag.StringVar(&DstMAC, <span class="string">"dstmac"</span>, <span class="string">"ffffffffffff"</span>, <span class="string">"Destination MAC address to use in sent frames."</span>)</div><div class="line">	flag.StringVar(&SrcIP, <span class="string">"srcip"</span>, <span class="string">"192.168.111.1"</span>, <span class="string">"Source IP address to use in sent frames."</span>)</div><div class="line">	flag.StringVar(&DstIP, <span class="string">"dstip"</span>, <span class="string">"192.168.111.10"</span>, <span class="string">"Destination IP address to use in sent frames."</span>)</div><div class="line">	flag.StringVar(&DomainName, <span class="string">"domain"</span>, <span class="string">"asavie.com"</span>, <span class="string">"Domain name to use in the DNS query."</span>)</div><div class="line">	flag.Parse()</div><div class="line"></div><div class="line">	<span class="comment">// 初始化XDP socket.</span></div><div class="line">	link, err := netlink.LinkByName(NIC)</div><div class="line">	<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">		<span class="built_in">panic</span>(err)</div><div class="line">	}</div><div class="line">	xsk, err := xdp.NewSocket(link.Attrs().Index, QueueID, <span class="constant">nil</span>)</div><div class="line">	<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">		<span class="built_in">panic</span>(err)</div><div class="line">	}</div><div class="line"></div><div class="line">    <span class="comment">//-----------------</span></div><div class="line">	<span class="comment">// 生成DNS查询请求</span></div><div class="line">	srcMAC, _ := hex.DecodeString(SrcMAC)</div><div class="line">	dstMAC, _ := hex.DecodeString(DstMAC)</div><div class="line"></div><div class="line">	eth := &layers.Ethernet{</div><div class="line">		SrcMAC:       net.HardwareAddr(srcMAC),</div><div class="line">		DstMAC:       net.HardwareAddr(dstMAC),</div><div class="line">		EthernetType: layers.EthernetTypeIPv4,</div><div class="line">	}</div><div class="line">	ip := &layers.IPv4{</div><div class="line">		Version: <span class="number"> 4</span>,</div><div class="line">		IHL:     <span class="number"> 5</span>,</div><div class="line">		TTL:     <span class="number"> 64</span>,</div><div class="line">		Id:      <span class="number"> 0</span>,</div><div class="line">		Protocol: layers.IPProtocolUDP,</div><div class="line">		SrcIP:    net.ParseIP(SrcIP).To4(),</div><div class="line">		DstIP:    net.ParseIP(DstIP).To4(),</div><div class="line">	}</div><div class="line">	udp := &layers.UDP{</div><div class="line">		SrcPort:<span class="number"> 1234</span>,</div><div class="line">		DstPort:<span class="number"> 53</span>,</div><div class="line">	}</div><div class="line">	udp.SetNetworkLayerForChecksum(ip)</div><div class="line">	query := <span class="built_in">new</span>(dns.Msg)</div><div class="line">	query.SetQuestion(dns.Fqdn(DomainName), dns.TypeA)</div><div class="line">	payload, err := query.Pack()</div><div class="line">	<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">		<span class="built_in">panic</span>(err)</div><div class="line">	}</div><div class="line"></div><div class="line">	buf := gopacket.NewSerializeBuffer()</div><div class="line">	opts := gopacket.SerializeOptions{</div><div class="line">		FixLengths:       <span class="constant">true</span>,</div><div class="line">		ComputeChecksums: <span class="constant">true</span>,</div><div class="line">	}</div><div class="line">	err = gopacket.SerializeLayers(buf, opts, eth, ip, udp, gopacket.Payload(payload))</div><div class="line">	<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">		<span class="built_in">panic</span>(err)</div><div class="line">	}</div><div class="line">	frameLen := <span class="built_in">len</span>(buf.Bytes())</div><div class="line">    <span class="comment">//-----------------</span></div><div class="line"></div><div class="line"></div><div class="line"></div><div class="line">	<span class="comment">// 填充UMEM中所有的frame, 使用预先生成的DNS查询</span></div><div class="line">	descs := xsk.GetDescs(math.MaxInt32, <span class="constant">false</span>)</div><div class="line">	<span class="keyword">for</span> i := <span class="keyword">range</span> descs {</div><div class="line">		frameLen = <span class="built_in">copy</span>(xsk.GetFrame(descs[i]), buf.Bytes())</div><div class="line">	}</div><div class="line"></div><div class="line">	fmt.Printf(<span class="string">"sending DNS queries from %v (%v) to %v (%v) for domain name %s...\n"</span>, ip.SrcIP, eth.SrcMAC, ip.DstIP, eth.DstMAC, DomainName)</div><div class="line"></div><div class="line"></div><div class="line">    <span class="comment">// 每秒输出发送的统计数据</span></div><div class="line">	<span class="keyword">go</span> <span class="keyword">func</span>() {</div><div class="line">		<span class="keyword">var</span> err error</div><div class="line">		<span class="keyword">var</span> prev xdp.Stats</div><div class="line">		<span class="keyword">var</span> cur xdp.Stats</div><div class="line">		<span class="keyword">var</span> numPkts <span class="typename">uint64</span></div><div class="line">		<span class="keyword">for</span> i := <span class="typename">uint64</span><span class="number">(0</span>); ; i++ {</div><div class="line">			time.Sleep(time.Duration<span class="number">(1</span>) * time.Second)</div><div class="line">			cur, err = xsk.Stats()</div><div class="line">			<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">				<span class="built_in">panic</span>(err)</div><div class="line">			}</div><div class="line">			numPkts = cur.Completed - prev.Completed</div><div class="line">			fmt.Printf(<span class="string">"%d packets/s (%d bytes/s)\n"</span>, numPkts, numPkts*<span class="typename">uint64</span>(frameLen))</div><div class="line">			prev = cur</div><div class="line">		}</div><div class="line">	}()</div><div class="line"></div><div class="line">    <span class="comment">// 无尽的发送查询苏局</span></div><div class="line">	<span class="keyword">for</span> {</div><div class="line">		descs := xsk.GetDescs(xsk.NumFreeTxSlots(), <span class="constant">false</span>)</div><div class="line">		<span class="keyword">for</span> i := <span class="keyword">range</span> descs {</div><div class="line">			descs[i].Len = <span class="typename">uint32</span>(frameLen)</div><div class="line">		}</div><div class="line">		xsk.Transmit(descs)</div><div class="line"></div><div class="line">		_, _, err = xsk.Poll<span class="number">(1</span>)</div><div class="line">		<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">			<span class="built_in">panic</span>(err)</div><div class="line">		}</div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<ol>
+<li>首先它基于网卡生成一个XSK,这个XSK的初始化隐藏了底层的很多的初始化动作，这是这个库做的很好的地方</li>
+<li>生成一个特定的DNS查询请求包,后面会一直使用这个数据往网络上发送</li>
+<li>得到所有可用的Desc, 并使用DNS请求数据进行初始化</li>
+<li>启动一个goroutine, 每秒打印出发送的包数和数据大小，以便观察它的性能</li>
+<li>在一个死循环中，先得到可以发送的Desc,然后调用<code>Transmit</code>将Desc写入到Tx ring。</li>
+<li>然后调用<code>Poll</code>,等待内核发送了数据或者接收到数据，再进行下一次的数据发送</li>
+</ol>
+<p>得益于XDP库的封装，很多麻烦的细节比如mmap的创建、socket option的设置， ring的操作等等，都隐藏起来了，对外提供了易于使用的接口</p>
+<p>接下来我们看一个同时读写的例子。</p>
+<h3 id="广播的例子">广播的例子</h3>
+<p>下面这个例子接收所有的数据包，并把目的Mac地址改成广播地址，再发送出去：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div><div class="line">35</div><div class="line">36</div><div class="line">37</div><div class="line">38</div><div class="line">39</div><div class="line">40</div><div class="line">41</div><div class="line">42</div><div class="line">43</div><div class="line">44</div><div class="line">45</div><div class="line">46</div><div class="line">47</div><div class="line">48</div><div class="line">49</div><div class="line">50</div><div class="line">51</div><div class="line">52</div><div class="line">53</div><div class="line">54</div><div class="line">55</div><div class="line">56</div><div class="line">57</div><div class="line">58</div><div class="line">59</div><div class="line">60</div><div class="line">61</div><div class="line">62</div><div class="line">63</div><div class="line">64</div><div class="line">65</div><div class="line">66</div><div class="line">67</div><div class="line">68</div><div class="line">69</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> main</div><div class="line"></div><div class="line"><span class="keyword">import</span> (</div><div class="line">	<span class="string">"os"</span></div><div class="line">	<span class="string">"os/signal"</span></div><div class="line">	<span class="string">"syscall"</span></div><div class="line"></div><div class="line">	<span class="string">"github.com/asavie/xdp"</span></div><div class="line">	<span class="string">"github.com/vishvananda/netlink"</span></div><div class="line">)</div><div class="line"></div><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	<span class="keyword">const</span> LinkName = <span class="string">"enp6s0"</span></div><div class="line">	<span class="keyword">const</span> QueueID =<span class="number"> 0</span></div><div class="line"></div><div class="line">	link, err := netlink.LinkByName(LinkName)</div><div class="line">	<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">		<span class="built_in">panic</span>(err)</div><div class="line">	}</div><div class="line"></div><div class="line">    <span class="comment">// 创建一个XDP程序1</span></div><div class="line">	program, err := xdp.NewProgram(QueueID +<span class="number"> 1</span>)</div><div class="line">	<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">		<span class="built_in">panic</span>(err)</div><div class="line">	}</div><div class="line">	<span class="keyword">if</span> err := program.Attach(link.Attrs().Index); err != <span class="constant">nil</span> {</div><div class="line">		<span class="built_in">panic</span>(err)</div><div class="line">	}</div><div class="line"></div><div class="line">    <span class="comment">// 初始化一个XDP Socket</span></div><div class="line">	xsk, err := xdp.NewSocket(link.Attrs().Index, QueueID, <span class="constant">nil</span>)</div><div class="line">	<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">		<span class="built_in">panic</span>(err)</div><div class="line">	}</div><div class="line"></div><div class="line">    <span class="comment">// 在XDP程序中注册这个xsk</span></div><div class="line">	<span class="keyword">if</span> err := program.Register(QueueID, xsk.FD()); err != <span class="constant">nil</span> {</div><div class="line">		<span class="built_in">panic</span>(err)</div><div class="line">	}</div><div class="line"></div><div class="line">	<span class="comment">// 退出的时候移除这个XDP BPF程序</span></div><div class="line">	c := <span class="built_in">make</span>(<span class="keyword">chan</span> os.Signal)</div><div class="line">	signal.Notify(c, os.Interrupt, syscall.SIGTERM)</div><div class="line">	<span class="keyword">go</span> <span class="keyword">func</span>() {</div><div class="line">		&lt;-c</div><div class="line">		program.Detach(link.Attrs().Index)</div><div class="line">		os.Exit<span class="number">(1</span>)</div><div class="line">	}()</div><div class="line"></div><div class="line">    <span class="comment">// 开始劳苦工作</span></div><div class="line">	<span class="keyword">for</span> {</div><div class="line">        <span class="comment">// Fill,等待内核把收到的程序修到Rx ring中</span></div><div class="line">		xsk.Fill(xsk.GetDescs(xsk.NumFreeFillSlots()))</div><div class="line">		numRx, _, err := xsk.Poll<span class="number">(-1</span>) <span class="comment">// 等待接收</span></div><div class="line">		<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">			<span class="built_in">panic</span>(err)</div><div class="line">		}</div><div class="line">		rxDescs := xsk.Receive(numRx) <span class="comment">// 收到的数据</span></div><div class="line">		<span class="keyword">for</span> i :=<span class="number"> 0</span>; i &lt; <span class="built_in">len</span>(rxDescs); i++ {</div><div class="line">			<span class="comment">// 把Mac地址修改为广播地址，也就是全ff</span></div><div class="line">			<span class="comment">// ff:ff:ff:ff:ff:ff</span></div><div class="line">			frame := xsk.GetFrame(rxDescs[i])</div><div class="line">			<span class="keyword">for</span> i :=<span class="number"> 0</span>; i &lt;<span class="number"> 6</span>; i++ {</div><div class="line">				frame[i] = <span class="typename">byte</span><span class="number">(0</span>xff)</div><div class="line">			}</div><div class="line">		}</div><div class="line">		xsk.Transmit(rxDescs) <span class="comment">// 把修改的数据发送出去</span></div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>如代码中的注释所示，</p>
+<ol>
+<li>先Fill</li>
+<li>调用Poll等待有接收的数据</li>
+<li>调用Receive读取接收的数据</li>
+<li>修改数据中的mac地址</li>
+<li>再发送出去</li>
+</ol>
+<p>如果你也测试这个程序，最好创建一个测试用的网络，否则会把你的网络搞挂</p>
+<h2 id="参考文档">参考文档</h2>
+<ol>
+<li><a href="https://lwn.net/Articles/750845/" target="_blank" rel="external">https://lwn.net/Articles/750845/</a></li>
+<li><a href="https://www.kernel.org/doc/html/latest/networking/af_xdp.html" target="_blank" rel="external">https://www.kernel.org/doc/html/latest/networking/af_xdp.html</a></li>
+<li><a href="https://github.com/asavie/xdp" target="_blank" rel="external">https://github.com/asavie/xdp</a></li>
+<li><a href="https://blog.xuegaogg.com/posts/1933/" target="_blank" rel="external">https://blog.xuegaogg.com/posts/1933/</a></li>
+<li><a href="https://rexrock.github.io/post/af_xdp1/" target="_blank" rel="external">https://rexrock.github.io/post/af_xdp1/</a></li>
+<li><a href="https://elinux.org/images/9/96/Elce-af_xdp-topel-v3.pdf" target="_blank" rel="external">https://elinux.org/images/9/96/Elce-af_xdp-topel-v3.pdf</a></li>
+</ol>
+]]></content>
+    <summary type="html">
+    <![CDATA[<p>Linux 网络栈并不缺乏功能，它的表现也很好 足以满足大多数用途。但是，在高速网络下，传统网络编程的额外开销占比太大了。在前一篇关于syscall.Socket的文章中，我们介绍了AF_PACKET类型的socket，它的性能着实一般，所有的数据都得在用户态和内核态之间做转换，而且在高并发的情况下还有大量的中断。使用eBPF XDP可以完美解决高性能的问题，我们在更早的文章中介绍了XDP的技术，Björn Töpel在Linux 4.18版本中诶Socket增加了一个协议族 <code>AF_XDP</code>,可以利用Socket接口和XDP技术实现高性能的网络读写。</p>
+]]>
+    
+    </summary>
+    
+      <category term="Go" scheme="https://colobu.com/categories/Go/"/>
+    
+  </entry>
   
   <entry>
     <title><![CDATA[使用底层的syscall.Socket实现网络编程]]></title>
@@ -1625,107 +1710,6 @@
 ]]></content>
     <summary type="html">
     <![CDATA[<p>最近在做<a href="https://colobu.com/2022/07/31/2022-rpc-frameworks-benchmarks/" target="_blank" rel="external">2022 Go生态圈 rpc 框架 Benchmark</a>之前，专门花了一星期时间，对rpcx进行了重点的优化，这篇文章专门记录一下几个重要的优化点，供大家参考。</p>
-]]>
-    
-    </summary>
-    
-      <category term="Go" scheme="https://colobu.com/categories/Go/"/>
-    
-  </entry>
-  
-  <entry>
-    <title><![CDATA[2022 Go生态圈 rpc 框架 Benchmark]]></title>
-    <link href="https://colobu.com/2022/07/31/2022-rpc-frameworks-benchmarks/"/>
-    <id>https://colobu.com/2022/07/31/2022-rpc-frameworks-benchmarks/</id>
-    <published>2022-07-31T07:49:55.000Z</published>
-    <updated>2023-02-04T04:46:21.750Z</updated>
-    <content type="html"><![CDATA[<p>距离上一次<a href="https://colobu.com/2021/08/01/benchmark-of-rpc-frameworks/" target="_blank" rel="external">2021年Go生态圈rpc框架benchmark</a>的测试整整一年了。一年来，各个RPC框架也获得长足的进展，<a href="https://rpcx.io" target="_blank" rel="external">rpcx</a>也在众多网友的支持下做了一些有益的优化和精简，所以是时候再做一次国内几个常用框架的性能比较了。</p>
-<a id="more"></a>
-<p>每次性能结果的发布，必然引来众多的人的注目，也引来更多的争议。这是很正常的。一个benchmark不代表评价一个框架的优劣，一个benchmakr测试也不足以代表测试所有的应用场景。在不同的业务形态下、巨大的连接数差别、消息的格式不同、消息大小的不同、部署环境的不同都可能导致某些场景下某个框架的结果比较好，某个框架的结果比较差。我们将讨论和焦点放在还有哪些可以性能提升的点上即可。某个框架的优化点或许能够其它框架带来一些优化的提示。</p>
-<p>另外，在实际使用微服务框架的时候，<strong>大部分的性能瓶颈在于业务代码</strong>，而不是框架本身，所以重点优化业务代码也非常的重要。</p>
-<p>本文测试的不同框架底层传输的协议是不同，比如grpc是通过HTTP2.0，kitex支持TTHeader、HTTP2等协议，arpc使用自研的协议，rpcx使用自研的协议,标准库rpc使用自研的协议。</p>
-<p>测试的消息体编解码采用统一的protobuf。</p>
-<p><strong>YangruiEmma 指出<a href="https://github.com/rpcxio/rpcx-benchmark/issues/13" target="_blank" rel="external">测试公平性的修正建议</a>, kitex采用的protobuf生成是官方的方式，但是其它几个框架采用的是<a href="https://github.com/gogo/protobuf" target="_blank" rel="external">gogo/protobuf</a>，性能上会有所不同。这是一个问题，因为kitex创建pb代码的时候配合使用的是官方的pb库。不过字节的同学说采用自研的protobuf库，会更快</strong></p>
-<p>本测试并未记录CPU和内存的消耗。这是一个缺陷。 因为CPU和内存会一直变化，没太想好如何科学的记录测试时的CPU和内存使用值。</p>
-<p>本次测试针对五种常见的rpc框架进行了测试:</p>
-<ul>
-<li><a href="https://github.com/smallnest/rpcx" target="_blank" rel="external">rpcx</a>, 最早的Go生态圈微服务框架之一，被新浪、好未来等公司使用</li>
-<li><a href="https://github.com/cloudwego/kitex" target="_blank" rel="external">kitex</a>, 字节跳动出品的微服务框架</li>
-<li><a href="https://github.com/lesismal/arpc" target="_blank" rel="external">arpc</a>: 一个性能优异的rpc框架 by lesismal</li>
-<li><a href="https://grpc.io/" target="_blank" rel="external">grpc</a>: Google发起的一个开源rpc框架，支持跨语言，使用广泛。该系统基于HTTP/2 协议传输，使用Protocol Buffers 作为接口描述语言。</li>
-<li><a href="https://pkg.go.dev/net/rpc" target="_blank" rel="external">标准库的rpc/std_rpc</a>: Go标准库自带的rpc框架，目前处于维护状态</li>
-</ul>
-<p>测试采用了各框架的最新版本:</p>
-<ul>
-<li><strong>rpcx</strong>: v1.7.8</li>
-<li><strong>kitex</strong>: v0.3.4</li>
-<li><strong>arpc</strong>: v1.2.9</li>
-<li><strong>grpc</strong>: v1.48.0</li>
-<li><strong>std_rpc</strong>: v1.8.4</li>
-</ul>
-<p>为了尽量保持一致性的测试，所有的测试都是在相同的测试环境下，相同的测试逻辑，相同的测试消息进行的:</p>
-<ul>
-<li>测试环境(已经服役6年的老机器,两台，一台做server,一台做client)<ul>
-<li>CPU型号: Intel(R) Xeon(R) CPU E5-2620 v2 @ 2.10GHz / 2颗</li>
-<li>物理核: 6个; 逻辑核: 12核</li>
-<li>内存: 64G</li>
-<li>开启网卡多队列</li>
-</ul>
-</li>
-<li>都采用protobuf作为消息体的编码方式，编码后的消息体大小为581个字节</li>
-<li>在客户端统计，统计吞吐量(throughputs)和延迟(lantency, 包括最大值，平均值，中位数值，和p99.9的值， 最小值都小于1毫秒，所以未统计)<ul>
-<li>对于延迟，我们还需要关注它的长尾情况，所以需要关注中位数和p99.9。p99.9指千分之999的请求的延迟都小于某个时间。</li>
-</ul>
-</li>
-</ul>
-<p>主要分为三个场景进行测试。</p>
-<ul>
-<li>TCP连接数为10, 长连接。并发数为100、200、500、1000、2000、5000的情况<br>主要测试高并发的情况下各框架最大的能力，包括吞吐量和延迟。</li>
-<li>TCP连接数为10,并发数为200,长连接。 吞吐量为10万/秒、15万/秒、18万/秒的情况下的延迟<br>主要测在吞吐保持一致的情况下，各个框架的延迟情况和长尾情况。延迟或长尾太大意味着使用这个吞吐率是不合适。</li>
-<li>TCP连接数为1000，并发数为1000，长连接。<br>主要测试大连接数比较高的情况下各框架的性能。主要是想针对字节的kitex这种自研的netpoll,看看是否更适合这种大量连接数的情况。</li>
-</ul>
-<p>这里并发数是指客户端启动的goroutine数量，多个goroutine可能共享同一个client(连接)。</p>
-<p>所有的各框架的测试代码都放在了<a href="https://github.com/rpcxio/rpcx-benchmark" target="_blank" rel="external">rpcx-benchmark</a>。测试的命令非常简单，如下面的介绍中所示，所以你可以下载下来自己测试验证，也欢迎提供优化补丁，补充更多的rpc框架等等。</p>
-<h2 id="场景一：_TCP连接数为10,_长连接。并发数为100、200、500、1000、2000、5000的情况">场景一： TCP连接数为10, 长连接。并发数为100、200、500、1000、2000、5000的情况</h2>
-<ul>
-<li>服务端启动: <code>./server -s xxx.xxx.xxx.xxx:8972</code> // xxx.xxx.xxx.xxx是服务端监听的IP地址</li>
-<li>客户端测试: <code>./client -c 2000 -n 1000000 -s xxx.xxx.xxx.xxx:8972</code> // 这里的并发数是2000, 测试总共发送1百万个请求</li>
-</ul>
-<p>测试原始数据: </p>
-<iframe width="700" height="300" frameborder="0" scrolling="no" src="https://onedrive.live.com/embed?resid=CD09EE1AE0AE8966%211237&authkey=%21ALkUD_tZUvdczJ8&em=2&wdAllowInteractivity=False&wdDownloadButton=True&wdInConfigurator=True&wdInConfigurator=True&edesNext=false&ejss=false"></iframe>
-
-
-<h3 id="吞吐量">吞吐量</h3>
-<p><img src="1.png" alt=""><br>Y轴是吞吐量/秒，越高越好。可以看到arpc框架吞吐非常的好，去年的测试也是arpc表现比较好，其次是rpcx、标准的rpc、kitex、grpc。</p>
-<p>可以看到在并发量比较大的情况下，除了grpc， 其它都能达到18万个请求/秒的吞吐量。</p>
-<h3 id="平均延迟">平均延迟</h3>
-<p><img src="2.png" alt=""><br>Y轴是平均延迟，越低越好，可以看到grpc的延迟较高。延迟正好和上面的吞吐量相反。</p>
-<h3 id="P99-9_延迟">P99.9 延迟</h3>
-<p>另外一个我们可能比较关注长尾的情况，可以选取中位数或者p99.9观察。 下面是p99.9的情况。<br><img src="3.png" alt=""></p>
-<p>当然，并发数为5000的情况下比较是无意义的，因为在并发数为5000的情况下，各框架的吞吐量是不一样的，在吞吐量高的情况下延迟也会大。<br>所以为了在公平的情况下观察长尾情况，我设计了下面的测试。</p>
-<h2 id="场景二:_TCP连接数为10,并发数为200,长连接。_吞吐量为10万/秒、15万/秒、18万/秒的情况下的延迟">场景二: TCP连接数为10,并发数为200,长连接。 吞吐量为10万/秒、15万/秒、18万/秒的情况下的延迟</h2>
-<p>为了观察延迟，我们需要保证吞吐量都尽量一样，在相同的吞吐量情况下观察延迟和长尾情况更科学。</p>
-<p>所以场景二就是在并发数为200的情况下，针对吞吐量为10万/秒、15万/秒、18万/秒三个场景，观察框架的延迟和P99.9延迟。</p>
-<p>测试原始数据: </p>
-<iframe width="700" height="346" frameborder="0" scrolling="no" src="https://onedrive.live.com/embed?resid=CD09EE1AE0AE8966%211240&authkey=%21AH7IxJNptuzNIRI&em=2&wdAllowInteractivity=False&wdDownloadButton=True&wdInConfigurator=True&wdInConfigurator=True&edesNext=false&ejss=false"></iframe>
-
-<h3 id="平均延迟-1">平均延迟</h3>
-<p><img src="4.png" alt=""><br>平均延迟看起来grpc比较高，因为它达不到18万/秒的吞吐，所以它的最后一个数值是没有的。kitex相对较高，这个还得具体看是不是kitex有一些具体的调优。 基本上是和吞吐量成负相关的。</p>
-<h3 id="P99-9_延迟-1">P99.9 延迟</h3>
-<p>长尾的情况，下面是p99.9的情况。<br><img src="5.png" alt=""></p>
-<p>arpc、rpcx和标准rpc的P99.9延迟还是比较好的。</p>
-<h2 id="场景三:_TCP连接数为1000，并发数为1000，长连接。">场景三: TCP连接数为1000，并发数为1000，长连接。</h2>
-<p>观察在大量连接情况下各框架的表现(吞吐率和延迟)。这个场景并没有选择巨量的连接数，而是选择了一个较常见的1000的连接数做测试，连接为长连接。</p>
-<p><img src="6.png" alt=""></p>
-<p>arpc在连接数比较多的情况下明显要好于其它框架，其次就是rpcx和标准rpc框架。</p>
-<p>平均耗时和P99.9耗时也符合这个情况，具体原始数据参考</p>
-<iframe width="700" height="346" frameborder="0" scrolling="no" src="https://onedrive.live.com/embed?resid=CD09EE1AE0AE8966%211242&authkey=%21ADlRyez3xISIKx4&em=2&wdAllowInteractivity=False&wdDownloadButton=True&wdInConfigurator=True&wdInConfigurator=True&edesNext=false&ejss=false"></iframe>
-
-
-<p>总体来看，rpcx的性能还是不错的，希望在以后的日子，参考兄弟rpc框架，做进一步的优化。<br>欢迎在<a href="https://colobu.com/2022/07/31/2022-rpc-frameworks-benchmarks/" target="_blank" rel="external">本文留言区</a>进行探讨。</p>
-]]></content>
-    <summary type="html">
-    <![CDATA[<p>距离上一次<a href="https://colobu.com/2021/08/01/benchmark-of-rpc-frameworks/" target="_blank" rel="external">2021年Go生态圈rpc框架benchmark</a>的测试整整一年了。一年来，各个RPC框架也获得长足的进展，<a href="https://rpcx.io" target="_blank" rel="external">rpcx</a>也在众多网友的支持下做了一些有益的优化和精简，所以是时候再做一次国内几个常用框架的性能比较了。</p>
 ]]>
     
     </summary>
