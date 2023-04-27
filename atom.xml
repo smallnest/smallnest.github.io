@@ -4,7 +4,7 @@
   <subtitle><![CDATA[大道至简 Simplicity is the ultimate form of sophistication]]></subtitle>
   <link href="/atom.xml" rel="self"/>
   <link href="https://colobu.com/"/>
-  <updated>2023-04-23T00:06:18.587Z</updated>
+  <updated>2023-04-27T00:14:34.512Z</updated>
   <id>https://colobu.com/</id>
   
   <author>
@@ -15,11 +15,310 @@
   <generator uri="http://zespia.tw/hexo/">Hexo</generator>
   
   <entry>
+    <title><![CDATA[“实现ping工具”]]></title>
+    <link href="https://colobu.com/2023/04/26/write-the-ping-tool-in-Go/"/>
+    <id>https://colobu.com/2023/04/26/write-the-ping-tool-in-Go/</id>
+    <published>2023-04-26T13:51:08.000Z</published>
+    <updated>2023-04-27T00:14:04.865Z</updated>
+    <content type="html"><![CDATA[<p>ping是一个网络工具，它被广泛地用于测试网络连接的质量和稳定性。当我们想知道我们的电脑是否能够与其他设备或服务器进行通信时，ping就是我们最好的朋友。当我们想侦测网络之间的连通性和网络质量的时候，也常常使用ping工具测量，因为它是操作系统常带的一个网络诊断工具，小而强大。</p>
+<p>ping最初是由Mike Muuss在1983年为Unix系统开发的。它的名字是来自于海军潜艇的声纳系统，声纳系统通过发送一个声波并测量其返回时间来确定目标的位置。Ping的工作原理类似，它发送一个小数据包到目标设备，然后等待该设备返回一个响应，以测量其响应时间和延迟。</p>
+<a id="more"></a>
+<p>当我们使用Ping测试网络连接时，它能够告诉我们两个重要的指标：延迟和丢包率。延迟是指从发送ping请求到接收到响应所需的时间，通常以毫秒为单位计算。丢包率则是指在ping请求和响应之间丢失的数据包的百分比。如果丢包率过高，说明网络连接可能存在问题，导致数据传输不稳定或者甚至无法连接。</p>
+<p>除了基本的ping命令外，还有许多其他ping命令和选项可供使用。例如，可以使用“-c”选项指定发送ping请求的次数，使用“-i”选项指定Ping请求之间的时间间隔。此外，还可以使用“-s”选项指定发送ping请求的数据包大小。</p>
+<p>尽管ping是一个非常有用的工具，但它也有一些限制。ping测试的结果可能会受到许多因素的影响，例如网络拥塞、防火墙、路由器丢弃等等。此外，一些设备或服务器可能已禁用对ping请求的响应，因此无法获得ping测试的结果。</p>
+<p>尽管它有一些限制，但它仍然是网络管理员和用户必备的工具之一。</p>
+<h2 id="实现原理">实现原理</h2>
+<p>ping工具是基于<a href="https://datatracker.ietf.org/doc/html/rfc792" target="_blank" rel="external">rfc 792 (ICMP协议)</a>来实现的。它是一份名为“Internet控制消息协议（ICMP）规范”的文件，由Jon Postel和J. Reynolds在1981年9月发布。该文档定义了ICMP协议，该协议是TCP/IP网络协议套件中的一个重要组成部分。</p>
+<p>ICMP协议是一种网络层协议，用于传输与网络控制和错误处理相关的消息。该协议通常与IP协议一起使用，用于在Internet上交换信息。RFC 792详细介绍了ICMP协议中的不同消息类型及其用途。ping就是利用发送一个Echo请求得到一个Echo Reply实现的。（当前ICMP是封装在IP包中传输的）<br><img src="echo.png" alt=""></p>
+<p>其中：</p>
+<ul>
+<li>type: 8代表echo消息, 0代表echo reply消息</li>
+<li>code: 总是0</li>
+<li>checksum:整个消息的校验和</li>
+<li>Identifier：用来匹配echo和reply，我们常常使用进程ID</li>
+<li>Sequence Number:序列号，也是用来匹配echo和reply, 比如同一个进程ID,不同的序列号代表不同的echo</li>
+<li>Data: payload值。所以我们使用ping的时候是可以使用一定大小的数据的，用来测试MTU或者什么</li>
+</ul>
+<p>等下一篇介绍traceroute工具实现的时候，我们还会介绍ICMP。</p>
+<p>对于ping来说，就是简单的发送一个echo消息，收到对应的echo reply消息后计算时延，如果超时未收到reply，就计算一次丢包。</p>
+<p>比如我们常用的ping命令，可以显示收包情况和时延，你可以指定发送的总数，最后还会有一个统计信息：<br><img src="ping.png" alt=""></p>
+<p>本文的介绍和例子都是针对IPV4的，IPv6类似但又有些不同。</p>
+<p>你在网上搜<code>ping.c</code>,很容易搜到通过C语言实现的ping工具，如果使用Go语言，也有几个实现方式。</p>
+<h2 id="“作弊”方式">“作弊”方式</h2>
+<p>最容易的实现方式就是调用操作系统中自带的ping工具:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> main</div><div class="line"></div><div class="line"><span class="keyword">import</span> (</div><div class="line">	<span class="string">"fmt"</span></div><div class="line">	<span class="string">"os"</span></div><div class="line">	<span class="string">"os/exec"</span></div><div class="line">)</div><div class="line"></div><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	host := os.Args<span class="number">[1</span>]</div><div class="line"></div><div class="line">	output, err := exec.Command(<span class="string">"ping"</span>, <span class="string">"-c"</span>, <span class="string">"3"</span>, host).CombinedOutput()</div><div class="line">	<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">		<span class="built_in">panic</span>(err)</div><div class="line">	}</div><div class="line"></div><div class="line">	fmt.Println(<span class="typename">string</span>(output))</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>简单几行代码。</p>
+<h2 id="使用_golang-org/x/net/icmp">使用 golang.org/x/net/icmp</h2>
+<p>Go的net扩展库专门实现了<a href="https://pkg.go.dev/golang.org/x/net/icmp" target="_blank" rel="external">icmp</a>协议。我们可以使用它来实现ping。</p>
+<p>插入一个知识点。<br>如果使用SOCK_RAW实现ping，是需要cap_net_raw权限的,你可以通过下面的命令设置:</p>
+<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">setcap cap_net_raw=+ep /path/to/your/compiled/binary</div></pre></td></tr></table></figure>
+
+<p>在Linux 3.0<a href="https://lwn.net/Articles/420800/" target="_blank" rel="external">新实现</a>了一种Socket方式，可以实现普通用户也能执行ping命令:<br>socket(PF_INET, SOCK_DGRAM, IPPROTO_ICMP)</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div></pre></td><td class="code"><pre><div class="line"></div><div class="line">不过你还需要设置:</div></pre></td></tr></table></figure>
+
+<p>shell<br>sudo sysctl -w net.ipv4.ping_group_range=&quot;0 2147483647&quot;</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line"></div><div class="line">首先，我们实现<span class="escape">`n</span>on-privileged ping<span class="escape">`方</span>式的ping, icmp包为我们做了封装，所以我们不必使用底层的<span class="escape">`s</span>ocket<span class="escape">`,</span>而是直接使用<span class="escape">`i</span>cmp.ListenPacket(<span class="string">"udp4"</span>, <span class="string">"0.0.0.0"</span>)<span class="escape">`来</span>实现。</div><div class="line"></div><div class="line">完整的代码如下：</div></pre></td></tr></table></figure>
+
+<p>go<br>package main</p>
+<p>import (<br>    &quot;fmt&quot;<br>    &quot;log&quot;<br>    &quot;net&quot;<br>    &quot;os&quot;<br>    &quot;time&quot;</p>
+<pre><code><span class="string">"golang.org/x/net/icmp"</span>
+<span class="string">"golang.org/x/net/ipv4"</span>
+</code></pre><p>)</p>
+<p>const (<br>    protocolICMP = 1<br>)</p>
+<p>func main() {<br>    if len(os.Args) != 2 {<br>        fmt.Fprintf(os.Stderr, &quot;Usage: %s host\n&quot;, os.Args[0])<br>        os.Exit(1)<br>    }<br>    host := os.Args[1]</p>
+<pre><code><span class="comment">// 使用icmp得到一个*packetconn,注意这里的network我们设置的`udp4`</span>
+<span class="built_in">c</span>, err := icmp.<span class="type">ListenPacket</span>(<span class="string">"udp4"</span>, <span class="string">"0.0.0.0"</span>)
+<span class="keyword">if</span> err != <span class="built_in">nil</span> {
+    log.<span class="type">Fatal</span>(err)
+}
+defer <span class="built_in">c</span>.<span class="type">Close</span>()
+
+<span class="comment">// 生成一个Echo消息</span>
+msg := &amp;icmp.<span class="type">Message</span>{
+    <span class="type">Type</span>: ipv4.<span class="type">ICMPTypeEcho</span>,
+    <span class="type">Code</span>: <span class="number">0</span>,
+    <span class="type">Body</span>: &amp;icmp.<span class="type">Echo</span>{
+        <span class="type">ID</span>:   os.<span class="type">Getpid</span>() &amp; <span class="number">0xffff</span>,
+        <span class="type">Seq</span>:  <span class="number">1</span>,
+        <span class="type">Data</span>: []byte(<span class="string">"Hello, are you there!"</span>),
+    },
+}
+
+wb, err := msg.<span class="type">Marshal</span>(<span class="built_in">nil</span>)
+<span class="keyword">if</span> err != <span class="built_in">nil</span> {
+    log.<span class="type">Fatal</span>(err)
+}
+
+<span class="comment">// 发送，注意这里必须是一个UDP地址</span>
+start := time.<span class="type">Now</span>()
+<span class="keyword">if</span> <span class="number">_</span>, err := <span class="built_in">c</span>.<span class="type">WriteTo</span>(wb, &amp;net.<span class="type">UDPAddr</span>{<span class="type">IP</span>: net.<span class="type">ParseIP</span>(host)}); err != <span class="built_in">nil</span> {
+    log.<span class="type">Fatal</span>(err)
+}
+
+<span class="comment">// 读取回包</span>
+reply := make([]byte, <span class="number">1500</span>)
+err = <span class="built_in">c</span>.<span class="type">SetReadDeadline</span>(time.<span class="type">Now</span>().<span class="type">Add</span>(<span class="number">5</span> * time.<span class="type">Second</span>))
+<span class="keyword">if</span> err != <span class="built_in">nil</span> {
+    log.<span class="type">Fatal</span>(err)
+}
+n, peer, err := <span class="built_in">c</span>.<span class="type">ReadFrom</span>(reply)
+<span class="keyword">if</span> err != <span class="built_in">nil</span> {
+    log.<span class="type">Fatal</span>(err)
+}
+
+duration := time.<span class="type">Since</span>(start)
+
+<span class="comment">// 得到的回包是一个ICMP消息，先解析出来</span>
+msg, err = icmp.<span class="type">ParseMessage</span>(<span class="class"><span class="keyword">protocol</span><span class="title">ICMP</span>, <span class="title">reply</span>[:<span class="title">n</span>])
+<span class="title">if</span> <span class="title">err</span> != <span class="title">nil</span> </span>{
+    log.<span class="type">Fatal</span>(err)
+}
+
+<span class="comment">// 打印结果</span>
+<span class="keyword">switch</span> msg.<span class="type">Type</span> {
+<span class="keyword">case</span> ipv4.<span class="type">ICMPTypeEchoReply</span>: <span class="comment">// 如果是Echo Reply消息</span>
+    echoReply, ok := msg.<span class="type">Body</span>.(*icmp.<span class="type">Echo</span>) <span class="comment">// 消息体是Echo类型</span>
+    <span class="keyword">if</span> !ok {
+        log.<span class="type">Fatal</span>(<span class="string">"invalid ICMP Echo Reply message"</span>)
+        <span class="keyword">return</span>
+    }
+
+    <span class="comment">// 这里可以通过ID, Seq、远程地址来进行判断，下面这个只使用了两个判断条件，是有风险的</span>
+    <span class="comment">// 如果此时有其他程序也发送了ICMP Echo,序列号一样，那么就可能是别的程序的回包，只不过这个几率比较小而已</span>
+    <span class="comment">// 如果再加上ID的判断，就精确了</span>
+    <span class="keyword">if</span> peer.(*net.<span class="type">UDPAddr</span>).<span class="type">IP</span>.<span class="type">String</span>() == host &amp;&amp; echoReply.<span class="type">Seq</span> == <span class="number">1</span> {
+        fmt.<span class="type">Printf</span>(<span class="string">"Reply from %s: seq=%d time=%v\n"</span>, host, msg.<span class="type">Body</span>.(*icmp.<span class="type">Echo</span>).<span class="type">Seq</span>, duration)
+        <span class="keyword">return</span>
+    }
+<span class="keyword">default</span>:
+    fmt.<span class="type">Printf</span>(<span class="string">"Unexpected ICMP message type: %v\n"</span>, msg.<span class="type">Type</span>)
+}
+</code></pre><p>}</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div></pre></td><td class="code"><pre><div class="line"></div><div class="line">关键代码都加了注释，主要注意回包的解析和回包的判断。尤其是回包的判断，我们在下一章实现traceroute的时候尤其需要注意这一点。</div><div class="line"></div><div class="line"><span class="comment">## 使用 ip4:icmp 实现</span></div><div class="line"></div><div class="line">即使我们想实现privileged ping，我们也不需要直接使用raw <span class="keyword">socket</span>，还是使用icmp包。</div><div class="line"></div><div class="line">在这种场景下，我们的network需要是<span class="string">`ip4:icmp`</span>,能够发送ICMP包，而不是上面的<span class="string">`udp4`</span>。</div></pre></td></tr></table></figure>
+
+<p>go<br>package main</p>
+<p>import (<br>    &quot;fmt&quot;<br>    &quot;log&quot;<br>    &quot;net&quot;<br>    &quot;os&quot;<br>    &quot;time&quot;</p>
+<pre><code><span class="string">"golang.org/x/net/icmp"</span>
+<span class="string">"golang.org/x/net/ipv4"</span>
+</code></pre><p>)</p>
+<p>const (<br>    protocolICMP = 1<br>)</p>
+<p>func main() {<br>    if len(os.Args) != 2 {<br>        fmt.Fprintf(os.Stderr, &quot;usage: %s host\n&quot;, os.Args[0])<br>        os.Exit(1)<br>    }<br>    host := os.Args[1]</p>
+<pre><code>// 解析目标主机的 IP 地址
+dst, err := net.ResolveIPAddr(<span class="string">"ip"</span>, host)
+<span class="keyword">if</span> err != nil {
+    <span class="built_in">log</span>.Fatal(err)
+}
+<span class="comment">
+// 创建 ICMP 连接</span>
+conn, err := icmp.ListenPacket(<span class="string">"ip4:icmp"</span>, <span class="string">"0.0.0.0"</span>)
+<span class="keyword">if</span> err != nil {
+    <span class="built_in">log</span>.Fatal(err)
+}
+defer conn.Close()
+<span class="comment">
+// 构造 ICMP 报文</span>
+msg := &amp;icmp.Message{
+    Type: ipv4.ICMPTypeEcho,
+    Code: <span class="number">0</span>,
+    Body: &amp;icmp.Echo{
+        ID:   os.Getpid() &amp; <span class="number">0xffff</span>,
+        Seq:  <span class="number">1</span>,
+        Data: []<span class="keyword">byte</span>(<span class="string">"Hello, are you there!"</span>),
+    },
+}
+msgBytes, err := msg.Marshal(nil)
+<span class="keyword">if</span> err != nil {
+    <span class="built_in">log</span>.Fatal(err)
+}
+<span class="comment">
+// 发送 ICMP 报文</span>
+start := <span class="built_in">time</span>.Now()
+_, err = conn.WriteTo(msgBytes, dst)
+<span class="keyword">if</span> err != nil {
+    <span class="built_in">log</span>.Fatal(err)
+}
+<span class="comment">
+// 接收 ICMP 报文</span>
+reply := make([]<span class="keyword">byte</span>, <span class="number">1500</span>)
+<span class="keyword">for</span> i := <span class="number">0</span>; i &lt; <span class="number">3</span>; i++ {
+    err = conn.SetReadDeadline(<span class="built_in">time</span>.Now().Add(<span class="number">5</span> * <span class="built_in">time</span>.Second))
+    <span class="keyword">if</span> err != nil {
+        <span class="built_in">log</span>.Fatal(err)
+    }
+    n, peer, err := conn.ReadFrom(reply)
+    <span class="keyword">if</span> err != nil {
+        <span class="built_in">log</span>.Fatal(err)
+    }
+    duration := <span class="built_in">time</span>.Since(start)
+
+   <span class="comment"> // 解析 ICMP 报文</span>
+    msg, err = icmp.ParseMessage(protocolICMP, reply[:n])
+    <span class="keyword">if</span> err != nil {
+        <span class="built_in">log</span>.Fatal(err)
+    }
+
+   <span class="comment"> // 打印结果</span>
+    <span class="keyword">switch</span> msg.Type {
+    <span class="keyword">case</span> ipv4.ICMPTypeEchoReply:
+        echoReply, ok := msg.Body.(*icmp.Echo)
+        <span class="keyword">if</span> !ok {
+            <span class="built_in">log</span>.Fatal(<span class="string">"invalid ICMP Echo Reply message"</span>)
+            <span class="constant">return</span>
+        }
+        <span class="keyword">if</span> peer.String() == host &amp;&amp; echoReply.ID == os.Getpid()&amp;<span class="number">0xffff</span> &amp;&amp; echoReply.Seq == <span class="number">1</span> {
+            fmt.Printf(<span class="string">"reply from %s: seq=%d time=%v\n"</span>, dst.String(), msg.Body.(*icmp.Echo).Seq, duration)
+            <span class="constant">return</span>
+        }
+    default:
+        fmt.Printf(<span class="string">"unexpected ICMP message type: %v\n"</span>, msg.Type)
+    }
+}
+</code></pre><p>}</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div></pre></td><td class="code"><pre><div class="line"></div><div class="line">和上面的例子比较，主要是发送的逻辑不一样，大同小异，发送额度内容都是ICMP Echo消息，只不过这次发送的失效，地址不是UDP地址，而是IP 地址。</div><div class="line"></div><div class="line"></div><div class="line"><span class="header">## 使用go-ping</span></div><div class="line"></div><div class="line">虽然Go net扩展库提供了icmp包，方便我们实现ping能力，但是代码还是有点偏底层的处理，网上有一个[<span class="link_label">go-ping/ping</span>](<span class="link_url">https://github.com/go-ping/ping</span>)库，还是被使用很多的，提供了更高级或者说更傻瓜的方法。</div><div class="line"></div><div class="line">三年了，疫情给世界带来的影响已经潜移默化到影响到互联网，影响到开源社区。我看到很多的开源项目因为一些原因都不再维护了，包括这个<span class="code">`go-ping`</span>项目，光靠作者用爱发电无法做到持久，有点遗憾，不过好歹是它已经比较成熟了，我们项目中使用没有问题。prometheus社区基于这个项目，维护了一个新的项目：[<span class="link_label">pro-bing</span>](<span class="link_url">https://github.com/prometheus-community/pro-bing</span>)。</div><div class="line"></div><div class="line"></div><div class="line">它的README文档中的例子已经很少的解释了它的使用方法，你可以利用它实现一个类似ping工具的功能，如果想大批量实现ping的功能，这个库就不合适了。</div><div class="line"></div><div class="line">下面代码就是一个ping的基本功能，没什么好说的，ping3次得到结果:</div></pre></td></tr></table></figure>
+
+<p>go<br>    // ping 并收集结果<br>    pinger, err := probing.NewPinger(&quot;github.com&quot;)<br>    if err != nil {<br>        panic(err)<br>    }<br>    // ping的次数<br>    pinger.Count = 3<br>    err = pinger.Run() // 阻塞直到完成或者超时<br>    if err != nil {<br>        panic(err)<br>    }<br>    stats := pinger.Statistics() // 得到统计结果<br>    pretty.Println(stats)</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div></pre></td><td class="code"><pre><div class="line"></div><div class="line">如果要实现Linux下<span class="built_in">ping</span>的功能，可以稍微复杂些:</div></pre></td></tr></table></figure>
+
+<p>go<br>    pinger, err = probing.NewPinger(&quot;github.com&quot;)<br>    if err != nil {<br>        panic(err)<br>    }</p>
+<pre><code>// Listen <span class="keyword">for</span> Ctrl-C.
+c := make(chan os.Signal, <span class="number">1</span>)
+signal.Notify(c, os.Interrupt)
+go func() {
+    <span class="keyword">for</span> <span class="number">_</span> = range c {
+        pinger.Stop()
+    }
+}()
+
+pinger.OnRecv = func(pkt *probing.Packet) {
+    fmt.Printf(<span class="string">"<span class="variable">%d</span> bytes from <span class="variable">%s</span>: icmp_seq=<span class="variable">%d</span> time=<span class="variable">%v</span>\n"</span>,
+        pkt.Nbytes, pkt.IPAddr, pkt.Seq, pkt.Rtt)
+}
+
+pinger.OnDuplicateRecv = func(pkt *probing.Packet) {
+    fmt.Printf(<span class="string">"<span class="variable">%d</span> bytes from <span class="variable">%s</span>: icmp_seq=<span class="variable">%d</span> time=<span class="variable">%v</span> ttl=<span class="variable">%v</span> (DUP!)\n"</span>,
+        pkt.Nbytes, pkt.IPAddr, pkt.Seq, pkt.Rtt, pkt.TTL)
+}
+
+pinger.OnFinish = func(stats *probing.Statistics) {
+    fmt.Printf(<span class="string">"\n--- <span class="variable">%s</span> ping statistics ---\n"</span>, stats.Addr)
+    fmt.Printf(<span class="string">"<span class="variable">%d</span> packets transmitted, <span class="variable">%d</span> packets received, <span class="variable">%v</span><span class="variable">%%</span> packet loss\n"</span>,
+        stats.PacketsSent, stats.PacketsRecv, stats.PacketLoss)
+    fmt.Printf(<span class="string">"round-trip min/avg/max/stddev = <span class="variable">%v</span>/<span class="variable">%v</span>/<span class="variable">%v</span>/<span class="variable">%v</span>\n"</span>,
+        stats.MinRtt, stats.AvgRtt, stats.MaxRtt, stats.StdDevRtt)
+}
+
+fmt.Printf(<span class="string">"PING <span class="variable">%s</span> (<span class="variable">%s</span>):\n"</span>, pinger.Addr(), pinger.IPAddr())
+err = pinger.Run()
+<span class="keyword">if</span> err != nil {
+    panic(err)
+}
+</code></pre><figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div></pre></td><td class="code"><pre><div class="line"></div><div class="line">前面也说了，处理返回的消息并和发送请求做匹配是一个技术点，那么go-<span class="built_in">ping</span>是怎么实现的呢?主要是下面的代码:</div></pre></td></tr></table></figure>
+
+<p>go<br>    switch pkt := m.Body.(type) {<br>    case *icmp.Echo:<br>        if !p.matchID(pkt.ID) {<br>            return nil<br>        }</p>
+<pre><code>    <span class="keyword">if</span> <span class="built_in">len</span>(pkt.Data) &lt; timeSliceLength+trackerLength {
+        <span class="keyword">return</span> fmt.Errorf(<span class="string">"insufficient data received; got: %d %v"</span>,
+            <span class="built_in">len</span>(pkt.Data), pkt.Data)
+    }
+
+    pktUUID, err := p.getPacketUUID(pkt.Data)
+    <span class="keyword">if</span> err != <span class="constant">nil</span> || pktUUID == <span class="constant">nil</span> {
+        <span class="keyword">return</span> err
+    }
+
+    timestamp := bytesToTime(pkt.Data[:timeSliceLength])
+    inPkt.Rtt = receivedAt.Sub(timestamp)
+    inPkt.Seq = pkt.Seq
+    <span class="comment">// 检查是否收到重复的包</span>
+    <span class="keyword">if</span> _, inflight := p.awaitingSequences[*pktUUID][pkt.Seq]; !inflight {
+        p.PacketsRecvDuplicates++
+        <span class="keyword">if</span> p.OnDuplicateRecv != <span class="constant">nil</span> {
+            p.OnDuplicateRecv(inPkt)
+        }
+        <span class="keyword">return</span> <span class="constant">nil</span>
+    }
+    <span class="comment">// 已经得到返回结果</span>
+    <span class="built_in">delete</span>(p.awaitingSequences[*pktUUID], pkt.Seq)
+    p.updateStatistics(inPkt)
+<span class="keyword">default</span>:
+    <span class="comment">// Very bad, not sure how this can happen</span>
+    <span class="keyword">return</span> fmt.Errorf(<span class="string">"invalid ICMP echo reply; type: '%T', '%v'"</span>, pkt, pkt)
+}
+</code></pre><p><code>`</code></p>
+<p>首先检查body必须是<code>*icmp.Echo</code>类型，这是基本操作。接着检查pkt.ID,这一下就把非本程序的包ICMP echo reply包过滤了。</p>
+<p>这里它在发送的payload中还加上自己的uuid和发送的时间戳。</p>
+<p>这里还处理了重复的包， uuid+seq标识同一个Echo请求。</p>
+<p>通过这几个例子，你应该了解了ping工具的底层实现，收藏起来，遇到相关的问题的时候不妨返回来查一查。</p>
+<p>下一篇，我们讲介绍traceroute工具的实现，相对ping来说更复杂了，但是都和ICMP协议相关。如果你有感兴趣的网络话题，“点击原文”进行讨论。</p>
+<p><strong>Go高级网络编程系列</strong></p>
+<ul>
+<li><a href="https://colobu.com/2023/04/22/batch-read-and-write-udp-packets-in-Go/" target="_blank" rel="external">高性能批量读写网络包</a></li>
+<li><a href="https://colobu.com/2023/04/17/use-af-xdp-socket/" target="_blank" rel="external">使用AF_XDP Socket更高效的网络传输</a></li>
+<li><a href="https://colobu.com/2023/04/09/use-syscall-Socket-in-go/" target="_blank" rel="external">使用底层的syscall.Socket实现网络编程</a></li>
+<li><a href="https://colobu.com/2023/04/02/support-1m-pps-with-zero-cpu-usage/" target="_blank" rel="external">每秒1百万的包传输，几乎不耗CPU的那种</a></li>
+<li><a href="https://colobu.com/2023/03/19/scan-all-IP-addresses-of-mainland-fastly-like-lightning/" target="_blank" rel="external">像闪电一样快速扫描全网的IP地址</a></li>
+<li><a href="https://colobu.com/2022/11/21/zero-copy-and-how-to-use-it-in-go-2/" target="_blank" rel="external">零拷贝技术第二篇：Go语言中的应用</a></li>
+<li><a href="https://colobu.com/2022/11/19/zero-copy-and-how-to-use-it-in-go/" target="_blank" rel="external">零拷贝技术第一篇：综述</a></li>
+<li><a href="https://colobu.com/2022/06/05/use-bpf-to-make-the-go-network-program-8x-faster/" target="_blank" rel="external">使用BPF, 将Go网络程序的吞吐提升8倍</a></li>
+</ul>
+]]></content>
+    <summary type="html">
+    <![CDATA[<p>ping是一个网络工具，它被广泛地用于测试网络连接的质量和稳定性。当我们想知道我们的电脑是否能够与其他设备或服务器进行通信时，ping就是我们最好的朋友。当我们想侦测网络之间的连通性和网络质量的时候，也常常使用ping工具测量，因为它是操作系统常带的一个网络诊断工具，小而强大。</p>
+<p>ping最初是由Mike Muuss在1983年为Unix系统开发的。它的名字是来自于海军潜艇的声纳系统，声纳系统通过发送一个声波并测量其返回时间来确定目标的位置。Ping的工作原理类似，它发送一个小数据包到目标设备，然后等待该设备返回一个响应，以测量其响应时间和延迟。</p>
+]]>
+    
+    </summary>
+    
+      <category term="Go" scheme="https://colobu.com/categories/Go/"/>
+    
+  </entry>
+  
+  <entry>
     <title><![CDATA[高性能批量读写网络包]]></title>
     <link href="https://colobu.com/2023/04/22/batch-read-and-write-udp-packets-in-Go/"/>
     <id>https://colobu.com/2023/04/22/batch-read-and-write-udp-packets-in-Go/</id>
     <published>2023-04-22T13:28:16.000Z</published>
-    <updated>2023-04-23T00:05:55.953Z</updated>
+    <updated>2023-04-23T00:10:51.069Z</updated>
     <content type="html"><![CDATA[<p>虽然网络协议栈提供了丰富的功能，让我们可以方便的实现网络的数据交流，但是有时候我们对协议栈的性能还是不是那么满意的，前几篇文章我也介绍了通过XDP等技术高效处理网络数据的方式，但是毕竟XDP还没有那么广泛的应用，使用起来也还不是那么简单，如果我们通过编程语言提供的标准库来实现数据的读写，还怎么能提高性能呢？今天就介绍一种方式，批量的读写数据包。</p>
 <a id="more"></a>
 <p><img src="batch.png" alt=""></p>
@@ -1707,62 +2006,6 @@
 ]]></content>
     <summary type="html">
     <![CDATA[<p>今天一位同学给我出了一道并发题，作为在极客时间开了《GO并发编程实战课》的作者，居然一时间没有回答上来，惭愧啊，所以晚上专门研究了一下题目，给出几个实现方案供探讨。</p>
-]]>
-    
-    </summary>
-    
-      <category term="Go" scheme="https://colobu.com/categories/Go/"/>
-    
-  </entry>
-  
-  <entry>
-    <title><![CDATA[爱折腾的WaitGroup]]></title>
-    <link href="https://colobu.com/2022/08/30/waitgroup-to-love-to-toss/"/>
-    <id>https://colobu.com/2022/08/30/waitgroup-to-love-to-toss/</id>
-    <published>2022-08-30T11:18:53.000Z</published>
-    <updated>2023-02-04T04:46:22.505Z</updated>
-    <content type="html"><![CDATA[<p><a href="https://pkg.go.dev/sync#WaitGroup" target="_blank" rel="external">WaitGroup</a>是Go并发编程中经常使用的做任务编排的一个一个并发原语。看起来它只有几个简单的方法，使用起来比较简单。实际上，WaitGroup的内部实现也陆陆续续改变了好几次,主要是针对它的字段的原子操作不断的做优化。</p>
-<a id="more"></a>
-<h2 id="WaitGroup原始的实现">WaitGroup原始的实现</h2>
-<p>最早的<code>WaitGroup</code>的实现如下：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> WaitGroup <span class="keyword">struct</span> {</div><div class="line">	m       Mutex</div><div class="line">	counter <span class="typename">int32</span></div><div class="line">	waiters <span class="typename">int32</span></div><div class="line">	sema    *<span class="typename">uint32</span></div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> (wg *WaitGroup) Add(delta <span class="typename">int</span>) {</div><div class="line">	v := atomic.AddInt32(&wg.counter, <span class="typename">int32</span>(delta))</div><div class="line">	<span class="keyword">if</span> v &lt;<span class="number"> 0</span> {</div><div class="line">		<span class="built_in">panic</span>(<span class="string">"sync: negative WaitGroup count"</span>)</div><div class="line">	}</div><div class="line">	<span class="keyword">if</span> v &gt;<span class="number"> 0</span> || atomic.LoadInt32(&wg.waiters) ==<span class="number"> 0</span> {</div><div class="line">		<span class="keyword">return</span></div><div class="line">	}</div><div class="line">	wg.m.Lock()</div><div class="line">	<span class="keyword">for</span> i := <span class="typename">int32</span><span class="number">(0</span>); i &lt; wg.waiters; i++ {</div><div class="line">		runtime_Semrelease(wg.sema)</div><div class="line">	}</div><div class="line">	wg.waiters =<span class="number"> 0</span></div><div class="line">	wg.sema = <span class="constant">nil</span></div><div class="line">	wg.m.Unlock()</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>它的实现字段的意义比较明确，但是实现还略显粗糙，比如sema采用指针实现。</p>
-<p>之后将字段<code>counter</code>和<code>waiters</code>合并。为了要保证64bit的原子操作8位对齐， 需要找到state1的对齐点。 sema去掉了指针实现。</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> WaitGroup <span class="keyword">struct</span> {</div><div class="line">	<span class="comment">// 64-bit value: high 32 bits are counter, low 32 bits are waiter count.</span></div><div class="line">	<span class="comment">// 64-bit atomic operations require 64-bit alignment, but 32-bit</span></div><div class="line">	<span class="comment">// compilers do not ensure it. So we allocate 12 bytes and then use</span></div><div class="line">	<span class="comment">// the aligned 8 bytes in them as state.</span></div><div class="line">	state1 <span class="number">[12</span>]<span class="typename">byte</span></div><div class="line">	sema   <span class="typename">uint32</span></div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> (wg *WaitGroup) state() *<span class="typename">uint64</span> {</div><div class="line">	<span class="keyword">if</span> <span class="typename">uintptr</span>(unsafe.Pointer(&wg.state1))<span class="number">%8</span> ==<span class="number"> 0</span> {</div><div class="line">		<span class="keyword">return</span> (*<span class="typename">uint64</span>)(unsafe.Pointer(&wg.state1))</div><div class="line">	} <span class="keyword">else</span> {</div><div class="line">		<span class="keyword">return</span> (*<span class="typename">uint64</span>)(unsafe.Pointer(&wg.state1<span class="number">[4</span>]))</div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>后来，<code>WaitGroup</code>实现如下，并稳定下来：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> WaitGroup <span class="keyword">struct</span> {</div><div class="line">	noCopy noCopy</div><div class="line"></div><div class="line">	<span class="comment">// 64-bit value: high 32 bits are counter, low 32 bits are waiter count.</span></div><div class="line">	<span class="comment">// 64-bit atomic operations require 64-bit alignment, but 32-bit</span></div><div class="line">	<span class="comment">// compilers do not ensure it. So we allocate 12 bytes and then use</span></div><div class="line">	<span class="comment">// the aligned 8 bytes in them as state, and the other 4 as storage</span></div><div class="line">	<span class="comment">// for the sema.</span></div><div class="line">	state1 <span class="number">[3</span>]<span class="typename">uint32</span></div><div class="line">}</div><div class="line"></div><div class="line"><span class="comment">// state returns pointers to the state and sema fields stored within wg.state1.</span></div><div class="line"><span class="keyword">func</span> (wg *WaitGroup) state() (statep *<span class="typename">uint64</span>, semap *<span class="typename">uint32</span>) {</div><div class="line">	<span class="keyword">if</span> <span class="typename">uintptr</span>(unsafe.Pointer(&wg.state1))<span class="number">%8</span> ==<span class="number"> 0</span> {</div><div class="line">		<span class="keyword">return</span> (*<span class="typename">uint64</span>)(unsafe.Pointer(&wg.state1)), &wg.state1<span class="number">[2</span>]</div><div class="line">	} <span class="keyword">else</span> {</div><div class="line">		<span class="keyword">return</span> (*<span class="typename">uint64</span>)(unsafe.Pointer(&wg.state1<span class="number">[1</span>])), &wg.state1<span class="number">[0</span>]</div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>state1 和 sema字段合并成一个字段<code>state1</code>， 这个数组是uint32,四字节。所以要么是第一个元素就是8byte对齐的，要么就是第二个元素是8byte对齐的。找到对齐的8byte,剩余的4byte就作为sema。</p>
-<p>这个实现没有问题，就是有些饶人。因为你不得不检查state1的对齐，才能确定哪个是counter和waiters,哪个是sema。</p>
-<blockquote>
-<p>问个问题： WaitGroup的waiter数最多是多大？</p>
-</blockquote>
-<h2 id="Go_1-18的改变">Go 1.18的改变</h2>
-<p>在Go 1.18中， WaitGroup又做了改变，针对64bit架构的环境，编译器保证伟uint64类型的字段按照8byte对齐。</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> WaitGroup <span class="keyword">struct</span> {</div><div class="line">	noCopy noCopy</div><div class="line"></div><div class="line">	<span class="comment">// 64-bit value: high 32 bits are counter, low 32 bits are waiter count.</span></div><div class="line">	<span class="comment">// 64-bit atomic operations require 64-bit alignment, but 32-bit</span></div><div class="line">	<span class="comment">// compilers only guarantee that 64-bit fields are 32-bit aligned.</span></div><div class="line">	<span class="comment">// For this reason on 32 bit architectures we need to check in state()</span></div><div class="line">	<span class="comment">// if state1 is aligned or not, and dynamically "swap" the field order if</span></div><div class="line">	<span class="comment">// needed.</span></div><div class="line">	state1 <span class="typename">uint64</span></div><div class="line">	state2 <span class="typename">uint32</span></div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>当然为了兼容32bit的架构，还是需要判断一下对齐:</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> (wg *WaitGroup) state() (statep *<span class="typename">uint64</span>, semap *<span class="typename">uint32</span>) {</div><div class="line">	<span class="keyword">if</span> unsafe.Alignof(wg.state1) ==<span class="number"> 8</span> || <span class="typename">uintptr</span>(unsafe.Pointer(&wg.state1))<span class="number">%8</span> ==<span class="number"> 0</span> {</div><div class="line">		<span class="comment">// state1 is 64-bit aligned: nothing to do.</span></div><div class="line">		<span class="keyword">return</span> &wg.state1, &wg.state2</div><div class="line">	} <span class="keyword">else</span> {</div><div class="line">		<span class="comment">// state1 is 32-bit aligned but not 64-bit aligned: this means that</span></div><div class="line">		<span class="comment">// (&state1)+4 is 64-bit aligned.</span></div><div class="line">		state := (*<span class="number">[3</span>]<span class="typename">uint32</span>)(unsafe.Pointer(&wg.state1))</div><div class="line">		<span class="keyword">return</span> (*<span class="typename">uint64</span>)(unsafe.Pointer(&state<span class="number">[1</span>])), &state<span class="number">[0</span>]</div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>总体上来说，在linux/amd64环境中，此修改会带来 9%~30%的性能提升。</p>
-<h2 id="Go_1-20中的改变">Go 1.20中的改变</h2>
-<p>优化还未万。在Go 1.19中， Russ Cox实现了atomic.Uint64,它在64bit架构和32bit架构下都是8byte对齐的,为啥呢？因为它有一个&quot;尚方宝剑&quot;:<code>align64</code></p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div></pre></td><td class="code"><pre><div class="line"><span class="comment">// An Uint64 is an atomic uint64. The zero value is zero.</span></div><div class="line"><span class="keyword">type</span> Uint64 <span class="keyword">struct</span> {</div><div class="line">	_ noCopy</div><div class="line">	_ align64</div><div class="line">	v <span class="typename">uint64</span></div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>64bit架构下没有问题，32bit架构下看到这个字段，Go编译器就会自动把它按照8byte对齐，这是一个约定。你在你的package下定义struct加上<code>align64</code>是没有用的。<br>不过如果你也想让你的struct 8byte对齐的话,你可以使用下面的技术:</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">import</span> <span class="string">"sync/atomic"</span></div><div class="line"></div><div class="line"><span class="keyword">type</span> T <span class="keyword">struct</span> {</div><div class="line">    _ <span class="number">[0</span>]atomic.Int64 <span class="comment">// 占用0字节，但是隐含字段是8byte对齐的</span></div><div class="line">    x <span class="typename">uint64</span> <span class="comment">// x是8byte对齐的</span></div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>这样依赖， WaitGroup的实现又可以简化成了:</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> WaitGroup <span class="keyword">struct</span> {</div><div class="line">	noCopy noCopy</div><div class="line"></div><div class="line">	state atomic.Uint64 <span class="comment">// high 32 bits are counter, low 32 bits are waiter count.</span></div><div class="line">	sema  <span class="typename">uint32</span></div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>也不必实现单独的<code>state()</code>方法了。直接使用state字段即可(去除了race代码):</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> (wg *WaitGroup) Add(delta <span class="typename">int</span>) {</div><div class="line">	state := wg.state.Add(<span class="typename">uint64</span>(delta) &lt;&lt;<span class="number"> 32</span>)</div><div class="line">	v := <span class="typename">int32</span>(state &gt;&gt;<span class="number"> 32</span>)</div><div class="line">	w := <span class="typename">uint32</span>(state)</div><div class="line"></div><div class="line">	<span class="keyword">if</span> v &lt;<span class="number"> 0</span> {</div><div class="line">		<span class="built_in">panic</span>(<span class="string">"sync: negative WaitGroup counter"</span>)</div><div class="line">	}</div><div class="line">	<span class="keyword">if</span> w !=<span class="number"> 0</span> && delta &gt;<span class="number"> 0</span> && v == <span class="typename">int32</span>(delta) {</div><div class="line">		<span class="built_in">panic</span>(<span class="string">"sync: WaitGroup misuse: Add called concurrently with Wait"</span>)</div><div class="line">	}</div><div class="line">	<span class="keyword">if</span> v &gt;<span class="number"> 0</span> || w ==<span class="number"> 0</span> {</div><div class="line">		<span class="keyword">return</span></div><div class="line">	}</div><div class="line">	<span class="comment">// This goroutine has set counter to 0 when waiters &gt; 0.</span></div><div class="line">	<span class="comment">// Now there can't be concurrent mutations of state:</span></div><div class="line">	<span class="comment">// - Adds must not happen concurrently with Wait,</span></div><div class="line">	<span class="comment">// - Wait does not increment waiters if it sees counter == 0.</span></div><div class="line">	<span class="comment">// Still do a cheap sanity check to detect WaitGroup misuse.</span></div><div class="line">	<span class="keyword">if</span> wg.state.Load() != state {</div><div class="line">		<span class="built_in">panic</span>(<span class="string">"sync: WaitGroup misuse: Add called concurrently with Wait"</span>)</div><div class="line">	}</div><div class="line">	<span class="comment">// Reset waiters count to 0.</span></div><div class="line">	wg.state.Store<span class="number">(0</span>)</div><div class="line">	<span class="keyword">for</span> ; w !=<span class="number"> 0</span>; w-- {</div><div class="line">		runtime_Semrelease(&wg.sema, <span class="constant">false</span>,<span class="number"> 0</span>)</div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
-
-]]></content>
-    <summary type="html">
-    <![CDATA[<p><a href="https://pkg.go.dev/sync#WaitGroup" target="_blank" rel="external">WaitGroup</a>是Go并发编程中经常使用的做任务编排的一个一个并发原语。看起来它只有几个简单的方法，使用起来比较简单。实际上，WaitGroup的内部实现也陆陆续续改变了好几次,主要是针对它的字段的原子操作不断的做优化。</p>
 ]]>
     
     </summary>
