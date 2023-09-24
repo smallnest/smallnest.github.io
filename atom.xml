@@ -4,7 +4,7 @@
   <subtitle><![CDATA[大道至简 Simplicity is the ultimate form of sophistication]]></subtitle>
   <link href="/atom.xml" rel="self"/>
   <link href="https://colobu.com/"/>
-  <updated>2023-09-24T14:15:19.943Z</updated>
+  <updated>2023-09-24T14:44:28.989Z</updated>
   <id>https://colobu.com/</id>
   
   <author>
@@ -13,6 +13,59 @@
   </author>
   
   <generator uri="http://zespia.tw/hexo/">Hexo</generator>
+  
+  <entry>
+    <title><![CDATA[从头再读取 io.Reader: 覆水难收？]]></title>
+    <link href="https://colobu.com/2023/09/24/reread-the-io-Reader/"/>
+    <id>https://colobu.com/2023/09/24/reread-the-io-Reader/</id>
+    <published>2023-09-24T14:17:38.000Z</published>
+    <updated>2023-09-24T14:44:08.094Z</updated>
+    <content type="html"><![CDATA[<p>前几天，我们百度的同学分享了Go标准库中一段好玩的好玩的代码， <code>net/http/response.go</code>中一段检查HTTP的headser中<code>Content-Length</code>未设置的情况下，对<code>http.Body</code>的有趣的处理。</p>
+<a id="more"></a>
+<p>我们知道<code>io.Reader</code>提供了<code>Read</code>方法，并没有将读取的数据再塞回去的方法，而且对于流式的Reader,也绝无可能将数据塞回去。就像覆水难收一样，泼出去的水，没办法收回来了。</p>
+<p>如果我们想从Reader读取一部分字节，做一些处理(一般是做一些检查)，然后想再让调用者从头开始读取咋办？</p>
+<p><code>net/http/response.go</code>中就有这么一段代码</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div></pre></td><td class="code"><pre><div class="line"><span class="comment">// Clone it, so we can modify r1 as needed.</span></div><div class="line">r1 := <span class="built_in">new</span>(Response)</div><div class="line">*r1 = *r</div><div class="line"><span class="keyword">if</span> r1.ContentLength ==<span class="number"> 0</span> && r1.Body != <span class="constant">nil</span> {</div><div class="line">	<span class="comment">// Is it actually 0 length? Or just unknown?</span></div><div class="line">	<span class="keyword">var</span> buf <span class="number">[1</span>]<span class="typename">byte</span></div><div class="line">	n, err := r1.Body.Read(buf[:])</div><div class="line">	<span class="keyword">if</span> err != <span class="constant">nil</span> && err != io.EOF {</div><div class="line">		<span class="keyword">return</span> err</div><div class="line">	}</div><div class="line">	<span class="keyword">if</span> n ==<span class="number"> 0</span> {</div><div class="line">		<span class="comment">// Reset it to a known zero reader, in case underlying one</span></div><div class="line">		<span class="comment">// is unhappy being read repeatedly.</span></div><div class="line">		r1.Body = NoBody</div><div class="line">	} <span class="keyword">else</span> {</div><div class="line">		r1.ContentLength =<span class="number"> -1</span></div><div class="line">		r1.Body = <span class="keyword">struct</span> {</div><div class="line">			io.Reader</div><div class="line">			io.Closer</div><div class="line">		}{</div><div class="line">			io.MultiReader(bytes.NewReader(buf[<span class="number">:1</span>]), r.Body),</div><div class="line">			r.Body,</div><div class="line">		}</div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>这段代码主要是针对响应(Response)对象做了一次克隆(Clone),目的是为了能够安全地修改响应对象,而不影响原始的响应对象。</p>
+<p>具体来看:</p>
+<ol>
+<li>r1 := new(Response) 创建一个新的响应对象</li>
+<li>r1 = r 让r1成为原始响应r的克隆</li>
+<li>接下来判断如果响应内容长度r1.ContentLength == 0 且响应体r1.Body != nil</li>
+<li>这说明内容长度标记为0,但实际上响应体不为空。这种情况下无法确定内容究竟是0长度还是长度未知。</li>
+<li>所以读取1字节到buf,以判断响应体是否真是0长度。</li>
+<li>如果读取到EOF,说明响应体确实长度为0,将Body重置为NoBody。</li>
+<li>否则说明长度未知,将ContentLength设置为-1,并用MultiReader将已读取的1字节内容和原Body组合,作为新Body。</li>
+<li>这样通过克隆的响应对象r1,可以安全地修改ContentLength和Body,而不影响原始响应对象r。</li>
+</ol>
+<p>这段代码通过克隆请求对象,巧妙地处理了内容长度标记为0但实际有内容的情况,避免了对原始响应对象的修改。</p>
+<p>它先读取了1个字节，来判断Body是否为空，不为空在通过<code>io.MultiReader(bytes.NewReader(buf[:1]), r.Body),</code>把这一个字节和原来的io.Reader(<code>r.Body</code>)在捏合在一起，形成一个新的io.Reader。</p>
+<p>通过<code>io.MultiReader</code>新建一个 io.Reader,就可以把已读取的字节和剩余未读取的字节组合起来，形成都未读取的Reader。</p>
+<p>标准库<code>net/http/transfer.go</code>中也有一段相同的逻辑处理。</p>
+<p>这让我想起了<a href="https://github.com/soheilhy/cmux" target="_blank" rel="external">soheilhy/cmux</a>, <a href="http://rpcx.io" target="_blank" rel="external">rpcx</a>最早使用它在一个端口上提供不同传输的协议。</p>
+<p>cmux也是预先读取一部分数据，和预先配置的Matcher进行匹配，如果匹配成功，比如HTTP1.1协议，那么这个连接后续就按照HTTP1.1协议进行解析。那么预先读取的这些字节也得交给解析器从头开始解析，否则数据就缺失了，那么它是怎么实现的呢？</p>
+<p>cmux使用老二另外一个方法，它创建了一个bufferedReader:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> bufferedReader <span class="keyword">struct</span> {</div><div class="line">	source     io.Reader</div><div class="line">	buffer     bytes.Buffer</div><div class="line">	bufferRead <span class="typename">int</span></div><div class="line">	bufferSize <span class="typename">int</span></div><div class="line">	sniffing   <span class="typename">bool</span></div><div class="line">	lastErr    error</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>当连接开始在侦探和哪个Matcher匹配的时候， conn连接会把数据写入到这个buffer中：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> (s *bufferedReader) Read(p []<span class="typename">byte</span>) (<span class="typename">int</span>, error) {</div><div class="line">	<span class="keyword">if</span> s.bufferSize &gt; s.bufferRead { <span class="comment">// buffer中有未读的数据，先读取这个</span></div><div class="line">		bn := <span class="built_in">copy</span>(p, s.buffer.Bytes()[s.bufferRead:s.bufferSize])</div><div class="line">		s.bufferRead += bn</div><div class="line">		<span class="keyword">return</span> bn, s.lastErr</div><div class="line">	} <span class="keyword">else</span> <span class="keyword">if</span> !s.sniffing && s.buffer.Cap() !=<span class="number"> 0</span> {</div><div class="line">		s.buffer = bytes.Buffer{}</div><div class="line">	}</div><div class="line"></div><div class="line">	<span class="comment">// 从原始的conn中读取</span></div><div class="line">	sn, sErr := s.source.Read(p)</div><div class="line">	<span class="keyword">if</span> sn &gt;<span class="number"> 0</span> && s.sniffing { <span class="comment">// 如果还在侦探状态，把读取的数据写入到buffer中</span></div><div class="line">		s.lastErr = sErr</div><div class="line">		<span class="keyword">if</span> wn, wErr := s.buffer.Write(p[:sn]); wErr != <span class="constant">nil</span> {</div><div class="line">			<span class="keyword">return</span> wn, wErr</div><div class="line">		}</div><div class="line">	}</div><div class="line">	<span class="keyword">return</span> sn, sErr</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>一旦侦探完成(match一个协议)，那么就会把读取的指针置为最开始的地方，从头开始读取，根据上面的方法的逻辑，读取完buffer就从原始conn中读取，也不会再往buffer中写。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> (m *MuxConn) doneSniffing() {</div><div class="line">	m.buf.reset(<span class="constant">false</span>)</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> (s *bufferedReader) reset(snif <span class="typename">bool</span>) {</div><div class="line">	s.sniffing = snif</div><div class="line">	s.bufferRead =<span class="number"> 0</span> <span class="comment">// 退回到原点，从最开始的数据开始读</span></div><div class="line">	s.bufferSize = s.buffer.Len() <span class="comment">// 已读取的数据</span></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>通过这种方式，也实现了预读取的功能。</p>
+<p>看起来，在Go语言中，还真的能覆水再回收。</p>
+]]></content>
+    <summary type="html">
+    <![CDATA[<p>前几天，我们百度的同学分享了Go标准库中一段好玩的好玩的代码， <code>net/http/response.go</code>中一段检查HTTP的headser中<code>Content-Length</code>未设置的情况下，对<code>http.Body</code>的有趣的处理。</p>
+]]>
+    
+    </summary>
+    
+      <category term="Go" scheme="https://colobu.com/categories/Go/"/>
+    
+  </entry>
   
   <entry>
     <title><![CDATA[更精准的时延：使用软件时间戳和硬件时间戳]]></title>
@@ -1424,74 +1477,6 @@
 ]]></content>
     <summary type="html">
     <![CDATA[<p>Go 1.21中新增加了三个内建的函数，相比以前的<code>len</code>、<code>cap</code>、<code>delete</code>、<code>append</code>、<code>close</code>、<code>panic</code>等函数，又有了新的变化，让我们一起来看看吧。</p>
-]]>
-    
-    </summary>
-    
-      <category term="Go" scheme="https://colobu.com/categories/Go/"/>
-    
-  </entry>
-  
-  <entry>
-    <title><![CDATA[怎么阻止一个Go程序退出？]]></title>
-    <link href="https://colobu.com/2023/05/22/how-to-block-the-go-app-exit/"/>
-    <id>https://colobu.com/2023/05/22/how-to-block-the-go-app-exit/</id>
-    <published>2023-05-22T14:18:30.000Z</published>
-    <updated>2023-05-22T14:38:26.805Z</updated>
-    <content type="html"><![CDATA[<p>给大家分享一个阻止Go程序退出的方法集合，其中还是有一些脑洞大开的方法。你有什么别的方法可以阻止Go程序退出么,欢迎在留言区留言。</p>
-<a id="more"></a>
-<p>像下面这样的程序，程序一运行就是退出了，原因在于主goroutine执行完了，子goroutine虽然存在，但是没能阻止主goroutine的执行:</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> main</div><div class="line"></div><div class="line"><span class="keyword">import</span> <span class="string">"net/http"</span></div><div class="line"></div><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	<span class="keyword">go</span> http.ListenAndServe(<span class="string">":8080"</span>, <span class="constant">nil</span>)</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>我整理了11个方法，看看你是否想得到。</p>
-<h2 id="方法一：_死循环">方法一： 死循环</h2>
-<p>这个方法是一个傻傻的方法，会耗费一个CPU核空转。</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> main</div><div class="line"></div><div class="line"><span class="keyword">import</span> <span class="string">"net/http"</span></div><div class="line"></div><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	<span class="keyword">go</span> http.ListenAndServe(<span class="string">":8080"</span>, <span class="constant">nil</span>)</div><div class="line"></div><div class="line">	<span class="keyword">for</span> {</div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<h2 id="方法二：select{}">方法二：<code>select{}</code></h2>
-<p>这是我写例子的时候常用的一个技巧，使用不带case的select语句，字数够少，所以我喜欢用。</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> main</div><div class="line"></div><div class="line"><span class="keyword">import</span> <span class="string">"net/http"</span></div><div class="line"></div><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	<span class="keyword">go</span> http.ListenAndServe(<span class="string">":8080"</span>, <span class="constant">nil</span>)</div><div class="line"></div><div class="line">	<span class="keyword">select</span> {}</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<h2 id="方法三:_从一个不带缓存的channel中读数据或者放数据">方法三: 从一个不带缓存的channel中读数据或者放数据</h2>
-<p>两种方法都会被阻塞。</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> main</div><div class="line"></div><div class="line"><span class="keyword">import</span> <span class="string">"net/http"</span></div><div class="line"></div><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	<span class="keyword">go</span> http.ListenAndServe(<span class="string">":8080"</span>, <span class="constant">nil</span>)</div><div class="line"></div><div class="line">	c := <span class="built_in">make</span>(<span class="keyword">chan</span> <span class="keyword">struct</span>{})</div><div class="line">	<span class="comment">// &lt;-c</span></div><div class="line">	c &lt;- <span class="keyword">struct</span>{}{}</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<h2 id="方法四：_从一个nil_channel中读数据或者放数据">方法四： 从一个nil channel中读数据或者放数据</h2>
-<p>两种方法都会被阻塞。</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> main</div><div class="line"></div><div class="line"><span class="keyword">import</span> <span class="string">"net/http"</span></div><div class="line"></div><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	<span class="keyword">go</span> http.ListenAndServe(<span class="string">":8080"</span>, <span class="constant">nil</span>)</div><div class="line"></div><div class="line">	<span class="keyword">var</span> c <span class="keyword">chan</span> <span class="keyword">struct</span>{}</div><div class="line">	<span class="comment">// &lt;-c</span></div><div class="line"></div><div class="line">	c &lt;- <span class="keyword">struct</span>{}{}</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<h2 id="方法五：互斥锁">方法五：互斥锁</h2>
-<p>读写锁也类似。</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> main</div><div class="line"></div><div class="line"><span class="keyword">import</span> (</div><div class="line">	<span class="string">"net/http"</span></div><div class="line">	<span class="string">"sync"</span></div><div class="line">)</div><div class="line"></div><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	<span class="keyword">go</span> http.ListenAndServe(<span class="string">":8080"</span>, <span class="constant">nil</span>)</div><div class="line"></div><div class="line">	<span class="keyword">var</span> m sync.Mutex</div><div class="line">	m.Lock()</div><div class="line">	m.Lock()</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<h2 id="方法六：WaitGroup">方法六：WaitGroup</h2>
-<p>也许你已经掌握套路了，很多同步原语都可以，比如Cond、信号量，我们就不重复介绍了。</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> main</div><div class="line"></div><div class="line"><span class="keyword">import</span> (</div><div class="line">	<span class="string">"net/http"</span></div><div class="line">	<span class="string">"sync"</span></div><div class="line">)</div><div class="line"></div><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	<span class="keyword">go</span> http.ListenAndServe(<span class="string">":8080"</span>, <span class="constant">nil</span>)</div><div class="line"></div><div class="line">	<span class="keyword">var</span> wg sync.WaitGroup</div><div class="line">	wg.Add<span class="number">(1</span>)</div><div class="line">	wg.Wait()</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<h2 id="方法七:_阻塞I/O">方法七: 阻塞I/O</h2>
-<p>最简单的使用<code>os.Stdin</code>,还可以使用文件、socket等，只要阻塞I/O即可。</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> main</div><div class="line"></div><div class="line"><span class="keyword">import</span> (</div><div class="line">	<span class="string">"net/http"</span></div><div class="line">	<span class="string">"os"</span></div><div class="line">)</div><div class="line"></div><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	<span class="keyword">go</span> http.ListenAndServe(<span class="string">":8080"</span>, <span class="constant">nil</span>)</div><div class="line"></div><div class="line">	os.Stdin.Read(<span class="built_in">make</span>([]<span class="typename">byte</span>,<span class="number"> 1</span>))</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<h2 id="方法八:_使用_signal-Notify">方法八: 使用 <code>signal.Notify</code></h2>
-<p>这是我在产品中经常使用的一个技巧，捕获<code>os.Signal</code>,实现优雅的退出。</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> main</div><div class="line"></div><div class="line"><span class="keyword">import</span> (</div><div class="line">	<span class="string">"net/http"</span></div><div class="line">	<span class="string">"os"</span></div><div class="line">	<span class="string">"os/signal"</span></div><div class="line">)</div><div class="line"></div><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	<span class="keyword">go</span> http.ListenAndServe(<span class="string">":8080"</span>, <span class="constant">nil</span>)</div><div class="line"></div><div class="line">	c := <span class="built_in">make</span>(<span class="keyword">chan</span> os.Signal,<span class="number"> 1</span>)</div><div class="line">	signal.Notify(c, os.Interrupt)</div><div class="line">	&lt;-c</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<h2 id="方法九：_使用_signal-Notify的变形">方法九： 使用 <code>signal.Notify</code>的变形</h2>
-<p>使用Context,可以把context传递给子goroutine,Context也适合和select配套使用。</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> main</div><div class="line"></div><div class="line"><span class="keyword">import</span> (</div><div class="line">	<span class="string">"context"</span></div><div class="line">	<span class="string">"net/http"</span></div><div class="line">	<span class="string">"os"</span></div><div class="line">	<span class="string">"os/signal"</span></div><div class="line">)</div><div class="line"></div><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	<span class="keyword">go</span> http.ListenAndServe(<span class="string">":8080"</span>, <span class="constant">nil</span>)</div><div class="line"></div><div class="line">	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)</div><div class="line">	<span class="keyword">defer</span> stop()</div><div class="line">	&lt;-ctx.Done()</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<h2 id="方法十：_fmt-Scanln()">方法十： <code>fmt.Scanln()</code></h2>
-<p>阻塞I/O更简洁的方式。</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> main</div><div class="line"></div><div class="line"><span class="keyword">import</span> (</div><div class="line">	<span class="string">"fmt"</span></div><div class="line">	<span class="string">"net/http"</span></div><div class="line">)</div><div class="line"></div><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	<span class="keyword">go</span> http.ListenAndServe(<span class="string">":8080"</span>, <span class="constant">nil</span>)</div><div class="line"></div><div class="line">	fmt.Scanln()</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<h2 id="方法十一：_runtime-Goexit()">方法十一： <code>runtime.Goexit()</code></h2>
-<p>主程序退出但是函数却不返回，直到子goroutine完成。</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> main</div><div class="line"></div><div class="line"><span class="keyword">import</span> (</div><div class="line">	<span class="string">"net/http"</span></div><div class="line">	<span class="string">"runtime"</span></div><div class="line">)</div><div class="line"></div><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	<span class="keyword">go</span> http.ListenAndServe(<span class="string">":8080"</span>, <span class="constant">nil</span>)</div><div class="line"></div><div class="line">	runtime.Goexit()</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>你还知道哪些方法？</p>
-]]></content>
-    <summary type="html">
-    <![CDATA[<p>给大家分享一个阻止Go程序退出的方法集合，其中还是有一些脑洞大开的方法。你有什么别的方法可以阻止Go程序退出么,欢迎在留言区留言。</p>
 ]]>
     
     </summary>
