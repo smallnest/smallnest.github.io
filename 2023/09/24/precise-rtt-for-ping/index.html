@@ -1,0 +1,705 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset="utf-8">
+  
+  <title>更精准的时延：使用软件时间戳和硬件时间戳</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+  <meta name="description" content="在我上一篇文章mping: 使用新的icmp库实现探测和压测工具文章中，介绍了使用新的第三方库icmpx使用ping的功能,实现了mping这样一个高性能的探测和压测工具，并且还计算了往返时延指标(RTT, Round Trip Time)。
+有时候，我们在做应用开发的时候，比如微服务调用的时候，也常常会计算程序的延时(latency)。">
+<meta property="og:type" content="article">
+<meta property="og:title" content="更精准的时延：使用软件时间戳和硬件时间戳">
+<meta property="og:url" content="https://colobu.com/2023/09/24/precise-rtt-for-ping/">
+<meta property="og:site_name" content="鸟窝">
+<meta property="og:description" content="在我上一篇文章mping: 使用新的icmp库实现探测和压测工具文章中，介绍了使用新的第三方库icmpx使用ping的功能,实现了mping这样一个高性能的探测和压测工具，并且还计算了往返时延指标(RTT, Round Trip Time)。
+有时候，我们在做应用开发的时候，比如微服务调用的时候，也常常会计算程序的延时(latency)。">
+<meta property="og:image" content="timestamp.png">
+<meta property="og:image" content="ethtool1.png">
+<meta property="og:image" content="ethtool2.png">
+<meta property="og:image" content="ethtool3.png">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="更精准的时延：使用软件时间戳和硬件时间戳">
+<meta name="twitter:description" content="在我上一篇文章mping: 使用新的icmp库实现探测和压测工具文章中，介绍了使用新的第三方库icmpx使用ping的功能,实现了mping这样一个高性能的探测和压测工具，并且还计算了往返时延指标(RTT, Round Trip Time)。
+有时候，我们在做应用开发的时候，比如微服务调用的时候，也常常会计算程序的延时(latency)。">
+
+  
+  <link rel="alternative" href="/atom.xml" title="鸟窝" type="application/atom+xml">
+  
+  
+  <link rel="icon" href="/favicon.png">
+  
+  <link rel="stylesheet" href="/css/style.css" type="text/css">
+
+  <link href="//cdn.staticfile.org/font-awesome/4.2.0/css/font-awesome.css" rel="stylesheet">
+  
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/fancybox/2.1.7/css/jquery.fancybox.min.css"
+    media="screen" type="text/css">
+  
+  <link rel="stylesheet" href="//cdnjs.cloudflare.com/ajax/libs/animate.css/3.1.1/animate.min.css" media="screen"
+    type="text/css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/tonsky/FiraCode@1.207/distr/fira_code.css">
+</head>
+<body>
+  <div id="container">
+    <div id="wrap">
+      <header id="header">
+  <div id="banner"></div>
+  <div id="header-outer" class="outer">
+    <div id="header-title" class="inner">
+      <h1 id="logo-wrap" class="animated bounceInLeft">
+        <a href="/" id="logo">鸟窝</a>
+      </h1>
+      
+        <h2 id="subtitle-wrap" class="animated bounceInLeft">
+          <a href="/" id="subtitle">大道至简 Simplicity is the ultimate form of sophistication</a>
+        </h2>
+      
+    </div>
+    <div id="header-inner" class="inner">
+      <nav id="main-nav">
+        <a id="main-nav-toggle" class="nav-icon"></a>
+        
+          
+            <a class="main-nav-link" href="/"><i class="fa fa-home">&nbsp;</i>首页</a>
+          
+          
+          
+            <a class="main-nav-link" href="/archives"><i class="fa fa-folder-o">&nbsp;</i>归档</a>
+          
+          
+          
+            <a class="main-nav-link" href="https://github.com/smallnest"><i class="fa fa-github">&nbsp;</i>github</a>
+          
+          
+          
+            <div class="dropdown main-nav-link"><a class="main-nav-link" href="#"><i class="fa fa-bars">&nbsp;</i>网站群</a>
+              <div class="dropdown-content">
+          
+            
+              <a href="/goasm"><i class="fa fa-language"></i>&nbsp;Go汇编示例</a>
+            
+                
+          
+            
+              <a href="https://gowebexamples.com"><i class="fa fa-external-link"></i>&nbsp;Go Web开发示例</a>
+            
+                
+          
+            
+              <a href="http://go-database-sql.org"><i class="fa fa-external-link"></i>&nbsp;Go 数据库开发教程</a>
+            
+                
+          
+            
+              <hr>
+            
+                
+          
+            
+              <a href="http://rpcx.io"><i class="fa undefined"></i>&nbsp;RPCX官网</a>
+            
+                
+          
+            
+              <a href="http://cn.doc.rpcx.io"><i class="fa undefined"></i>&nbsp;RPC开发指南</a>
+            
+                
+          
+          </div>
+        </div>
+          
+          
+          
+            <a class="main-nav-link" href="/ScalaCollectionsCookbook"><i class="fa fa-book">&nbsp;</i>Scala集合技术手册</a>
+          
+          
+          
+            <a class="main-nav-link" href="/about"><i class="fa fa-lemon-o">&nbsp;</i>关于</a>
+          
+          
+
+
+      </nav>
+      <nav id="sub-nav">
+        
+          <a id="nav-rss-link" class="nav-icon" href="/atom.xml" title="RSS Feed"></a>
+        
+        <a id="nav-search-btn" class="nav-icon" title="Search"></a>
+      </nav>
+      <div id="search-form-wrap">
+        <form action="https://www.google.com/search" method="get" accept-charset="utf-8" class="search-form">
+          <input type="search" id="search-word" name="q" maxlength="20" class="search-form-input" placeholder="Search">
+          <input type=hidden name=ie value="utf-8">
+          <input type=hidden name=oe value="utf-8">
+          <input type=hidden name=hl value="zh-CN">
+          <input type="submit" id="search-submit" value="" class="search-form-submit">
+        </form>
+      </div>
+    </div>
+  </div>
+</header>
+      <div class="outer">
+        <section id="main"><article id="post-precise-rtt-for-ping" class="article article-type-post" itemscope
+  itemprop="blogPost">
+  <div class="article-meta">
+    <a href="/2023/09/24/precise-rtt-for-ping/" class="article-date">
+  <time datetime="2023-09-24T07:05:41.000Z" itemprop="datePublished">2023年09月24日</time>
+</a>
+    
+  <div class="article-category">
+    <a class="article-category-link" href="/categories/Go/">Go</a>
+  </div>
+
+    
+  <div class="article-author"> by smallnest</div>
+
+  </div>
+  <div class="article-inner">
+    
+    
+    <header class="article-header">
+      
+  
+    <h1 class="article-title" itemprop="name">
+      更精准的时延：使用软件时间戳和硬件时间戳
+	  
+    </h1>
+  
+
+    </header>
+    
+    <div class="article-entry" itemprop="articleBody">
+      
+      
+      
+      <script>function show_answer(btn, x) { if (btn.value === "显示答案") { btn.value = "隐藏答案" } else { btn.value = "显示答案" } var as = document.getElementById(x); if (as.style.display === "none") { as.style.display = "block" } else { as.style.display = "none" } }</script>
+      <p>在我上一篇文章<a href="https://colobu.com/2023/09/10/mping-a-multi-targets-high-frequency-pressure-measuring-and-detection-tool/" target="_blank" rel="external">mping: 使用新的icmp库实现探测和压测工具</a>文章中，介绍了使用新的第三方库icmpx使用ping的功能,实现了mping这样一个高性能的探测和压测工具，并且还计算了往返时延指标(RTT, Round Trip Time)。</p>
+<p>有时候，我们在做应用开发的时候，比如微服务调用的时候，也常常会计算程序的延时(latency)。</p>
+<a id="more"></a>
+<h2 id="网络时延">网络时延</h2>
+<p>一般情况下，我们通过在应用层读取时间戳，计算两个时间戳的延时($t1 - t0$)，就可以得到时延，就足够了。通过观察这个数据，我们可以看到网络的时延情况(latency)和抖动(jitter)。但是有时候,我们想知道物理网络传输网络的时延是多少，比如北京A机房到B机房的时延，如果通过应用层的时间戳来计算，误差就太大了。为什么呢？</p>
+<p>我们知道，当你的服务器和另外一个服务器通讯的时候，包(packet)其实经过了很漫长的链路，从你的应用程序写入本机的buffer,到本机协议栈的处理，网卡处理、网线、机房的各种网络设备、骨干网、再到对端机房、网卡、协议栈、应用程序，经过了很多很多的环节，如果还经过了云网络的话，会更复杂。其中应用层到网卡处理这一段时间，可能会因为CPU的处理能力、服务器负载、网络处理的能力，导致有比较大的耗时，如果在应用层计算网络两点之间的网络时延的话，不能正确得到两点之间的时延或者RTT。</p>
+<p>一般来说，光信号在光纤中的传输速度大约为20万公里/秒，所以理论上每100公里的物理网络时延大约为0.5毫秒。但光信号在光纤上的传播时延会受到光纤材质、组件损耗、连接损耗等因素的影响,会比理论值稍大一些。另外在运营商实际网络中,还需要考虑路由器处理带来的转发时延的影响。</p>
+<p>北京到广州的全程大约为2200公里。按照理论计算时延11毫秒， RTT的话需要来回的时延，所以是22毫秒，但是实际是，我使用我在北京的一个腾讯云的服务器ping广州的一台机器，时延大约38.9毫秒：</p>
+<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div></pre></td><td class="code"><pre><div class="line">ubuntu@lab:~$ ping <span class="number">221.4</span>.<span class="number">66.66</span></div><div class="line">PING <span class="number">221.4</span>.<span class="number">66.66</span> (<span class="number">221.4</span>.<span class="number">66.66</span>) <span class="number">56</span>(<span class="number">84</span>) bytes of data.</div><div class="line"><span class="number">64</span> bytes from <span class="number">221.4</span>.<span class="number">66.66</span>: icmp_seq=<span class="number">1</span> ttl=<span class="number">251</span> time=<span class="number">38.9</span> ms</div><div class="line"><span class="number">64</span> bytes from <span class="number">221.4</span>.<span class="number">66.66</span>: icmp_seq=<span class="number">2</span> ttl=<span class="number">251</span> time=<span class="number">38.8</span> ms</div><div class="line"><span class="number">64</span> bytes from <span class="number">221.4</span>.<span class="number">66.66</span>: icmp_seq=<span class="number">3</span> ttl=<span class="number">251</span> time=<span class="number">38.9</span> ms</div><div class="line"><span class="number">64</span> bytes from <span class="number">221.4</span>.<span class="number">66.66</span>: icmp_seq=<span class="number">4</span> ttl=<span class="number">251</span> time=<span class="number">38.9</span> ms</div><div class="line"><span class="number">64</span> bytes from <span class="number">221.4</span>.<span class="number">66.66</span>: icmp_seq=<span class="number">5</span> ttl=<span class="number">251</span> time=<span class="number">38.9</span> ms</div></pre></td></tr></table></figure>
+
+<p>这个指标对于物理网络建设以及准备使用云设施的服务器来说，非常的重要，毕竟越短的时延会给我们带来更好的性能。同时如果更好的更准确的计算这个时延也很重要了。</p>
+<h2 id="软件时间戳和硬件时间戳">软件时间戳和硬件时间戳</h2>
+<p>我们可以通过软件时间戳或者硬件时间戳，更精确的计算包的进入发送和接收的时间戳，去掉应用层或者协议栈层带来的误差。</p>
+<p>如果硬件和驱动程序支持,网卡会在发送和接收数据包时,使用硬件计数器向数据包的时间戳字段写入一个高精度时间戳。</p>
+<p>如果硬件不支持，Linux也实现实现一个软件的时间戳，协议栈处理收到和发出的包时写入一个高精度时间戳。</p>
+<p><img src="timestamp.png" alt=""></p>
+<ul>
+<li><p>软件时间戳(Software Timestamp)<br>通过软件方式获取时间和写入数据包的时间戳。相比硬件时间戳,软件时间戳有以下特点:</p>
+<ul>
+<li>获取时间和写入时间戳的过程在软件层完成,不需要硬件支持。</li>
+<li>时间精度较低,通常只能达到毫秒级。硬件时间戳可以达到微秒或纳秒级精度。</li>
+<li>时间同步不够精确。受到软件运行开销、系统调度等因素影响。</li>
+<li>对系统资源占用较大,会增加中断开销。</li>
+<li>只能标记退出和进入协议栈的时间,不能精确标记发送和接收时刻。</li>
+<li>不同设备之间时间同步困难,容易产生时间偏差。</li>
+</ul>
+</li>
+<li><p>硬件时间戳(Hardware Timestamp)<br>通过硬件芯片中的计数器来获取时间和写入数据包时间戳。相比软件时间戳,硬件时间戳具有以下优点:</p>
+<ul>
+<li>时间精度高,可以达到纳秒或皮秒级,满足对实时性要求较高的场景。</li>
+<li>时间捕获精确,可以准确标记数据包的发送时刻和接收时刻。</li>
+<li>对系统资源占用少,减少了中断开销。</li>
+<li>不同设备之间时间同步容易,通过协议如PTP实现同步精度高。</li>
+<li>不受软件运行开销等影响,时间戳更准确。</li>
+</ul>
+</li>
+</ul>
+<p>可以通过 <code>ethtool -T &lt;网络接口名&gt;</code>来查看机器对软硬件时间戳的支持情况。比如下面这台机器软硬件时间戳都不支持<br><img src="ethtool1.png" alt=""></p>
+<p>下面这台机器只支持软件时间戳：<br><img src="ethtool2.png" alt=""></p>
+<p>下面这台机器支持软硬件时间戳：<br><img src="ethtool3.png" alt=""></p>
+<h2 id="使用软硬件时间戳">使用软硬件时间戳</h2>
+<p>Linux内核对软硬件时间戳的支持是渐进的。</p>
+<p>软件时间戳(Software Timestamping)自2.6内核开始支持,通过调用clock_gettime()等时间系统调用可以获取software timestamp，timestamp精度可以达到纳秒级。但软件时间戳易受到系统调度、中断等影响,精度较差。</p>
+<p>硬件时间戳(Hardware Timestamping)自3.5内核开始引入PTP硬件时间戳支持,主要应用于高精度时间同步，能够直接读取网络卡、FPGA等硬件计数器的值作为时间戳，精度可以达到纳秒甚至皮秒级。但需要硬件支持,且对驱动和读数有一定要求。</p>
+<p>接下来我对mping工具进行改造，让它：</p>
+<ul>
+<li>如果client支持硬件时间戳，那么则使用硬件时间戳</li>
+<li>如果client不支持硬件时间戳，退而求其次，使用软件时间戳</li>
+<li>如果client软硬件时间戳都不支持，那么则使用应用程序的时间戳</li>
+</ul>
+<p>接下来我边讲解代码的同时，边讲解如何使用软硬件时间戳的。</p>
+<p>因为需要对socket进行底层的设置和读写，所以使用icmpx这个库已经不合适了，我把原来的mping项目转换回<code>conn, err := net.ListenPacket(&quot;ip4:icmp&quot;, &quot;0.0.0.0&quot;)</code>的形式，这样我们就可以得到socket的文件描述符进行开启软硬件时间戳的设置，并且可以读取这些时间戳了。</p>
+<h3 id="创建连接">创建连接</h3>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div><div class="line">35</div><div class="line">36</div><div class="line">37</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> openConn() (*net.IPConn, error) {</div><div class="line">	conn, err := net.ListenPacket(<span class="string">"ip4:icmp"</span>, <span class="string">"0.0.0.0"</span>)</div><div class="line">	<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">		<span class="keyword">return</span> <span class="constant">nil</span>, err</div><div class="line">	}</div><div class="line"></div><div class="line">	ipconn := conn.(*net.IPConn)</div><div class="line">	f, err := ipconn.File()</div><div class="line">	<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">		<span class="keyword">return</span> <span class="constant">nil</span>, err</div><div class="line">	}</div><div class="line">	<span class="keyword">defer</span> f.Close()</div><div class="line"></div><div class="line">	fd := <span class="typename">int</span>(f.Fd())</div><div class="line"></div><div class="line">	flags := unix.SOF_TIMESTAMPING_SYS_HARDWARE | unix.SOF_TIMESTAMPING_RAW_HARDWARE | unix.SOF_TIMESTAMPING_SOFTWARE | unix.SOF_TIMESTAMPING_RX_HARDWARE | unix.SOF_TIMESTAMPING_RX_SOFTWARE |</div><div class="line">		unix.SOF_TIMESTAMPING_TX_HARDWARE | unix.SOF_TIMESTAMPING_TX_SOFTWARE |</div><div class="line">		unix.SOF_TIMESTAMPING_OPT_CMSG | unix.SOF_TIMESTAMPING_OPT_TSONLY</div><div class="line">	<span class="keyword">if</span> err := syscall.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_TIMESTAMPING, flags); err != <span class="constant">nil</span> {</div><div class="line">		supportTxTimestamping = <span class="constant">false</span></div><div class="line">		supportRxTimestamping = <span class="constant">false</span></div><div class="line">		<span class="keyword">if</span> err := syscall.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_TIMESTAMPNS,<span class="number"> 1</span>); err == <span class="constant">nil</span> {</div><div class="line">			supportRxTimestamping = <span class="constant">true</span></div><div class="line">		}</div><div class="line"></div><div class="line">		<span class="keyword">return</span> ipconn, <span class="constant">nil</span></div><div class="line">	}</div><div class="line">	timeout := syscall.Timeval{Sec:<span class="number"> 1</span>, Usec:<span class="number"> 0</span>}</div><div class="line">	<span class="keyword">if</span> err := syscall.SetsockoptTimeval(fd, unix.SOL_SOCKET, unix.SO_RCVTIMEO, &timeout); err != <span class="constant">nil</span> {</div><div class="line">		<span class="keyword">return</span> <span class="constant">nil</span>, err</div><div class="line">	}</div><div class="line">	<span class="keyword">if</span> err := syscall.SetsockoptTimeval(fd, unix.SOL_SOCKET, unix.SO_SNDTIMEO, &timeout); err != <span class="constant">nil</span> {</div><div class="line">		<span class="keyword">return</span> <span class="constant">nil</span>, err</div><div class="line">	}</div><div class="line"></div><div class="line">	<span class="keyword">return</span> ipconn, <span class="constant">nil</span></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<ul>
+<li>首先我们要先创建一个icmp conn对象，通过<code>net.ListenPacket(&quot;ip4:icmp&quot;, &quot;0.0.0.0&quot;)</code>即可获得。</li>
+<li>然后得到它的文件描述符(通过<code>File.Fd</code>方法)，也有通过<code>Control</code>方法得到socket的文件描述符的:</li>
+</ul>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">var</span> connFd <span class="typename">int</span></div><div class="line">err = conn.Control(<span class="keyword">func</span>(fd <span class="typename">uintptr</span>) {</div><div class="line">    connFd = <span class="typename">int</span>(fd) </div><div class="line">})</div></pre></td></tr></table></figure>
+
+<p>两种方法都可以。</p>
+<ul>
+<li>接下来我们通过<code>SetsockoptInt</code>设置读取软硬件时间戳。 软硬件的标志都设置上，发送和接收的时间戳都设置上。你可以想想，发送的软硬件时间戳我们咋获取？应用程序把外放数据写入到缓冲区就返回了，那个时候它是得不到软硬件时间戳的。通过设置<code>SOF_TIMESTAMPING_OPT_CMSG</code>,可以在在网卡发送外发数据时，把软件或者硬件的时间戳写如到MSG_ERRQUEUE，你可以后续读取到这个时间戳。</li>
+</ul>
+<p>这里不会主动帮你开启硬件时间戳。如果你的硬件支持，但是没有开启的话，你可以手动开始硬件时间戳。</p>
+<p>这里如果当前的操作系统不支持<code>SO_TIMESTAMPING</code>的话，那么尝试设置<code>SO_TIMESTAMPNS</code>, SO_TIMESTAMPNS自2.6以来就开始支持了。</p>
+<h3 id="发送时读取发送的时间戳">发送时读取发送的时间戳</h3>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div></pre></td><td class="code"><pre><div class="line">         ......</div><div class="line">_, err = conn.WriteTo(data, target)</div><div class="line"><span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">	<span class="keyword">return</span> err</div><div class="line">}</div><div class="line"></div><div class="line">rs := &Result{</div><div class="line">	txts:   ts,</div><div class="line">	target: target.IP.String(),</div><div class="line">	seq:    seq,</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">if</span> supportTxTimestamping {</div><div class="line">	<span class="keyword">if</span> txts, err := getTxTs(fd); err != <span class="constant">nil</span> {</div><div class="line">		<span class="keyword">if</span> strings.HasPrefix(err.Error(), <span class="string">"resource temporarily unavailable"</span>) {</div><div class="line">			<span class="keyword">continue</span></div><div class="line">		}</div><div class="line">		fmt.Printf(<span class="string">"failed to get TX timestamp: %s"</span>, err)</div><div class="line">		rs.txts = txts</div><div class="line">	}</div><div class="line">}</div><div class="line">         ......</div><div class="line"></div><div class="line">         <span class="keyword">func</span> getTxTs(socketFd <span class="typename">int</span>) (<span class="typename">int64</span>, error) {</div><div class="line">             pktBuf := <span class="built_in">make</span>([]<span class="typename">byte</span>,<span class="number"> 1024</span>)</div><div class="line">             oob := <span class="built_in">make</span>([]<span class="typename">byte</span>,<span class="number"> 1024</span>)</div><div class="line">             _, oobn, _, _, err := syscall.Recvmsg(socketFd, pktBuf, oob, syscall.MSG_ERRQUEUE)</div><div class="line">             <span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">                 <span class="keyword">return</span><span class="number"> 0</span>, err</div><div class="line">             }</div><div class="line">             <span class="keyword">return</span> getTsFromOOB(oob, oobn)</div><div class="line">         }</div></pre></td></tr></table></figure>
+
+<p>每写完一个数据包，则尝试从这个socket中读取发送时的软硬件时间戳，通过<code>Recvmsg</code>系统调用从<code>MSG_ERRQUEUE</code>获取。</p>
+<h3 id="接收时读取软硬件时间戳">接收时读取软硬件时间戳</h3>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div></pre></td><td class="code"><pre><div class="line">  ......</div><div class="line">  _ = conn.SetReadDeadline(time.Now().Add<span class="number">(10</span> * time.Millisecond))</div><div class="line">n, oobn, _, ra, err := conn.ReadMsgIP(pktBuf, oob)</div><div class="line"></div><div class="line"><span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">	<span class="keyword">return</span> err</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">var</span> rxts <span class="typename">int64</span></div><div class="line"><span class="keyword">if</span> supportRxTimestamping {</div><div class="line">	<span class="keyword">if</span> rxts, err = getTsFromOOB(oob, oobn); err != <span class="constant">nil</span> {</div><div class="line">		<span class="keyword">return</span> fmt.Errorf(<span class="string">"failed to get RX timestamp: %s"</span>, err)</div><div class="line">	}</div><div class="line">} <span class="keyword">else</span> {</div><div class="line">	rxts = time.Now().UnixNano()</div><div class="line">}</div><div class="line">      ......</div></pre></td></tr></table></figure>
+
+<p><code>conn.ReadMsgIP</code>会返回Out-Of-Band的数据，接收时的软件或者硬件时间戳就写入到这里面，我们通过<code>getTsFromOOB</code>方法解析:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div></pre></td><td class="code"><pre><div class="line"></div><div class="line"><span class="keyword">func</span> getTsFromOOB(oob []<span class="typename">byte</span>, oobn <span class="typename">int</span>) (<span class="typename">int64</span>, error) {</div><div class="line">	cms, err := syscall.ParseSocketControlMessage(oob[:oobn])</div><div class="line">	<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">		<span class="keyword">return</span><span class="number"> 0</span>, err</div><div class="line">	}</div><div class="line">	<span class="keyword">for</span> _, cm := <span class="keyword">range</span> cms {</div><div class="line">		<span class="keyword">if</span> cm.Header.Level == syscall.SOL_SOCKET && cm.Header.Type == syscall.SO_TIMESTAMPING {</div><div class="line">			<span class="keyword">var</span> t unix.ScmTimestamping</div><div class="line">			<span class="keyword">if</span> err := binary.Read(bytes.NewBuffer(cm.Data), binary.LittleEndian, &t); err != <span class="constant">nil</span> {</div><div class="line">				<span class="keyword">return</span><span class="number"> 0</span>, err</div><div class="line">			}</div><div class="line"></div><div class="line">			<span class="keyword">for</span> i :=<span class="number"> 0</span>; i &lt; <span class="built_in">len</span>(t.Ts); i++ {</div><div class="line">				<span class="keyword">if</span> t.Ts[i].Nano() &gt;<span class="number"> 0</span> {</div><div class="line">					<span class="keyword">return</span> t.Ts[i].Nano(), <span class="constant">nil</span></div><div class="line">				}</div><div class="line">			}</div><div class="line"></div><div class="line">			<span class="keyword">return</span><span class="number"> 0</span>, ErrStampNotFund</div><div class="line">		}</div><div class="line"></div><div class="line">		<span class="keyword">if</span> cm.Header.Level == syscall.SOL_SOCKET && cm.Header.Type == syscall.SCM_TIMESTAMPNS {</div><div class="line">			<span class="keyword">var</span> t unix.Timespec</div><div class="line">			<span class="keyword">if</span> err := binary.Read(bytes.NewBuffer(cm.Data), binary.LittleEndian, &t); err != <span class="constant">nil</span> {</div><div class="line">				<span class="keyword">return</span><span class="number"> 0</span>, err</div><div class="line">			}</div><div class="line">			<span class="keyword">return</span> t.Nano(), <span class="constant">nil</span></div><div class="line">		}</div><div class="line">	}</div><div class="line">	<span class="keyword">return</span><span class="number"> 0</span>, ErrStampNotFund</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>如果是时间戳的数据, Level是SOL_SOCKET, Type是SO_TIMESTAMPING或者老版本的SCM_TIMESTAMPNS。</p>
+<p>我们需要一个<code>unix.ScmTimestamping</code>数据类型反序列这个数据，它包含长度是3的一个数据。一般软件时间戳放入到第一个元素中，硬件时间戳放入到第三个，但是至少会有一个元素包含时间戳，我们依次遍历，看看哪一个时间戳设置了就用哪一个。</p>
+<p>这个mping的例子演示了使用软硬件时间戳精确计算时延的例子，使用软硬件时间戳还可以实现更精确的时间服务PTP。 mping的代码可以从<a href="https://github.com/smallnest/mping/blob/master/ping.go" target="_blank" rel="external">github</a>上获取到。</p>
+
+      
+    </div>
+    <footer class="article-footer">
+      
+
+      
+      <!-- <link rel="stylesheet" href="https://unpkg.com/gitalk/dist/gitalk.css">
+      <script src="https://unpkg.com/gitalk/dist/gitalk.min.js"></script> -->
+      <section id="comments">
+        <script src="https://utteranc.es/client.js"
+                repo="smallnest/gitalk"
+                issue-term="title"
+                theme="github-light"
+                crossorigin="anonymous"
+                async>
+        </script>
+        <!-- <div id="gitalk-container"></div>
+        <script type="text/javascript">
+          var gitalkOpts = {
+            id: '2023/09/24/precise-rtt-for-ping/',
+            owner: 'smallnest',
+            repo: 'gitalk',
+            title: '更精准的时延：使用软件时间戳和硬件时间戳',
+            body: 'https://colobu.com/2023/09/24/precise-rtt-for-ping/',
+            clientID: 'bc02724130ed5b7ee275',
+            clientSecret: '68cb0bae2f93a8b88b09e0eb9b08c844b06a9047',
+            admin: ['smallnest'],
+            distractionFreeMode: false
+          };
+
+          const gitalk = new Gitalk(gitalkOpts)
+          gitalk.render('gitalk-container')
+        </script> -->
+        <noscript> 为正常使用评论功能请激活JavaScript</noscript>
+      </section>
+
+      
+
+    </footer>
+  </div>
+  
+  
+<nav id="article-nav">
+  
+    <a href="/2023/09/24/reread-the-io-Reader/" id="article-nav-newer" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">Newer</strong>
+      <div class="article-nav-title">
+        
+          从头再读取 io.Reader: 覆水难收？
+        
+      </div>
+    </a>
+  
+  
+    <a href="/2023/09/13/pgo/" id="article-nav-older" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">Older</strong>
+      <div class="article-nav-title">PGO: 为你的Go程序提效5%</div>
+    </a>
+  
+</nav>
+
+  
+</article></section>
+        
+          <aside id="sidebar">
+  
+    <div class="widget-wrap">
+  <h3 class="widget-title">微信公众号</h3>
+  <div class="widget">
+    <img width="100%" src="/images/widgets/gopatterns.jpg">
+  </div>
+</div>
+
+<div class="widget-wrap">
+  <h3 class="widget-title">极客时间专栏</h3>
+  <div class="widget">
+    <a href="https://time.geekbang.org/column/intro/100061801">
+      <img width="100%" src="/images/widgets/geekbang.png">
+    </a>
+  </div>
+</div>
+
+<div class="widget-wrap">
+    <h3 class="widget-title">原创图书</h3>
+    <div class="widget">
+      <a href="/ScalaCollectionsCookbook/">
+        <img width="100%" src="/ScalaCollectionsCookbook/scala_collections_cookbook.jpg">
+        <img width="100%" src="/ScalaCollectionsCookbook/scala_collections_cookbook_tw.png">
+      </a>
+    </div>
+</div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">分类</h3>
+    <div class="widget">
+      <ul class="category-list"><li class="category-list-item"><a class="category-list-link" href="/categories/Android/">Android</a><span class="category-list-count">12</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/C/">C++</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/DOTNET/">DOTNET</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Docker/">Docker</a><span class="category-list-count">5</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Go/">Go</a><span class="category-list-count">241</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Java/">Java</a><span class="category-list-count">64</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Linux/">Linux</a><span class="category-list-count">7</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Rust/">Rust</a><span class="category-list-count">12</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Scala/">Scala</a><span class="category-list-count">18</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/go/">go</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/k8s/">k8s</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/rust/">rust</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/分享/">分享</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/前端开发/">前端开发</a><span class="category-list-count">18</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/区块链/">区块链</a><span class="category-list-count">8</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/大数据/">大数据</a><span class="category-list-count">60</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/工具/">工具</a><span class="category-list-count">28</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/数据库/">数据库</a><span class="category-list-count">3</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/架构/">架构</a><span class="category-list-count">27</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/算法/">算法</a><span class="category-list-count">4</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/管理/">管理</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/网络编程/">网络编程</a><span class="category-list-count">13</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/设计模式/">设计模式</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/读书笔记/">读书笔记</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/运维/">运维</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/高并发编程/">高并发编程</a><span class="category-list-count">20</span></li></ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">标签云</h3>
+    <div class="widget tagcloud">
+      <a href="/tags/Android/" style="font-size: 15.71px;">Android</a><a href="/tags/ApacheBench/" style="font-size: 11.43px;">ApacheBench</a><a href="/tags/Bower/" style="font-size: 10.00px;">Bower</a><a href="/tags/C/" style="font-size: 10.00px;">C#</a><a href="/tags/CDN/" style="font-size: 10.00px;">CDN</a><a href="/tags/CQRS/" style="font-size: 10.00px;">CQRS</a><a href="/tags/CRC/" style="font-size: 10.00px;">CRC</a><a href="/tags/CSS/" style="font-size: 11.43px;">CSS</a><a href="/tags/CompletableFuture/" style="font-size: 10.00px;">CompletableFuture</a><a href="/tags/Comsat/" style="font-size: 10.00px;">Comsat</a><a href="/tags/Curator/" style="font-size: 18.57px;">Curator</a><a href="/tags/DSL/" style="font-size: 10.00px;">DSL</a><a href="/tags/Disruptor/" style="font-size: 10.00px;">Disruptor</a><a href="/tags/Docker/" style="font-size: 11.43px;">Docker</a><a href="/tags/Ember/" style="font-size: 11.43px;">Ember</a><a href="/tags/FastJson/" style="font-size: 10.00px;">FastJson</a><a href="/tags/Fiber/" style="font-size: 10.00px;">Fiber</a><a href="/tags/GAE/" style="font-size: 10.00px;">GAE</a><a href="/tags/GC/" style="font-size: 12.86px;">GC</a><a href="/tags/Gnuplot/" style="font-size: 10.00px;">Gnuplot</a><a href="/tags/Go/" style="font-size: 14.29px;">Go</a><a href="/tags/Gradle/" style="font-size: 10.00px;">Gradle</a><a href="/tags/Grunt/" style="font-size: 10.00px;">Grunt</a><a href="/tags/Gulp/" style="font-size: 10.00px;">Gulp</a><a href="/tags/Hadoop/" style="font-size: 10.00px;">Hadoop</a><a href="/tags/Hazelcast/" style="font-size: 10.00px;">Hazelcast</a><a href="/tags/IPFS/" style="font-size: 10.00px;">IPFS</a><a href="/tags/Ignite/" style="font-size: 10.00px;">Ignite</a><a href="/tags/JVM/" style="font-size: 10.00px;">JVM</a><a href="/tags/Java/" style="font-size: 17.14px;">Java</a><a href="/tags/Kafka/" style="font-size: 20.00px;">Kafka</a><a href="/tags/Lambda/" style="font-size: 14.29px;">Lambda</a><a href="/tags/Linux/" style="font-size: 12.86px;">Linux</a><a href="/tags/LongAdder/" style="font-size: 10.00px;">LongAdder</a><a href="/tags/MathJax/" style="font-size: 10.00px;">MathJax</a><a href="/tags/Maven/" style="font-size: 11.43px;">Maven</a><a href="/tags/Memcached/" style="font-size: 10.00px;">Memcached</a><a href="/tags/Metrics/" style="font-size: 10.00px;">Metrics</a><a href="/tags/Mongo/" style="font-size: 12.86px;">Mongo</a><a href="/tags/Netty/" style="font-size: 15.71px;">Netty</a>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">归档</h3>
+    <div class="widget">
+      <ul class="archive-list"><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/09/">September 2023</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/08/">August 2023</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/07/">July 2023</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/06/">June 2023</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/05/">May 2023</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/04/">April 2023</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/03/">March 2023</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/01/">January 2023</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/12/">December 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/11/">November 2022</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/10/">October 2022</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/09/">September 2022</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/08/">August 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/07/">July 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/06/">June 2022</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/05/">May 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/04/">April 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/03/">March 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/02/">February 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/01/">January 2022</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/12/">December 2021</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/11/">November 2021</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/10/">October 2021</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/08/">August 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/07/">July 2021</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/06/">June 2021</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/05/">May 2021</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/04/">April 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/03/">March 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/02/">February 2021</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/01/">January 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/12/">December 2020</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/11/">November 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/09/">September 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/08/">August 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/07/">July 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/06/">June 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/05/">May 2020</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/04/">April 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/03/">March 2020</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/02/">February 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/01/">January 2020</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/12/">December 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/11/">November 2019</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/10/">October 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/09/">September 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/08/">August 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/07/">July 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/06/">June 2019</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/05/">May 2019</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/04/">April 2019</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/03/">March 2019</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/02/">February 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/01/">January 2019</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/12/">December 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/11/">November 2018</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/10/">October 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/09/">September 2018</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/08/">August 2018</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/07/">July 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/06/">June 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/05/">May 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/04/">April 2018</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/03/">March 2018</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/02/">February 2018</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/01/">January 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/12/">December 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/11/">November 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/10/">October 2017</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/09/">September 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/08/">August 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/07/">July 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/06/">June 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/05/">May 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/04/">April 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/03/">March 2017</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/02/">February 2017</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/01/">January 2017</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/12/">December 2016</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/11/">November 2016</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/10/">October 2016</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/09/">September 2016</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/08/">August 2016</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/07/">July 2016</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/06/">June 2016</a><span class="archive-list-count">14</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/05/">May 2016</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/04/">April 2016</a><span class="archive-list-count">14</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/03/">March 2016</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/02/">February 2016</a><span class="archive-list-count">8</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/01/">January 2016</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/12/">December 2015</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/11/">November 2015</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/10/">October 2015</a><span class="archive-list-count">9</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/09/">September 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/08/">August 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/07/">July 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/06/">June 2015</a><span class="archive-list-count">8</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/05/">May 2015</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/04/">April 2015</a><span class="archive-list-count">15</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/03/">March 2015</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/02/">February 2015</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/01/">January 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/12/">December 2014</a><span class="archive-list-count">28</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/11/">November 2014</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/10/">October 2014</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/09/">September 2014</a><span class="archive-list-count">28</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/08/">August 2014</a><span class="archive-list-count">19</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/07/">July 2014</a><span class="archive-list-count">1</span></li></ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">近期文章</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+            <a href="/2023/09/27/when-and-how-to-use-classical-bpf/">何时以及如何高效的使用经典的bpf, 它能到来什么好处？</a>
+          </li>
+        
+          <li>
+            <a href="/2023/09/24/reread-the-io-Reader/">从头再读取 io.Reader: 覆水难收？</a>
+          </li>
+        
+          <li>
+            <a href="/2023/09/24/precise-rtt-for-ping/">更精准的时延：使用软件时间戳和硬件时间戳</a>
+          </li>
+        
+          <li>
+            <a href="/2023/09/13/pgo/">PGO: 为你的Go程序提效5%</a>
+          </li>
+        
+          <li>
+            <a href="/2023/09/11/tracing-a-packet-journey-using-linux-tracepoints-perf-ebpf/">使用Linux tracepoints、perf 和 eBPF 跟踪包的旅程</a>
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">友情链接</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+			 
+            <a href="http://stackshare.io" target="_blank">技术栈</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://toutiao.io/" target="_blank">开发者头条</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://weekly.manong.io/issues/" target="_blank">码农周刊</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.tuicool.com/mags" target="_blank">编程狂人周刊</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.importnew.com/" target="_blank">importnew</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://ifeve.com/" target="_blank">并发编程网</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://github.com" target="_blank">github</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://stackoverflow.com/" target="_blank">stackoverflow</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.javacodegeeks.com/" target="_blank">javacodegeeks</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.infoq.com/" target="_blank">infoq</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.dzone.com/links/index.html" target="_blank">dzone</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://oj.leetcode.com/problems/" target="_blank">leetcode</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://tutorials.jenkov.com" target="_blank">jenkov</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://howtodoinjava.com" target="_blank">HowToDoInJava</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://java-design-patterns.com/patterns/" target="_blank">java design patterns</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://medium.com/netflix-techblog" target="_blank">Netflix技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://www.techiedelight.com" target="_blank">Techie Delight</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://engineering.linkedin.com/blog" target="_blank">Linkedin技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://blogs.dropbox.com/tech/" target="_blank">Dropbox技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://code.fb.com" target="_blank">Facebook技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://jm.taobao.org" target="_blank">淘宝中间件团队</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://tech.meituan.com" target="_blank">美团技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://blogs.360.cn" target="_blank">360技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://xiaomi-info.github.io" target="_blank">小米信息部技术团队</a>
+			
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+      
+
+  
+</aside>
+        
+      </div>
+      <footer id="footer">
+  
+  <div class="outer">
+    <div id="footer-info" class="inner">
+      &copy; 2023 smallnest<br>
+	  Powered by <a href="http://hexo.io/" target="_blank">Hexo</a>
+    </div>
+  </div>
+</footer>
+    </div>
+    <nav id="mobile-nav">
+  
+    
+      <a href="/" class="mobile-nav-link"><i class="fa fa-home">&nbsp;</i>首页</a>
+    
+  
+    
+      <a href="/archives" class="mobile-nav-link"><i class="fa fa-folder-o">&nbsp;</i>归档</a>
+    
+  
+    
+      <a href="https://github.com/smallnest" class="mobile-nav-link"><i class="fa fa-github">&nbsp;</i>github</a>
+    
+  
+    
+      <a class="mobile-nav-link" href="#"><i class="fa fa-bars">&nbsp;</i>网站群</a>
+    
+      
+            <a class="mobile-nav-link" href="/goasm">&nbsp;&nbsp;<i class="fa fa-language">&nbsp;</i>Go汇编示例</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="https://gowebexamples.com">&nbsp;&nbsp;<i class="fa fa-external-link">&nbsp;</i>Go Web开发示例</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://go-database-sql.org">&nbsp;&nbsp;<i class="fa fa-external-link">&nbsp;</i>Go 数据库开发教程</a>
+          
+          
+    
+      
+            
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://rpcx.io">&nbsp;&nbsp;<i class="fa undefined">&nbsp;</i>RPCX官网</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://cn.doc.rpcx.io">&nbsp;&nbsp;<i class="fa undefined">&nbsp;</i>RPC开发指南</a>
+          
+          
+    
+    
+  
+    
+      <a href="/ScalaCollectionsCookbook" class="mobile-nav-link"><i class="fa fa-book">&nbsp;</i>Scala集合技术手册</a>
+    
+  
+    
+      <a href="/about" class="mobile-nav-link"><i class="fa fa-lemon-o">&nbsp;</i>关于</a>
+    
+  
+</nav>
+    
+<script src="//cdn.staticfile.org/jquery/1.11.1/jquery.min.js"></script>
+<script src="//cdn.bootcss.com/jquery.lazyload/1.9.1/jquery.lazyload.min.js"></script>
+
+<script src="//cdnjs.cloudflare.com/ajax/libs/fancybox/3.2.5/jquery.fancybox.min.js"></script>
+
+
+<script src="/js/script.js" type="text/javascript"></script>
+
+<!-- mathjax config similar to math.stackexchange -->
+<script type="text/x-mathjax-config">
+  MathJax.Hub.Config({
+    tex2jax: {
+      inlineMath: [ ['$','$'], ["\\(","\\)"] ],
+      processEscapes: true,
+      skipTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code']
+    }
+  });
+  MathJax.Hub.Queue(function() {
+      var all = MathJax.Hub.getAllJax(), i;
+      for(i=0; i < all.length; i += 1) {
+        all[i].SourceElement().parentNode.className += ' has-jax';
+      }
+  });
+</script>
+<script type="text/javascript" src="//cdn.bootcss.com/mathjax/2.6.0-beta.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML">
+</script>
+
+<div id="totop" style="position:fixed;bottom:150px;right:10px;cursor: pointer;z-index: 2000;">
+	<a title="返回顶部"><img src="/images/scrollup.png"/></a>
+</div>
+<script src="/js/totop.js" type="text/javascript"></script>
+
+
+
+
+<script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "//hm.baidu.com/hm.js?e085d87993250aab11f3e0c15f1c2785";
+  var s = document.getElementsByTagName("script")[0]; 
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+
+
+  </div>
+</body>
+</html>

@@ -1,0 +1,796 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset="utf-8">
+  
+  <title>使用Linux tracepoints、perf 和 eBPF 跟踪包的旅程</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+  <meta name="description" content="原文: Tracing a packet journey using Linux tracepoints, perf and eBPF
+很久以来我一直在寻找一个底层的Linux网络调试工具。我一直在寻找一个低级的Linux网络调试工具已经有一段时间了。Linux 允许使用虚拟接口(virtual interface)和网络命名空间(network namespace)的组合来构建直接在主机上运行的">
+<meta property="og:type" content="article">
+<meta property="og:title" content="使用Linux tracepoints、perf 和 eBPF 跟踪包的旅程">
+<meta property="og:url" content="https://colobu.com/2023/09/11/tracing-a-packet-journey-using-linux-tracepoints-perf-ebpf/">
+<meta property="og:site_name" content="鸟窝">
+<meta property="og:description" content="原文: Tracing a packet journey using Linux tracepoints, perf and eBPF
+很久以来我一直在寻找一个底层的Linux网络调试工具。我一直在寻找一个低级的Linux网络调试工具已经有一段时间了。Linux 允许使用虚拟接口(virtual interface)和网络命名空间(network namespace)的组合来构建直接在主机上运行的">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="使用Linux tracepoints、perf 和 eBPF 跟踪包的旅程">
+<meta name="twitter:description" content="原文: Tracing a packet journey using Linux tracepoints, perf and eBPF
+很久以来我一直在寻找一个底层的Linux网络调试工具。我一直在寻找一个低级的Linux网络调试工具已经有一段时间了。Linux 允许使用虚拟接口(virtual interface)和网络命名空间(network namespace)的组合来构建直接在主机上运行的">
+
+  
+  <link rel="alternative" href="/atom.xml" title="鸟窝" type="application/atom+xml">
+  
+  
+  <link rel="icon" href="/favicon.png">
+  
+  <link rel="stylesheet" href="/css/style.css" type="text/css">
+
+  <link href="//cdn.staticfile.org/font-awesome/4.2.0/css/font-awesome.css" rel="stylesheet">
+  
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/fancybox/2.1.7/css/jquery.fancybox.min.css"
+    media="screen" type="text/css">
+  
+  <link rel="stylesheet" href="//cdnjs.cloudflare.com/ajax/libs/animate.css/3.1.1/animate.min.css" media="screen"
+    type="text/css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/tonsky/FiraCode@1.207/distr/fira_code.css">
+</head>
+<body>
+  <div id="container">
+    <div id="wrap">
+      <header id="header">
+  <div id="banner"></div>
+  <div id="header-outer" class="outer">
+    <div id="header-title" class="inner">
+      <h1 id="logo-wrap" class="animated bounceInLeft">
+        <a href="/" id="logo">鸟窝</a>
+      </h1>
+      
+        <h2 id="subtitle-wrap" class="animated bounceInLeft">
+          <a href="/" id="subtitle">大道至简 Simplicity is the ultimate form of sophistication</a>
+        </h2>
+      
+    </div>
+    <div id="header-inner" class="inner">
+      <nav id="main-nav">
+        <a id="main-nav-toggle" class="nav-icon"></a>
+        
+          
+            <a class="main-nav-link" href="/"><i class="fa fa-home">&nbsp;</i>首页</a>
+          
+          
+          
+            <a class="main-nav-link" href="/archives"><i class="fa fa-folder-o">&nbsp;</i>归档</a>
+          
+          
+          
+            <a class="main-nav-link" href="https://github.com/smallnest"><i class="fa fa-github">&nbsp;</i>github</a>
+          
+          
+          
+            <div class="dropdown main-nav-link"><a class="main-nav-link" href="#"><i class="fa fa-bars">&nbsp;</i>网站群</a>
+              <div class="dropdown-content">
+          
+            
+              <a href="/goasm"><i class="fa fa-language"></i>&nbsp;Go汇编示例</a>
+            
+                
+          
+            
+              <a href="https://gowebexamples.com"><i class="fa fa-external-link"></i>&nbsp;Go Web开发示例</a>
+            
+                
+          
+            
+              <a href="http://go-database-sql.org"><i class="fa fa-external-link"></i>&nbsp;Go 数据库开发教程</a>
+            
+                
+          
+            
+              <hr>
+            
+                
+          
+            
+              <a href="http://rpcx.io"><i class="fa undefined"></i>&nbsp;RPCX官网</a>
+            
+                
+          
+            
+              <a href="http://cn.doc.rpcx.io"><i class="fa undefined"></i>&nbsp;RPC开发指南</a>
+            
+                
+          
+          </div>
+        </div>
+          
+          
+          
+            <a class="main-nav-link" href="/ScalaCollectionsCookbook"><i class="fa fa-book">&nbsp;</i>Scala集合技术手册</a>
+          
+          
+          
+            <a class="main-nav-link" href="/about"><i class="fa fa-lemon-o">&nbsp;</i>关于</a>
+          
+          
+
+
+      </nav>
+      <nav id="sub-nav">
+        
+          <a id="nav-rss-link" class="nav-icon" href="/atom.xml" title="RSS Feed"></a>
+        
+        <a id="nav-search-btn" class="nav-icon" title="Search"></a>
+      </nav>
+      <div id="search-form-wrap">
+        <form action="https://www.google.com/search" method="get" accept-charset="utf-8" class="search-form">
+          <input type="search" id="search-word" name="q" maxlength="20" class="search-form-input" placeholder="Search">
+          <input type=hidden name=ie value="utf-8">
+          <input type=hidden name=oe value="utf-8">
+          <input type=hidden name=hl value="zh-CN">
+          <input type="submit" id="search-submit" value="" class="search-form-submit">
+        </form>
+      </div>
+    </div>
+  </div>
+</header>
+      <div class="outer">
+        <section id="main"><article id="post-tracing-a-packet-journey-using-linux-tracepoints-perf-ebpf" class="article article-type-post" itemscope
+  itemprop="blogPost">
+  <div class="article-meta">
+    <a href="/2023/09/11/tracing-a-packet-journey-using-linux-tracepoints-perf-ebpf/" class="article-date">
+  <time datetime="2023-09-11T14:09:17.000Z" itemprop="datePublished">2023年09月11日</time>
+</a>
+    
+  <div class="article-category">
+    <a class="article-category-link" href="/categories/Go/">Go</a>
+  </div>
+
+    
+  <div class="article-author"> by Jean-Tiare Le Bigot</div>
+
+  </div>
+  <div class="article-inner">
+    
+    
+    <header class="article-header">
+      
+  
+    <h1 class="article-title" itemprop="name">
+      使用Linux tracepoints、perf 和 eBPF 跟踪包的旅程
+	  
+    </h1>
+  
+
+    </header>
+    
+    <div class="article-entry" itemprop="articleBody">
+      
+      
+      
+      <script>function show_answer(btn, x) { if (btn.value === "显示答案") { btn.value = "隐藏答案" } else { btn.value = "显示答案" } var as = document.getElementById(x); if (as.style.display === "none") { as.style.display = "block" } else { as.style.display = "none" } }</script>
+      <p>原文: <a href="https://blog.yadutaf.fr/2017/07/28/tracing-a-packet-journey-using-linux-tracepoints-perf-ebpf/" target="_blank" rel="external">Tracing a packet journey using Linux tracepoints, perf and eBPF</a></p>
+<p>很久以来我一直在寻找一个底层的Linux网络调试工具。<br>我一直在寻找一个低级的Linux网络调试工具已经有一段时间了。Linux 允许使用虚拟接口(virtual interface)和网络命名空间(network namespace)的组合来构建直接在主机上运行的复杂网络。当出现问题时，故障排除相当乏味。如果这是 L3 路由问题，mtr则很有可能会有所帮助。但是，如果这是一个较低层的问题，我通常会手动检查每个接口/网桥/网络命名空间/iptables并启动几个tcpdump，以尝试了解正在发生的事情。如果您事先不了解网络设置，这可能感觉像走迷宫。</p>
+<a id="more"></a>
+<p>我需要的是一个工具，可以告诉我 “嘿，哥们，我已经看到了你的数据包：它已经这样消失了，在这个接口上，在这个网络命名空间中”。</p>
+<p>基本上，我需要的是在L2上的mtr。</p>
+<p>没有这样的工具？让我们白手起家建一个！</p>
+<p>在这篇文章的最后，我们将有一个简单易用的底层数据包跟踪器。如果您 ping 本地 Docker 容器，它将显示如下内容：</p>
+<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div></pre></td><td class="code"><pre><div class="line"><span class="comment"># ping -4 172.17.0.2</span></div><div class="line">[  <span class="number">4026531957</span>]          docker0 request <span class="comment">#17146.001 172.17.0.1 -&gt; 172.17.0.2</span></div><div class="line">[  <span class="number">4026531957</span>]      vetha373ab6 request <span class="comment">#17146.001 172.17.0.1 -&gt; 172.17.0.2</span></div><div class="line">[  <span class="number">4026532258</span>]             eth0 request <span class="comment">#17146.001 172.17.0.1 -&gt; 172.17.0.2</span></div><div class="line">[  <span class="number">4026532258</span>]             eth0   reply <span class="comment">#17146.001 172.17.0.2 -&gt; 172.17.0.1</span></div><div class="line">[  <span class="number">4026531957</span>]      vetha373ab6   reply <span class="comment">#17146.001 172.17.0.2 -&gt; 172.17.0.1</span></div><div class="line">[  <span class="number">4026531957</span>]          docker0   reply <span class="comment">#17146.001 172.17.0.2 -&gt; 172.17.0.1</span></div></pre></td></tr></table></figure>
+
+<h2 id="追踪救援_(Tracing_to_the_rescue)">追踪救援 (Tracing to the rescue)</h2>
+<p>走出迷宫的一种方法是探索。这就是你走出迷宫时所做的。另一种走出迷宫的方法是改变你的观点，从上帝的视角，观察那些知道这条路的人所走的路。</p>
+<p>在 Linux 术语中，这意味着转向内核视角，其中网络命名空间只是标签，而不是“容器”1。在内核中，数据包、接口等是普通的可观察对象。</p>
+<p>在这篇文章中，我将重点介绍 2 个跟踪工具： perf 和 eBPF。</p>
+<h2 id="介绍_perf_和_eBPF">介绍 perf 和 eBPF</h2>
+<p>perf是 Linux 上每个性能相关分析的基准工具。它是在与 Linux 内核相同的源代码树中开发的，必须针对您将用于跟踪的内核进行专门编译。它可以跟踪内核以及用户程序。它还可以通过采样或使用跟踪点来工作。可以将其视为比strace的巨大超集，且开销要低得多的。本文我们只以非常简单的方式使用它。如果您想了解更多有关 perf 的知识 ，我强烈建议您访问 Brendan Gregg 的<a href="http://www.brendangregg.com/perf.html" target="_blank" rel="external">博客</a>。</p>
+<p>eBPF 是 Linux 内核相对最近才添加的功能。顾名思义,这是BPF字节码(即“伯克利数据包过滤器”,用于在BSD家族系统上过滤数据包)的扩展版本。在 Linux上,如果满足一些安全标准,它也可以用来在运行时内核中安全地运行与平台无关的代码。例如,在程序运行之前会验证内存访问,并且必须能证明该程序会在受限的时间内结束。即使程序本身是安全的并且总是会终止,如果内核无法证明这一点,该程序也会被拒绝。</p>
+<p>这样的程序可以用作QOS的网络分类器,非常底层的网络和过滤可以使用eXpress数据平面(XDP),这些程序作为跟踪代理以及许多其他场景。跟踪探针可以附加到<code>/proc/kallsyms</code>中的任意函数或任何跟踪点。在这篇文章中,我将重点介绍附加到跟踪点(tracepoint)的跟踪代理。</p>
+<p>有关附加到内核函数的跟踪探针的示例或作为更详细的介绍,请阅读我之前关于eBPF的<a href="https://blog.yadutaf.fr/2016/03/30/turn-any-syscall-into-event-introducing-ebpf-kernel-probes/" target="_blank" rel="external">文章</a>。</p>
+<h2 id="实验室设置">实验室设置</h2>
+<p>对于这篇文章,我们需要perf和一些用于eBPF的工具。由于我不是手写汇编代码的忠实拥趸,所以这里我将使用<a href="https://github.com/iovisor/bcc" target="_blank" rel="external">bcc</a>。这是一个强大且灵活的工具,允许你用受限的C语言编写内核探针,并在用户空间用Python进行检测。对于生产环境来说可能过重,但对于开发非常完美!</p>
+<p>在这里我重述在Ubuntu 17.04(Zesty)上的安装说明,这是我笔记本电脑所使用的操作系统。从其他发行版到“perf”的说明不应该有太大的差异,而特定的bcc安装说明可以在<a href="https://github.com/iovisor/bcc/blob/master/INSTALL.md" target="_blank" rel="external">github</a>上找到。</p>
+<blockquote>
+<p>注意:将eBPF附加到跟踪点至少需要Linux内核版本高于4.7。</p>
+</blockquote>
+<p>安装 perf:</p>
+<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div></pre></td><td class="code"><pre><div class="line">// 安装</div><div class="line"><span class="built_in">sudo</span> apt install linux-tools-generic</div><div class="line"></div><div class="line"><span class="comment"># 测试</span></div><div class="line">perf</div></pre></td></tr></table></figure>
+
+<p>如果看到错误信息,很可能是你的内核最近更新了但是操作系统还没有重启。</p>
+<p>安装 bcc:</p>
+<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div></pre></td><td class="code"><pre><div class="line"><span class="comment"># 安装原来</span></div><div class="line"><span class="built_in">sudo</span> apt install bison build-essential cmake flex git libedit-dev python zlib1g-dev libelf-dev libllvm4.<span class="number">0</span> llvm-dev libclang-dev luajit luajit-<span class="number">5.1</span>-dev</div><div class="line"></div><div class="line"><span class="comment"># 获取bcc源代码</span></div><div class="line">git clone https://github.com/iovisor/bcc.git</div><div class="line"></div><div class="line"><span class="comment"># 编译并安装</span></div><div class="line">mkdir bcc/build</div><div class="line"><span class="built_in">cd</span> bcc/build</div><div class="line">cmake .. -DCMAKE_INSTALL_PREFIX=/usr</div><div class="line">make</div><div class="line"><span class="built_in">sudo</span> make install</div></pre></td></tr></table></figure>
+
+<h2 id="寻找好的跟踪点,也就是“用_perf_手动跟踪数据包的旅程”">寻找好的跟踪点,也就是“用 perf 手动跟踪数据包的旅程”</h2>
+<p>有多种方法可以找到好的跟踪点。在这篇文章的早期版本中,我从 veth 驱动的代码开始,并从那里追踪函数调用来找到要跟踪的函数。虽然它确实导致了可以接受的结果,但我无法捕获所有的包。的确,所有数据包共同经过的路径都在未导出的(内联或静态)方法中。这就是我意识到 Linux 有跟踪点并决定重写这篇文章及相关代码使用跟踪点而不是函数。这很令人沮丧,但对我来说也更有趣。</p>
+<p>我废话太多了，言归正传。</p>
+<p>我们的目标是跟踪数据包所经历的路径。根据它们所经过的接口, 它们经过的跟踪点可能会有所不同(剧透:它们确实不同)。</p>
+<p>为了找到合适的跟踪点,我在使用 perf trace时 ping了2个内部目的IP和2个外部的目的IP：</p>
+<ul>
+<li>localhost,IP 为 127.0.0.1</li>
+<li>一个“无辜的” Docker 容器,IP 为 172.17.0.2</li>
+<li>通过 USB 共享网络的我的手机,IP 为 192.168.42.129</li>
+<li>通过 WiFi 的我的手机,IP 为 192.168.43.1</li>
+</ul>
+<p><code>perf trace</code> 是 perf 命令的一个子命令,默认情况下会产生类似于strace的输出(开销更小)。我们可以轻松地调整它,隐藏系统调用本身,只打印“net”类别的事件。例如,跟踪ping一个IP为172.17.0.2的Docker容器看起来像这样:</p>
+<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div></pre></td><td class="code"><pre><div class="line"><span class="built_in">sudo</span> perf trace --no-syscalls --event <span class="string">'net:*'</span> ping <span class="number">172.17</span>.<span class="number">0.2</span> -c1 &gt; /dev/null</div><div class="line">     <span class="number">0.000</span> net:net_dev_queue:dev=docker0 skbaddr=<span class="number">0</span>xffff96d481988700 len=<span class="number">98</span>)</div><div class="line">     <span class="number">0.008</span> net:net_dev_start_xmit:dev=docker0 queue_mapping=<span class="number">0</span> skbaddr=<span class="number">0</span>xffff96d481988700 vlan_tagged=<span class="number">0</span> vlan_proto=<span class="number">0</span>x0000 vlan_tci=<span class="number">0</span>x0000 protocol=<span class="number">0</span>x0800 ip_summed=<span class="number">0</span> len=<span class="number">98</span> data_len=<span class="number">0</span> network_offset=<span class="number">14</span> transport_offset_valid=<span class="number">1</span> transport_offset=<span class="number">34</span> tx_flags=<span class="number">0</span> gso_size=<span class="number">0</span> gso_segs=<span class="number">0</span> gso_<span class="built_in">type</span>=<span class="number">0</span>)</div><div class="line">     <span class="number">0.014</span> net:net_dev_queue:dev=veth79215ff skbaddr=<span class="number">0</span>xffff96d481988700 len=<span class="number">98</span>)</div><div class="line">     <span class="number">0.016</span> net:net_dev_start_xmit:dev=veth79215ff queue_mapping=<span class="number">0</span> skbaddr=<span class="number">0</span>xffff96d481988700 vlan_tagged=<span class="number">0</span> vlan_proto=<span class="number">0</span>x0000 vlan_tci=<span class="number">0</span>x0000 protocol=<span class="number">0</span>x0800 ip_summed=<span class="number">0</span> len=<span class="number">98</span> data_len=<span class="number">0</span> network_offset=<span class="number">14</span> transport_offset_valid=<span class="number">1</span> transport_offset=<span class="number">34</span> tx_flags=<span class="number">0</span> gso_size=<span class="number">0</span> gso_segs=<span class="number">0</span> gso_<span class="built_in">type</span>=<span class="number">0</span>)</div><div class="line">     <span class="number">0.020</span> net:netif_rx:dev=eth0 skbaddr=<span class="number">0</span>xffff96d481988700 len=<span class="number">84</span>)</div><div class="line">     <span class="number">0.022</span> net:net_dev_xmit:dev=veth79215ff skbaddr=<span class="number">0</span>xffff96d481988700 len=<span class="number">98</span> rc=<span class="number">0</span>)</div><div class="line">     <span class="number">0.024</span> net:net_dev_xmit:dev=docker0 skbaddr=<span class="number">0</span>xffff96d481988700 len=<span class="number">98</span> rc=<span class="number">0</span>)</div><div class="line">     <span class="number">0.027</span> net:netif_receive_skb:dev=eth0 skbaddr=<span class="number">0</span>xffff96d481988700 len=<span class="number">84</span>)</div><div class="line">     <span class="number">0.044</span> net:net_dev_queue:dev=eth0 skbaddr=<span class="number">0</span>xffff96d481988b00 len=<span class="number">98</span>)</div><div class="line">     <span class="number">0.046</span> net:net_dev_start_xmit:dev=eth0 queue_mapping=<span class="number">0</span> skbaddr=<span class="number">0</span>xffff96d481988b00 vlan_tagged=<span class="number">0</span> vlan_proto=<span class="number">0</span>x0000 vlan_tci=<span class="number">0</span>x0000 protocol=<span class="number">0</span>x0800 ip_summed=<span class="number">0</span> len=<span class="number">98</span> data_len=<span class="number">0</span> network_offset=<span class="number">14</span> transport_offset_valid=<span class="number">1</span> transport_offset=<span class="number">34</span> tx_flags=<span class="number">0</span> gso_size=<span class="number">0</span> gso_segs=<span class="number">0</span> gso_<span class="built_in">type</span>=<span class="number">0</span>)</div><div class="line">     <span class="number">0.048</span> net:netif_rx:dev=veth79215ff skbaddr=<span class="number">0</span>xffff96d481988b00 len=<span class="number">84</span>)</div><div class="line">     <span class="number">0.050</span> net:net_dev_xmit:dev=eth0 skbaddr=<span class="number">0</span>xffff96d481988b00 len=<span class="number">98</span> rc=<span class="number">0</span>)</div><div class="line">     <span class="number">0.053</span> net:netif_receive_skb:dev=veth79215ff skbaddr=<span class="number">0</span>xffff96d481988b00 len=<span class="number">84</span>)</div><div class="line">     <span class="number">0.060</span> net:netif_receive_skb_entry:dev=docker0 napi_id=<span class="number">0</span>x3 queue_mapping=<span class="number">0</span> skbaddr=<span class="number">0</span>xffff96d481988b00 vlan_tagged=<span class="number">0</span> vlan_proto=<span class="number">0</span>x0000 vlan_tci=<span class="number">0</span>x0000 protocol=<span class="number">0</span>x0800 ip_summed=<span class="number">2</span> <span class="built_in">hash</span>=<span class="number">0</span>x00000000 l4_<span class="built_in">hash</span>=<span class="number">0</span> len=<span class="number">84</span> data_len=<span class="number">0</span> truesize=<span class="number">768</span> mac_header_valid=<span class="number">1</span> mac_header=-<span class="number">14</span> nr_frags=<span class="number">0</span> gso_size=<span class="number">0</span> gso_<span class="built_in">type</span>=<span class="number">0</span>)</div><div class="line">     <span class="number">0.061</span> net:netif_receive_skb:dev=docker0 skbaddr=<span class="number">0</span>xffff96d481988b00 len=<span class="number">84</span>)</div></pre></td></tr></table></figure>
+
+<p>仅保留事件名称和 skbaddr，这看起来更具可读性。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div></pre></td><td class="code"><pre><div class="line">net_dev_queue           dev=docker0     skbaddr<span class="number">=0</span>xffff96d481988700</div><div class="line">net_dev_start_xmit      dev=docker0     skbaddr<span class="number">=0</span>xffff96d481988700</div><div class="line">net_dev_queue           dev=veth79215ff skbaddr<span class="number">=0</span>xffff96d481988700</div><div class="line">net_dev_start_xmit      dev=veth79215ff skbaddr<span class="number">=0</span>xffff96d481988700</div><div class="line">netif_rx                dev=eth0        skbaddr<span class="number">=0</span>xffff96d481988700</div><div class="line">net_dev_xmit            dev=veth79215ff skbaddr<span class="number">=0</span>xffff96d481988700</div><div class="line">net_dev_xmit            dev=docker0     skbaddr<span class="number">=0</span>xffff96d481988700</div><div class="line">netif_receive_skb       dev=eth0        skbaddr<span class="number">=0</span>xffff96d481988700</div><div class="line"></div><div class="line">net_dev_queue           dev=eth0        skbaddr<span class="number">=0</span>xffff96d481988b00</div><div class="line">net_dev_start_xmit      dev=eth0        skbaddr<span class="number">=0</span>xffff96d481988b00</div><div class="line">netif_rx                dev=veth79215ff skbaddr<span class="number">=0</span>xffff96d481988b00</div><div class="line">net_dev_xmit            dev=eth0        skbaddr<span class="number">=0</span>xffff96d481988b00</div><div class="line">netif_receive_skb       dev=veth79215ff skbaddr<span class="number">=0</span>xffff96d481988b00</div><div class="line">netif_receive_skb_entry dev=docker0     skbaddr<span class="number">=0</span>xffff96d481988b00</div><div class="line">netif_receive_skb       dev=docker0     skbaddr<span class="number">=0</span>xffff96d481988b00</div></pre></td></tr></table></figure>
+
+<p>这里有几点需要说明。最明显的是<code>skbaddr</code>在中间发生了变化,但其他时候保持不变, 这是发生中echo reply数据包作为对该echo request(ping)的回复生成时。在其他时间,同一网络数据包在接口之间移动,希望没有复制。复制是昂贵的...</p>
+<p>另一个有趣的点是,我们明确看到数据包经过docker0网桥,然后是veth的主机端,在我的例子中是veth79215ff,最后是veth的容器端,假装是eth0。我们还没有看到网络命名空间,但它已经给出了很好的概览。</p>
+<p>最后,在看到eth0上的数据包之后,我们按相反顺序看到了跟踪点。这不是响应,而是传输的最终目的路径。</p>
+<p>通过在4种目标场景中重复类似的过程,我们可以选择最合适的跟踪点来跟踪数据包的旅程。我选择了其中的4个:</p>
+<ul>
+<li><code>net_dev_queue</code></li>
+<li><code>netif_receive_skb_entry</code></li>
+<li><code>netif_rx</code></li>
+<li><code>napi_gro_receive_entry</code></li>
+</ul>
+<p>采用这4个跟踪点将按顺序为我提供跟踪事件,没有重复,节省了一些去重工作。仍然是一个非常好的选择。</p>
+<p>我们可以轻松地对这个选择进行双重检查,像这样:</p>
+<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div></pre></td><td class="code"><pre><div class="line"><span class="built_in">sudo</span> perf trace --no-syscalls           \</div><div class="line">  --event <span class="string">'net:net_dev_queue'</span>           \</div><div class="line">  --event <span class="string">'net:netif_receive_skb_entry'</span> \</div><div class="line">  --event <span class="string">'net:netif_rx'</span>                \</div><div class="line">  --event <span class="string">'net:napi_gro_receive_entry'</span>  \</div><div class="line">  ping <span class="number">172.17</span>.<span class="number">0.2</span> -c1 &gt; /dev/null</div><div class="line">     <span class="number">0.000</span> net:net_dev_queue:dev=docker0 skbaddr=<span class="number">0</span>xffff8e847720a900 len=<span class="number">98</span>)</div><div class="line">     <span class="number">0.010</span> net:net_dev_queue:dev=veth7781d5c skbaddr=<span class="number">0</span>xffff8e847720a900 len=<span class="number">98</span>)</div><div class="line">     <span class="number">0.014</span> net:netif_rx:dev=eth0 skbaddr=<span class="number">0</span>xffff8e847720a900 len=<span class="number">84</span>)</div><div class="line">     <span class="number">0.034</span> net:net_dev_queue:dev=eth0 skbaddr=<span class="number">0</span>xffff8e849cb8<span class="built_in">cd</span>00 len=<span class="number">98</span>)</div><div class="line">     <span class="number">0.036</span> net:netif_rx:dev=veth7781d5c skbaddr=<span class="number">0</span>xffff8e849cb8<span class="built_in">cd</span>00 len=<span class="number">84</span>)</div><div class="line">     <span class="number">0.045</span> net:netif_receive_skb_entry:dev=docker0 napi_id=<span class="number">0</span>x1 queue_mapping=<span class="number">0</span> skbaddr=<span class="number">0</span>xffff8e849cb8<span class="built_in">cd</span>00 vlan_tagged=<span class="number">0</span> vlan_proto=<span class="number">0</span>x0000 vlan_tci=<span class="number">0</span>x0000 protocol=<span class="number">0</span>x0800 ip_summed=<span class="number">2</span> <span class="built_in">hash</span>=<span class="number">0</span>x00000000 l4_<span class="built_in">hash</span>=<span class="number">0</span> len=<span class="number">84</span> data_len=<span class="number">0</span> truesize=<span class="number">768</span> mac_header_valid=<span class="number">1</span> mac_header=-<span class="number">14</span> nr_frags=<span class="number">0</span> gso_size=<span class="number">0</span> gso_<span class="built_in">type</span>=<span class="number">0</span>)</div></pre></td></tr></table></figure>
+
+<p>任务完成!</p>
+<p>如果你想更进一步,探索可用网络跟踪点的列表,你可以使用 perf list:</p>
+<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line"><span class="built_in">sudo</span> perf list <span class="string">'net:*'</span></div></pre></td></tr></table></figure>
+
+<p>这应该会返回一个像<code>net:netif_rx</code>这样的跟踪点名称列表。冒号前的部分(&#39;net&#39;)是事件类别;冒号后的是该类别中的事件名称。</p>
+<h2 id="使用eBPF_/_bcc编写自定义跟踪器">使用eBPF / bcc编写自定义跟踪器</h2>
+<p>对大多数情况来说,这已经远远超出需求了。如果你读这篇文章是为了学习如何在Linux系统上跟踪数据包的旅程,你已经获取了所有需要的信息。但是,如果你想更深入地研究,运行自定义过滤器,跟踪更多的数据,如数据包经过的网络命名空间或源和目的IP,请继续跟我走。</p>
+<p>从Linux内核4.7开始,可以将eBPF程序附加到内核跟踪点上。在此之前,构建此跟踪器的唯一替代方法是将探针附加到导出的内核符号上。尽管这种方法可行,但它有一些缺点:</p>
+<ul>
+<li>内核内部API不稳定。跟踪点是稳定的(尽管数据结构不一定是...)。</li>
+<li>出于性能考虑,大多数网络内部函数是内联的或静态的。它们都不能被探测。</li>
+<li>找到所有这些函数的潜在调用点很麻烦,有时在这一阶段不可用所需的所有数据。</li>
+</ul>
+<p>本文的早期版本尝试使用kprobes,它们更易于使用,但结果却是不完整的。</p>
+<p>现在，让我们坦诚一点，通过跟踪点访问数据要比使用它们的 kprobe 对应物要繁琐得多。虽然我尽量保持这篇文章尽可能易懂，但您可能希望从我<a href="https://blog.yadutaf.fr/2016/03/30/turn-any-syscall-into-event-introducing-ebpf-kernel-probes/" target="_blank" rel="external">先前的一篇文章</a>开始。</p>
+<p>撇开这个声明，让我们从一个简单的 Hello World 程序开始介绍。在这个 Hello World 示例中，每当我们选择的 4 个跟踪点之一被触发时（net_dev_queue、netif_receive_skb_entry、netif_rx 和 napi_gro_receive_entry），我们将建立一个事件。为了在这个阶段保持简单，我们将发送程序的 comm，即一个 16 个字符的字符串，基本上是程序的名称。</p>
+<figure class="highlight c"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div><div class="line">35</div><div class="line">36</div><div class="line">37</div><div class="line">38</div><div class="line">39</div><div class="line">40</div></pre></td><td class="code"><pre><div class="line"><span class="preprocessor">#<span class="keyword">include</span> &lt;bcc/proto.h&gt;</span></div><div class="line"><span class="preprocessor">#<span class="keyword">include</span> &lt;linux/sched.h&gt;</span></div><div class="line"></div><div class="line"><span class="comment">// Event structure</span></div><div class="line"><span class="keyword">struct</span> route_evt_t {</div><div class="line">        <span class="keyword">char</span> comm[TASK_COMM_LEN];</div><div class="line">};</div><div class="line">BPF_PERF_OUTPUT(route_evt);</div><div class="line"></div><div class="line"><span class="keyword">static</span> <span class="keyword">inline</span> <span class="keyword">int</span> do_trace(<span class="keyword">void</span>* ctx, <span class="keyword">struct</span> sk_buff* skb)</div><div class="line">{</div><div class="line">    <span class="comment">// Built event for userland</span></div><div class="line">    <span class="keyword">struct</span> route_evt_t evt = {};</div><div class="line">    bpf_get_current_comm(evt.comm, TASK_COMM_LEN);</div><div class="line"></div><div class="line">    <span class="comment">// Send event to userland</span></div><div class="line">    route_evt.perf_submit(ctx, &evt, <span class="keyword">sizeof</span>(evt));</div><div class="line"></div><div class="line">    <span class="keyword">return</span> <span class="number">0</span>;</div><div class="line">}</div><div class="line"></div><div class="line"><span class="comment">/**</span></div><div class="line">  * Attach to Kernel Tracepoints</div><div class="line">  */</div><div class="line"></div><div class="line">TRACEPOINT_PROBE(net, netif_rx) {</div><div class="line">    <span class="keyword">return</span> do_trace(args, (<span class="keyword">struct</span> sk_buff*)args-&gt;skbaddr);</div><div class="line">}</div><div class="line"></div><div class="line">TRACEPOINT_PROBE(net, net_dev_queue) {</div><div class="line">    <span class="keyword">return</span> do_trace(args, (<span class="keyword">struct</span> sk_buff*)args-&gt;skbaddr);</div><div class="line">}</div><div class="line"></div><div class="line">TRACEPOINT_PROBE(net, napi_gro_receive_entry) {</div><div class="line">    <span class="keyword">return</span> do_trace(args, (<span class="keyword">struct</span> sk_buff*)args-&gt;skbaddr);</div><div class="line">}</div><div class="line"></div><div class="line">TRACEPOINT_PROBE(net, netif_receive_skb_entry) {</div><div class="line">    <span class="keyword">return</span> do_trace(args, (<span class="keyword">struct</span> sk_buff*)args-&gt;skbaddr);</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>这个代码片段会连接到“net”类别的 4 个跟踪点，加载<code>skbaddr</code>字段，并将其传递给通用部分，目前通用部分仅加载程序名称。如果您想知道这个 <code>args-&gt;skbaddr</code> 是从哪里来的（我很高兴您这样想），<code>args</code> 结构是由 <code>bcc</code> 为您生成的，每当您使用 TRACEPOINT_PROBE 定义一个跟踪点时，它都会为您生成。由于它是即时生成的，没有简单的方法来查看它的定义，但是有更好的方法。我们可以直接查看来自内核的数据源。幸运的是，每个跟踪点都有一个 <code>/sys/kernel/debug/tracing/events</code> 条目。例如，对于 net:netif_rx，您可以只运行命令 <code>cat /sys/kernel/debug/tracing/events/net/netif_rx/format</code>，这应该会输出类似于以下内容：</p>
+<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div></pre></td><td class="code"><pre><div class="line">name: netif_rx</div><div class="line">ID: <span class="number">1183</span></div><div class="line">format:</div><div class="line">	field:unsigned short common_<span class="built_in">type</span>;         offset:<span class="number">0</span>; size:<span class="number">2</span>; signed:<span class="number">0</span>;</div><div class="line">	field:unsigned char common_flags;         offset:<span class="number">2</span>; size:<span class="number">1</span>; signed:<span class="number">0</span>;</div><div class="line">	field:unsigned char common_preempt_count; offset:<span class="number">3</span>; size:<span class="number">1</span>; signed:<span class="number">0</span>;</div><div class="line">	field:int common_pid;                     offset:<span class="number">4</span>; size:<span class="number">4</span>; signed:<span class="number">1</span>;</div><div class="line"></div><div class="line">	field:void * skbaddr;         offset:<span class="number">8</span>;  size:<span class="number">8</span>; signed:<span class="number">0</span>;</div><div class="line">	field:unsigned int len;       offset:<span class="number">16</span>; size:<span class="number">4</span>; signed:<span class="number">0</span>;</div><div class="line">	field:__data_loc char[] name; offset:<span class="number">20</span>; size:<span class="number">4</span>; signed:<span class="number">1</span>;</div><div class="line"></div><div class="line">print fmt: <span class="string">"dev=%s skbaddr=%p len=%u"</span>, __get_str(name), REC-&gt;skbaddr, REC-&gt;len</div></pre></td></tr></table></figure>
+
+<p>您可能会注意到记录末尾的打印 fmt 行。这正是 <code>perf trace</code> 用来生成其输出的内容。</p>
+<p>有了底层基础代码，并且你已了解了它，我们可以将其包装在一个 Python 脚本中，以显示 eBPF 探针发送的每个事件的一行：</p>
+<figure class="highlight python"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div></pre></td><td class="code"><pre><div class="line"><span class="comment">#!/usr/bin/env python</span></div><div class="line"><span class="comment"># coding: utf-8</span></div><div class="line"></div><div class="line"><span class="keyword">from</span> socket <span class="keyword">import</span> inet_ntop</div><div class="line"><span class="keyword">from</span> bcc <span class="keyword">import</span> BPF</div><div class="line"><span class="keyword">import</span> ctypes <span class="keyword">as</span> ct</div><div class="line"></div><div class="line">bpf_text = <span class="string">'''&lt;SEE CODE SNIPPET ABOVE&gt;'''</span></div><div class="line"></div><div class="line">TASK_COMM_LEN = <span class="number">16</span> <span class="comment"># linux/sched.h</span></div><div class="line"></div><div class="line"><span class="class"><span class="keyword">class</span> <span class="title">RouteEvt</span><span class="params">(ct.Structure)</span>:</span></div><div class="line">    _fields_ = [</div><div class="line">        (<span class="string">"comm"</span>,    ct.c_char * TASK_COMM_LEN),</div><div class="line">    ]</div><div class="line"></div><div class="line"><span class="function"><span class="keyword">def</span> <span class="title">event_printer</span><span class="params">(cpu, data, size)</span>:</span></div><div class="line">    <span class="comment"># Decode event</span></div><div class="line">    event = ct.cast(data, ct.POINTER(RouteEvt)).contents</div><div class="line"></div><div class="line">    <span class="comment"># Print event</span></div><div class="line">    <span class="keyword">print</span> <span class="string">"Just got a packet from %s"</span> % (event.comm)</div><div class="line"></div><div class="line"><span class="keyword">if</span> __name__ == <span class="string">"__main__"</span>:</div><div class="line">    b = BPF(text=bpf_text)</div><div class="line">    b[<span class="string">"route_evt"</span>].open_perf_buffer(event_printer)</div><div class="line"></div><div class="line">    <span class="keyword">while</span> <span class="keyword">True</span>:</div><div class="line">        b.kprobe_poll()</div></pre></td></tr></table></figure>
+
+<p>您现在可以测试它了。您需要以 root 权限运行。</p>
+<blockquote>
+<p>请注意：在这个阶段我们没有对包进行筛选。即使是网络使用很低情况也可能会让你的终端刷屏</p>
+</blockquote>
+<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div></pre></td><td class="code"><pre><div class="line">$&gt; <span class="built_in">sudo</span> python ./tracepkt.py</div><div class="line">...</div><div class="line">Just got a packet from ping6</div><div class="line">Just got a packet from ping6</div><div class="line">Just got a packet from ping</div><div class="line">Just got a packet from irq/<span class="number">46</span>-iwlwifi</div><div class="line">...</div></pre></td></tr></table></figure>
+
+<p>在这种情况下，您可以看到我正在使用 ping 和 ping6，WiFi 驱动程序刚刚接收了一些数据包。在这种情况下，这是echo reply。</p>
+<p>现在让我们开始添加一些有用的数据/筛选条件。</p>
+<p>在本文中，我不会重点关注性能。这将更好地展示 eBPF 的功能和限制。要使它（明显）更快，我们可以使用数据包大小作为筛选，假设没有设置“奇怪的” IP 选项。使用这个示例程序会减慢您的网络流量。</p>
+<blockquote>
+<p>请注意：为了限制此帖子的长度，我将在此处专注于 C/eBPF 部分。我会在帖子末尾放置完整源代码的链接。</p>
+</blockquote>
+<h2 id="添加网络接口信息">添加网络接口信息</h2>
+<p>首先，您可以安全地删除“comm”资源、加载和 sched.h 标头。在这里它没有真正用处，抱歉。</p>
+<p>然后，您可以包含 <code>net/inet_sock.h</code>，以便我们有必要的声明，并向事件结构中添加 <code>char ifname[IFNAMSIZ];</code>。</p>
+<p>现在，我们将从设备结构中加载设备名称。这很有趣，因为这是一个实际有用的信息，并且在可管理的范围内演示了加载任何数据的技术：</p>
+<figure class="highlight c"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div></pre></td><td class="code"><pre><div class="line"><span class="comment">// 得到设备指针</span></div><div class="line"><span class="keyword">struct</span> net_device *dev;</div><div class="line">bpf_probe_read(&dev, <span class="keyword">sizeof</span>(skb-&gt;dev), ((<span class="keyword">char</span>*)skb) + offsetof(typeof(*skb), dev));</div><div class="line"></div><div class="line"><span class="comment">// 加载网络接口名称</span></div><div class="line">bpf_probe_read(&evt.ifname, IFNAMSIZ, dev-&gt;name);</div></pre></td></tr></table></figure>
+
+<p>您可以测试它，它可以正常工作。但不要忘记在 Python 部分添加相关的代码 :)</p>
+<p>好的，它是如何工作的呢？为了加载接口名称，我们需要接口设备结构。我将从最后一个语句开始解释，因为它最容易理解，前一个实际上只是更复杂的版本。它使用 bpf_probe_read 从 dev-&gt;name 读取长度为 IFNAMSIZ 的数据，并将其复制到 evt.ifname。第一行遵循完全相同的逻辑。它将 <code>skb-&gt;dev</code> 指针的值加载到 <code>dev</code> 中。不幸的是，我没有找到另一种在没有 <code>offsetof / typeof</code> 花招的情况下加载字段地址的方法。</p>
+<p>作为提醒，eBPF 的目标是允许对内核进行安全脚本化。这意味着禁止随机内存访问。所有内存访问必须经过验证。除非您访问的内存位于堆栈上，否则需要使用 bpf_probe_read 读取访问器。这使得代码阅读/编写起来很繁琐，但也使其更安全。bpf_probe_read 在内核中的 bpf_trace.c 中定义。其中有一些有趣的部分：</p>
+<ol>
+<li>它类似于 memcpy。请注意复制对性能的成本。</li>
+<li>如果出现错误，它将返回一个初始化为 0 的缓冲区并返回一个错误。它不会崩溃或停止程</li>
+</ol>
+<figure class="highlight c"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div></pre></td><td class="code"><pre><div class="line"><span class="preprocessor">#<span class="keyword">define</span> member_read(destination, source_struct, source_member)                 \</span></div><div class="line"> <span class="keyword">do</span>{                                                                          \</div><div class="line">   bpf_probe_read(                                                            \</div><div class="line">     destination,                                                             \</div><div class="line">     <span class="keyword">sizeof</span>(source_struct-&gt;source_member),                                    \</div><div class="line">     ((<span class="keyword">char</span>*)source_struct) + offsetof(typeof(*source_struct), source_member) \</div><div class="line">   );                                                                         \</div><div class="line"> } <span class="keyword">while</span>(<span class="number">0</span>)</div></pre></td></tr></table></figure>
+
+<p>这使得我们可以编写：</p>
+<figure class="highlight c"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">member_read(&dev, skb, dev);</div></pre></td></tr></table></figure>
+
+<p>好极了!</p>
+<h2 id="添加网络命名空间_ID">添加网络命名空间 ID</h2>
+<p>这可能是最有价值的信息。就其本身而言，它是所有这些努力的正当理由。不幸的是，这也是最难加载的。</p>
+<p>命名空间标识符可以从以下两个地方加载：</p>
+<ul>
+<li>socket&#39;sk&#39; 结构</li>
+<li>设备 &#39;dev&#39; 结构</li>
+</ul>
+<p>最初，我使用套接字结构，因为这是我在编写 <a href="https://github.com/iovisor/bcc/blob/master/tools/solisten.py" target="_blank" rel="external">solisten.py</a> 时使用的结构。不过，不知为何，一旦数据包跨越命名空间边界，命名空间标识符就不再可读。该字段全为0，这是一个明显的无效内存访问的指示器（请记住 bpf_probe_read 在出现错误时的工作原理），并且破坏了整个目的。</p>
+<p>幸运的是，设备方法有效。可以将其看作是询问数据包在哪个接口上以及接口属于哪个命名空间的过程。</p>
+<figure class="highlight c"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">struct</span> net* net;</div><div class="line"></div><div class="line"><span class="comment">// Get netns id. Equivalent to: evt.netns = dev-&gt;nd_net.net-&gt;ns.inum</span></div><div class="line">possible_net_t *skc_net = &dev-&gt;nd_net;</div><div class="line">member_read(&net, skc_net, net);</div><div class="line"><span class="keyword">struct</span> ns_common* ns = member_address(net, ns);</div><div class="line">member_read(&evt.netns, ns, inum);</div></pre></td></tr></table></figure>
+
+<p>使用以下附加宏以提高可读性：</p>
+<figure class="highlight c"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div></pre></td><td class="code"><pre><div class="line"><span class="preprocessor">#<span class="keyword">define</span> member_address(source_struct, source_member) \</span></div><div class="line">({                                                   \</div><div class="line">  <span class="keyword">void</span>* __ret;                                       \</div><div class="line">  __ret = (<span class="keyword">void</span>*) (((<span class="keyword">char</span>*)source_struct) + offsetof(typeof(*source_struct), source_member)); \</div><div class="line">  __ret;                                             \</div><div class="line">})</div></pre></td></tr></table></figure>
+
+<p>将这些部分组合在一起，然后... 完成！</p>
+<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div></pre></td><td class="code"><pre><div class="line">$&gt; <span class="built_in">sudo</span> python ./tracepkt.py</div><div class="line">[  <span class="number">4026531957</span>]          docker0</div><div class="line">[  <span class="number">4026531957</span>]      vetha373ab6</div><div class="line">[  <span class="number">4026532258</span>]             eth0</div><div class="line">[  <span class="number">4026532258</span>]             eth0</div><div class="line">[  <span class="number">4026531957</span>]      vetha373ab6</div><div class="line">[  <span class="number">4026531957</span>]          docker0</div></pre></td></tr></table></figure>
+
+<p>如果您向 Docker 容器发送 ping，您应该会看到这个。数据包通过本地的 docker0 桥接器传递，然后移动到 veth 对，跨越了网络命名空间边界，回复沿着完全相反的路径返回。</p>
+<p>回复这确实是一个棘手的问题！</p>
+<h2 id="更进一步：只跟踪request_reply_和_echo_reply_数据包">更进一步：只跟踪request reply 和 echo reply 数据包</h2>
+<p>作为奖励，我们还将加载数据包的 IP 地址。无论如何，我们都必须读取 IP 标头。我将在这里坚持使用 IPv4，但相同的逻辑适用于IPv6。</p>
+<p>坏消息是，没有什么是真正简单的。请记住，我们正在处理内核，在网络路径中。某些数据包尚未打开。这意味着某些标头偏移仍未初始化。我们将不得不计算它的所有，从 MAC 标头到 IP 标头，最后到 ICMP 标头。</p>
+<p>让我们先轻轻松松地加载 MAC 标头地址，并推导出 IP 标头地址。我们不会加载 MAC 标头本身，而是假设它的长度为 14 字节。</p>
+<figure class="highlight c"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div></pre></td><td class="code"><pre><div class="line"><span class="comment">// Compute MAC header address</span></div><div class="line"><span class="keyword">char</span>* head;</div><div class="line">u16 mac_header;</div><div class="line"></div><div class="line">member_read(&head,       skb, head);</div><div class="line">member_read(&mac_header, skb, mac_header);</div><div class="line"></div><div class="line"><span class="comment">// Compute IP Header address</span></div><div class="line"><span class="preprocessor">#<span class="keyword">define</span> MAC_HEADER_SIZE 14;</span></div><div class="line"><span class="keyword">char</span>* ip_header_address = head + mac_header + MAC_HEADER_SIZE;</div></pre></td></tr></table></figure>
+
+<p>这基本上意味着 IP 标头从 <code>skb-&gt;head + skb-&gt;mac_header + MAC_HEADER_SIZE;</code> 开始。</p>
+<p>现在，我们可以解码 IP 标头中的 IP 版本，即第一个字节的前 4 位，确保它是 IPv4：</p>
+<figure class="highlight c"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div></pre></td><td class="code"><pre><div class="line"><span class="comment">// 加载ip的版本</span></div><div class="line">u8 ip_version;</div><div class="line">bpf_probe_read(&ip_version, <span class="keyword">sizeof</span>(u8), ip_header_address);</div><div class="line">ip_version = ip_version &gt;&gt; <span class="number">4</span> & <span class="number">0xf</span>;</div><div class="line"></div><div class="line"><span class="comment">// 过滤 IPv4 packets</span></div><div class="line"><span class="keyword">if</span> (ip_version != <span class="number">4</span>) {</div><div class="line">    <span class="keyword">return</span> <span class="number">0</span>;</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>现在，我们加载完整的 IP 标头，提取 IP 地址以使 Python 信息更有用，确保下一个标头是 ICMP，并推导出 ICMP 标头偏移量。下面是所有这些操作：</p>
+<figure class="highlight c"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div></pre></td><td class="code"><pre><div class="line"><span class="comment">// Load IP Header</span></div><div class="line"><span class="keyword">struct</span> iphdr iphdr;</div><div class="line">bpf_probe_read(&iphdr, <span class="keyword">sizeof</span>(iphdr), ip_header_address);</div><div class="line"></div><div class="line"><span class="comment">// Load protocol and address</span></div><div class="line">u8 icmp_offset_from_ip_header = iphdr.ihl * <span class="number">4</span>;</div><div class="line">evt.saddr[<span class="number">0</span>] = iphdr.saddr;</div><div class="line">evt.daddr[<span class="number">0</span>] = iphdr.daddr;</div><div class="line"></div><div class="line"><span class="comment">// Filter ICMP packets</span></div><div class="line"><span class="keyword">if</span> (iphdr.protocol != IPPROTO_ICMP) {</div><div class="line">    <span class="keyword">return</span> <span class="number">0</span>;</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>最后，我们可以加载 ICMP 标头本身，确保这是一个echo request of reply，并从中加载 id 和 seq：</p>
+<figure class="highlight c"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div></pre></td><td class="code"><pre><div class="line"><span class="comment">// Compute ICMP header address and load ICMP header</span></div><div class="line"><span class="keyword">char</span>* icmp_header_address = ip_header_address + icmp_offset_from_ip_header;</div><div class="line"><span class="keyword">struct</span> icmphdr icmphdr;</div><div class="line">bpf_probe_read(&icmphdr, <span class="keyword">sizeof</span>(icmphdr), icmp_header_address);</div><div class="line"></div><div class="line"><span class="comment">// Filter ICMP echo request and echo reply</span></div><div class="line"><span class="keyword">if</span> (icmphdr.type != ICMP_ECHO && icmphdr.type != ICMP_ECHOREPLY) {</div><div class="line">    <span class="keyword">return</span> <span class="number">0</span>;</div><div class="line">}</div><div class="line"></div><div class="line"><span class="comment">// Get ICMP info</span></div><div class="line">evt.icmptype = icmphdr.type;</div><div class="line">evt.icmpid   = icmphdr.un.echo.id;</div><div class="line">evt.icmpseq  = icmphdr.un.echo.sequence;</div><div class="line"></div><div class="line"><span class="comment">// Fix endian</span></div><div class="line">evt.icmpid  = be16_to_cpu(evt.icmpid);</div><div class="line">evt.icmpseq = be16_to_cpu(evt.icmpseq);</div></pre></td></tr></table></figure>
+
+<p>这就是全部内容！</p>
+<p>如果您想从特定 ping 实例中过滤 ICMP，您可以假定 evt.icmpid 是 Linux 的 ping 的 PID。</p>
+<h2 id="是时候展示了！">是时候展示了！</h2>
+<p>启动程序，然后在另一个终端中运行一些 &quot;ping&quot; 命令，观察结果：</p>
+<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div></pre></td><td class="code"><pre><div class="line"><span class="comment"># ping -4 localhost</span></div><div class="line">[  <span class="number">4026531957</span>]               lo request <span class="comment">#20212.001 127.0.0.1 -&gt; 127.0.0.1</span></div><div class="line">[  <span class="number">4026531957</span>]               lo request <span class="comment">#20212.001 127.0.0.1 -&gt; 127.0.0.1</span></div><div class="line">[  <span class="number">4026531957</span>]               lo   reply <span class="comment">#20212.001 127.0.0.1 -&gt; 127.0.0.1</span></div><div class="line">[  <span class="number">4026531957</span>]               lo   reply <span class="comment">#20212.001 127.0.0.1 -&gt; 127.0.0.1</span></div></pre></td></tr></table></figure>
+
+<p>一个 ICMP echo request由进程 20212 发送（Linux 的 ping 中的 ICMP id）通过回环接口发送，传递到完全相同的回环接口，其中生成并发送回一个echo reply。回环接口既是发出接口也是接收接口。</p>
+<p>那么 WiFi 网关呢？</p>
+<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line"><span class="comment"># ping -4 192.168.43.1</span></div><div class="line">[  <span class="number">4026531957</span>]           wlp2s0 request <span class="comment">#20710.001 192.168.43.191 -&gt; 192.168.43.1</span></div><div class="line">[  <span class="number">4026531957</span>]           wlp2s0   reply <span class="comment">#20710.001 192.168.43.1 -&gt; 192.168.43.191</span></div></pre></td></tr></table></figure>
+
+<p>在这种情况下，echo request和echo reply通过 WiFi 接口进行。很容易。</p>
+<p>稍微不相关的一点是，还记得当我们只打印拥有数据包的进程的“comm”时吗？在这种情况下，echo request将属于 ping 进程，而reply将属于 WiFi 驱动程序，因为在 Linux 视角下，WiFi 驱动程序是生成回复的进程。</p>
+<p>最后一个，也是我个人最喜欢的，ping 一个 Docker 容器。这不是因为 Docker，而是因为它最好地展示了 eBPF 的强大之处。它允许构建了一个类似于 &quot;x-ray&quot; 的工具，用于分析 ping。</p>
+<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div></pre></td><td class="code"><pre><div class="line"><span class="comment"># ping -4 172.17.0.2</span></div><div class="line">[  <span class="number">4026531957</span>]          docker0 request <span class="comment">#17146.001 172.17.0.1 -&gt; 172.17.0.2</span></div><div class="line">[  <span class="number">4026531957</span>]      vetha373ab6 request <span class="comment">#17146.001 172.17.0.1 -&gt; 172.17.0.2</span></div><div class="line">[  <span class="number">4026532258</span>]             eth0 request <span class="comment">#17146.001 172.17.0.1 -&gt; 172.17.0.2</span></div><div class="line">[  <span class="number">4026532258</span>]             eth0   reply <span class="comment">#17146.001 172.17.0.2 -&gt; 172.17.0.1</span></div><div class="line">[  <span class="number">4026531957</span>]      vetha373ab6   reply <span class="comment">#17146.001 172.17.0.2 -&gt; 172.17.0.1</span></div><div class="line">[  <span class="number">4026531957</span>]          docker0   reply <span class="comment">#17146.001 172.17.0.2 -&gt; 172.17.0.1</span></div></pre></td></tr></table></figure>
+
+<p>经过一些处理，现在看起来如下所示：</p>
+<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line">       Host netns           | Container netns</div><div class="line">+---------------------------+-----------------+</div><div class="line">| docker0 ---&gt; veth0e65931 ---&gt; eth0          |</div><div class="line">+---------------------------+-----------------+</div></pre></td></tr></table></figure>
+
+<h2 id="最后的话">最后的话</h2>
+<p>eBPF/bcc使我们能够编写一系列新的工具，用于深度故障排除、跟踪和追踪先前无法通过内核补丁到达的地方的问题。跟踪点也非常方便，因为它们为我们提供了有趣的位置的良好提示，消除了繁琐阅读内核代码的需要，并可以放置在从 kprobe 中无法访问的代码部分，例如内联或静态函数。</p>
+<p>要进一步深入，我们可以添加 IPv6 支持。这很容易做到，我将把它作为读者的练习留下。理想情况下，我希望能够衡量性能的影响。但是这篇帖子已经非常长了。通过跟踪路由和 iptables 决策以及 ARP 数据包，改进这个工具可能会很有趣。所有这些将使这个工具成为像我这样的人的完美“X光”数据包跟踪器，有时需要应对复杂的Linux网络设置。</p>
+<p>正如承诺的那样，您可以在Github上查看完整的代码（带有IPv6支持）：<a href="https://github.com/yadutaf/tracepkt" target="_blank" rel="external">https://github.com/yadutaf/tracepkt</a></p>
+
+      
+    </div>
+    <footer class="article-footer">
+      
+
+      
+      <!-- <link rel="stylesheet" href="https://unpkg.com/gitalk/dist/gitalk.css">
+      <script src="https://unpkg.com/gitalk/dist/gitalk.min.js"></script> -->
+      <section id="comments">
+        <script src="https://utteranc.es/client.js"
+                repo="smallnest/gitalk"
+                issue-term="title"
+                theme="github-light"
+                crossorigin="anonymous"
+                async>
+        </script>
+        <!-- <div id="gitalk-container"></div>
+        <script type="text/javascript">
+          var gitalkOpts = {
+            id: '2023/09/11/tracing-a-packet-journey-using-linux-',
+            owner: 'smallnest',
+            repo: 'gitalk',
+            title: '使用Linux tracepoints、perf 和 eBPF 跟踪包的旅程',
+            body: 'https://colobu.com/2023/09/11/tracing-a-packet-journey-using-linux-tracepoints-perf-ebpf/',
+            clientID: 'bc02724130ed5b7ee275',
+            clientSecret: '68cb0bae2f93a8b88b09e0eb9b08c844b06a9047',
+            admin: ['smallnest'],
+            distractionFreeMode: false
+          };
+
+          const gitalk = new Gitalk(gitalkOpts)
+          gitalk.render('gitalk-container')
+        </script> -->
+        <noscript> 为正常使用评论功能请激活JavaScript</noscript>
+      </section>
+
+      
+
+    </footer>
+  </div>
+  
+  
+<nav id="article-nav">
+  
+    <a href="/2023/09/13/pgo/" id="article-nav-newer" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">Newer</strong>
+      <div class="article-nav-title">
+        
+          PGO: 为你的Go程序提效5%
+        
+      </div>
+    </a>
+  
+  
+    <a href="/2023/09/10/mping-a-multi-targets-high-frequency-pressure-measuring-and-detection-tool/" id="article-nav-older" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">Older</strong>
+      <div class="article-nav-title">mping: 使用新的icmp库实现探测和压测工具</div>
+    </a>
+  
+</nav>
+
+  
+</article></section>
+        
+          <aside id="sidebar">
+  
+    <div class="widget-wrap">
+  <h3 class="widget-title">微信公众号</h3>
+  <div class="widget">
+    <img width="100%" src="/images/widgets/gopatterns.jpg">
+  </div>
+</div>
+
+<div class="widget-wrap">
+  <h3 class="widget-title">极客时间专栏</h3>
+  <div class="widget">
+    <a href="https://time.geekbang.org/column/intro/100061801">
+      <img width="100%" src="/images/widgets/geekbang.png">
+    </a>
+  </div>
+</div>
+
+<div class="widget-wrap">
+    <h3 class="widget-title">原创图书</h3>
+    <div class="widget">
+      <a href="/ScalaCollectionsCookbook/">
+        <img width="100%" src="/ScalaCollectionsCookbook/scala_collections_cookbook.jpg">
+        <img width="100%" src="/ScalaCollectionsCookbook/scala_collections_cookbook_tw.png">
+      </a>
+    </div>
+</div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">分类</h3>
+    <div class="widget">
+      <ul class="category-list"><li class="category-list-item"><a class="category-list-link" href="/categories/Android/">Android</a><span class="category-list-count">12</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/C/">C++</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/DOTNET/">DOTNET</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Docker/">Docker</a><span class="category-list-count">5</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Go/">Go</a><span class="category-list-count">241</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Java/">Java</a><span class="category-list-count">64</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Linux/">Linux</a><span class="category-list-count">7</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Rust/">Rust</a><span class="category-list-count">12</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Scala/">Scala</a><span class="category-list-count">18</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/go/">go</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/k8s/">k8s</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/rust/">rust</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/分享/">分享</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/前端开发/">前端开发</a><span class="category-list-count">18</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/区块链/">区块链</a><span class="category-list-count">8</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/大数据/">大数据</a><span class="category-list-count">60</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/工具/">工具</a><span class="category-list-count">28</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/数据库/">数据库</a><span class="category-list-count">3</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/架构/">架构</a><span class="category-list-count">27</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/算法/">算法</a><span class="category-list-count">4</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/管理/">管理</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/网络编程/">网络编程</a><span class="category-list-count">13</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/设计模式/">设计模式</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/读书笔记/">读书笔记</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/运维/">运维</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/高并发编程/">高并发编程</a><span class="category-list-count">20</span></li></ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">标签云</h3>
+    <div class="widget tagcloud">
+      <a href="/tags/Android/" style="font-size: 15.71px;">Android</a><a href="/tags/ApacheBench/" style="font-size: 11.43px;">ApacheBench</a><a href="/tags/Bower/" style="font-size: 10.00px;">Bower</a><a href="/tags/C/" style="font-size: 10.00px;">C#</a><a href="/tags/CDN/" style="font-size: 10.00px;">CDN</a><a href="/tags/CQRS/" style="font-size: 10.00px;">CQRS</a><a href="/tags/CRC/" style="font-size: 10.00px;">CRC</a><a href="/tags/CSS/" style="font-size: 11.43px;">CSS</a><a href="/tags/CompletableFuture/" style="font-size: 10.00px;">CompletableFuture</a><a href="/tags/Comsat/" style="font-size: 10.00px;">Comsat</a><a href="/tags/Curator/" style="font-size: 18.57px;">Curator</a><a href="/tags/DSL/" style="font-size: 10.00px;">DSL</a><a href="/tags/Disruptor/" style="font-size: 10.00px;">Disruptor</a><a href="/tags/Docker/" style="font-size: 11.43px;">Docker</a><a href="/tags/Ember/" style="font-size: 11.43px;">Ember</a><a href="/tags/FastJson/" style="font-size: 10.00px;">FastJson</a><a href="/tags/Fiber/" style="font-size: 10.00px;">Fiber</a><a href="/tags/GAE/" style="font-size: 10.00px;">GAE</a><a href="/tags/GC/" style="font-size: 12.86px;">GC</a><a href="/tags/Gnuplot/" style="font-size: 10.00px;">Gnuplot</a><a href="/tags/Go/" style="font-size: 14.29px;">Go</a><a href="/tags/Gradle/" style="font-size: 10.00px;">Gradle</a><a href="/tags/Grunt/" style="font-size: 10.00px;">Grunt</a><a href="/tags/Gulp/" style="font-size: 10.00px;">Gulp</a><a href="/tags/Hadoop/" style="font-size: 10.00px;">Hadoop</a><a href="/tags/Hazelcast/" style="font-size: 10.00px;">Hazelcast</a><a href="/tags/IPFS/" style="font-size: 10.00px;">IPFS</a><a href="/tags/Ignite/" style="font-size: 10.00px;">Ignite</a><a href="/tags/JVM/" style="font-size: 10.00px;">JVM</a><a href="/tags/Java/" style="font-size: 17.14px;">Java</a><a href="/tags/Kafka/" style="font-size: 20.00px;">Kafka</a><a href="/tags/Lambda/" style="font-size: 14.29px;">Lambda</a><a href="/tags/Linux/" style="font-size: 12.86px;">Linux</a><a href="/tags/LongAdder/" style="font-size: 10.00px;">LongAdder</a><a href="/tags/MathJax/" style="font-size: 10.00px;">MathJax</a><a href="/tags/Maven/" style="font-size: 11.43px;">Maven</a><a href="/tags/Memcached/" style="font-size: 10.00px;">Memcached</a><a href="/tags/Metrics/" style="font-size: 10.00px;">Metrics</a><a href="/tags/Mongo/" style="font-size: 12.86px;">Mongo</a><a href="/tags/Netty/" style="font-size: 15.71px;">Netty</a>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">归档</h3>
+    <div class="widget">
+      <ul class="archive-list"><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/09/">September 2023</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/08/">August 2023</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/07/">July 2023</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/06/">June 2023</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/05/">May 2023</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/04/">April 2023</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/03/">March 2023</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/01/">January 2023</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/12/">December 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/11/">November 2022</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/10/">October 2022</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/09/">September 2022</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/08/">August 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/07/">July 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/06/">June 2022</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/05/">May 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/04/">April 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/03/">March 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/02/">February 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/01/">January 2022</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/12/">December 2021</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/11/">November 2021</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/10/">October 2021</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/08/">August 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/07/">July 2021</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/06/">June 2021</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/05/">May 2021</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/04/">April 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/03/">March 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/02/">February 2021</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/01/">January 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/12/">December 2020</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/11/">November 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/09/">September 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/08/">August 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/07/">July 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/06/">June 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/05/">May 2020</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/04/">April 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/03/">March 2020</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/02/">February 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/01/">January 2020</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/12/">December 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/11/">November 2019</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/10/">October 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/09/">September 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/08/">August 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/07/">July 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/06/">June 2019</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/05/">May 2019</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/04/">April 2019</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/03/">March 2019</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/02/">February 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/01/">January 2019</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/12/">December 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/11/">November 2018</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/10/">October 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/09/">September 2018</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/08/">August 2018</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/07/">July 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/06/">June 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/05/">May 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/04/">April 2018</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/03/">March 2018</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/02/">February 2018</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/01/">January 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/12/">December 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/11/">November 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/10/">October 2017</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/09/">September 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/08/">August 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/07/">July 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/06/">June 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/05/">May 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/04/">April 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/03/">March 2017</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/02/">February 2017</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/01/">January 2017</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/12/">December 2016</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/11/">November 2016</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/10/">October 2016</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/09/">September 2016</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/08/">August 2016</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/07/">July 2016</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/06/">June 2016</a><span class="archive-list-count">14</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/05/">May 2016</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/04/">April 2016</a><span class="archive-list-count">14</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/03/">March 2016</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/02/">February 2016</a><span class="archive-list-count">8</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/01/">January 2016</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/12/">December 2015</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/11/">November 2015</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/10/">October 2015</a><span class="archive-list-count">9</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/09/">September 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/08/">August 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/07/">July 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/06/">June 2015</a><span class="archive-list-count">8</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/05/">May 2015</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/04/">April 2015</a><span class="archive-list-count">15</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/03/">March 2015</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/02/">February 2015</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/01/">January 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/12/">December 2014</a><span class="archive-list-count">28</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/11/">November 2014</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/10/">October 2014</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/09/">September 2014</a><span class="archive-list-count">28</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/08/">August 2014</a><span class="archive-list-count">19</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/07/">July 2014</a><span class="archive-list-count">1</span></li></ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">近期文章</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+            <a href="/2023/09/27/when-and-how-to-use-classical-bpf/">何时以及如何高效的使用经典的bpf, 它能到来什么好处？</a>
+          </li>
+        
+          <li>
+            <a href="/2023/09/24/reread-the-io-Reader/">从头再读取 io.Reader: 覆水难收？</a>
+          </li>
+        
+          <li>
+            <a href="/2023/09/24/precise-rtt-for-ping/">更精准的时延：使用软件时间戳和硬件时间戳</a>
+          </li>
+        
+          <li>
+            <a href="/2023/09/13/pgo/">PGO: 为你的Go程序提效5%</a>
+          </li>
+        
+          <li>
+            <a href="/2023/09/11/tracing-a-packet-journey-using-linux-tracepoints-perf-ebpf/">使用Linux tracepoints、perf 和 eBPF 跟踪包的旅程</a>
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">友情链接</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+			 
+            <a href="http://stackshare.io" target="_blank">技术栈</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://toutiao.io/" target="_blank">开发者头条</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://weekly.manong.io/issues/" target="_blank">码农周刊</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.tuicool.com/mags" target="_blank">编程狂人周刊</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.importnew.com/" target="_blank">importnew</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://ifeve.com/" target="_blank">并发编程网</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://github.com" target="_blank">github</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://stackoverflow.com/" target="_blank">stackoverflow</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.javacodegeeks.com/" target="_blank">javacodegeeks</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.infoq.com/" target="_blank">infoq</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.dzone.com/links/index.html" target="_blank">dzone</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://oj.leetcode.com/problems/" target="_blank">leetcode</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://tutorials.jenkov.com" target="_blank">jenkov</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://howtodoinjava.com" target="_blank">HowToDoInJava</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://java-design-patterns.com/patterns/" target="_blank">java design patterns</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://medium.com/netflix-techblog" target="_blank">Netflix技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://www.techiedelight.com" target="_blank">Techie Delight</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://engineering.linkedin.com/blog" target="_blank">Linkedin技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://blogs.dropbox.com/tech/" target="_blank">Dropbox技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://code.fb.com" target="_blank">Facebook技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://jm.taobao.org" target="_blank">淘宝中间件团队</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://tech.meituan.com" target="_blank">美团技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://blogs.360.cn" target="_blank">360技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://xiaomi-info.github.io" target="_blank">小米信息部技术团队</a>
+			
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+      
+
+  
+</aside>
+        
+      </div>
+      <footer id="footer">
+  
+  <div class="outer">
+    <div id="footer-info" class="inner">
+      &copy; 2023 smallnest<br>
+	  Powered by <a href="http://hexo.io/" target="_blank">Hexo</a>
+    </div>
+  </div>
+</footer>
+    </div>
+    <nav id="mobile-nav">
+  
+    
+      <a href="/" class="mobile-nav-link"><i class="fa fa-home">&nbsp;</i>首页</a>
+    
+  
+    
+      <a href="/archives" class="mobile-nav-link"><i class="fa fa-folder-o">&nbsp;</i>归档</a>
+    
+  
+    
+      <a href="https://github.com/smallnest" class="mobile-nav-link"><i class="fa fa-github">&nbsp;</i>github</a>
+    
+  
+    
+      <a class="mobile-nav-link" href="#"><i class="fa fa-bars">&nbsp;</i>网站群</a>
+    
+      
+            <a class="mobile-nav-link" href="/goasm">&nbsp;&nbsp;<i class="fa fa-language">&nbsp;</i>Go汇编示例</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="https://gowebexamples.com">&nbsp;&nbsp;<i class="fa fa-external-link">&nbsp;</i>Go Web开发示例</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://go-database-sql.org">&nbsp;&nbsp;<i class="fa fa-external-link">&nbsp;</i>Go 数据库开发教程</a>
+          
+          
+    
+      
+            
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://rpcx.io">&nbsp;&nbsp;<i class="fa undefined">&nbsp;</i>RPCX官网</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://cn.doc.rpcx.io">&nbsp;&nbsp;<i class="fa undefined">&nbsp;</i>RPC开发指南</a>
+          
+          
+    
+    
+  
+    
+      <a href="/ScalaCollectionsCookbook" class="mobile-nav-link"><i class="fa fa-book">&nbsp;</i>Scala集合技术手册</a>
+    
+  
+    
+      <a href="/about" class="mobile-nav-link"><i class="fa fa-lemon-o">&nbsp;</i>关于</a>
+    
+  
+</nav>
+    
+<script src="//cdn.staticfile.org/jquery/1.11.1/jquery.min.js"></script>
+<script src="//cdn.bootcss.com/jquery.lazyload/1.9.1/jquery.lazyload.min.js"></script>
+
+<script src="//cdnjs.cloudflare.com/ajax/libs/fancybox/3.2.5/jquery.fancybox.min.js"></script>
+
+
+<script src="/js/script.js" type="text/javascript"></script>
+
+<!-- mathjax config similar to math.stackexchange -->
+<script type="text/x-mathjax-config">
+  MathJax.Hub.Config({
+    tex2jax: {
+      inlineMath: [ ['$','$'], ["\\(","\\)"] ],
+      processEscapes: true,
+      skipTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code']
+    }
+  });
+  MathJax.Hub.Queue(function() {
+      var all = MathJax.Hub.getAllJax(), i;
+      for(i=0; i < all.length; i += 1) {
+        all[i].SourceElement().parentNode.className += ' has-jax';
+      }
+  });
+</script>
+<script type="text/javascript" src="//cdn.bootcss.com/mathjax/2.6.0-beta.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML">
+</script>
+
+<div id="totop" style="position:fixed;bottom:150px;right:10px;cursor: pointer;z-index: 2000;">
+	<a title="返回顶部"><img src="/images/scrollup.png"/></a>
+</div>
+<script src="/js/totop.js" type="text/javascript"></script>
+
+
+
+
+<script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "//hm.baidu.com/hm.js?e085d87993250aab11f3e0c15f1c2785";
+  var s = document.getElementsByTagName("script")[0]; 
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+
+
+  </div>
+</body>
+</html>

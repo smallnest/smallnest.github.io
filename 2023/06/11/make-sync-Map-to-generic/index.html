@@ -1,0 +1,712 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset="utf-8">
+  
+  <title>让 sync.Map  支持泛型</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+  <meta name="description" content="渐渐地， Go泛型越来越多应用的Go的标准库中了。一些标准库的类型，比如container/heap、container/list、container/ring、math都是有机会支持泛型的，但是考虑到Go向下兼容的情况，这些包可能不会直接修改，最可能就是新建一些并发的包，或者放在扩展包中。
+本篇文章将讲一个相对复杂的例子，也就是对sync.Map的修改，让它支持泛型。">
+<meta property="og:type" content="article">
+<meta property="og:title" content="让 sync.Map  支持泛型">
+<meta property="og:url" content="https://colobu.com/2023/06/11/make-sync-Map-to-generic/">
+<meta property="og:site_name" content="鸟窝">
+<meta property="og:description" content="渐渐地， Go泛型越来越多应用的Go的标准库中了。一些标准库的类型，比如container/heap、container/list、container/ring、math都是有机会支持泛型的，但是考虑到Go向下兼容的情况，这些包可能不会直接修改，最可能就是新建一些并发的包，或者放在扩展包中。
+本篇文章将讲一个相对复杂的例子，也就是对sync.Map的修改，让它支持泛型。">
+<meta property="og:image" content="syncmap.jpg">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="让 sync.Map  支持泛型">
+<meta name="twitter:description" content="渐渐地， Go泛型越来越多应用的Go的标准库中了。一些标准库的类型，比如container/heap、container/list、container/ring、math都是有机会支持泛型的，但是考虑到Go向下兼容的情况，这些包可能不会直接修改，最可能就是新建一些并发的包，或者放在扩展包中。
+本篇文章将讲一个相对复杂的例子，也就是对sync.Map的修改，让它支持泛型。">
+
+  
+  <link rel="alternative" href="/atom.xml" title="鸟窝" type="application/atom+xml">
+  
+  
+  <link rel="icon" href="/favicon.png">
+  
+  <link rel="stylesheet" href="/css/style.css" type="text/css">
+
+  <link href="//cdn.staticfile.org/font-awesome/4.2.0/css/font-awesome.css" rel="stylesheet">
+  
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/fancybox/2.1.7/css/jquery.fancybox.min.css"
+    media="screen" type="text/css">
+  
+  <link rel="stylesheet" href="//cdnjs.cloudflare.com/ajax/libs/animate.css/3.1.1/animate.min.css" media="screen"
+    type="text/css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/tonsky/FiraCode@1.207/distr/fira_code.css">
+</head>
+<body>
+  <div id="container">
+    <div id="wrap">
+      <header id="header">
+  <div id="banner"></div>
+  <div id="header-outer" class="outer">
+    <div id="header-title" class="inner">
+      <h1 id="logo-wrap" class="animated bounceInLeft">
+        <a href="/" id="logo">鸟窝</a>
+      </h1>
+      
+        <h2 id="subtitle-wrap" class="animated bounceInLeft">
+          <a href="/" id="subtitle">大道至简 Simplicity is the ultimate form of sophistication</a>
+        </h2>
+      
+    </div>
+    <div id="header-inner" class="inner">
+      <nav id="main-nav">
+        <a id="main-nav-toggle" class="nav-icon"></a>
+        
+          
+            <a class="main-nav-link" href="/"><i class="fa fa-home">&nbsp;</i>首页</a>
+          
+          
+          
+            <a class="main-nav-link" href="/archives"><i class="fa fa-folder-o">&nbsp;</i>归档</a>
+          
+          
+          
+            <a class="main-nav-link" href="https://github.com/smallnest"><i class="fa fa-github">&nbsp;</i>github</a>
+          
+          
+          
+            <div class="dropdown main-nav-link"><a class="main-nav-link" href="#"><i class="fa fa-bars">&nbsp;</i>网站群</a>
+              <div class="dropdown-content">
+          
+            
+              <a href="/goasm"><i class="fa fa-language"></i>&nbsp;Go汇编示例</a>
+            
+                
+          
+            
+              <a href="https://gowebexamples.com"><i class="fa fa-external-link"></i>&nbsp;Go Web开发示例</a>
+            
+                
+          
+            
+              <a href="http://go-database-sql.org"><i class="fa fa-external-link"></i>&nbsp;Go 数据库开发教程</a>
+            
+                
+          
+            
+              <hr>
+            
+                
+          
+            
+              <a href="http://rpcx.io"><i class="fa undefined"></i>&nbsp;RPCX官网</a>
+            
+                
+          
+            
+              <a href="http://cn.doc.rpcx.io"><i class="fa undefined"></i>&nbsp;RPC开发指南</a>
+            
+                
+          
+          </div>
+        </div>
+          
+          
+          
+            <a class="main-nav-link" href="/ScalaCollectionsCookbook"><i class="fa fa-book">&nbsp;</i>Scala集合技术手册</a>
+          
+          
+          
+            <a class="main-nav-link" href="/about"><i class="fa fa-lemon-o">&nbsp;</i>关于</a>
+          
+          
+
+
+      </nav>
+      <nav id="sub-nav">
+        
+          <a id="nav-rss-link" class="nav-icon" href="/atom.xml" title="RSS Feed"></a>
+        
+        <a id="nav-search-btn" class="nav-icon" title="Search"></a>
+      </nav>
+      <div id="search-form-wrap">
+        <form action="https://www.google.com/search" method="get" accept-charset="utf-8" class="search-form">
+          <input type="search" id="search-word" name="q" maxlength="20" class="search-form-input" placeholder="Search">
+          <input type=hidden name=ie value="utf-8">
+          <input type=hidden name=oe value="utf-8">
+          <input type=hidden name=hl value="zh-CN">
+          <input type="submit" id="search-submit" value="" class="search-form-submit">
+        </form>
+      </div>
+    </div>
+  </div>
+</header>
+      <div class="outer">
+        <section id="main"><article id="post-make-sync-Map-to-generic" class="article article-type-post" itemscope
+  itemprop="blogPost">
+  <div class="article-meta">
+    <a href="/2023/06/11/make-sync-Map-to-generic/" class="article-date">
+  <time datetime="2023-06-11T13:46:30.000Z" itemprop="datePublished">2023年06月11日</time>
+</a>
+    
+  <div class="article-category">
+    <a class="article-category-link" href="/categories/Go/">Go</a>
+  </div>
+
+    
+  <div class="article-author"> by smallnest</div>
+
+  </div>
+  <div class="article-inner">
+    
+    
+    <header class="article-header">
+      
+  
+    <h1 class="article-title" itemprop="name">
+      让 sync.Map  支持泛型
+	  
+    </h1>
+  
+
+    </header>
+    
+    <div class="article-entry" itemprop="articleBody">
+      
+      
+      
+      <script>function show_answer(btn, x) { if (btn.value === "显示答案") { btn.value = "隐藏答案" } else { btn.value = "显示答案" } var as = document.getElementById(x); if (as.style.display === "none") { as.style.display = "block" } else { as.style.display = "none" } }</script>
+      <p>渐渐地， Go泛型越来越多应用的Go的标准库中了。一些标准库的类型，比如<code>container/heap</code>、<code>container/list</code>、<code>container/ring</code>、<code>math</code>都是有机会支持泛型的，但是考虑到Go向下兼容的情况，这些包可能不会直接修改，最可能就是新建一些并发的包，或者放在扩展包中。</p>
+<p>本篇文章将讲一个相对复杂的例子，也就是对<code>sync.Map</code>的修改，让它支持泛型。</p>
+<a id="more"></a>
+<h2 id="找出变换量，将其改变为type_parameter">找出变换量，将其改变为type parameter</h2>
+<p><code>sync.Map</code>是一种map，所以它遵循map的K-V的映射关系。键是一种可以比较的类型，以便进行是否相等的检查，值是任意类型。内建的map类型在变量定义的时候就执行了键和值的类型，也算是最初级的泛型，sync.Map的键和值是any类型的，但实际上键是comparable类型才可以。下面这个代码能编译，但是运行时会出错。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">var</span> m sync.Map</div><div class="line"></div><div class="line">key := <span class="keyword">func</span>() {}</div><div class="line">m.Store(key, <span class="string">"value"</span>)</div></pre></td></tr></table></figure>
+
+<p>键的类型和值的类型是变化量，可以更改成类型参数，所以我们先对这两个变化量下手，修改成类型参数。</p>
+<p>标准库中主要使用两个map对象做read和dirty数据中的存储，所以我们使用类型参数创建这两个map对象。<br>entry也改成泛型的支持。</p>
+<div class="tabs">  
+  <div class="tab">
+    <input class="tab-radio" type="radio" id="tab-1" name="tab-group-1" checked>
+    <label class="tab-label" for="tab-1">支持泛型的sync.Map</label>    
+    <div class="tab-panel">
+      <div class="tab-content">        
+
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> Map[K comparable, V any] <span class="keyword">struct</span> { <span class="comment">// 定义K,V 类型参数</span></div><div class="line">	mu sync.Mutex</div><div class="line"></div><div class="line">	read atomic.Pointer[readOnly[K, V]] <span class="comment">// readonly 也支持泛型，因为它内部也是使用了一个map</span></div><div class="line"></div><div class="line">	dirty <span class="keyword">map</span>[K]*entry[V] <span class="comment">// map改造成泛型</span></div><div class="line"></div><div class="line">	misses <span class="typename">int</span></div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">type</span> readOnly[K comparable, V any] <span class="keyword">struct</span> {</div><div class="line">	m       <span class="keyword">map</span>[K]*entry[V] <span class="comment">// 这个改成泛型</span></div><div class="line">	amended <span class="typename">bool</span></div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">var</span> expunged = unsafe.Pointer(<span class="built_in">new</span>(any)) <span class="comment">// 一个特殊的标记为删除的值</span></div><div class="line"></div><div class="line"><span class="keyword">type</span> entry[V any] <span class="keyword">struct</span> {</div><div class="line">	p atomic.Pointer[V] <span class="comment">// 泛型类型，atomic.Pointer支持泛型</span></div><div class="line">}</div></pre></td></tr></table></figure>
+
+ </div>
+  </div>
+</div>
+<div class="tab">
+  <input class="tab-radio" type="radio" id="tab-2" name="tab-group-1" checked>
+  <label class="tab-label" for="tab-2">标准库中的sync.Map</label>    
+  <div class="tab-panel">
+    <div class="tab-content">
+
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> Map <span class="keyword">struct</span> {</div><div class="line">	mu Mutex</div><div class="line"></div><div class="line">	read atomic.Pointer[readOnly]</div><div class="line">	dirty <span class="keyword">map</span>[any]*entry</div><div class="line"></div><div class="line">	misses <span class="typename">int</span></div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">type</span> readOnly <span class="keyword">struct</span> {</div><div class="line">	m       <span class="keyword">map</span>[any]*entry</div><div class="line">	amended <span class="typename">bool</span> </div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">var</span> expunged = <span class="built_in">new</span>(any)</div><div class="line"></div><div class="line"><span class="keyword">type</span> entry <span class="keyword">struct</span> {</div><div class="line">	p atomic.Pointer[any]</div><div class="line">}</div></pre></td></tr></table></figure>
+
+	  </div>
+    </div>
+  </div>       
+</div>
+
+<p>基本上我们通过少量的修改，把sync.Map的相关的类型都改成了支持泛型的类型的类型。</p>
+<h2 id="改造方法支持泛型">改造方法支持泛型</h2>
+<p>相关的类型改造成支持泛型后，编译就过不去了，因为相关的方法也需要修改。</p>
+<p><img src="syncmap.jpg" alt=""></p>
+<p>泛型函数比如<code>newEntry</code>编译器或者编辑器中报错说是entry是泛型的，我们根据这个提示改成泛型的：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div></pre></td><td class="code"><pre><div class="line"></div><div class="line"><span class="keyword">func</span> newEntry[V any](i V) *entry[V] {</div><div class="line">	e := &entry[V]{}</div><div class="line">	e.p.Store(&i)</div><div class="line">	<span class="keyword">return</span> e</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>泛型方法中我们把Receiver的类型改成<code>Map[K, V]</code>,最好是把<code>(m *Map)</code>全部替换一遍。返回值<code>readonly</code>也改成泛型类型的定义:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> (m *Map[K, V]) loadReadOnly() readOnly[K, V] {</div><div class="line">	<span class="keyword">if</span> p := m.read.Load(); p != <span class="constant">nil</span> {</div><div class="line">		<span class="keyword">return</span> *p</div><div class="line">	}</div><div class="line">	<span class="keyword">return</span> readOnly[K, V]{}</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>接下来改造Load方法， 将其中的Key和Value类型从any类型改成K,V类型参数。<br>这里一个小机器就是源标准库中有可能返回nil值，改成返回V类型的零值，V类型的零值有三种方式创建出来，我们使用<code>var zero V</code>创建零值：</p>
+<div class="tabs">  
+  <div class="tab">
+    <input class="tab-radio" type="radio" id="tab-3" name="tab-group-2" checked>
+    <label class="tab-label" for="tab-3">支持泛型的sync.Map</label>    
+    <div class="tab-panel">
+      <div class="tab-content">
+
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> (m *Map[K, V]) Load(key K) (value V, ok <span class="typename">bool</span>) {</div><div class="line">	read := m.loadReadOnly()</div><div class="line">	e, ok := read.m[key]</div><div class="line">	<span class="keyword">if</span> !ok && read.amended {</div><div class="line">		m.mu.Lock()</div><div class="line">		read = m.loadReadOnly()</div><div class="line">		e, ok = read.m[key]</div><div class="line">		<span class="keyword">if</span> !ok && read.amended {</div><div class="line">			e, ok = m.dirty[key]</div><div class="line">			<span class="comment">// Regardless of whether the entry was present, record a miss: this key</span></div><div class="line">			<span class="comment">// will take the slow path until the dirty map is promoted to the read</span></div><div class="line">			<span class="comment">// map.</span></div><div class="line">			m.missLocked()</div><div class="line">		}</div><div class="line">		m.mu.Unlock()</div><div class="line">	}</div><div class="line">	<span class="keyword">if</span> !ok {</div><div class="line">		<span class="keyword">var</span> zero V</div><div class="line">		<span class="keyword">return</span> zero, <span class="constant">false</span></div><div class="line">	}</div><div class="line">	<span class="keyword">return</span> e.load()</div><div class="line">}</div></pre></td></tr></table></figure>
+
+     
+ </div>
+  </div>
+</div>
+<div class="tab">
+  <input class="tab-radio" type="radio" id="tab-4" name="tab-group-2" checked>
+  <label class="tab-label" for="tab-4">标准库中的sync.Map</label>    
+  <div class="tab-panel">
+    <div class="tab-content">
+
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> (m *Map) Load(key any) (value any, ok <span class="typename">bool</span>) {</div><div class="line">	read := m.loadReadOnly()</div><div class="line">	e, ok := read.m[key]</div><div class="line">	<span class="keyword">if</span> !ok && read.amended {</div><div class="line">		m.mu.Lock()</div><div class="line">		<span class="comment">// Avoid reporting a spurious miss if m.dirty got promoted while we were</span></div><div class="line">		<span class="comment">// blocked on m.mu. (If further loads of the same key will not miss, it's</span></div><div class="line">		<span class="comment">// not worth copying the dirty map for this key.)</span></div><div class="line">		read = m.loadReadOnly()</div><div class="line">		e, ok = read.m[key]</div><div class="line">		<span class="keyword">if</span> !ok && read.amended {</div><div class="line">			e, ok = m.dirty[key]</div><div class="line">			<span class="comment">// Regardless of whether the entry was present, record a miss: this key</span></div><div class="line">			<span class="comment">// will take the slow path until the dirty map is promoted to the read</span></div><div class="line">			<span class="comment">// map.</span></div><div class="line">			m.missLocked()</div><div class="line">		}</div><div class="line">		m.mu.Unlock()</div><div class="line">	}</div><div class="line">	<span class="keyword">if</span> !ok {</div><div class="line">		<span class="keyword">return</span> <span class="constant">nil</span>, <span class="constant">false</span></div><div class="line">	}</div><div class="line">	<span class="keyword">return</span> e.load()</div><div class="line">}</div></pre></td></tr></table></figure>
+
+	  </div>
+    </div>
+  </div>       
+</div>
+
+<p>接下来我再介绍一个棘手的改造情况。<br><code>load</code>方法中会判断<code>p == expunged</code>, <code>expunged</code>是一个特殊的值，用来标记为被删除还没有被清理掉。但是这个时候p的类型是<code>*V</code>, p的类型是<code>unsafe.Pointer(new(interface{}))</code>,类型不一样，指向的值也不一样。</p>
+<p>改如何改造呢？</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> (e *entry) load() (value any, ok <span class="typename">bool</span>) {</div><div class="line">	p := e.p.Load()</div><div class="line">	<span class="keyword">if</span> p == <span class="constant">nil</span> || p == expunged {</div><div class="line">		<span class="keyword">return</span> <span class="constant">nil</span>, <span class="constant">false</span></div><div class="line">	}</div><div class="line">	<span class="keyword">return</span> *p, <span class="constant">true</span></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>我们可以使用<code>unsafe.Pointer(p) == expunged</code>转为相同的类型，首先类型相同，另外我，们还是使用<code>unsafe.Pointer(new(interface{}))</code>来标记被删除的键:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> (e *entry[V]) load() (value V, ok <span class="typename">bool</span>) {</div><div class="line">	p := e.p.Load()</div><div class="line">	<span class="keyword">if</span> p == <span class="constant">nil</span> || unsafe.Pointer(p) == expunged {</div><div class="line">		<span class="keyword">var</span> zero V</div><div class="line">		<span class="keyword">return</span> zero, <span class="constant">false</span></div><div class="line">	}</div><div class="line">	<span class="keyword">return</span> *p, <span class="constant">true</span></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>在<code>unexpungeLocked</code>方法中，我们强制把<code>expunged</code>转换成<code>*V</code>,尽管它底层指向的是一个<code>any</code>,反正部门也不会更改<code>expunged</code>的值，这种强制转换也没有啥风险。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> (e *entry[V]) unexpungeLocked() (wasExpunged <span class="typename">bool</span>) {</div><div class="line">	<span class="keyword">return</span> e.p.CompareAndSwap((*V)(expunged), <span class="constant">nil</span>)</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>剩下的方法就用同样的方式进行改造，甚至可以通过批量替换的方式处理，最终我们把整个sync.Map改造成支持泛型了。</p>
+<p>最终形成的代码如下：<br><a href="https://github.com/smallnest/gofer/blob/master/syncx/sync_map.go" target="_blank" rel="external">generic sync map</a></p>
+<p>把官方的测试代码复制过来测试，没有问题。</p>
+<h2 id="性能">性能</h2>
+<p>最后大家比较关注的就是这一顿骚操作能不能带来性能的提升呢？功能的提升是显而易见的，我们输入的参数和返回值都是一个特定的类型，不需要做type assert了。</p>
+<p>还是改造官方标准库对sync.Map的bench代码，我们增加一个这个泛型类型的支持，为了公平期间我们使用的key和value都是int类型。相关的代码可以看<a href="https://github.com/smallnest/gofer/blob/master/syncx/map_bench_test.go" target="_blank" rel="external">map_bench_test.go</a>。</p>
+<p>测试结果如下,可以看到绝大部分场景下我们的泛型Map要比标准库中的sync.Map要快，只有在<code>BenchmarkMapCompareAndSwapNoExistingKey</code>和<code>BenchmarkMapCompareAndSwapValueNotEqual</code>两个场景下比sync.Map慢，并且慢很多，待我找找原因，如果有分析结果会在另一篇文章中介绍。</p>
+<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div><div class="line">35</div><div class="line">36</div><div class="line">37</div><div class="line">38</div><div class="line">39</div><div class="line">40</div><div class="line">41</div><div class="line">42</div><div class="line">43</div><div class="line">44</div><div class="line">45</div><div class="line">46</div></pre></td><td class="code"><pre><div class="line">BenchmarkMapLoadMostlyHits/*syncx.SyncMap[int,int]-<span class="number">8</span>         	<span class="number">319121388</span>	         <span class="number">3.725</span> ns/op</div><div class="line">BenchmarkMapLoadMostlyHits/*syncx.Map[int,int]-<span class="number">8</span>             	<span class="number">897178652</span>	         <span class="number">2.491</span> ns/op</div><div class="line">BenchmarkMapLoadMostlyMisses/*syncx.SyncMap[int,int]-<span class="number">8</span>       	<span class="number">478179013</span>	         <span class="number">2.426</span> ns/op</div><div class="line">BenchmarkMapLoadMostlyMisses/*syncx.Map[int,int]-<span class="number">8</span>           	<span class="number">866405142</span>	         <span class="number">2.315</span> ns/op</div><div class="line">BenchmarkMapLoadOrStoreBalanced/*syncx.SyncMap[int,int]-<span class="number">8</span>    	 <span class="number">5727007</span>	       <span class="number">223.4</span> ns/op</div><div class="line">BenchmarkMapLoadOrStoreBalanced/*syncx.Map[int,int]-<span class="number">8</span>        	 <span class="number">8712914</span>	       <span class="number">171.7</span> ns/op</div><div class="line">BenchmarkMapLoadOrStoreUnique/*syncx.SyncMap[int,int]-<span class="number">8</span>      	 <span class="number">2843049</span>	       <span class="number">405.7</span> ns/op</div><div class="line">BenchmarkMapLoadOrStoreUnique/*syncx.Map[int,int]-<span class="number">8</span>          	 <span class="number">4316347</span>	       <span class="number">321.8</span> ns/op</div><div class="line">BenchmarkMapLoadOrStoreCollision/*syncx.SyncMap[int,int]-<span class="number">8</span>   	<span class="number">312317070</span>	         <span class="number">3.799</span> ns/op</div><div class="line">BenchmarkMapLoadOrStoreCollision/*syncx.Map[int,int]-<span class="number">8</span>       	<span class="number">1000000000</span>	         <span class="number">1.800</span> ns/op</div><div class="line">BenchmarkMapLoadAndDeleteBalanced/*syncx.SyncMap[int,int]-<span class="number">8</span>  	<span class="number">242927908</span>	         <span class="number">4.978</span> ns/op</div><div class="line">BenchmarkMapLoadAndDeleteBalanced/*syncx.Map[int,int]-<span class="number">8</span>      	<span class="number">656539690</span>	         <span class="number">3.040</span> ns/op</div><div class="line">BenchmarkMapLoadAndDeleteUnique/*syncx.SyncMap[int,int]-<span class="number">8</span>    	<span class="number">599912763</span>	         <span class="number">1.958</span> ns/op</div><div class="line">BenchmarkMapLoadAndDeleteUnique/*syncx.Map[int,int]-<span class="number">8</span>        	<span class="number">1000000000</span>	         <span class="number">1.186</span> ns/op</div><div class="line">BenchmarkMapLoadAndDeleteCollision/*syncx.SyncMap[int,int]-<span class="number">8</span> 	<span class="number">361118110</span>	         <span class="number">3.283</span> ns/op</div><div class="line">BenchmarkMapLoadAndDeleteCollision/*syncx.Map[int,int]-<span class="number">8</span>     	<span class="number">669603936</span>	         <span class="number">2.184</span> ns/op</div><div class="line">BenchmarkMapRange/*syncx.SyncMap[int,int]-<span class="number">8</span>                  	  <span class="number">744468</span>	      <span class="number">1594</span> ns/op</div><div class="line">BenchmarkMapRange/*syncx.Map[int,int]-<span class="number">8</span>                      	  <span class="number">887029</span>	      <span class="number">1378</span> ns/op</div><div class="line">BenchmarkMapAdversarialAlloc/*syncx.SyncMap[int,int]-<span class="number">8</span>       	 <span class="number">8579004</span>	       <span class="number">139.1</span> ns/op</div><div class="line">BenchmarkMapAdversarialAlloc/*syncx.Map[int,int]-<span class="number">8</span>           	<span class="number">10151095</span>	       <span class="number">117.4</span> ns/op</div><div class="line">BenchmarkMapAdversarialDelete/*syncx.SyncMap[int,int]-<span class="number">8</span>      	<span class="number">28653038</span>	        <span class="number">42.42</span> ns/op</div><div class="line">BenchmarkMapAdversarialDelete/*syncx.Map[int,int]-<span class="number">8</span>          	<span class="number">37976685</span>	        <span class="number">31.75</span> ns/op</div><div class="line">BenchmarkMapDeleteCollision/*syncx.SyncMap[int,int]-<span class="number">8</span>        	<span class="number">688516219</span>	         <span class="number">1.797</span> ns/op</div><div class="line">BenchmarkMapDeleteCollision/*syncx.Map[int,int]-<span class="number">8</span>            	<span class="number">1000000000</span>	         <span class="number">1.288</span> ns/op</div><div class="line">BenchmarkMapSwapCollision/*syncx.SyncMap[int,int]-<span class="number">8</span>          	 <span class="number">8715524</span>	       <span class="number">137.1</span> ns/op</div><div class="line">BenchmarkMapSwapCollision/*syncx.Map[int,int]-<span class="number">8</span>              	<span class="number">10524654</span>	       <span class="number">114.5</span> ns/op</div><div class="line">BenchmarkMapSwapMostlyHits/*syncx.SyncMap[int,int]-<span class="number">8</span>         	<span class="number">61979068</span>	        <span class="number">20.24</span> ns/op</div><div class="line">BenchmarkMapSwapMostlyHits/*syncx.Map[int,int]-<span class="number">8</span>             	<span class="number">100000000</span>	        <span class="number">14.85</span> ns/op</div><div class="line">BenchmarkMapSwapMostlyMisses/*syncx.SyncMap[int,int]-<span class="number">8</span>       	 <span class="number">2543487</span>	       <span class="number">471.1</span> ns/op</div><div class="line">BenchmarkMapSwapMostlyMisses/*syncx.Map[int,int]-<span class="number">8</span>           	 <span class="number">3203072</span>	       <span class="number">374.4</span> ns/op</div><div class="line">BenchmarkMapCompareAndSwapCollision/*syncx.SyncMap[int,int]-<span class="number">8</span>         	<span class="number">74106286</span>	        <span class="number">17.56</span> ns/op</div><div class="line">BenchmarkMapCompareAndSwapCollision/*syncx.Map[int,int]-<span class="number">8</span>             	 <span class="number">2704873</span>	       <span class="number">448.8</span> ns/op</div><div class="line">BenchmarkMapCompareAndSwapNoExistingKey/*syncx.SyncMap[int,int]-<span class="number">8</span>     	<span class="number">560624862</span>	         <span class="number">2.116</span> ns/op</div><div class="line">BenchmarkMapCompareAndSwapNoExistingKey/*syncx.Map[int,int]-<span class="number">8</span>         	<span class="number">1000000000</span>	         <span class="number">1.417</span> ns/op</div><div class="line">BenchmarkMapCompareAndSwapValueNotEqual/*syncx.SyncMap[int,int]-<span class="number">8</span>     	<span class="number">264941869</span>	         <span class="number">4.297</span> ns/op</div><div class="line">BenchmarkMapCompareAndSwapValueNotEqual/*syncx.Map[int,int]-<span class="number">8</span>         	 <span class="number">5341881</span>	       <span class="number">225.9</span> ns/op</div><div class="line">BenchmarkMapCompareAndSwapMostlyHits/*syncx.SyncMap[int,int]-<span class="number">8</span>        	<span class="number">74957446</span>	        <span class="number">15.56</span> ns/op</div><div class="line">BenchmarkMapCompareAndSwapMostlyHits/*syncx.Map[int,int]-<span class="number">8</span>            	<span class="number">188375540</span>	         <span class="number">8.393</span> ns/op</div><div class="line">BenchmarkMapCompareAndSwapMostlyMisses/*syncx.SyncMap[int,int]-<span class="number">8</span>      	<span class="number">215614034</span>	         <span class="number">5.475</span> ns/op</div><div class="line">BenchmarkMapCompareAndSwapMostlyMisses/*syncx.Map[int,int]-<span class="number">8</span>          	<span class="number">514081917</span>	         <span class="number">2.111</span> ns/op</div><div class="line">BenchmarkMapCompareAndDeleteCollision/*syncx.SyncMap[int,int]-<span class="number">8</span>       	<span class="number">100000000</span>	        <span class="number">11.49</span> ns/op</div><div class="line">BenchmarkMapCompareAndDeleteCollision/*syncx.Map[int,int]-<span class="number">8</span>           	<span class="number">221624979</span>	        <span class="number">10.07</span> ns/op</div><div class="line">BenchmarkMapCompareAndDeleteMostlyHits/*syncx.SyncMap[int,int]-<span class="number">8</span>      	<span class="number">55139349</span>	        <span class="number">21.67</span> ns/op</div><div class="line">BenchmarkMapCompareAndDeleteMostlyHits/*syncx.Map[int,int]-<span class="number">8</span>          	<span class="number">129426009</span>	        <span class="number">12.53</span> ns/op</div><div class="line">BenchmarkMapCompareAndDeleteMostlyMisses/*syncx.SyncMap[int,int]-<span class="number">8</span>    	<span class="number">500900576</span>	         <span class="number">2.476</span> ns/op</div><div class="line">BenchmarkMapCompareAndDeleteMostlyMisses/*syncx.Map[int,int]-<span class="number">8</span>        	<span class="number">486840268</span>	         <span class="number">2.307</span> ns/op</div></pre></td></tr></table></figure>
+
+
+      
+    </div>
+    <footer class="article-footer">
+      
+
+      
+      <!-- <link rel="stylesheet" href="https://unpkg.com/gitalk/dist/gitalk.css">
+      <script src="https://unpkg.com/gitalk/dist/gitalk.min.js"></script> -->
+      <section id="comments">
+        <script src="https://utteranc.es/client.js"
+                repo="smallnest/gitalk"
+                issue-term="title"
+                theme="github-light"
+                crossorigin="anonymous"
+                async>
+        </script>
+        <!-- <div id="gitalk-container"></div>
+        <script type="text/javascript">
+          var gitalkOpts = {
+            id: '2023/06/11/make-sync-Map-to-generic/',
+            owner: 'smallnest',
+            repo: 'gitalk',
+            title: '让 sync.Map  支持泛型',
+            body: 'https://colobu.com/2023/06/11/make-sync-Map-to-generic/',
+            clientID: 'bc02724130ed5b7ee275',
+            clientSecret: '68cb0bae2f93a8b88b09e0eb9b08c844b06a9047',
+            admin: ['smallnest'],
+            distractionFreeMode: false
+          };
+
+          const gitalk = new Gitalk(gitalkOpts)
+          gitalk.render('gitalk-container')
+        </script> -->
+        <noscript> 为正常使用评论功能请激活JavaScript</noscript>
+      </section>
+
+      
+
+    </footer>
+  </div>
+  
+  
+<nav id="article-nav">
+  
+    <a href="/2023/06/18/a-generic-sortedmap-in-go/" id="article-nav-newer" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">Newer</strong>
+      <div class="article-nav-title">
+        
+          一个泛型的有序Go Map实现
+        
+      </div>
+    </a>
+  
+  
+    <a href="/2023/05/29/extends-sync-Once/" id="article-nav-older" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">Older</strong>
+      <div class="article-nav-title">sync.Once的新扩展</div>
+    </a>
+  
+</nav>
+
+  
+</article></section>
+        
+          <aside id="sidebar">
+  
+    <div class="widget-wrap">
+  <h3 class="widget-title">微信公众号</h3>
+  <div class="widget">
+    <img width="100%" src="/images/widgets/gopatterns.jpg">
+  </div>
+</div>
+
+<div class="widget-wrap">
+  <h3 class="widget-title">极客时间专栏</h3>
+  <div class="widget">
+    <a href="https://time.geekbang.org/column/intro/100061801">
+      <img width="100%" src="/images/widgets/geekbang.png">
+    </a>
+  </div>
+</div>
+
+<div class="widget-wrap">
+    <h3 class="widget-title">原创图书</h3>
+    <div class="widget">
+      <a href="/ScalaCollectionsCookbook/">
+        <img width="100%" src="/ScalaCollectionsCookbook/scala_collections_cookbook.jpg">
+        <img width="100%" src="/ScalaCollectionsCookbook/scala_collections_cookbook_tw.png">
+      </a>
+    </div>
+</div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">分类</h3>
+    <div class="widget">
+      <ul class="category-list"><li class="category-list-item"><a class="category-list-link" href="/categories/Android/">Android</a><span class="category-list-count">12</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/C/">C++</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/DOTNET/">DOTNET</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Docker/">Docker</a><span class="category-list-count">5</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Go/">Go</a><span class="category-list-count">241</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Java/">Java</a><span class="category-list-count">64</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Linux/">Linux</a><span class="category-list-count">7</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Rust/">Rust</a><span class="category-list-count">12</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Scala/">Scala</a><span class="category-list-count">18</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/go/">go</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/k8s/">k8s</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/rust/">rust</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/分享/">分享</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/前端开发/">前端开发</a><span class="category-list-count">18</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/区块链/">区块链</a><span class="category-list-count">8</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/大数据/">大数据</a><span class="category-list-count">60</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/工具/">工具</a><span class="category-list-count">28</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/数据库/">数据库</a><span class="category-list-count">3</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/架构/">架构</a><span class="category-list-count">27</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/算法/">算法</a><span class="category-list-count">4</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/管理/">管理</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/网络编程/">网络编程</a><span class="category-list-count">13</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/设计模式/">设计模式</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/读书笔记/">读书笔记</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/运维/">运维</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/高并发编程/">高并发编程</a><span class="category-list-count">20</span></li></ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">标签云</h3>
+    <div class="widget tagcloud">
+      <a href="/tags/Android/" style="font-size: 15.71px;">Android</a><a href="/tags/ApacheBench/" style="font-size: 11.43px;">ApacheBench</a><a href="/tags/Bower/" style="font-size: 10.00px;">Bower</a><a href="/tags/C/" style="font-size: 10.00px;">C#</a><a href="/tags/CDN/" style="font-size: 10.00px;">CDN</a><a href="/tags/CQRS/" style="font-size: 10.00px;">CQRS</a><a href="/tags/CRC/" style="font-size: 10.00px;">CRC</a><a href="/tags/CSS/" style="font-size: 11.43px;">CSS</a><a href="/tags/CompletableFuture/" style="font-size: 10.00px;">CompletableFuture</a><a href="/tags/Comsat/" style="font-size: 10.00px;">Comsat</a><a href="/tags/Curator/" style="font-size: 18.57px;">Curator</a><a href="/tags/DSL/" style="font-size: 10.00px;">DSL</a><a href="/tags/Disruptor/" style="font-size: 10.00px;">Disruptor</a><a href="/tags/Docker/" style="font-size: 11.43px;">Docker</a><a href="/tags/Ember/" style="font-size: 11.43px;">Ember</a><a href="/tags/FastJson/" style="font-size: 10.00px;">FastJson</a><a href="/tags/Fiber/" style="font-size: 10.00px;">Fiber</a><a href="/tags/GAE/" style="font-size: 10.00px;">GAE</a><a href="/tags/GC/" style="font-size: 12.86px;">GC</a><a href="/tags/Gnuplot/" style="font-size: 10.00px;">Gnuplot</a><a href="/tags/Go/" style="font-size: 14.29px;">Go</a><a href="/tags/Gradle/" style="font-size: 10.00px;">Gradle</a><a href="/tags/Grunt/" style="font-size: 10.00px;">Grunt</a><a href="/tags/Gulp/" style="font-size: 10.00px;">Gulp</a><a href="/tags/Hadoop/" style="font-size: 10.00px;">Hadoop</a><a href="/tags/Hazelcast/" style="font-size: 10.00px;">Hazelcast</a><a href="/tags/IPFS/" style="font-size: 10.00px;">IPFS</a><a href="/tags/Ignite/" style="font-size: 10.00px;">Ignite</a><a href="/tags/JVM/" style="font-size: 10.00px;">JVM</a><a href="/tags/Java/" style="font-size: 17.14px;">Java</a><a href="/tags/Kafka/" style="font-size: 20.00px;">Kafka</a><a href="/tags/Lambda/" style="font-size: 14.29px;">Lambda</a><a href="/tags/Linux/" style="font-size: 12.86px;">Linux</a><a href="/tags/LongAdder/" style="font-size: 10.00px;">LongAdder</a><a href="/tags/MathJax/" style="font-size: 10.00px;">MathJax</a><a href="/tags/Maven/" style="font-size: 11.43px;">Maven</a><a href="/tags/Memcached/" style="font-size: 10.00px;">Memcached</a><a href="/tags/Metrics/" style="font-size: 10.00px;">Metrics</a><a href="/tags/Mongo/" style="font-size: 12.86px;">Mongo</a><a href="/tags/Netty/" style="font-size: 15.71px;">Netty</a>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">归档</h3>
+    <div class="widget">
+      <ul class="archive-list"><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/09/">September 2023</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/08/">August 2023</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/07/">July 2023</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/06/">June 2023</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/05/">May 2023</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/04/">April 2023</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/03/">March 2023</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/01/">January 2023</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/12/">December 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/11/">November 2022</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/10/">October 2022</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/09/">September 2022</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/08/">August 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/07/">July 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/06/">June 2022</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/05/">May 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/04/">April 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/03/">March 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/02/">February 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/01/">January 2022</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/12/">December 2021</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/11/">November 2021</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/10/">October 2021</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/08/">August 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/07/">July 2021</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/06/">June 2021</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/05/">May 2021</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/04/">April 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/03/">March 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/02/">February 2021</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/01/">January 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/12/">December 2020</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/11/">November 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/09/">September 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/08/">August 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/07/">July 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/06/">June 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/05/">May 2020</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/04/">April 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/03/">March 2020</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/02/">February 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/01/">January 2020</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/12/">December 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/11/">November 2019</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/10/">October 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/09/">September 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/08/">August 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/07/">July 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/06/">June 2019</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/05/">May 2019</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/04/">April 2019</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/03/">March 2019</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/02/">February 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/01/">January 2019</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/12/">December 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/11/">November 2018</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/10/">October 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/09/">September 2018</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/08/">August 2018</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/07/">July 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/06/">June 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/05/">May 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/04/">April 2018</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/03/">March 2018</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/02/">February 2018</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/01/">January 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/12/">December 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/11/">November 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/10/">October 2017</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/09/">September 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/08/">August 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/07/">July 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/06/">June 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/05/">May 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/04/">April 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/03/">March 2017</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/02/">February 2017</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/01/">January 2017</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/12/">December 2016</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/11/">November 2016</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/10/">October 2016</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/09/">September 2016</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/08/">August 2016</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/07/">July 2016</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/06/">June 2016</a><span class="archive-list-count">14</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/05/">May 2016</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/04/">April 2016</a><span class="archive-list-count">14</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/03/">March 2016</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/02/">February 2016</a><span class="archive-list-count">8</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/01/">January 2016</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/12/">December 2015</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/11/">November 2015</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/10/">October 2015</a><span class="archive-list-count">9</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/09/">September 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/08/">August 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/07/">July 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/06/">June 2015</a><span class="archive-list-count">8</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/05/">May 2015</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/04/">April 2015</a><span class="archive-list-count">15</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/03/">March 2015</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/02/">February 2015</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/01/">January 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/12/">December 2014</a><span class="archive-list-count">28</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/11/">November 2014</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/10/">October 2014</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/09/">September 2014</a><span class="archive-list-count">28</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/08/">August 2014</a><span class="archive-list-count">19</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/07/">July 2014</a><span class="archive-list-count">1</span></li></ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">近期文章</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+            <a href="/2023/09/27/when-and-how-to-use-classical-bpf/">何时以及如何高效的使用经典的bpf, 它能到来什么好处？</a>
+          </li>
+        
+          <li>
+            <a href="/2023/09/24/reread-the-io-Reader/">从头再读取 io.Reader: 覆水难收？</a>
+          </li>
+        
+          <li>
+            <a href="/2023/09/24/precise-rtt-for-ping/">更精准的时延：使用软件时间戳和硬件时间戳</a>
+          </li>
+        
+          <li>
+            <a href="/2023/09/13/pgo/">PGO: 为你的Go程序提效5%</a>
+          </li>
+        
+          <li>
+            <a href="/2023/09/11/tracing-a-packet-journey-using-linux-tracepoints-perf-ebpf/">使用Linux tracepoints、perf 和 eBPF 跟踪包的旅程</a>
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">友情链接</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+			 
+            <a href="http://stackshare.io" target="_blank">技术栈</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://toutiao.io/" target="_blank">开发者头条</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://weekly.manong.io/issues/" target="_blank">码农周刊</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.tuicool.com/mags" target="_blank">编程狂人周刊</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.importnew.com/" target="_blank">importnew</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://ifeve.com/" target="_blank">并发编程网</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://github.com" target="_blank">github</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://stackoverflow.com/" target="_blank">stackoverflow</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.javacodegeeks.com/" target="_blank">javacodegeeks</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.infoq.com/" target="_blank">infoq</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.dzone.com/links/index.html" target="_blank">dzone</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://oj.leetcode.com/problems/" target="_blank">leetcode</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://tutorials.jenkov.com" target="_blank">jenkov</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://howtodoinjava.com" target="_blank">HowToDoInJava</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://java-design-patterns.com/patterns/" target="_blank">java design patterns</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://medium.com/netflix-techblog" target="_blank">Netflix技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://www.techiedelight.com" target="_blank">Techie Delight</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://engineering.linkedin.com/blog" target="_blank">Linkedin技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://blogs.dropbox.com/tech/" target="_blank">Dropbox技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://code.fb.com" target="_blank">Facebook技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://jm.taobao.org" target="_blank">淘宝中间件团队</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://tech.meituan.com" target="_blank">美团技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://blogs.360.cn" target="_blank">360技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://xiaomi-info.github.io" target="_blank">小米信息部技术团队</a>
+			
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+      
+
+  
+</aside>
+        
+      </div>
+      <footer id="footer">
+  
+  <div class="outer">
+    <div id="footer-info" class="inner">
+      &copy; 2023 smallnest<br>
+	  Powered by <a href="http://hexo.io/" target="_blank">Hexo</a>
+    </div>
+  </div>
+</footer>
+    </div>
+    <nav id="mobile-nav">
+  
+    
+      <a href="/" class="mobile-nav-link"><i class="fa fa-home">&nbsp;</i>首页</a>
+    
+  
+    
+      <a href="/archives" class="mobile-nav-link"><i class="fa fa-folder-o">&nbsp;</i>归档</a>
+    
+  
+    
+      <a href="https://github.com/smallnest" class="mobile-nav-link"><i class="fa fa-github">&nbsp;</i>github</a>
+    
+  
+    
+      <a class="mobile-nav-link" href="#"><i class="fa fa-bars">&nbsp;</i>网站群</a>
+    
+      
+            <a class="mobile-nav-link" href="/goasm">&nbsp;&nbsp;<i class="fa fa-language">&nbsp;</i>Go汇编示例</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="https://gowebexamples.com">&nbsp;&nbsp;<i class="fa fa-external-link">&nbsp;</i>Go Web开发示例</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://go-database-sql.org">&nbsp;&nbsp;<i class="fa fa-external-link">&nbsp;</i>Go 数据库开发教程</a>
+          
+          
+    
+      
+            
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://rpcx.io">&nbsp;&nbsp;<i class="fa undefined">&nbsp;</i>RPCX官网</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://cn.doc.rpcx.io">&nbsp;&nbsp;<i class="fa undefined">&nbsp;</i>RPC开发指南</a>
+          
+          
+    
+    
+  
+    
+      <a href="/ScalaCollectionsCookbook" class="mobile-nav-link"><i class="fa fa-book">&nbsp;</i>Scala集合技术手册</a>
+    
+  
+    
+      <a href="/about" class="mobile-nav-link"><i class="fa fa-lemon-o">&nbsp;</i>关于</a>
+    
+  
+</nav>
+    
+<script src="//cdn.staticfile.org/jquery/1.11.1/jquery.min.js"></script>
+<script src="//cdn.bootcss.com/jquery.lazyload/1.9.1/jquery.lazyload.min.js"></script>
+
+<script src="//cdnjs.cloudflare.com/ajax/libs/fancybox/3.2.5/jquery.fancybox.min.js"></script>
+
+
+<script src="/js/script.js" type="text/javascript"></script>
+
+<!-- mathjax config similar to math.stackexchange -->
+<script type="text/x-mathjax-config">
+  MathJax.Hub.Config({
+    tex2jax: {
+      inlineMath: [ ['$','$'], ["\\(","\\)"] ],
+      processEscapes: true,
+      skipTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code']
+    }
+  });
+  MathJax.Hub.Queue(function() {
+      var all = MathJax.Hub.getAllJax(), i;
+      for(i=0; i < all.length; i += 1) {
+        all[i].SourceElement().parentNode.className += ' has-jax';
+      }
+  });
+</script>
+<script type="text/javascript" src="//cdn.bootcss.com/mathjax/2.6.0-beta.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML">
+</script>
+
+<div id="totop" style="position:fixed;bottom:150px;right:10px;cursor: pointer;z-index: 2000;">
+	<a title="返回顶部"><img src="/images/scrollup.png"/></a>
+</div>
+<script src="/js/totop.js" type="text/javascript"></script>
+
+
+
+
+<script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "//hm.baidu.com/hm.js?e085d87993250aab11f3e0c15f1c2785";
+  var s = document.getElementsByTagName("script")[0]; 
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+
+
+  </div>
+</body>
+</html>
