@@ -4,7 +4,7 @@
   <subtitle><![CDATA[大道至简 Simplicity is the ultimate form of sophistication]]></subtitle>
   <link href="/atom.xml" rel="self"/>
   <link href="https://colobu.com/"/>
-  <updated>2023-10-10T01:44:49.958Z</updated>
+  <updated>2023-10-15T10:54:31.337Z</updated>
   <id>https://colobu.com/</id>
   
   <author>
@@ -13,6 +13,145 @@
   </author>
   
   <generator uri="http://zespia.tw/hexo/">Hexo</generator>
+  
+  <entry>
+    <title><![CDATA[“Rust并发编程 - 第四章 容器类并发原语”]]></title>
+    <link href="https://colobu.com/2023/10/15/concurrency-programming-via-rust-ch04/"/>
+    <id>https://colobu.com/2023/10/15/concurrency-programming-via-rust-ch04/</id>
+    <published>2023-10-15T10:35:03.000Z</published>
+    <updated>2023-10-15T10:53:59.196Z</updated>
+    <content type="html"><![CDATA[<p>Rust 在并发编程方面有一些强大的原语，让你能够写出安全且高效的并发代码。最显著的原语之一是 ownership system，它允许你在没有锁的情况下管理内存访问。此外，Rust 还提供了一些并发编程的工具和标准库,比如线程、线程池、消息通讯(mpsc等)、原子操作等，不过这一章我们不介绍这些工具和库，它们会专门的分章节去讲。这一章我们专门讲一些保证在线程间共享的一些方式和库。</p>
+<p>并发原语内容较多，分成两章，这一章介绍<code>Cow</code>、<code>beef::Cow</code>、<code>Box</code>、 <code>Cell</code>、<code>RefCell</code>、<code>OnceCell</code>、<code>LazyCell</code>、<code>LazyLock</code> 和 <code>Rc</code>。 我把它们称之为容器类并发原语，主要基于它们的行为，它们主要是对普通数据进行包装，以便提供其他更丰富的功能。</p>
+<a id="more"></a>
+<p><img src="ch04.png" alt=""></p>
+<h2 id="cow">cow</h2>
+<p>cow不是🐄，而是<code>clone-on-write</code>或者<code>copy-on-write</code>的缩写。</p>
+<p>cow(Copy-on-write) 是一种优化内存和提高性能的技术,通常应用在资源共享的场景。</p>
+<p>其基本思想是,当有多个调用者(callers)同时请求相同的资源时,都会共享同一份资源,直到有调用者试图修改资源内容时,系统才会真正复制一份副本出来给该调用者,而其他调用者仍然使用原来的资源。</p>
+<p>Rust中的String和Vec等类型就利用了COW。例如:</p>
+<figure class="highlight rust"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">let</span> s1 = String::from(<span class="string">"hello"</span>);</div><div class="line"><span class="keyword">let</span> s2 = s1; <span class="comment">// s1和s2共享同一份内存</span></div><div class="line"></div><div class="line">s2.push_str(<span class="string">" world"</span>); <span class="comment">// s2会进行写操作,于是系统复制一份新的内存给s2</span></div></pre></td></tr></table></figure>
+
+<p>这样可以避免大量未修改的字符串、向量等的重复分配和复制,提高内存利用率和性能。</p>
+<p>cow的优点是:</p>
+<ul>
+<li>内存利用率高,只有进行写时才复制</li>
+<li>读取性能高,多个调用者共享同一资源</li>
+</ul>
+<p>缺点是:</p>
+<ul>
+<li>写时需要复制,有一定性能损失</li>
+<li>实现较复杂</li>
+</ul>
+<p>需要根据实际场景权衡使用。但对于存在大量相同或相似资源的共享情况,使用cow可以带来显著性能提升。</p>
+<p>标准库中<code>std::borrow::Cow</code> 类型是一个智能指针，提供了写时克隆（clone-on-write）的功能：它可以封装并提供对借用数据的不可变访问，当需要进行修改或获取所有权时，它可以惰性地克隆数据。</p>
+<p>Cow 实现了<code>Deref</code>，这意味着你可以直接在其封装的数据上调用不可变方法。如果需要进行改变，则 <code>to_mut</code> 将获取到一个对拥有的值的可变引用，必要时进行克隆。</p>
+<p>下面的代码将<code>origin</code>字符串包装成一个<code>cow</code>, 你可以把它borrowed成一个<code>&amp;str</code>,其实也可以直接在<code>cow</code>调用<code>&amp;str</code>方法，因为<code>Cow</code>实现了<code>Deref</code>，可以自动解引用，比如直接调用<code>len</code>和<code>into</code>：</p>
+<figure class="highlight rust"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">let</span> origin = <span class="string">"hello world"</span>;</div><div class="line"><span class="keyword">let</span> <span class="keyword">mut</span> cow = Cow::from(origin);</div><div class="line">assert_eq!(cow, <span class="string">"hello world"</span>);</div><div class="line"></div><div class="line"><span class="comment">// Cow can be borrowed as a str</span></div><div class="line"><span class="keyword">let</span> s: &<span class="keyword">str</span> = &cow;</div><div class="line">assert_eq!(s, <span class="string">"hello world"</span>);</div><div class="line"></div><div class="line">assert_eq!(s.len(), cow.len());</div><div class="line"></div><div class="line"><span class="comment">// Cow can be converted to a String</span></div><div class="line"><span class="keyword">let</span> s: String = cow.into();</div><div class="line">assert_eq!(s, <span class="string">"HELLO WORLD"</span>);</div></pre></td></tr></table></figure>
+
+<p>接下来我们已一个写时clone的例子。下面这个例子将字符串中的字符全部改成大写字母：</p>
+<figure class="highlight rust"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div></pre></td><td class="code"><pre><div class="line"><span class="comment">// Cow can be borrowed as a mut str</span></div><div class="line"><span class="keyword">let</span> s: &<span class="keyword">mut</span> <span class="keyword">str</span> = cow.to_mut();</div><div class="line">s.make_ascii_uppercase();</div><div class="line">assert_eq!(s, <span class="string">"HELLO WORLD"</span>);</div><div class="line">assert_eq!(origin, <span class="string">"hello world"</span>);</div></pre></td></tr></table></figure>
+
+<p>这里使用<code>to_mut</code>得到一个可变引用，一旦s有修改，它会从原始数据中clone一份，在克隆的数据上进行修改。</p>
+<p>所以如果你想在某些数据上实现<code>copy-on-write</code>/<code>clone-on-write</code>的功能，可以考虑使用<code>std::borrow::Cow</code>。</p>
+<p>更进一步，<code>beef</code>库提供了一个更快，更紧凑的<code>Cow</code>类型,它的使用方法和标准库的<code>Cow</code>使用方法类似：</p>
+<figure class="highlight rust"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">pub</span> <span class="function"><span class="keyword">fn</span> <span class="title">beef_cow</span></span>() {</div><div class="line">    <span class="keyword">let</span> borrowed: beef::Cow&lt;<span class="keyword">str</span>&gt; = beef::Cow::borrowed(<span class="string">"Hello"</span>);</div><div class="line">    <span class="keyword">let</span> owned: beef::Cow&lt;<span class="keyword">str</span>&gt; = beef::Cow::owned(String::from(<span class="string">"World"</span>));</div><div class="line">    <span class="keyword">let</span> <span class="number">_</span> = beef::Cow::from(<span class="string">"Hello"</span>);</div><div class="line"></div><div class="line">    assert_eq!(format!(<span class="string">"{} {}!"</span>, borrowed, owned), <span class="string">"Hello World!"</span>,);</div><div class="line"></div><div class="line">    <span class="keyword">const</span> WORD: usize = size_of::&lt;usize&gt;();</div><div class="line"></div><div class="line">    assert_eq!(size_of::&lt;std::borrow::Cow&lt;<span class="keyword">str</span>&gt;&gt;(), <span class="number">3</span> * WORD);</div><div class="line">    assert_eq!(size_of::&lt;beef::Cow&lt;<span class="keyword">str</span>&gt;&gt;(), <span class="number">3</span> * WORD);</div><div class="line">    assert_eq!(size_of::&lt;beef::lean::Cow&lt;<span class="keyword">str</span>&gt;&gt;(), <span class="number">2</span> * WORD);</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>这个例子的上半部分演示了生成<code>beef::Cow</code>的三种方法<code>Cow::borrowed</code>、<code>Cow::from</code>、<code>Cow::owned</code>，标准库<code>Cow</code>也有这三个方法，它们的区别是：</p>
+<ul>
+<li><code>borrowed</code>: 借用已有资源</li>
+<li><code>from</code>: 从已有资源复制创建Owned</li>
+<li><code>owned</code>: 自己提供资源内容</li>
+</ul>
+<p>这个例子下半部分对比了标准库<code>Cow</code>和<code>beef::Cow</code>以及更紧凑的<code>beef::lean::Cow</code>所占内存的大小。可以看到对于数据是<code>str</code>类型的Cow，现在的标准库的<code>Cow</code>占三个WORD, 和beef::Cow相当,而进一步压缩的beef::lean::Cow只占了两个Word。</p>
+<p><code>cow-utils</code>针对字符串的Cow做了优化，性能更好。</p>
+<h2 id="box">box</h2>
+<p><code>Box&lt;T&gt;</code>，通常简称为<code>box</code>，提供了在 Rust 中最简单的堆分配形式。<code>Box</code> 为这个分配提供了所有权，并在超出作用域时释放其内容。<code>Box</code> 还确保它们不会分配超过 <code>isize::MAX</code> 字节的内存。</p>
+<p>它的使用很简单，下面的例子就是把值<code>val</code>从栈上移动到堆上：</p>
+<figure class="highlight rust"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">let</span> val: <span class="keyword">u8</span> = <span class="number">5</span>;</div><div class="line"><span class="keyword">let</span> boxed: Box&lt;<span class="keyword">u8</span>&gt; = Box::new(val);</div></pre></td></tr></table></figure>
+
+<p>那么怎么反其道而行之呢？下面的例子就是通过解引用把值从堆上移动到栈上：</p>
+<figure class="highlight rust"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">let</span> boxed: Box&lt;<span class="keyword">u8</span>&gt; = Box::new(<span class="number">5</span>);</div><div class="line"><span class="keyword">let</span> val: <span class="keyword">u8</span> = *boxed;</div></pre></td></tr></table></figure>
+
+<p>如果我们要定义一个递归的数据结构，比如链表，下面的方式是不行的，因为List的大小不固定，我们不知道该分配给它多少内存：</p>
+<figure class="highlight rust"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div></pre></td><td class="code"><pre><div class="line"><span class="preprocessor">#[derive(Debug)]</span></div><div class="line"><span class="keyword">enum</span> <span class="title">List</span>&lt;T&gt; {</div><div class="line">    Cons(T, List&lt;T&gt;),</div><div class="line">    Nil,</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>这个时候就可以使用<code>Box</code>了:</p>
+<figure class="highlight rust"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div></pre></td><td class="code"><pre><div class="line"><span class="preprocessor">#[derive(Debug)]</span></div><div class="line"><span class="keyword">enum</span> <span class="title">List</span>&lt;T&gt; {</div><div class="line">    Cons(T, Box&lt;List&lt;T&gt;&gt;),</div><div class="line">    Nil,</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">let</span> list: List&lt;<span class="keyword">i32</span>&gt; = List::Cons(<span class="number">1</span>, Box::new(List::Cons(<span class="number">2</span>, Box::new(List::Nil))));</div><div class="line">println!(<span class="string">"{list:?}"</span>);</div></pre></td></tr></table></figure>
+
+<p>目前Rust还提供一个实验性的类型<code>ThinBox</code>, 它是一个瘦指针，不管内部元素的类型是啥：</p>
+<figure class="highlight rust"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">pub</span> <span class="function"><span class="keyword">fn</span> <span class="title">thin_box_example</span></span>() {</div><div class="line">    <span class="keyword">use</span> std::mem::{size_of, size_of_val};</div><div class="line">    <span class="keyword">let</span> size_of_ptr = size_of::&lt;*<span class="keyword">const</span> ()&gt;();</div><div class="line"></div><div class="line">    <span class="keyword">let</span> box_five = Box::new(<span class="number">5</span>);</div><div class="line">    <span class="keyword">let</span> box_slice = Box::&lt;[<span class="keyword">i32</span>]&gt;::new_zeroed_slice(<span class="number">5</span>);</div><div class="line">    assert_eq!(size_of_ptr, size_of_val(&box_five));</div><div class="line">    assert_eq!(size_of_ptr * <span class="number">2</span>, size_of_val(&box_slice));</div><div class="line"></div><div class="line"></div><div class="line">    <span class="keyword">let</span> five = ThinBox::new(<span class="number">5</span>);</div><div class="line">    <span class="keyword">let</span> thin_slice = ThinBox::&lt;[<span class="keyword">i32</span>]&gt;::new_unsize([<span class="number">1</span>, <span class="number">2</span>, <span class="number">3</span>, <span class="number">4</span>]);</div><div class="line">    assert_eq!(size_of_ptr, size_of_val(&five));</div><div class="line">    assert_eq!(size_of_ptr, size_of_val(&thin_slice));</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<h2 id="Cell、RefCell、OnceCell、LazyCell_和_LazyLock">Cell、RefCell、OnceCell、LazyCell 和 LazyLock</h2>
+<p><code>Cell</code>和<code>RefCell</code>是Rust中用于内部可变性(interior mutability)的两个重要类型。</p>
+<p><code>Cell</code>和<code>RefCell</code>都是可共享的可变容器。可共享的可变容器的存在是为了以受控的方式允许可变性，即使存在别名引用。Cell<t> 和 RefCell<t> 都允许在单线程环境下以这种方式进行。然而，无论是 Cell<t> 还是 RefCell<t> 都不是线程安全的（它们没有实现 Sync）。</t></t></t></t></p>
+<h3 id="Cell">Cell</h3>
+<p><code>Cell&lt;T&gt;</code>允许在不违反借用规则的前提下,修改其包含的值:</p>
+<ul>
+<li><code>Cell</code>中的值不再拥有所有权,只能通过<code>get</code>和<code>set</code>方法访问。</li>
+<li><code>set</code>方法可以在不获取可变引用的情况下修改<code>Cell</code>的值。</li>
+<li>适用于简单的单值容器，如整数或字符。</li>
+</ul>
+<p>下面这个例子创建了一个Cell, 赋值给变量<code>x</code>,注意x是不可变的，但是我们能够通过<code>set</code>方法修改它的值，并且即使存在对x的引用y时也可以修改它的值：</p>
+<figure class="highlight rust"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">use</span> std::cell::Cell;</div><div class="line"></div><div class="line"><span class="keyword">let</span> x = Cell::new(<span class="number">42</span>);</div><div class="line"><span class="keyword">let</span> y = &x;</div><div class="line"></div><div class="line">x.set(<span class="number">10</span>); <span class="comment">// 可以修改</span></div><div class="line"></div><div class="line">println!(<span class="string">"y: {:?}"</span>, y.get());  <span class="comment">// 输出 y: 10</span></div></pre></td></tr></table></figure>
+
+<h3 id="RefCell">RefCell</h3>
+<p><code>RefCell&lt;T&gt;</code> 提供了更灵活的内部可变性，允许在运行时检查借用规则,通过运行时借用检查来实现:</p>
+<ul>
+<li>通过<code>borrow</code>和<code>borrow_mut</code>方法进行不可变和可变借用。</li>
+<li>借用必须在作用域结束前归还,否则会panic。</li>
+<li>适用于包含多个字段的容器。</li>
+</ul>
+<figure class="highlight rust"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">use</span> std::cell::RefCell;</div><div class="line"></div><div class="line"><span class="keyword">let</span> x = RefCell::new(<span class="number">42</span>);</div><div class="line"></div><div class="line">{</div><div class="line">    <span class="keyword">let</span> y = x.borrow();</div><div class="line">    <span class="comment">// 在这个作用域内，只能获得不可变引用</span></div><div class="line">    println!(<span class="string">"y: {:?}"</span>, *y.borrow());</div><div class="line">}</div><div class="line"></div><div class="line">{</div><div class="line">    <span class="keyword">let</span> <span class="keyword">mut</span> z = x.borrow_mut();</div><div class="line">    <span class="comment">// 在这个作用域内，可以获得可变引用</span></div><div class="line">    *z = <span class="number">10</span>;</div><div class="line">}</div><div class="line"></div><div class="line">println!(<span class="string">"x: {:?}"</span>, x.borrow().deref());</div></pre></td></tr></table></figure>
+
+<p>如果你开启了<code>#![feature(cell_update)]</code>, 你还可以更新它:<code>c.update(|x| x + 1);</code>。</p>
+<h3 id="OnceCell">OnceCell</h3>
+<p><code>OnceCell</code> 是 Rust 标准库中的一个类型，用于提供一次性写入的单元格。它允许在运行时将值放入单元格，但只允许一次。一旦值被写入，进一步的写入尝试将被忽略。</p>
+<p>主要特点和用途：</p>
+<ul>
+<li>一次性写入：<code>OnceCell</code> 确保其内部值只能被写入一次。一旦值被写入，后续的写入操作将被忽略。</li>
+<li>懒初始化：<code>OnceCell</code> 支持懒初始化，这意味着它只有在需要时才会进行初始化。这在需要在运行时确定何时初始化值的情况下很有用。</li>
+<li>线程安全：<code>OnceCell</code> 提供了线程安全的一次性写入。在多线程环境中，它确保只有一个线程能够成功写入值，而其他线程的写入尝试将被忽略。</li>
+</ul>
+<p>下面这个例子演示了<code>OnceCell</code>使用方法，还未初始化的时候，获取的它的值是None, 一旦初始化为<code>Hello, World!</code>,它的值就固定下来了:</p>
+<figure class="highlight rust"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">pub</span> <span class="function"><span class="keyword">fn</span> <span class="title">once_cell_example</span></span>() {</div><div class="line">    <span class="keyword">let</span> cell = OnceCell::new();</div><div class="line">    assert!(cell.get().is_none()); <span class="comment">// true</span></div><div class="line"></div><div class="line">    <span class="keyword">let</span> value: &String = cell.get_or_init(|| <span class="string">"Hello, World!"</span>.to_string());</div><div class="line">    assert_eq!(value, <span class="string">"Hello, World!"</span>);</div><div class="line">    assert!(cell.get().is_some()); <span class="comment">//true</span></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<h3 id="LazyCell、LazyLock">LazyCell、LazyLock</h3>
+<p>有时候我们想实现懒(惰性)初始化的效果，当然<code>lazy_static</code>库可以实现这个效果，但是Rust标准库也提供了一个功能，不过目前还处于不稳定的状态，你需要设置<code>#![feature(lazy_cell)]</code>使能它。</p>
+<p>下面是一个使用它的例子:</p>
+<figure class="highlight rust"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div></pre></td><td class="code"><pre><div class="line">#![feature(lazy_cell)]</div><div class="line"></div><div class="line"><span class="keyword">use</span> std::cell::LazyCell;</div><div class="line"></div><div class="line"><span class="keyword">let</span> lazy: LazyCell&lt;<span class="keyword">i32</span>&gt; = LazyCell::new(|| {</div><div class="line">    println!(<span class="string">"initializing"</span>);</div><div class="line">    <span class="number">46</span></div><div class="line">});</div><div class="line">println!(<span class="string">"ready"</span>);</div><div class="line">println!(<span class="string">"{}"</span>, *lazy); <span class="comment">// 46</span></div><div class="line">println!(<span class="string">"{}"</span>, *lazy); <span class="comment">// 46</span></div></pre></td></tr></table></figure>
+
+<p>注意它是懒初始化的，也就是你在第一次访问它的时候它才会调用初始化函数进行初始化。</p>
+<p>但是它不是线程安全的，如果想使用线程安全的版本，你可以使用<code>std::sync::LazyLock</code>:</p>
+<figure class="highlight rust"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">use</span> std::collections::HashMap;</div><div class="line"></div><div class="line"><span class="keyword">use</span> std::sync::LazyLock;</div><div class="line"></div><div class="line"><span class="keyword">static</span> HASHMAP: LazyLock&lt;HashMap&lt;<span class="keyword">i32</span>, String&gt;&gt; = LazyLock::new(|| {</div><div class="line">    println!(<span class="string">"initializing"</span>);</div><div class="line">    <span class="keyword">let</span> <span class="keyword">mut</span> m = HashMap::new();</div><div class="line">    m.insert(<span class="number">13</span>, <span class="string">"Spica"</span>.to_string());</div><div class="line">    m.insert(<span class="number">74</span>, <span class="string">"Hoyten"</span>.to_string());</div><div class="line">    m</div><div class="line">});</div><div class="line"></div><div class="line"><span class="function"><span class="keyword">fn</span> <span class="title">main</span></span>() {</div><div class="line">    println!(<span class="string">"ready"</span>);</div><div class="line">    std::thread::spawn(|| {</div><div class="line">        println!(<span class="string">"{:?}"</span>, HASHMAP.get(&<span class="number">13</span>));</div><div class="line">    }).join().unwrap();</div><div class="line">    println!(<span class="string">"{:?}"</span>, HASHMAP.get(&<span class="number">74</span>));</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<h2 id="rc">rc</h2>
+<p><code>Rc</code> 是 Rust 标准库中的一个智能指针类型，全名是 std::rc::Rc，代表 &quot;reference counting&quot;。它用于在多个地方共享相同数据时，通过引用计数来进行所有权管理。</p>
+<ul>
+<li><code>Rc</code> 使用引用计数来追踪指向数据的引用数量。当引用计数降为零时，数据会被自动释放。</li>
+<li><code>Rc</code>允许多个 Rc 指针共享相同的数据，而无需担心所有权的转移。</li>
+<li><code>Rc</code> 内部存储的数据是不可变的。如果需要可变性，可以使用 RefCell 或 Mutex 等内部可变性的机制。</li>
+<li><code>Rc</code> 在处理循环引用时需要额外注意，因为循环引用会导致引用计数无法降为零，从而导致内存泄漏。为了解决这个问题，可以使用 Weak 类型。</li>
+</ul>
+<p>下面这个例子演示了<code>Rc</code>的基本使用方法，通过<code>clone</code>我们可以获得新的共享引用。</p>
+<figure class="highlight rust"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">use</span> std::rc::Rc;</div><div class="line"></div><div class="line"><span class="keyword">let</span> data = Rc::new(<span class="number">42</span>);</div><div class="line"></div><div class="line"><span class="keyword">let</span> reference1 = Rc::clone(&data);</div><div class="line"><span class="keyword">let</span> reference2 = Rc::clone(&data);</div><div class="line"></div><div class="line"><span class="comment">// data 的引用计数现在为 3</span></div><div class="line"></div><div class="line"><span class="comment">// 当 reference1 和 reference2 被丢弃时，引用计数减少</span></div></pre></td></tr></table></figure>
+
+<p>注意<code>Rc</code> 允许在多个地方共享不可变数据，通过引用计数来管理所有权。</p>
+<p>如果还想修改数据，那么就可以使用上一节的<code>Cell</code>相关类型, 比如下面的例子，我们使用<code>Rc&lt;RefCell&lt;HashMap&gt;&gt;</code>类型来实现这个需求：</p>
+<figure class="highlight rust"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">pub</span> <span class="function"><span class="keyword">fn</span> <span class="title">rc_refcell_example</span></span>() {</div><div class="line">    <span class="keyword">let</span> shared_map: Rc&lt;RefCell&lt;<span class="number">_</span>&gt;&gt; = Rc::new(RefCell::new(HashMap::new()));</div><div class="line">    {</div><div class="line">        <span class="keyword">let</span> <span class="keyword">mut</span> map: RefMut&lt;<span class="number">_</span>&gt; = shared_map.borrow_mut();</div><div class="line">        map.insert(<span class="string">"africa"</span>, <span class="number">92388</span>);</div><div class="line">        map.insert(<span class="string">"kyoto"</span>, <span class="number">11837</span>);</div><div class="line">        map.insert(<span class="string">"piccadilly"</span>, <span class="number">11826</span>);</div><div class="line">        map.insert(<span class="string">"marbles"</span>, <span class="number">38</span>);</div><div class="line">    }</div><div class="line"></div><div class="line">    <span class="keyword">let</span> total: <span class="keyword">i32</span> = shared_map.borrow().values().sum();</div><div class="line">    println!(<span class="string">"{total}"</span>);</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>这样我们就针对不可变类型<code>Rc</code>实现了数据的可变性。</p>
+<p>注意<code>Rc</code>不是线程安全的，针对上面的里面，如果想实现线程安全的类型，你可以使用<code>Arc</code>,不过这个类型我们放在下一章进行再介绍。</p>
+]]></content>
+    <summary type="html">
+    <![CDATA[<p>Rust 在并发编程方面有一些强大的原语，让你能够写出安全且高效的并发代码。最显著的原语之一是 ownership system，它允许你在没有锁的情况下管理内存访问。此外，Rust 还提供了一些并发编程的工具和标准库,比如线程、线程池、消息通讯(mpsc等)、原子操作等，不过这一章我们不介绍这些工具和库，它们会专门的分章节去讲。这一章我们专门讲一些保证在线程间共享的一些方式和库。</p>
+<p>并发原语内容较多，分成两章，这一章介绍<code>Cow</code>、<code>beef::Cow</code>、<code>Box</code>、 <code>Cell</code>、<code>RefCell</code>、<code>OnceCell</code>、<code>LazyCell</code>、<code>LazyLock</code> 和 <code>Rc</code>。 我把它们称之为容器类并发原语，主要基于它们的行为，它们主要是对普通数据进行包装，以便提供其他更丰富的功能。</p>
+]]>
+    
+    </summary>
+    
+      <category term="Rust" scheme="https://colobu.com/categories/Rust/"/>
+    
+  </entry>
   
   <entry>
     <title><![CDATA[使用rust重写: 和Go版本mping比较]]></title>
@@ -1543,62 +1682,6 @@
     <summary type="html">
     <![CDATA[<p>渐渐地， Go泛型越来越多应用的Go的标准库中了。一些标准库的类型，比如<code>container/heap</code>、<code>container/list</code>、<code>container/ring</code>、<code>math</code>都是有机会支持泛型的，但是考虑到Go向下兼容的情况，这些包可能不会直接修改，最可能就是新建一些并发的包，或者放在扩展包中。</p>
 <p>本篇文章将讲一个相对复杂的例子，也就是对<code>sync.Map</code>的修改，让它支持泛型。</p>
-]]>
-    
-    </summary>
-    
-      <category term="Go" scheme="https://colobu.com/categories/Go/"/>
-    
-  </entry>
-  
-  <entry>
-    <title><![CDATA[sync.Once的新扩展]]></title>
-    <link href="https://colobu.com/2023/05/29/extends-sync-Once/"/>
-    <id>https://colobu.com/2023/05/29/extends-sync-Once/</id>
-    <published>2023-05-29T14:06:47.000Z</published>
-    <updated>2023-05-29T15:05:03.303Z</updated>
-    <content type="html"><![CDATA[<p>在Go 1.21中， 增加了和sync.Once有关的三个函数。sync.Once本身实现就非常简单了，新增加的这三个函数到底是干啥的？让我们一起来看看。</p>
-<a id="more"></a>
-<h2 id="sync-Once">sync.Once</h2>
-<p>我们常常使用sync.Once实现单例模式，它也非常的高效。</p>
-<p>下面的代码是官方的一个例子，运行它可以看到<code>onceBody</code>函数只会被执行一次:</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> main</div><div class="line"></div><div class="line"><span class="keyword">import</span> (</div><div class="line">	<span class="string">"fmt"</span></div><div class="line">	<span class="string">"sync"</span></div><div class="line">)</div><div class="line"></div><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	<span class="keyword">var</span> once sync.Once</div><div class="line">	onceBody := <span class="keyword">func</span>() {</div><div class="line">		fmt.Println(<span class="string">"Only once"</span>)</div><div class="line">	}</div><div class="line">	done := <span class="built_in">make</span>(<span class="keyword">chan</span> <span class="typename">bool</span>)</div><div class="line">	<span class="keyword">for</span> i :=<span class="number"> 0</span>; i &lt;<span class="number"> 10</span>; i++ {</div><div class="line">		<span class="keyword">go</span> <span class="keyword">func</span>() {</div><div class="line">			once.Do(onceBody)</div><div class="line">			done &lt;- <span class="constant">true</span></div><div class="line">		}()</div><div class="line">	}</div><div class="line">	<span class="keyword">for</span> i :=<span class="number"> 0</span>; i &lt;<span class="number"> 10</span>; i++ {</div><div class="line">		&lt;-done</div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<h2 id="OnceFunc">OnceFunc</h2>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> OnceFunc(f <span class="keyword">func</span>()) <span class="keyword">func</span>()</div></pre></td></tr></table></figure>
-
-<p><code>OnceFunc</code>返回一个可以并发调用的函数，它可以被调用多次。即使返回的函数被调用多次，<code>f</code>也只会被调用一次。</p>
-<p>下面的代码<code>onceBody</code>只被执行了一次：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	onceBody := <span class="keyword">func</span>() {</div><div class="line">		fmt.Println(<span class="string">"Only once"</span>)</div><div class="line">	}</div><div class="line"></div><div class="line">	foo := sync.OnceFunc(onceBody)</div><div class="line">	<span class="keyword">for</span> i :=<span class="number"> 0</span>; i &lt;<span class="number"> 10</span>; i++ {</div><div class="line">		foo()</div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<h2 id="OnceValue">OnceValue</h2>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> OnceValue[T any](f <span class="keyword">func</span>() T) <span class="keyword">func</span>() T</div></pre></td></tr></table></figure>
-
-<p><code>OnceValue</code>返回一个函数， 这个函数会返回f的返回值。多次调用都会返回同一个值。</p>
-<p>下面的代码中,<code>randvalue</code>只会被执行一次，返回结果记做<code>n</code>的话， 并且每次调用bar函数都会返回<code>n</code>。bar可以并发的被调用。</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div></pre></td><td class="code"><pre><div class="line">randvalue := <span class="keyword">func</span>() <span class="typename">int</span> {</div><div class="line">	<span class="keyword">return</span> rand.Int()</div><div class="line">}</div><div class="line">bar := sync.OnceValue(randvalue)</div><div class="line"><span class="keyword">for</span> i :=<span class="number"> 0</span>; i &lt;<span class="number"> 10</span>; i++ {</div><div class="line">	fmt.Println(bar())</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>同时，可以看到在标准库中，泛型越来越被使用。</p>
-<h2 id="OnceValues">OnceValues</h2>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> OnceValues[T1, T2 any](f <span class="keyword">func</span>() (T1, T2)) <span class="keyword">func</span>() (T1, T2)</div></pre></td></tr></table></figure>
-
-<p><code>OnceValues</code>和<code>OnceValue</code>的功能类似，只不过返回两个参数，仅此而已。</p>
-<p>综述一下：</p>
-<ul>
-<li>这三个函数返回的函数被调用的时候，分别返回0个、1个、2个返回值。</li>
-<li>返回的函数可以被并发的调用。 </li>
-<li>如果f被执行的时候panic, 返回的函数被调用的时候也会panic,panic的值和f的panic一样。</li>
-</ul>
-<p>稍微展开讲一下tuple。</p>
-<p>如果想返回更多的返回值，自己模仿构造一个，或者把多个返回值封装到一个对象中。</p>
-<p>很多年前，我记得看一篇文章介绍某种编程语言的tuple是硬编码的， 两个元素的tuple、三个元素的tuple、四个元素的tuple等，忘记是哪个语言了。<br>所以你也可以模仿它。</p>
-<p><a href="https://github.com/barweiss/go-tuple" target="_blank" rel="external">go-tuple</a>就是这样实现的一个go语言的tuple,最多支持9个元素。</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> T9</div><div class="line"><span class="keyword">func</span> FromArray9(arr <span class="number">[9</span>]any) (T9[Ty1, Ty2, Ty3, Ty4, Ty5, Ty6, Ty7, Ty8, Ty9], error)</div><div class="line"><span class="keyword">func</span> FromArray9X(arr <span class="number">[9</span>]any) T9[Ty1, Ty2, Ty3, Ty4, Ty5, Ty6, Ty7, Ty8, Ty9]</div><div class="line"><span class="keyword">func</span> FromSlice9(values []any) (T9[Ty1, Ty2, Ty3, Ty4, Ty5, Ty6, Ty7, Ty8, Ty9], error)</div><div class="line"><span class="keyword">func</span> FromSlice9X(values []any) T9[Ty1, Ty2, Ty3, Ty4, Ty5, Ty6, Ty7, Ty8, Ty9]</div><div class="line"><span class="keyword">func</span> New9(v1 Ty1, v2 Ty2, v3 Ty3, v4 Ty4, v5 Ty5, v6 Ty6, v7 Ty7, v8 Ty8, v9 Ty9) T9[Ty1, Ty2, Ty3, Ty4, Ty5, Ty6, Ty7, Ty8, Ty9]</div><div class="line"><span class="keyword">func</span> (t T9[Ty1, Ty2, Ty3, Ty4, Ty5, Ty6, Ty7, Ty8, Ty9]) Array() <span class="number">[9</span>]any</div><div class="line"><span class="keyword">func</span> (t T9[Ty1, Ty2, Ty3, Ty4, Ty5, Ty6, Ty7, Ty8, Ty9]) GoString() <span class="typename">string</span></div><div class="line"><span class="keyword">func</span> (t T9[Ty1, Ty2, Ty3, Ty4, Ty5, Ty6, Ty7, Ty8, Ty9]) Len() <span class="typename">int</span></div><div class="line"><span class="keyword">func</span> (t T9[Ty1, Ty2, Ty3, Ty4, Ty5, Ty6, Ty7, Ty8, Ty9]) Slice() []any</div><div class="line"><span class="keyword">func</span> (t T9[Ty1, Ty2, Ty3, Ty4, Ty5, Ty6, Ty7, Ty8, Ty9]) String() <span class="typename">string</span></div><div class="line"><span class="keyword">func</span> (t T9[Ty1, Ty2, Ty3, Ty4, Ty5, Ty6, Ty7, Ty8, Ty9]) Values() (Ty1, Ty2, Ty3, Ty4, Ty5, Ty6, Ty7, Ty8, Ty9)</div></pre></td></tr></table></figure>
-
-<p>顺便说一下，上面我介绍的Go 1.21新增的三个内建函数之一的<code>clear</code>,清除map的时候，只是把map置空，并不会shrink map， 你可以看例子： <a href="https://go.dev/play/p/quVwNvAZAGJ?v=gotip" target="_blank" rel="external">https://go.dev/play/p/quVwNvAZAGJ?v=gotip</a> 或者相关讨论 <a href="https://github.com/golang/go/issues/56351" target="_blank" rel="external">https://github.com/golang/go/issues/56351</a></p>
-]]></content>
-    <summary type="html">
-    <![CDATA[<p>在Go 1.21中， 增加了和sync.Once有关的三个函数。sync.Once本身实现就非常简单了，新增加的这三个函数到底是干啥的？让我们一起来看看。</p>
 ]]>
     
     </summary>
