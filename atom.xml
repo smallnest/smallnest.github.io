@@ -4,7 +4,7 @@
   <subtitle><![CDATA[大道至简 Simplicity is the ultimate form of sophistication]]></subtitle>
   <link href="/atom.xml" rel="self"/>
   <link href="https://colobu.com/"/>
-  <updated>2023-10-30T13:56:10.789Z</updated>
+  <updated>2023-11-05T14:34:10.679Z</updated>
   <id>https://colobu.com/</id>
   
   <author>
@@ -13,6 +13,130 @@
   </author>
   
   <generator uri="http://zespia.tw/hexo/">Hexo</generator>
+  
+  <entry>
+    <title><![CDATA[Rust并发编程番外篇: Mutex内部实现]]></title>
+    <link href="https://colobu.com/2023/11/05/inside-rust-mutex/"/>
+    <id>https://colobu.com/2023/11/05/inside-rust-mutex/</id>
+    <published>2023-11-05T12:59:46.000Z</published>
+    <updated>2023-11-05T14:33:45.831Z</updated>
+    <content type="html"><![CDATA[<p>Mutex是最常用的一种同步原语，它提供了互斥锁的功能,多线程可以互斥访问共享数据以及通过锁保护临界区。Rust标准库提供了Mutex的实现，接下来我们看看它是怎么实现的。</p>
+<a id="more"></a>
+<h2 id="Mutex的定义">Mutex的定义</h2>
+<p><code>Mutex</code>包含三个字段。</p>
+<p>一个是内部实现的锁(<code>sys::Mutex</code>)，根据不同的操作系统，可能选择不同的实现。<br>一个是<code>poison</code>，用来标记锁是否被破坏，是否中毒了。<br>最后一个是<code>data</code>，用来存储被保护的数据。</p>
+<figure class="highlight rust"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">pub</span> <span class="keyword">struct</span> Mutex&lt;T: ?Sized&gt; {</div><div class="line">    inner: sys::Mutex,</div><div class="line">    poison: poison::Flag,</div><div class="line">    data: UnsafeCell&lt;T&gt;,</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">impl</span>&lt;T&gt; Mutex&lt;T&gt; {</div><div class="line">    <span class="keyword">pub</span> <span class="keyword">const</span> <span class="function"><span class="keyword">fn</span> <span class="title">new</span></span>(t: T) -&gt; Mutex&lt;T&gt; {</div><div class="line">        Mutex { inner: sys::Mutex::new(), poison: poison::Flag::new(), data: UnsafeCell::new(t) }</div><div class="line">    }</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>另外一个关联的数据结构是<code>MutexGuard</code>, 它是<code>Mutex</code>的一个智能指针，用来管理锁的生命周期。它实现了<code>Deref</code>和<code>Drop</code>，所以可以通过<code>*</code>来访问被保护的数据，当<code>MutexGuard</code>离开作用域时，会自动释放锁。</p>
+<figure class="highlight rust"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div></pre></td><td class="code"><pre><div class="line">```rust</div><div class="line"><span class="keyword">pub</span> <span class="keyword">struct</span> MutexGuard&lt;'a, T: ?Sized + 'a&gt; {</div><div class="line">    lock: &'a Mutex&lt;T&gt;,</div><div class="line">    poison: poison::Guard,</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>当请求锁时，调用内部的<code>sys::Mutex</code>上锁，并且返回一个<code>MutexGuard</code>，其实严格的说，返回一个<code>LockResult</code>，它是一个<code>Result</code>，当锁中毒时，返回<code>Err</code>，否则返回<code>Ok</code>，<code>Ok</code>中包含了<code>MutexGuard</code>。</p>
+<figure class="highlight rust"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div></pre></td><td class="code"><pre><div class="line">```rust</div><div class="line">    <span class="keyword">pub</span> <span class="function"><span class="keyword">fn</span> <span class="title">lock</span></span>(&<span class="keyword">self</span>) -&gt; LockResult&lt;MutexGuard&lt;'_, T&gt;&gt; {</div><div class="line">        <span class="keyword">unsafe</span> {</div><div class="line">            <span class="keyword">self</span>.inner.lock();</div><div class="line">            MutexGuard::new(<span class="keyword">self</span>)</div><div class="line">        }</div><div class="line">    }</div><div class="line"></div><div class="line">    <span class="keyword">pub</span> <span class="keyword">type</span> <span class="title">LockResult</span>&lt;Guard&gt; = Result&lt;Guard, PoisonError&lt;Guard&gt;&gt;;</div></pre></td></tr></table></figure>
+
+<p><code>poison</code>如果你不太了解，可以看看<a href="https://nomicon.purewhite.io/poisoning.html" target="_blank" rel="external">这篇文章</a>，我们不进一步介绍它了。<br><code>MutexGuard</code>功能已经介绍了, 接下来我们看看它的实现:</p>
+<figure class="highlight rust"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">impl</span>&lt;T: ?Sized&gt; Deref <span class="keyword">for</span> MutexGuard&lt;'_, T&gt; {</div><div class="line">    <span class="keyword">type</span> <span class="title">Target</span> = T;</div><div class="line"></div><div class="line">    <span class="function"><span class="keyword">fn</span> <span class="title">deref</span></span>(&<span class="keyword">self</span>) -&gt; &T {</div><div class="line">        <span class="keyword">unsafe</span> { &*<span class="keyword">self</span>.lock.data.get() }</div><div class="line">    }</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">impl</span>&lt;T: ?Sized&gt; DerefMut <span class="keyword">for</span> MutexGuard&lt;'_, T&gt; {</div><div class="line">    <span class="function"><span class="keyword">fn</span> <span class="title">deref_mut</span></span>(&<span class="keyword">mut</span> <span class="keyword">self</span>) -&gt; &<span class="keyword">mut</span> T {</div><div class="line">        <span class="keyword">unsafe</span> { &<span class="keyword">mut</span> *<span class="keyword">self</span>.lock.data.get() }</div><div class="line">    }</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p><code>MutexGuard</code>的解引用返回被保护的数据，返回的是一个引用和可变引用。</p>
+<p>当<code>MutexGuard</code>离开作用域时，会自动释放锁，它的实现如下,可以看到它调用了<code>self.lock.inner.unlock()</code>:</p>
+<figure class="highlight rust"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">impl</span>&lt;T: ?Sized&gt; Drop <span class="keyword">for</span> MutexGuard&lt;'_, T&gt; {</div><div class="line">    <span class="preprocessor">#[inline]</span></div><div class="line">    <span class="function"><span class="keyword">fn</span> <span class="title">drop</span></span>(&<span class="keyword">mut</span> <span class="keyword">self</span>) {</div><div class="line">        <span class="keyword">unsafe</span> {</div><div class="line">            <span class="keyword">self</span>.lock.poison.done(&<span class="keyword">self</span>.poison);</div><div class="line">            <span class="keyword">self</span>.lock.inner.unlock();</div><div class="line">        }</div><div class="line">    }</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p><code>try_lock</code>调用<code>inner</code>的<code>try_lock</code>,每什么好说的：</p>
+<figure class="highlight rust"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">pub</span> <span class="function"><span class="keyword">fn</span> <span class="title">try_lock</span></span>(&<span class="keyword">self</span>) -&gt; TryLockResult&lt;MutexGuard&lt;'_, T&gt;&gt; {</div><div class="line">    <span class="keyword">unsafe</span> {</div><div class="line">        <span class="keyword">if</span> <span class="keyword">self</span>.inner.try_lock() {</div><div class="line">            Ok(MutexGuard::new(<span class="keyword">self</span>)?)</div><div class="line">        } <span class="keyword">else</span> {</div><div class="line">            Err(TryLockError::WouldBlock)</div><div class="line">        }</div><div class="line">    }</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>目前rust还提供了一个不稳定的方法<code>unlock</code>，主动的立即释放锁,其实就是调用了<code>drop(guard)</code>:</p>
+<figure class="highlight rust"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">pub</span> <span class="function"><span class="keyword">fn</span> <span class="title">unlock</span></span>(guard: MutexGuard&lt;'_, T&gt;) {</div><div class="line">        drop(guard);</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>那么看起来，锁的主要逻辑是<code>inner</code>实现的，接下来我们看看<code>inner</code>的实现。  </p>
+<p><code>inner</code>的类型是<code>sys::Mutex</code>,它位于<a href="https://github.com/rust-lang/rust/blob/8acf40bd546258a70953187c950ea56d1a8f5bf2/library/std/src/sys/mod.rs" target="_blank" rel="external">library/std/src/sys/mod.rs</a>,根据操作系统的不同，有不同的实现，我们主要看linux(unix)的实现。</p>
+<p>unix的实现位于<a href="https://github.com/rust-lang/rust/blob/8acf40bd546258a70953187c950ea56d1a8f5bf2/library/std/src/sys/unix/locks/futex_mutex.rs" target="_blank" rel="external">/library/std/src/sys/unix/locks</a>, 根据具体的操作系统，也有两种实现方案，我们主要看linux的实现。</p>
+<figure class="highlight rust"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">if</span> <span class="preprocessor">#[cfg(any(</span></div><div class="line">        target_os = "linux",</div><div class="line">        target_os = "android",</div><div class="line">        all(target_os = "emscripten", target_feature = "atomics"),</div><div class="line">        target_os = "freebsd",</div><div class="line">        target_os = "openbsd",</div><div class="line">        target_os = "dragonfly",</div><div class="line">    ))] {</div><div class="line">        <span class="keyword">mod</span> futex_mutex;</div><div class="line">        <span class="keyword">mod</span> futex_rwlock;</div><div class="line">        <span class="keyword">mod</span> futex_condvar;</div><div class="line">        <span class="keyword">pub</span>(<span class="keyword">crate</span>) <span class="keyword">use</span> futex_mutex::Mutex;</div><div class="line">        <span class="keyword">pub</span>(<span class="keyword">crate</span>) <span class="keyword">use</span> futex_rwlock::RwLock;</div><div class="line">        <span class="keyword">pub</span>(<span class="keyword">crate</span>) <span class="keyword">use</span> futex_condvar::Condvar;</div><div class="line">    } ...</div></pre></td></tr></table></figure>
+
+<p>它有两种实现<code>futex_mutex</code>和<code>pthread_mutex.rs</code>, Linux操作系统下，使用的是<code>futex_mutex</code>。</p>
+<p><code>futex_mutex</code>会使用Linux操作系统的<code>futex_wait</code>和<code>futex_wake</code>系统调用。<br>它只包含一个<code>futex</code>字段，它是一个<code>AtomicU32</code>，用来表示锁的状态，它有三种状态:</p>
+<ul>
+<li>0: 未加锁状态·</li>
+<li>1: 加锁，且没有其它线程等待</li>
+<li>2: 加锁，且有其它线程等待(竞争)</li>
+</ul>
+<figure class="highlight rust"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">use</span> crate::sync::atomic::{</div><div class="line">    AtomicU32,</div><div class="line">    Ordering::{Acquire, Relaxed, Release},</div><div class="line">};</div><div class="line"><span class="keyword">use</span> crate::sys::futex::{futex_wait, futex_wake};</div><div class="line"></div><div class="line"><span class="keyword">pub</span> <span class="keyword">struct</span> Mutex {</div><div class="line">    futex: AtomicU32,</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p><code>new</code>创建一个未加锁的Muext, 而<code>try_lock</code>会尝试将<code>futex</code>从0改为1，如果成功，表示加锁成功，否则失败。<br>注意这里使用了 <code>Acquire</code>和<code>Relaxed</code> Ordering，交换成功新值内存可见(<code>Acquire</code>)，失败无所谓了(<code>Relaxed</code>):</p>
+<figure class="highlight rust"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">impl</span> Mutex {</div><div class="line">    <span class="preprocessor">#[inline]</span></div><div class="line">    <span class="keyword">pub</span> <span class="keyword">const</span> <span class="function"><span class="keyword">fn</span> <span class="title">new</span></span>() -&gt; Self {</div><div class="line">        Self { futex: AtomicU32::new(<span class="number">0</span>) }</div><div class="line">    }</div><div class="line"></div><div class="line">    <span class="preprocessor">#[inline]</span></div><div class="line">    <span class="keyword">pub</span> <span class="function"><span class="keyword">fn</span> <span class="title">try_lock</span></span>(&<span class="keyword">self</span>) -&gt; <span class="keyword">bool</span> {</div><div class="line">        <span class="keyword">self</span>.futex.compare_exchange(<span class="number">0</span>, <span class="number">1</span>, Acquire, Relaxed).is_ok()</div><div class="line">    }</div><div class="line"></div><div class="line">    ...</div><div class="line">}</div><div class="line"></div><div class="line">接下来是重头戏`lock`:</div></pre></td></tr></table></figure>
+
+<p>rust<br>impl Mutex {<br>    ...</p>
+<pre><code><span class="preprocessor">#[inline]</span>
+<span class="keyword">pub</span> <span class="function"><span class="keyword">fn</span> <span class="title">lock</span></span>(&amp;<span class="keyword">self</span>) {
+    <span class="keyword">if</span> <span class="keyword">self</span>.futex.compare_exchange(<span class="number">0</span>, <span class="number">1</span>, Acquire, Relaxed).is_err() {
+        <span class="keyword">self</span>.lock_contended(); <span class="comment">// 如果第一次抢不到锁，进入锁竞争场景的处理</span>
+    }
+}
+
+<span class="preprocessor">#[cold]</span>
+<span class="function"><span class="keyword">fn</span> <span class="title">lock_contended</span></span>(&amp;<span class="keyword">self</span>) {
+    <span class="comment">// 获取锁的状态</span>
+    <span class="keyword">let</span> <span class="keyword">mut</span> state = <span class="keyword">self</span>.spin();
+
+    <span class="comment">// 如果未加速，去抢!</span>
+    <span class="keyword">if</span> state == <span class="number">0</span> {
+        <span class="keyword">match</span> <span class="keyword">self</span>.futex.compare_exchange(<span class="number">0</span>, <span class="number">1</span>, Acquire, Relaxed) {
+            Ok(<span class="number">_</span>) =&gt; <span class="keyword">return</span>, <span class="comment">// 抢成功，返回</span>
+            Err(s) =&gt; state = s, <span class="comment">// 失败，把当前的状态赋值给state</span>
+        }
+    }
+
+    <span class="keyword">loop</span> {
+        <span class="comment">// 运气来了，在多个人抢一个未加锁的锁时，你，命中天子抢到了锁，并且把锁状态从0改为2</span>
+        <span class="keyword">if</span> state != <span class="number">2</span> &amp;&amp; <span class="keyword">self</span>.futex.swap(<span class="number">2</span>, Acquire) == <span class="number">0</span> {
+            <span class="comment">// 成功把锁的状态从0改成了2，获取了锁，返回</span>
+            <span class="keyword">return</span>;
+        }
+
+        <span class="comment">// 等待锁状态变化，如果锁状态不是2，就不等了</span>
+        futex_wait(&amp;<span class="keyword">self</span>.futex, <span class="number">2</span>, None);
+
+        <span class="comment">// 别的线程释放了锁，spin检查锁的状态，再集中精力继续抢</span>
+        state = <span class="keyword">self</span>.spin();
+    }
+}
+
+<span class="function"><span class="keyword">fn</span> <span class="title">spin</span></span>(&amp;<span class="keyword">self</span>) -&gt; <span class="keyword">u32</span> {
+    <span class="keyword">let</span> <span class="keyword">mut</span> spin = <span class="number">100</span>;
+    <span class="keyword">loop</span> {
+        <span class="comment">// 获取当前锁的状态， 可能是0,1,2三种状态</span>
+        <span class="keyword">let</span> state = <span class="keyword">self</span>.futex.load(Relaxed);
+
+        <span class="comment">// 如果是未加锁，或者是有其它线程等待，则返回</span>
+        <span class="comment">// 如果spin次数用完了，也返回</span>
+        <span class="keyword">if</span> state != <span class="number">1</span> || spin == <span class="number">0</span> {
+            <span class="keyword">return</span> state;
+        }
+
+        crate::hint::spin_loop();
+        spin -= <span class="number">1</span>;
+    }
+}
+...
+</code></pre><p>}</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line">总得来说，抢锁的线程通过spin,避免上下文切换，能够提高性能。如果spin次数用完了，就进入等待状态，等待其它线程释放锁，然后再抢。</div><div class="line"></div><div class="line">剩下一个方法就是解锁了。解锁比较简单，就是把锁的状态从1或者2改为0，如果原来是2，表示还有其它线程等待，就唤醒一个。</div></pre></td></tr></table></figure>
+
+<p>rust<br>impl Mutex {<br>    ...<br>    pub unsafe fn unlock(&amp;self) {<br>        if self.futex.swap(0, Release) == 2 {<br>            // 如果还有等待的线程，就唤醒一个<br>            self.wake();<br>        }<br>    }</p>
+<pre><code><span class="comment">#[cold]</span>
+fn wake(&amp;self) {
+    futex_wake(&amp;self.futex);
+}
+<span class="keyword">...</span>
+</code></pre><p>}<br><code>`</code></p>
+<p>可以看到，Rust的Mutex的实现还是比较简单的，它的核心是利用操作系统的<code>futex</code>相关方法，加一个<code>AtomicU32</code>标志来实现。</p>
+]]></content>
+    <summary type="html">
+    <![CDATA[<p>Mutex是最常用的一种同步原语，它提供了互斥锁的功能,多线程可以互斥访问共享数据以及通过锁保护临界区。Rust标准库提供了Mutex的实现，接下来我们看看它是怎么实现的。</p>
+]]>
+    
+    </summary>
+    
+      <category term="Rust" scheme="https://colobu.com/categories/Rust/"/>
+    
+  </entry>
   
   <entry>
     <title><![CDATA[iptables 以及 Go操作库]]></title>
@@ -2042,29 +2166,6 @@
     <summary type="html">
     <![CDATA[<p>工厂模式(Factory pattern)是一种创建型模式，就是用来创建新对象的一种设计模式,它可以将复杂对象的建造过程抽象出来（抽象类别），使这个抽象过程的不同实现方法可以构造出不同表现（属性）的对象。</p>
 <p>23种设计模式中包含抽象工厂模式，工厂方法模式，其他也有人总结出简单工厂模式。这个工厂大量的依赖接口、抽象类和具体的类实现。在Go中，才不会有这么复杂的工厂创建模式，Go中最常见的工厂模式类似简单工厂模式，而且一般都是通过<code>New</code>或者<code>NewXXX</code>来实现。</p>
-]]>
-    
-    </summary>
-    
-      <category term="Go" scheme="https://colobu.com/categories/Go/"/>
-    
-  </entry>
-  
-  <entry>
-    <title><![CDATA[100个Go编程错误小抄]]></title>
-    <link href="https://colobu.com/2023/07/18/cheatsheet-of-100-go-mistakes/"/>
-    <id>https://colobu.com/2023/07/18/cheatsheet-of-100-go-mistakes/</id>
-    <published>2023-07-18T14:08:21.000Z</published>
-    <updated>2023-07-18T14:23:29.618Z</updated>
-    <content type="html"><![CDATA[<p>这是针对《100 Go mistakes and how to avoid them》 一书的总结。作者能总结出100条易犯的错误很不容易，最接近这个数目的是<a href="https://colobu.com/2015/09/07/gotchas-and-common-mistakes-in-go-golang/" target="_blank" rel="external">Go的50度灰：Golang新开发者要注意的陷阱和常见错误</a>,没想到那已经是9年前的文章了。</p>
-<a id="more"></a>
-<p><img src="100gomistakes.jpg" alt=""></p>
-<p>我把它整理成小抄的形式，更容易快速预览，适合紧张忙碌的996的码农们。第一列是作者总结的错误，后面一列加上我个人的经验，一句话经验。</p>
-<p><img src="100gomistakes.png" alt=""></p>
-<p>pdf格式下载请点击 <a href="https://colobu.com/2023/07/18/cheatsheet-of-100-go-mistakes/100gomistakes.pdf" target="_blank" rel="external">小抄下载</a></p>
-]]></content>
-    <summary type="html">
-    <![CDATA[<p>这是针对《100 Go mistakes and how to avoid them》 一书的总结。作者能总结出100条易犯的错误很不容易，最接近这个数目的是<a href="https://colobu.com/2015/09/07/gotchas-and-common-mistakes-in-go-golang/" target="_blank" rel="external">Go的50度灰：Golang新开发者要注意的陷阱和常见错误</a>,没想到那已经是9年前的文章了。</p>
 ]]>
     
     </summary>
