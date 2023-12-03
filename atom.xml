@@ -4,7 +4,7 @@
   <subtitle><![CDATA[大道至简 Simplicity is the ultimate form of sophistication]]></subtitle>
   <link href="/atom.xml" rel="self"/>
   <link href="https://colobu.com/"/>
-  <updated>2023-11-17T00:45:28.412Z</updated>
+  <updated>2023-12-03T08:15:58.303Z</updated>
   <id>https://colobu.com/</id>
   
   <author>
@@ -15,11 +15,152 @@
   <generator uri="http://zespia.tw/hexo/">Hexo</generator>
   
   <entry>
+    <title><![CDATA[2023年 Go 并发库的变化综述]]></title>
+    <link href="https://colobu.com/2023/12/03/status-og-so-sync-in-2023/"/>
+    <id>https://colobu.com/2023/12/03/status-og-so-sync-in-2023/</id>
+    <published>2023-12-03T05:39:09.000Z</published>
+    <updated>2023-12-03T08:15:23.365Z</updated>
+    <content type="html"><![CDATA[<p>2023年来， Go的并发库又有了一些变化，这篇文章是对这些变换的综述。小细节的变化，比如typo、文档变化等无关大局的变化就不介绍了。</p>
+<a id="more"></a>
+<h2 id="sync-Map">sync.Map</h2>
+<p>Go 1.21.0 中增加了和Once相关的三个函数，便于Once的使用。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> OnceFunc(f <span class="keyword">func</span>()) <span class="keyword">func</span>()</div><div class="line"><span class="keyword">func</span> OnceValue[T any](f <span class="keyword">func</span>() T) <span class="keyword">func</span>() T</div><div class="line"><span class="keyword">func</span> OnceValues[T1, T2 any](f <span class="keyword">func</span>() (T1, T2)) <span class="keyword">func</span>() (T1, T2)</div></pre></td></tr></table></figure>
+
+<p>这三个函数的功能分别是：</p>
+<ul>
+<li>OnceFunc：返回一个函数<code>g</code>，多次调用这个函数<code>g</code>，只会执行一次<code>f</code>。 如果<code>f</code>执行时panic, 则后续调用这个函数<code>g</code>不会再执行<code>f</code>,但是每次调用都会panic。</li>
+<li>OnceValue：返回一个函数<code>g</code>，多次调用这个函数<code>g</code>，只会执行一次<code>f</code>，函数<code>g</code>返回值类型是T。比上一个<code>g</code>多了一个返回值。panic原理同上。</li>
+<li>OnceValues：返回一个函数<code>g</code>，多次调用这个函数<code>g</code>，只会执行一次<code>f</code>，函数<code>g</code>返回值类型是(T1, T2)。比上一个<code>g</code>又多了一个返回值。panic原理同上。</li>
+</ul>
+<p>当然理论上你还可以增加更多的函数，返回更多的返回值，因为Go没有Tuple类型，所以这里还不能简化函数<code>g</code>的返回值为Tuple类型。反正Go 1.21.0就只增加了这三个函数。</p>
+<p>这个有什么好处呢？先前我们使用<code>sync.Once</code>的时候，比如初始化一个线程池，我们需要定义一个线程池的变量，每次访问线程池变量的时候，我需要调用一下<code>sync.Once.Do</code>:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> TestOnce(t *testing.T) {</div><div class="line">	<span class="keyword">var</span> pool any</div><div class="line">	<span class="keyword">var</span> once sync.Once</div><div class="line">	<span class="keyword">var</span> initFn = <span class="keyword">func</span>() {</div><div class="line">		<span class="comment">// init pool</span></div><div class="line">		pool =<span class="number"> 1</span></div><div class="line">	}</div><div class="line"></div><div class="line">	<span class="keyword">for</span> i :=<span class="number"> 0</span>; i &lt;<span class="number"> 10</span>; i++ {</div><div class="line">		once.Do(initFn)</div><div class="line">		t.Log(pool)</div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>如果使用<code>OnceValue</code>,就可以简化代码：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> TestOnceValue(t *testing.T) {</div><div class="line">	<span class="keyword">var</span> initPool = <span class="keyword">func</span>() any {</div><div class="line">		<span class="keyword">return</span><span class="number"> 1</span></div><div class="line">	}</div><div class="line">	<span class="keyword">var</span> poolGenerator = sync.OnceValue(initPool)</div><div class="line"></div><div class="line">	<span class="keyword">for</span> i :=<span class="number"> 0</span>; i &lt;<span class="number"> 10</span>; i++ {</div><div class="line">		t.Log(poolGenerator())</div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>代码略微简化，获取单例的时候只需调用返回的函数<code>g</code>即可。</p>
+<p>所以基本上，这三个函数只是对sync.Once做了封装，更方便使用。</p>
+<h2 id="理解copyChecker">理解copyChecker</h2>
+<p>我们知道， <code>sync.Cond</code>有两个字段<code>noCopy</code>和<code>checker</code>, <code>noCopy</code>通过<code>go vet</code>工具能够静态编译时检查出来，但是<code>checker</code>是在运行时检查的：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> Cond <span class="keyword">struct</span> {</div><div class="line">	noCopy noCopy</div><div class="line"></div><div class="line">	<span class="comment">// L is held while observing or changing the condition</span></div><div class="line">	L Locker</div><div class="line"></div><div class="line">	notify  notifyList</div><div class="line">	checker copyChecker</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>先前<code>copyChecker</code>的判断条件如下，虽然简单的三行，但是不容易理解:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> (c *copyChecker) check() {</div><div class="line">	<span class="keyword">if</span> <span class="typename">uintptr</span>(*c) != <span class="typename">uintptr</span>(unsafe.Pointer(c)) &&</div><div class="line">		!atomic.CompareAndSwapUintptr((*<span class="typename">uintptr</span>)(c),<span class="number"> 0</span>, <span class="typename">uintptr</span>(unsafe.Pointer(c))) &&</div><div class="line">		<span class="typename">uintptr</span>(*c) != <span class="typename">uintptr</span>(unsafe.Pointer(c)) {</div><div class="line">		<span class="built_in">panic</span>(<span class="string">"sync.Cond is copied"</span>)</div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>现在加上了注释，解释了这三行的意义：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> (c *copyChecker) check() {</div><div class="line">	<span class="comment">// Check if c has been copied in three steps:</span></div><div class="line">	<span class="comment">// 1. The first comparison is the fast-path. If c has been initialized and not copied, this will return immediately. Otherwise, c is either not initialized, or has been copied.</span></div><div class="line">	<span class="comment">// 2. Ensure c is initialized. If the CAS succeeds, we're done. If it fails, c was either initialized concurrently and we simply lost the race, or c has been copied.</span></div><div class="line">	<span class="comment">// 3. Do step 1 again. Now that c is definitely initialized, if this fails, c was copied.</span></div><div class="line">	<span class="keyword">if</span> <span class="typename">uintptr</span>(*c) != <span class="typename">uintptr</span>(unsafe.Pointer(c)) &&</div><div class="line">		!atomic.CompareAndSwapUintptr((*<span class="typename">uintptr</span>)(c),<span class="number"> 0</span>, <span class="typename">uintptr</span>(unsafe.Pointer(c))) &&</div><div class="line">		<span class="typename">uintptr</span>(*c) != <span class="typename">uintptr</span>(unsafe.Pointer(c)) {</div><div class="line">		<span class="built_in">panic</span>(<span class="string">"sync.Cond is copied"</span>)</div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>主要逻辑在以下3步:</p>
+<ul>
+<li>第一步是一个快速检查,直接比较 <code>c</code> 指针和 <code>c</code> 本身的指针,如果不相等则表示已被复制。这是最快的检查路径。</li>
+<li>第二步确保 <code>c</code> 已经被初始化。使用 CAS (CompareAndSwap)来初始化。如果CAS失败,说明<code>c</code> 已经在其他goroutine初始化,或者被复制了。</li>
+<li>第三步再次执行第一步的检查。因为这时我们清楚的知道 <code>c</code> 已经初始化了,所以如果检查失败,就可以确认 <code>c</code> 被复制了。</li>
+</ul>
+<p>整个逻辑就是使用 CAS 配合两次指针检查,来确保判断的正确性。</p>
+<p>总的来说，第一步快速检查是性能优化。第二步使用 CAS 确保初始化。第三步再次检查来确保判断。</p>
+<h2 id="sync-Map_的一处优化">sync.Map 的一处优化</h2>
+<p>先前， <code>sync.Map</code> 的 <code>Range</code> 函数的实现如下：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> (m *Map) Range(f <span class="keyword">func</span>(key, value any) <span class="typename">bool</span>) {</div><div class="line">    ...</div><div class="line">    <span class="keyword">if</span> read.amended {</div><div class="line">			read = readOnly{m: m.dirty}</div><div class="line">			m.read.Store(&read)</div><div class="line">			m.dirty = <span class="constant">nil</span></div><div class="line">			m.misses =<span class="number"> 0</span></div><div class="line">	}</div><div class="line">    ...</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>其中有一段代码：<code>m.read.Store(&amp;read)</code>,会导致<code>read</code>逃逸到堆上，通过下面的一个小技巧，避免了<code>read</code>的逃逸（通过一个新的变量）：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> (m *Map) Range(f <span class="keyword">func</span>(key, value any) <span class="typename">bool</span>) {</div><div class="line">    ...</div><div class="line">	<span class="keyword">if</span> read.amended {</div><div class="line">		read = readOnly{m: m.dirty}</div><div class="line">		copyRead := read</div><div class="line">		m.read.Store(&copyRead)</div><div class="line">		m.dirty = <span class="constant">nil</span></div><div class="line">		m.misses =<span class="number"> 0</span></div><div class="line">	}</div><div class="line">    ...</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p><a href="https://github.com/golang/go/issues/62404" target="_blank" rel="external">issue #62404</a>对这个问题进行了分析。</p>
+<h2 id="sync-Once的实现中done使用atomic-Uint32替换">sync.Once的实现中done使用atomic.Uint32替换</h2>
+<p>先前<code>sync.Once</code>的实现如下：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> Once <span class="keyword">struct</span> {</div><div class="line">	done <span class="typename">uint32</span></div><div class="line">	m    Mutex</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>其中字段<code>done</code>是一个<code>uint32</code>类型，用来表示<code>Once</code>是否已经执行过了。这个字段的类型是<code>uint32</code>，而不是<code>bool</code>，是因为<code>uint32</code>类型可以使用<code>atomic</code>包的原子操作，而<code>bool</code>类型不能。</p>
+<p>现在<code>sync.Once</code>的实现如下：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> Once <span class="keyword">struct</span> {</div><div class="line">	done atomic.Uint32</div><div class="line">	m    Mutex</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>自从go 1.19提供了对基本类型的原子封装，Go标准库大量代码都被<code>atomic.XXX</code>类型锁替换。</p>
+<p>我个人认为，目前这个修改相对于先前的实现，性能上在某些情况下可能会有性能的下降，我会专门写一篇文章进行探讨。</p>
+<p>除了<code>sync.Once</code>，还有一批类型使用了<code>atomic.XXX</code>类型替换原来的使用方法，有必要可以进行替换么？</p>
+<h2 id="sync-OnceFunc_初始实现的优化">sync.OnceFunc 初始实现的优化</h2>
+<p>初始的<code>sync.OnceFunc</code>的实现如下：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> OnceFunc(f <span class="keyword">func</span>()) <span class="keyword">func</span>() {</div><div class="line">	<span class="keyword">var</span> (</div><div class="line">		once  Once</div><div class="line">		valid <span class="typename">bool</span></div><div class="line">		p     any</div><div class="line">	)</div><div class="line">	g := <span class="keyword">func</span>() {</div><div class="line">		<span class="keyword">defer</span> <span class="keyword">func</span>() {</div><div class="line">			p = <span class="built_in">recover</span>()</div><div class="line">			<span class="keyword">if</span> !valid {</div><div class="line">				<span class="built_in">panic</span>(p)</div><div class="line">			}</div><div class="line">		}()</div><div class="line">		f()</div><div class="line">		valid = <span class="constant">true</span></div><div class="line">	}</div><div class="line">	<span class="keyword">return</span> <span class="keyword">func</span>() {</div><div class="line">		once.Do(g)</div><div class="line">		<span class="keyword">if</span> !valid {</div><div class="line">			<span class="built_in">panic</span>(p)</div><div class="line">		}</div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>仔细看这段代码，你会发现，传递给<code>OnceFunc/OnceValue/OnceValues</code>的函数<code>f</code>，即使执行完一次，只要返回的<code>g</code>函数好活着没有被垃圾回收，这个<code>f</code>就一直存活。<br>这是没必要的，因为<code>f</code>只需要执行一次，执行完就可以被垃圾回收了。所以，这里可以对<code>f</code>进行一次优化，让<code>f</code>执行完就设置为<code>nil</code>，这样就可以被垃圾回收了。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> OnceFunc(f <span class="keyword">func</span>()) <span class="keyword">func</span>() {</div><div class="line">	<span class="keyword">var</span> (</div><div class="line">		once  Once</div><div class="line">		valid <span class="typename">bool</span></div><div class="line">		p     any</div><div class="line">	)</div><div class="line">	<span class="comment">// Construct the inner closure just once to reduce costs on the fast path.</span></div><div class="line">	g := <span class="keyword">func</span>() {</div><div class="line">		<span class="keyword">defer</span> <span class="keyword">func</span>() {</div><div class="line">			p = <span class="built_in">recover</span>()</div><div class="line">			<span class="keyword">if</span> !valid {</div><div class="line">				<span class="comment">// Re-panic immediately so on the first call the user gets a</span></div><div class="line">				<span class="comment">// complete stack trace into f.</span></div><div class="line">				<span class="built_in">panic</span>(p)</div><div class="line">			}</div><div class="line">		}()</div><div class="line">		f()</div><div class="line">		f = <span class="constant">nil</span>      <span class="comment">// Do not keep f alive after invoking it.</span></div><div class="line">		valid = <span class="constant">true</span> <span class="comment">// Set only if f does not panic.</span></div><div class="line">	}</div><div class="line">	<span class="keyword">return</span> <span class="keyword">func</span>() {</div><div class="line">		once.Do(g)</div><div class="line">		<span class="keyword">if</span> !valid {</div><div class="line">			<span class="built_in">panic</span>(p)</div><div class="line">		}</div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<h2 id="context">context</h2>
+<p>我们知道，在 Go 1.20中， 新增加了一个<code>WithCancelCause</code>方法(<code>func WithCancelCause(parent Context) (ctx Context, cancel CancelCauseFunc)</code>)，我们在<code>cancel</code>的时候可以把cancel的原因传递给<code>WithCancelCause</code>产生的Context，这样可以通过<code>context.Cause</code>方法获取到<code>cancel</code>的原因。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line">ctx, cancel := context.WithCancelCause(parent)</div><div class="line">cancel(myError)</div><div class="line">ctx.Err() <span class="comment">// 返回 context.Canceled</span></div><div class="line">context.Cause(ctx) <span class="comment">// 返回 myError</span></div></pre></td></tr></table></figure>
+
+<p>当然这个实现只进行了一半，因为超时相关的Context也需要增加这个功能，所以在Go 1.21.0中又新增了两个相关的函数：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> WithDeadlineCause(parent Context, d time.Time, cause error) (Context, CancelFunc)</div><div class="line"><span class="keyword">func</span> WithTimeoutCause(parent Context, timeout time.Duration, cause error) (Context, CancelFunc)</div></pre></td></tr></table></figure>
+
+<p>这两个和<code>WithCancelCause</code>还不太一样，不是利用返回的cancel函数传递原因，而是直接在函数参数中传递原因。</p>
+<p>Go 1.21.0 还增加了一个<code>AfterFunc</code>函数，这个函数和<code>time.AfterFunc</code>类似，但是返回的是一个<code>Context</code>，这个<code>Context</code>在超时后会自动取消，这个函数的实现如下：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> AfterFunc(ctx Context, f <span class="keyword">func</span>()) (stop <span class="keyword">func</span>() <span class="typename">bool</span>)</div></pre></td></tr></table></figure>
+
+<p>指定的<code>Context</code>在在done(超时或者取消)，如果context已经done,那么<code>f</code>立即被调用。<br>返回的<code>stop</code>函数用来停止<code>f</code>的调用，如果<code>stop</code>被调用并且返回true，<code>f</code>不会被调用。</p>
+<p>这是一个辅助函数，但是难以理解，估计这个函数不会被广泛的使用。</p>
+<p>其他一些小性能的优化比如<code>type emptyCtx int</code>替换成<code>type emptyCtx struct{}</code>等等就不用提了。</p>
+<p>增加了一个<code>func WithoutCancel(parent Context) Context</code>, 当parent被取消时，不会波及到这个函数返回的Context。</p>
+<h2 id="Coroutines_for_Go">Coroutines for Go</h2>
+<p>在今年7月，Russ Coxx写了一篇巨论： <a href="https://research.swtch.com/coro" target="_blank" rel="external">Coroutines for Go</a>。</p>
+<p>个人不看好在Go标准库实现这个东西，我感觉Rob Pike也不会同意，但是这个东西社区如果去实现一个库，我觉得还是有可能的，返回如果大家不看好，社区的库自然会消亡。</p>
+<p>否则，渐渐的Go迷失了它的初心: 简单好用。</p>
+<p>社区的一些协程库：</p>
+<ul>
+<li><a href="https://github.com/stealthrocket/coroutine" target="_blank" rel="external">coroutine</a></li>
+<li><a href="https://github.com/solarlune/routine" target="_blank" rel="external">routine</a></li>
+<li><a href="https://github.com/SolarLune/gocoro" target="_blank" rel="external">gocoro</a></li>
+</ul>
+<p>你在go.dev还能搜到一些，这里就不赘述了。</p>
+<h2 id="golang-org/x/sync_没有明显改动">golang.org/x/sync 没有明显改动</h2>
+<p><code>errgroup</code>支持使用<code>withCancelCause</code>设置cause。<br><code>singleflight</code>的panicError增加Unwrap方法。</p>
+]]></content>
+    <summary type="html">
+    <![CDATA[<p>2023年来， Go的并发库又有了一些变化，这篇文章是对这些变换的综述。小细节的变化，比如typo、文档变化等无关大局的变化就不介绍了。</p>
+]]>
+    
+    </summary>
+    
+      <category term="Go" scheme="https://colobu.com/categories/Go/"/>
+    
+  </entry>
+  
+  <entry>
+    <title><![CDATA[“五年磨一剑：这本Go并发的书终于要和大家见面了”]]></title>
+    <link href="https://colobu.com/2023/11/21/the-book-is-coming/"/>
+    <id>https://colobu.com/2023/11/21/the-book-is-coming/</id>
+    <published>2023-11-21T13:43:27.000Z</published>
+    <updated>2023-11-21T14:46:21.801Z</updated>
+    <content type="html"><![CDATA[<p>我以为这本书能赶上今年的6.18，但是没等到，让GopherChina2023两位获奖的幸运观众等这么久。我以为这么书能赶上今年的双十一，还是差了一点，还是没能出版，但是这一次，它真的来了，应该有很大的信心能赶上双12了，因为它已经开始在京东预售了。</p>
+<p>是的，它已经在京东上架预售，并且预期在十二月初就开始发售。并且，限时半价，你只需要79元，400多页，全彩印刷，限时5折优惠，先期只售4000册，先到先得，赶快下单！</p>
+<p>// 此处插入京东的预售卡片</p>
+<p>好书不怕晚，这本锤炼了五年的Go并发编程知识集大成的书，从知识范围、内容组织、实战效果、美观趣味上都是我目前看到的最好的Go并发编程书籍。我相信，这本书能让你在Go并发编程的路上少走很多弯路，让你的Go并发编程水平更上一层楼。</p>
+<a id="more"></a>
+<p>还是要先给大家看一下这本书的封面，这是我最喜欢的一本书的封面之一，采用Gopher吉祥物做主角，描述了秋天大丰收的场景，很多的Gopher在抢收苹果。<br>// 封面， 标注出并发原语</p>
+<p>再放几张实拍图。<br>// 几张实拍图</p>
+<h2 id="知识范围">知识范围</h2>
+<p>大家考察一本书的时候，首先翻阅的是它的目录，通过目录可以看出这本书的知识范围，甚至可以通过章节也能看出这本书的知识深度。这本书的目录如下：</p>
+<p>// 把目录的截图贴在这里</p>
+<h2 id="内容组织">内容组织</h2>
+<h2 id="实战效果">实战效果</h2>
+<h2 id="美观趣味">美观趣味</h2>
+]]></content>
+    <summary type="html">
+    <![CDATA[<p>我以为这本书能赶上今年的6.18，但是没等到，让GopherChina2023两位获奖的幸运观众等这么久。我以为这么书能赶上今年的双十一，还是差了一点，还是没能出版，但是这一次，它真的来了，应该有很大的信心能赶上双12了，因为它已经开始在京东预售了。</p>
+<p>是的，它已经在京东上架预售，并且预期在十二月初就开始发售。并且，限时半价，你只需要79元，400多页，全彩印刷，限时5折优惠，先期只售4000册，先到先得，赶快下单！</p>
+<p>// 此处插入京东的预售卡片</p>
+<p>好书不怕晚，这本锤炼了五年的Go并发编程知识集大成的书，从知识范围、内容组织、实战效果、美观趣味上都是我目前看到的最好的Go并发编程书籍。我相信，这本书能让你在Go并发编程的路上少走很多弯路，让你的Go并发编程水平更上一层楼。</p>
+]]>
+    
+    </summary>
+    
+  </entry>
+  
+  <entry>
     <title><![CDATA[TOP 20 Go最佳实践]]></title>
     <link href="https://colobu.com/2023/11/17/golang-quick-reference-top-20-best-coding-practices/"/>
     <id>https://colobu.com/2023/11/17/golang-quick-reference-top-20-best-coding-practices/</id>
     <published>2023-11-17T00:05:39.000Z</published>
-    <updated>2023-11-17T00:45:05.182Z</updated>
+    <updated>2023-11-17T00:45:25.978Z</updated>
     <content type="html"><![CDATA[<p>原文: <a href="https://medium.com/@golangda/golang-quick-reference-top-20-best-coding-practices-c0cea6a43f20" target="_blank" rel="external">Golang Best Practices (Top 20)</a></p>
 <a id="more"></a>
 <h2 id="简介">简介</h2>
@@ -2162,134 +2303,6 @@ fn wake(&amp;self) {
 ]]></content>
     <summary type="html">
     <![CDATA[<p>在前一篇<a href="https://colobu.com/2023/08/07/go-design-pattern-prototype/" target="_blank" rel="external">真实世界的Go设计模式 - 原型模式</a>一文中，我们介绍了gorm作者张金柱的另一个库<a href="https://github.com/jinzhu/copier" target="_blank" rel="external">jinzhu/copier</a>,它提供了对象数据深度复制的能力。<br>]]>
-    
-    </summary>
-    
-      <category term="Go" scheme="https://colobu.com/categories/Go/"/>
-    
-  </entry>
-  
-  <entry>
-    <title><![CDATA[真实世界的Go设计模式 - 单例模式 和 惰性初始化模式]]></title>
-    <link href="https://colobu.com/2023/07/27/go-design-patterns-singleton/"/>
-    <id>https://colobu.com/2023/07/27/go-design-patterns-singleton/</id>
-    <published>2023-07-27T14:52:48.000Z</published>
-    <updated>2023-08-07T15:29:11.804Z</updated>
-    <content type="html"><![CDATA[<p>在面向对象编程语言中，单例模式(Singleton pattern)确保一个类只有一个实例，并提供对该实例的全局访问。</p>
-<p>那么Go语言中，单例模式确认一个类型只有一个实例，并提供对改实例的全局访问，一般就是直接访问全局变量即可。<br><a id="more"></a></p>
-<p>比如Go标准库中的<code>os.Stdin</code>、<code>os.Stdout</code>、<code>os.Stderr</code>分别代表标准输入、标准输出和标准错误输出。它们是<code>*os.File</code>类型的全局变量，可以在程序中直接使用:</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">var</span> (</div><div class="line">	Stdin  = NewFile(<span class="typename">uintptr</span>(syscall.Stdin), <span class="string">"/dev/stdin"</span>)</div><div class="line">	Stdout = NewFile(<span class="typename">uintptr</span>(syscall.Stdout), <span class="string">"/dev/stdout"</span>)</div><div class="line">	Stderr = NewFile(<span class="typename">uintptr</span>(syscall.Stderr), <span class="string">"/dev/stderr"</span>)</div><div class="line">)</div></pre></td></tr></table></figure>
-
-<p>又比如io包下的EOF:</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">var</span> EOF = errors.New(<span class="string">"EOF"</span>)</div></pre></td></tr></table></figure>
-
-<p>Go标准库中有很多这样的单例的实现，又比如<code>http.DefaultClient</code>、<code>http.DefaultServeMux</code>、<code>http.DefaultTransport</code>、<code>net.IPv4zero</code>都是单例对象。</p>
-<p>有时候，有人也认为是单例模式也是反模式。</p>
-<blockquote>
-<p>反模式(Anti-pattern)是一种在软件工程中常见的概念,主要指在软件设计、开发中要避免使用的模式或实践。</p>
-<p>反模式的一些主要特征包括:</p>
-<ul>
-<li>它通常是初学者常犯的错误或陷阱。</li>
-<li>它反映了一种看似可行但实际上低效或错误的解决方案。</li>
-<li>使用反模式可能在短期内出现类似解决问题的效果,但长期来看会适得其反。</li>
-<li>它通常是一个坏的或劣质的设计,不符合最佳实践。</li>
-<li>存在一个更好的、可替代的解决方案。</li>
-</ul>
-<p>一些常见的反模式示例:</p>
-<ul>
-<li>复制-粘贴编程:为了重复使用代码,直接复制粘贴,而不创建函数或模块。</li>
-<li>上帝对象:一个巨大的包含全部功能的复杂对象。</li>
-<li>依赖注入滥用:即使简单的对象也进行依赖注入,增加了复杂性。</li>
-<li>自我封装:通过封装无谓的细节来增加类的复杂性。</li>
-<li>过度抽象和设计：代码缺乏可读性</li>
-</ul>
-</blockquote>
-<p>为什么这么说呢，加入两个goroutine同时使用<code>http.DefaultClient</code>, 其中一个goroutine修改了这个client的一些字段，也会影响到第二个goroutine的使用。</p>
-<p>而且这些单例都是可修改对象，第三库甚至偷偷修改了这个变量的值，你都不会发现，比如你想连接本地的53端口，查询一些域名，但是可能被别人劫持到它的服务器上：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div><div class="line">35</div><div class="line">36</div><div class="line">37</div><div class="line">38</div><div class="line">39</div><div class="line">40</div><div class="line">41</div><div class="line">42</div><div class="line">43</div><div class="line">44</div><div class="line">45</div><div class="line">46</div><div class="line">47</div><div class="line">48</div><div class="line">49</div><div class="line">50</div><div class="line">51</div><div class="line">52</div><div class="line">53</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> main</div><div class="line"></div><div class="line"><span class="keyword">import</span> (</div><div class="line">	<span class="string">"fmt"</span></div><div class="line">	<span class="string">"net"</span></div><div class="line"></div><div class="line">	<span class="string">"github.com/miekg/dns"</span></div><div class="line">)</div><div class="line"></div><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	<span class="comment">// 单例对象被修改，实际可能在一个第三包的init函数中写了下面这一行</span></div><div class="line">	net.IPv4zero = net.IPv4<span class="number">(8</span>,<span class="number"> 8</span>,<span class="number"> 8</span>,<span class="number"> 8</span>)</div><div class="line"></div><div class="line">	<span class="comment">// 设置DNS服务器地址</span></div><div class="line">	dnsServer := net.JoinHostPort(net.IPv4zero.String(), <span class="string">"53"</span>)</div><div class="line"></div><div class="line">	<span class="comment">// 创建DNS客户端</span></div><div class="line">	c := <span class="built_in">new</span>(dns.Client)</div><div class="line"></div><div class="line">	<span class="comment">// 构建DNS请求消息</span></div><div class="line">	msg := <span class="built_in">new</span>(dns.Msg)</div><div class="line">	msg.SetQuestion(dns.Fqdn(<span class="string">"rpcx.io"</span>), dns.TypeA)</div><div class="line"></div><div class="line">	<span class="comment">// 发送DNS请求消息</span></div><div class="line">	resp, _, err := c.Exchange(msg, dnsServer)</div><div class="line">	<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">		fmt.Println(<span class="string">"Error sending DNS request:"</span>, err)</div><div class="line">		<span class="keyword">return</span></div><div class="line">	}</div><div class="line"></div><div class="line">	<span class="comment">// 解析DNS响应消息</span></div><div class="line">	ipAddr, err := parseDNSResponse(resp)</div><div class="line">	<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">		fmt.Println(<span class="string">"Error parsing DNS response:"</span>, err)</div><div class="line">		<span class="keyword">return</span></div><div class="line">	}</div><div class="line"></div><div class="line">	<span class="comment">// 输出查询结果</span></div><div class="line">	fmt.Println(<span class="string">"IPv4 Address for google.com:"</span>, ipAddr)</div><div class="line">}</div><div class="line"><span class="keyword">func</span> parseDNSResponse(resp *dns.Msg) (<span class="typename">string</span>, error) {</div><div class="line">	<span class="keyword">if</span> <span class="built_in">len</span>(resp.Answer) ==<span class="number"> 0</span> {</div><div class="line">		<span class="keyword">return</span> <span class="string">""</span>, fmt.Errorf(<span class="string">"No answer in DNS response"</span>)</div><div class="line">	}</div><div class="line"></div><div class="line">	<span class="keyword">for</span> _, ans := <span class="keyword">range</span> resp.Answer {</div><div class="line">		<span class="keyword">if</span> a, ok := ans.(*dns.A); ok {</div><div class="line">			<span class="keyword">return</span> a.A.String(), <span class="constant">nil</span></div><div class="line">		}</div><div class="line">	}</div><div class="line"></div><div class="line">	<span class="keyword">return</span> <span class="string">""</span>, fmt.Errorf(<span class="string">"No A record found in DNS response"</span>)</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>本来我想查询本机的dns服务器，结果却被劫持到谷歌的<code>8.8.8.8</code> DNS服务器上进行查询了。</p>
-<p>惰性初始模式(Lazy initialization, 懒汉式初始化)推迟对象的创建、数据的计算等需要耗费较多资源的操作，只有在第一次访问的时候才执行。<strong>惰性初始</strong>是一种拖延战术。在第一次需求出现以前，先延迟创建对象、计算值或其它昂贵的代码片段。</p>
-<p>一句话，也就是延迟初始化。</p>
-<p>如果你是Java程序员，面试的时候大概率会被问到单例的模式的实现，就像问茴香豆的茴字有几个写法。Java中大概有下面几种单例的实现：</p>
-<ul>
-<li><p>饿汉式（Eager Initialization）</p>
-</li>
-<li><p>懒汉式（Lazy Initialization）</p>
-</li>
-<li><p>双重检查锁（Double-Checked Locking）</p>
-</li>
-<li><p>静态内部类（Static Inner Class）</p>
-</li>
-<li><p>枚举单例（Enum Singleton）</p>
-</li>
-</ul>
-<p>后面四种都属于惰性初始模式，在实例被第一次使用才会初始化。</p>
-<p>Rust语言中常使用<code>lazy_static</code> 宏来实现惰性初始模式实现单例:</p>
-<figure class="highlight rust"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div></pre></td><td class="code"><pre><div class="line">lazy_static! {</div><div class="line">    <span class="keyword">static</span> <span class="keyword">ref</span> SINGLETON: Mutex&lt;Singleton&gt; = Mutex::new(Singleton::new());</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">struct</span> Singleton {</div><div class="line">    <span class="comment">// Add fields and methods as needed</span></div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">impl</span> Singleton {</div><div class="line">    <span class="function"><span class="keyword">fn</span> <span class="title">new</span></span>() -&gt; Self {</div><div class="line">        Singleton {</div><div class="line">            <span class="comment">// Initialize fields</span></div><div class="line">        }</div><div class="line">    }</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>而在Go标准库中，可以使用<code>sync.Once</code>来实现惰性初始单例模式。比如<code>os/user</code>获取当前用户的时候，只需执行一次耗时的系统调用，后续就直接从第一次初始化的结果中获取，即使第一次查询失败：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> Current() (*User, error) {</div><div class="line">	cache.Do(<span class="keyword">func</span>() { cache.u, cache.err = current() })</div><div class="line">	<span class="keyword">if</span> cache.err != <span class="constant">nil</span> {</div><div class="line">		<span class="keyword">return</span> <span class="constant">nil</span>, cache.err</div><div class="line">	}</div><div class="line">	u := *cache.u <span class="comment">// copy</span></div><div class="line">	<span class="keyword">return</span> &u, <span class="constant">nil</span></div><div class="line">}</div><div class="line"></div><div class="line"><span class="comment">// cache of the current user</span></div><div class="line"><span class="keyword">var</span> cache <span class="keyword">struct</span> {</div><div class="line">	sync.Once</div><div class="line">	u   *User</div><div class="line">	err error</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>在即将发布的Go 1.21中，sync.Once又多了三个兄弟：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> OnceFunc(f <span class="keyword">func</span>()) <span class="keyword">func</span>()</div><div class="line"><span class="keyword">func</span> OnceValue(f <span class="keyword">func</span>() T) <span class="keyword">func</span>() T</div><div class="line"><span class="keyword">func</span> OnceValues(f <span class="keyword">func</span>() (T1, T2)) <span class="keyword">func</span>() (T1, T2)</div></pre></td></tr></table></figure>
-
-<p>它们是基于sync.Once实现的辅助函数，比如Current就可以使用OnceValues改写，有兴趣的同学可以试试。</p>
-<p>这三个新函数的讲解可以阅读我先前的一篇文章：<a href="https://colobu.com/2023/05/29/extends-sync-Once/" target="_blank" rel="external">sync.Once的新扩展 (colobu.com)</a></p>
-]]></content>
-    <summary type="html">
-    <![CDATA[<p>在面向对象编程语言中，单例模式(Singleton pattern)确保一个类只有一个实例，并提供对该实例的全局访问。</p>
-<p>那么Go语言中，单例模式确认一个类型只有一个实例，并提供对改实例的全局访问，一般就是直接访问全局变量即可。<br>]]>
-    
-    </summary>
-    
-      <category term="Go" scheme="https://colobu.com/categories/Go/"/>
-    
-  </entry>
-  
-  <entry>
-    <title><![CDATA[真实世界的Go设计模式 - Builder设计模式]]></title>
-    <link href="https://colobu.com/2023/07/25/go-design-patterns-builder/"/>
-    <id>https://colobu.com/2023/07/25/go-design-patterns-builder/</id>
-    <published>2023-07-25T15:39:01.000Z</published>
-    <updated>2023-08-07T15:32:01.399Z</updated>
-    <content type="html"><![CDATA[<p>中文翻译成 建造者模式、生成器模式。</p>
-<p>一个遵循《设计模式》一书臆造出来的例子如： <a href="https://refactoring.guru/design-patterns/builder/go/example" target="_blank" rel="external">Builder in Go / Design Patterns (refactoring.guru)</a>，复杂又难以理解。</p>
-<a id="more"></a>
-<p>在Go标准库中，一个常见的实现了Builder设计模式的例子是<code>strings.Builder</code>。<code>strings.Builder</code>类型提供了一种构建字符串的有效方式，特别是当您需要在循环中动态构建字符串时，这样可以避免不必要的内存分配和拷贝。</p>
-<p>实现<code>strings.Builder</code>的关键点是使用了可变长度的缓冲区来存储字符串，并在构建过程中动态地增加其大小，以适应不断增长的字符串。下面是一个简单的示例：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> main</div><div class="line"></div><div class="line"><span class="keyword">import</span> (</div><div class="line">	<span class="string">"fmt"</span></div><div class="line">	<span class="string">"strings"</span></div><div class="line">)</div><div class="line"></div><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	builder := strings.Builder{}</div><div class="line"></div><div class="line">	<span class="comment">// 添加字符串片段到构建器</span></div><div class="line">	builder.WriteString(<span class="string">"Hello, "</span>)</div><div class="line">	builder.WriteString(<span class="string">"World!"</span>)</div><div class="line"></div><div class="line">	<span class="comment">// 获取构建好的字符串</span></div><div class="line">	result := builder.String()</div><div class="line"></div><div class="line">	fmt.Println(result) <span class="comment">// 输出: Hello, World!</span></div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>在这个例子中，我们首先使用<code>strings.Builder{}</code>创建了一个新的构建器。然后，通过调用<code>WriteString()</code>方法，我们可以向构建器添加字符串片段。最后，通过调用<code>String()</code>方法，我们可以获得构建好的最终字符串。</p>
-<p>这里值得注意的是，<code>strings.Builder</code>在内部使用了一个可变长度的<code>[]byte</code>缓冲区，它会根据需要自动增长。这样，在构建字符串时，<code>strings.Builder</code>会根据当前缓冲区的大小和新添加的字符串片段的长度来决定是否需要扩展缓冲区的大小，从而避免了频繁的内存分配和拷贝操作。</p>
-<p>这种实现方式在构建大型字符串时非常高效，因为它最小化了内存分配和拷贝的开销，同时还能提供简洁而灵活的API来构建字符串。这是Go标准库中使用Builder设计模式的一个很好的例子。</p>
-<p>在地道的Go语言中，很少看到真正明显的使用Builder进行构建对象的例子。第一，Go一般直接New一个对象，传入相应的值进行字段的设置，相当的简洁粗暴，第二，Go的风格是很少使用方法链式调用(<strong>Method Chaining</strong>),而是使用功能选项风格(functional option)。链式调用是很好实现Builder的一种方式。</p>
-<p>比如下面这个例子，我们对<code>*http.Request</code>进行包装，生成一个新的支持链式构建的<code>Request</code>。在创建一个新的<code>Request</code>的时候，我们使用链式调用进行初始化，增加了<code>Cookie</code>和查询参数：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div><div class="line">35</div><div class="line">36</div><div class="line">37</div><div class="line">38</div><div class="line">39</div><div class="line">40</div><div class="line">41</div><div class="line">42</div><div class="line">43</div><div class="line">44</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> chaining</div><div class="line"></div><div class="line"><span class="keyword">import</span> (</div><div class="line">	<span class="string">"fmt"</span></div><div class="line">	<span class="string">"net/http"</span></div><div class="line">)</div><div class="line"></div><div class="line"><span class="keyword">type</span> Request <span class="keyword">struct</span> {</div><div class="line">	*http.Request</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	<span class="comment">// 使用链式调用创建一个GET请求</span></div><div class="line">	request, _ := http.NewRequest(<span class="string">"GET"</span>, <span class="string">"https://www.example.com"</span>, <span class="constant">nil</span>)</div><div class="line"></div><div class="line">	req := &Request{request}</div><div class="line"></div><div class="line">	req.WithHeader(<span class="string">"User-Agent"</span>, <span class="string">"MyCustomUserAgent"</span>).</div><div class="line">		WithCookie(&http.Cookie{Name: <span class="string">"session"</span>, Value: <span class="string">"abc123"</span>}).</div><div class="line">		WithQueryParam(<span class="string">"key"</span>, <span class="string">"value"</span>)</div><div class="line"></div><div class="line">	<span class="comment">// 打印构建好的请求</span></div><div class="line">	fmt.Println(request)</div><div class="line">}</div><div class="line"></div><div class="line"><span class="comment">// WithHeader 添加请求头</span></div><div class="line"><span class="keyword">func</span> (r *Request) WithHeader(key, value <span class="typename">string</span>) *Request {</div><div class="line">	r.Header.Add(key, value)</div><div class="line">	<span class="keyword">return</span> r</div><div class="line">}</div><div class="line"></div><div class="line"><span class="comment">// WithCookie 添加Cookie</span></div><div class="line"><span class="keyword">func</span> (r *Request) WithCookie(cookie *http.Cookie) *Request {</div><div class="line">	r.AddCookie(cookie)</div><div class="line">	<span class="keyword">return</span> r</div><div class="line">}</div><div class="line"></div><div class="line"><span class="comment">// WithQueryParam 添加URL查询参数</span></div><div class="line"><span class="keyword">func</span> (r *Request) WithQueryParam(key, value <span class="typename">string</span>) *Request {</div><div class="line">	query := r.URL.Query()</div><div class="line">	query.Add(key, value)</div><div class="line">	r.URL.RawQuery = query.Encode()</div><div class="line">	<span class="keyword">return</span> r</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>但是，这种方式在Go生态圈中还是比较少用的，比如<code>*http.Request</code>还是通过逐步调用进行一步步的构建。</p>
-<p>现在在Go生态圈流行一种叫functional option的创建模式。这个想法最早来自于Rob Pike的<a href="[command center: Self-referential functions and the design of options](https://commandcenter.blogspot.com/2014/01/self-referential-functions-and-design.html">Self-referential functions and the design of options</a>)，后来不知道怎么被大佬们介绍就流行起来了。Go一般创建对象会使用以下几个方式：</p>
-<ul>
-<li><p>New(x int, y stirng, z S)：选项太多时参数太长。</p>
-</li>
-<li><p>NewXXX(...)、NewYYY(...)、NewZZZ(...):为每个配置选项声明一个新的构造函数，多个选项同时支持时方法太多。</p>
-</li>
-<li><p>New(config Config):定义一个配置对象，这是在很多选项的情况很多gopher采用的一种方式</p>
-</li>
-<li><p>New(options ...func(*Server))： 使用功能选项WithHost、WithPort、WithTimeout等作为opton</p>
-</li>
-<li><p>链式构建：如上面的例子，Go生态圈中少用</p>
-</li>
-</ul>
-<p>我看到功能选项有被滥用的趋势，也有人建议我开发的rpcx框架中使用功能选项模式，我拒绝了，因为简单的一个字段的赋值就使用功能选项，我个人认为有点大材小用了，但是我也没有大张旗鼓的去写文章去批判它，我怕会被它的拥趸群起攻之。选择自己喜欢的就好。所以etcd的作者就同时使用了两种方式，萝卜白菜，各取所爱：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> New(cfg Config) (*Client, error)</div><div class="line"><span class="keyword">func</span> NewCtxClient(ctx context.Context, opts ...Option) *Client</div></pre></td></tr></table></figure>
-
-<p>写于 7.26凌晨</p>
-]]></content>
-    <summary type="html">
-    <![CDATA[<p>中文翻译成 建造者模式、生成器模式。</p>
-<p>一个遵循《设计模式》一书臆造出来的例子如： <a href="https://refactoring.guru/design-patterns/builder/go/example" target="_blank" rel="external">Builder in Go / Design Patterns (refactoring.guru)</a>，复杂又难以理解。</p>
-]]>
     
     </summary>
     
