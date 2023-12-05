@@ -4,7 +4,7 @@
   <subtitle><![CDATA[大道至简 Simplicity is the ultimate form of sophistication]]></subtitle>
   <link href="/atom.xml" rel="self"/>
   <link href="https://colobu.com/"/>
-  <updated>2023-12-03T16:36:22.283Z</updated>
+  <updated>2023-12-05T14:22:55.013Z</updated>
   <id>https://colobu.com/</id>
   
   <author>
@@ -13,6 +13,53 @@
   </author>
   
   <generator uri="http://zespia.tw/hexo/">Hexo</generator>
+  
+  <entry>
+    <title><![CDATA[这个限流库两个大bug存在了半年之久，没人发现？]]></title>
+    <link href="https://colobu.com/2023/12/05/two-bugs-of-uber-ratelimit/"/>
+    <id>https://colobu.com/2023/12/05/two-bugs-of-uber-ratelimit/</id>
+    <published>2023-12-05T12:55:38.000Z</published>
+    <updated>2023-12-05T14:22:26.057Z</updated>
+    <content type="html"><![CDATA[<p>最近我的同事在使用<a href="https://github.com/uber-go/ratelimit" target="_blank" rel="external">uber-go/ratelimit</a>这个限流库的时候，遇到了两个大bug。这两个bug都是在这个库的最新版本(<code>v0.3.0</code>)中存在的,而这个版本从7月初发布都已经过半年了，都没人提bug，难道大家都没遇到过么？</p>
+<a id="more"></a>
+<p>我先前都是使用<a href="https://github.com/juju/ratelimit" target="_blank" rel="external">juju/ratelimit</a>这个限流库的，不过我不太喜欢这个库的复杂的“构造函数”，后来尝试了<a href="https://github.com/uber-go/ratelimit" target="_blank" rel="external">uber-go/ratelimit</a>这个库后，感觉SDK设计比较简单，而且使用起来也不错，就一直使用了。当时的版本是<code>v0.2.0</code>,而且我也不会设置它的<code>slack</code>参数，所以也相安无事。</p>
+<p>最近我同事在做项目的时候，把这个库更新到最新的<code>v0.3.0</code>,发现在发包一段时间后，突然限流不起作用了，发包频率狂飙导致程序panic。<br>很容易通过下面一个单元测试复现这个问题：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> TestLimiter(t *testing.T) {</div><div class="line">	limiter := ratelimit.New<span class="number">(1</span>, ratelimit.Per(time.Second), ratelimit.WithSlack<span class="number">(1</span>))</div><div class="line"></div><div class="line">	<span class="keyword">for</span> i :=<span class="number"> 0</span>; i &lt;<span class="number"> 25</span>; i++ {</div><div class="line">		<span class="keyword">if</span> i ==<span class="number"> 1</span> {</div><div class="line">			time.Sleep<span class="number">(2</span> * time.Second)</div><div class="line">		}</div><div class="line">		limiter.Take()</div><div class="line"></div><div class="line">		fmt.Println(time.Now().Unix(), i) <span class="comment">// burst</span></div><div class="line"></div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>这个单元测试尝试在第二个周期中不调用限流器，让它有机会进入slack判断的逻辑。这个库的slack设计的本意是在rate的基础上留一点余地，不那么严格按照rate进行限流，不过因为<code>v0.3.0</code>代码的问题，导致slack的判断逻辑出现了问题:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div><div class="line">35</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> (t *atomicInt64Limiter) Take() time.Time {</div><div class="line">	<span class="keyword">var</span> (</div><div class="line">		newTimeOfNextPermissionIssue <span class="typename">int64</span></div><div class="line">		now                          <span class="typename">int64</span></div><div class="line">	)</div><div class="line">	<span class="keyword">for</span> {</div><div class="line">		now = t.clock.Now().UnixNano()</div><div class="line">		timeOfNextPermissionIssue := atomic.LoadInt64(&t.state)</div><div class="line"></div><div class="line">		<span class="keyword">switch</span> {</div><div class="line">		<span class="keyword">case</span> timeOfNextPermissionIssue ==<span class="number"> 0</span> || (t.maxSlack ==<span class="number"> 0</span> && now-timeOfNextPermissionIssue &gt; <span class="typename">int64</span>(t.perRequest)):</div><div class="line">			<span class="comment">// if this is our first call or t.maxSlack == 0 we need to shrink issue time to now</span></div><div class="line">			newTimeOfNextPermissionIssue = now</div><div class="line">		<span class="keyword">case</span> t.maxSlack &gt;<span class="number"> 0</span> && now-timeOfNextPermissionIssue &gt; <span class="typename">int64</span>(t.maxSlack):</div><div class="line">			<span class="comment">// a lot of nanoseconds passed since the last Take call</span></div><div class="line">			<span class="comment">// we will limit max accumulated time to maxSlack</span></div><div class="line">			newTimeOfNextPermissionIssue = now - <span class="typename">int64</span>(t.maxSlack)</div><div class="line">		<span class="keyword">default</span>:</div><div class="line">			<span class="comment">// calculate the time at which our permission was issued</span></div><div class="line">			newTimeOfNextPermissionIssue = timeOfNextPermissionIssue + <span class="typename">int64</span>(t.perRequest)</div><div class="line">		}</div><div class="line"></div><div class="line">		<span class="keyword">if</span> atomic.CompareAndSwapInt64(&t.state, timeOfNextPermissionIssue, newTimeOfNextPermissionIssue) {</div><div class="line">			<span class="keyword">break</span></div><div class="line">		}</div><div class="line">	}</div><div class="line"></div><div class="line">	sleepDuration := time.Duration(newTimeOfNextPermissionIssue - now)</div><div class="line">	<span class="keyword">if</span> sleepDuration &gt;<span class="number"> 0</span> {</div><div class="line">		t.clock.Sleep(sleepDuration)</div><div class="line">		<span class="keyword">return</span> time.Unix<span class="number">(0</span>, newTimeOfNextPermissionIssue)</div><div class="line">	}</div><div class="line">	<span class="comment">// return now if we don't sleep as atomicLimiter does</span></div><div class="line">	<span class="keyword">return</span> time.Unix<span class="number">(0</span>, now)</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>一旦进入<code>case t.maxSlack &gt; 0 &amp;&amp; now-timeOfNextPermissionIssue &gt; int64(t.maxSlack):</code>这个分支，你会发现后续调用<code>Take</code>基本都会进入这个分支，程序不会阻塞，只要调用<code>Take</code>都不会阻塞。可以看到当设置slack&gt;0的时候才会进入这个分支，正好默认slack=10。这个bug也可以推算出来。<br>假设当前进入这个分支，当前时间是now1，那么这次Take就会把<code>newTimeOfNextPermissionIssue</code>设置为 <code>now1-int64(t.maxSlack)</code>。<br>接下来再调用Take,当前时间是now2,now2总是会比now1大一点，至少大几纳秒吧。<br>这个时候我们计算分支的条件<code>now-timeOfNextPermissionIssue &gt; int64(t.maxSlack)</code>，这个条件肯定是成立的，因为<code>now2-(now1-int64(t.maxSlack))</code> = <code>(now2-now1) + int64(t.maxSlack)</code> &gt; <code>int64(t.maxSlack)</code>。<br>导致后续的每次Take都会进入这个分支，不会阻塞，导致程序疯狂发包，最终导致panic。</p>
+<p>周末的时候我给这个项目提了一个bug, 它的一个维护者进行了修复，不过这个项目主要开发者已经对这个<code>v0.3.0</code>的实现丧失了信心，因为这个实现已经出现过一次类似的bug,被他回滚后了，后来有被修复才合进来，现在有出现bug了。</p>
+<p>不管作者修不修复，你一定要注意，使用这个库的<code>v0.3.0</code>一定小心，有可能踩到这个雷。</p>
+<p>这个其中的一个大bug。</p>
+<p>其实我们对slack的有无不是那么关心的，那么我们使用<code>ratelimit.WithoutSlack</code>这个选项，把slack设置为0，是不是就没问题了呢？</p>
+<p>嗯，是的，不会再出现上面的bug,而且在我的mac笔记本上跑的单元测试也每问题，但是!但是!但是!又出现了另外一个bug。</p>
+<p>我们把限流的速率修改为<code>5000</code>,结果在Linux测试机器上跑只能跑到接近<code>2000</code>,远远小于预期，那这还咋限流，流根本打不上去。</p>
+<p>我的同事说把<code>ratelimit</code>版本降到<code>v0.2.0</code>,同时不要设置<code>slack=0</code>可以解决这个问题。</p>
+<p>这就很奇怪了，经过一番排查，发现问题可能出在Go标准库的<code>time.Sleep</code>上。</p>
+<p>我们使用<code>time.Sleep</code> 休眠50微秒的话，在Go 1.16之前，Linux机器上基本上实际会休眠80、90微秒，但是在Go 1.16之后，Linux机器上1毫秒，差距巨大，在Windows机器上，Go 1.16之前是1毫秒，之后是14毫秒，差距也是巨大的。我在苹果的MacPro M1的机器测试，就没有这个问题。</p>
+<p>这个bug记录在<a href="https://github.com/golang/go/issues/44343" target="_blank" rel="external">issues#44343</a>, 自2021年2月提出来来，已经快三年了，这个bug还一直没有关闭，问题还一直存在着，看样子这个bug也不是那么容易找到根因和彻底解决。</p>
+<p>所以如果你要使用<code>time.Sleep</code>,请记得在Linux环境下，它的精度也就在<strong>1ms</strong>左右。所以<code>ratelimit</code>库如果依赖它做5000的限流，如果不好好设计的话，达不到限流的效果。</p>
+<p>总结一下，如果你使用<a href="https://github.com/uber-go/ratelimit" target="_blank" rel="external">uber-go/ratelimit</a>,一定记得：</p>
+<ol>
+<li>使用较老的版本<code>v0.2.0</code></li>
+<li>不要设置<code>slack=0</code>, 默认或者设置一个非零的值</li>
+</ol>
+<p>其实我从<code>juju/ratelimit</code>切换到<code>uber-go/ratelimit</code>还有一个根本的原因。<code>juju/ratelimit</code>是基于令牌桶的限流，而<code>uber-go/ratelimit</code>基于漏桶的限流，或者说<code>uber-go/ratelimit</code>更像是整形(shaping)，更符合我们使用的场景，我们想匀速的发送数据包，不希望有Burst或者突然的速率变化，我们的场景更看中的是匀速。</p>
+<p>当然你也可以使用<a href="https://github.com/juju/ratelimit" target="_blank" rel="external">juju/ratelimit</a>，这是Canonical公司贡献的一个限流库，版权是LGPL 3.0 + 对Go更合适的条款，这也是Canonical公司统一对它们的Go项目的授权。它是一个基于令牌的限流库，其实用起来也可以，不过已经4年没有代码更新了。<br>有一点我觉得不太爽的地方是它初始化就把桶填满了，导致的结果就是可能一开始使用这个桶获取令牌的速度超出你的预期，有可能导致一开始就发包速度很快，然后慢慢的才匀速，这个不是我想要的效果，但是我又每办法修改，所以我fork了这个项目<a href="https://github.com/smallnest/ratelimit" target="_blank" rel="external">smallnest/ratelimit</a>，可以在初始化限流器的时候，可以设置初始的令牌，比如将初始的令牌设置为零。</p>
+<p>当前Go官方也提供了一个扩展库<a href="https://pkg.go.dev/golang.org/x/time/rate" target="_blank" rel="external">golang.org/x/time/rate</a>, 功能更强大，强大带来的负面效果就是使用起来比较复杂，复杂带来的效果就是可能带来一些的潜在的错误，不过在认真评估和测试后也是可以使用的。</p>
+<p>还有一些关注度不是那么高的第三库，还包括一些使用滑动窗口实现的限流库，还有分布式的限流库，如果你想了解更多，请参考《深入理解Go并发编程》这本书，专门有一章详细介绍限流库。</p>
+]]></content>
+    <summary type="html">
+    <![CDATA[<p>最近我的同事在使用<a href="https://github.com/uber-go/ratelimit" target="_blank" rel="external">uber-go/ratelimit</a>这个限流库的时候，遇到了两个大bug。这两个bug都是在这个库的最新版本(<code>v0.3.0</code>)中存在的,而这个版本从7月初发布都已经过半年了，都没人提bug，难道大家都没遇到过么？</p>
+]]>
+    
+    </summary>
+    
+      <category term="Go" scheme="https://colobu.com/categories/Go/"/>
+    
+  </entry>
   
   <entry>
     <title><![CDATA[2023年 Go 并发库的变化综述]]></title>
@@ -2272,84 +2319,6 @@ fn wake(&amp;self) {
 ]]></content>
     <summary type="html">
     <![CDATA[<p>在前一篇<a href="https://colobu.com/2023/08/07/go-design-pattern-prototype/" target="_blank" rel="external">真实世界的Go设计模式 - 原型模式</a>一文中，我们介绍了gorm作者张金柱的另一个库<a href="https://github.com/jinzhu/copier" target="_blank" rel="external">jinzhu/copier</a>,它提供了对象数据深度复制的能力。<br>]]>
-    
-    </summary>
-    
-      <category term="Go" scheme="https://colobu.com/categories/Go/"/>
-    
-  </entry>
-  
-  <entry>
-    <title><![CDATA[真实世界的Go设计模式 - 单例模式 和 惰性初始化模式]]></title>
-    <link href="https://colobu.com/2023/07/27/go-design-patterns-singleton/"/>
-    <id>https://colobu.com/2023/07/27/go-design-patterns-singleton/</id>
-    <published>2023-07-27T14:52:48.000Z</published>
-    <updated>2023-08-07T15:29:11.804Z</updated>
-    <content type="html"><![CDATA[<p>在面向对象编程语言中，单例模式(Singleton pattern)确保一个类只有一个实例，并提供对该实例的全局访问。</p>
-<p>那么Go语言中，单例模式确认一个类型只有一个实例，并提供对改实例的全局访问，一般就是直接访问全局变量即可。<br><a id="more"></a></p>
-<p>比如Go标准库中的<code>os.Stdin</code>、<code>os.Stdout</code>、<code>os.Stderr</code>分别代表标准输入、标准输出和标准错误输出。它们是<code>*os.File</code>类型的全局变量，可以在程序中直接使用:</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">var</span> (</div><div class="line">	Stdin  = NewFile(<span class="typename">uintptr</span>(syscall.Stdin), <span class="string">"/dev/stdin"</span>)</div><div class="line">	Stdout = NewFile(<span class="typename">uintptr</span>(syscall.Stdout), <span class="string">"/dev/stdout"</span>)</div><div class="line">	Stderr = NewFile(<span class="typename">uintptr</span>(syscall.Stderr), <span class="string">"/dev/stderr"</span>)</div><div class="line">)</div></pre></td></tr></table></figure>
-
-<p>又比如io包下的EOF:</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">var</span> EOF = errors.New(<span class="string">"EOF"</span>)</div></pre></td></tr></table></figure>
-
-<p>Go标准库中有很多这样的单例的实现，又比如<code>http.DefaultClient</code>、<code>http.DefaultServeMux</code>、<code>http.DefaultTransport</code>、<code>net.IPv4zero</code>都是单例对象。</p>
-<p>有时候，有人也认为是单例模式也是反模式。</p>
-<blockquote>
-<p>反模式(Anti-pattern)是一种在软件工程中常见的概念,主要指在软件设计、开发中要避免使用的模式或实践。</p>
-<p>反模式的一些主要特征包括:</p>
-<ul>
-<li>它通常是初学者常犯的错误或陷阱。</li>
-<li>它反映了一种看似可行但实际上低效或错误的解决方案。</li>
-<li>使用反模式可能在短期内出现类似解决问题的效果,但长期来看会适得其反。</li>
-<li>它通常是一个坏的或劣质的设计,不符合最佳实践。</li>
-<li>存在一个更好的、可替代的解决方案。</li>
-</ul>
-<p>一些常见的反模式示例:</p>
-<ul>
-<li>复制-粘贴编程:为了重复使用代码,直接复制粘贴,而不创建函数或模块。</li>
-<li>上帝对象:一个巨大的包含全部功能的复杂对象。</li>
-<li>依赖注入滥用:即使简单的对象也进行依赖注入,增加了复杂性。</li>
-<li>自我封装:通过封装无谓的细节来增加类的复杂性。</li>
-<li>过度抽象和设计：代码缺乏可读性</li>
-</ul>
-</blockquote>
-<p>为什么这么说呢，加入两个goroutine同时使用<code>http.DefaultClient</code>, 其中一个goroutine修改了这个client的一些字段，也会影响到第二个goroutine的使用。</p>
-<p>而且这些单例都是可修改对象，第三库甚至偷偷修改了这个变量的值，你都不会发现，比如你想连接本地的53端口，查询一些域名，但是可能被别人劫持到它的服务器上：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div><div class="line">35</div><div class="line">36</div><div class="line">37</div><div class="line">38</div><div class="line">39</div><div class="line">40</div><div class="line">41</div><div class="line">42</div><div class="line">43</div><div class="line">44</div><div class="line">45</div><div class="line">46</div><div class="line">47</div><div class="line">48</div><div class="line">49</div><div class="line">50</div><div class="line">51</div><div class="line">52</div><div class="line">53</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> main</div><div class="line"></div><div class="line"><span class="keyword">import</span> (</div><div class="line">	<span class="string">"fmt"</span></div><div class="line">	<span class="string">"net"</span></div><div class="line"></div><div class="line">	<span class="string">"github.com/miekg/dns"</span></div><div class="line">)</div><div class="line"></div><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	<span class="comment">// 单例对象被修改，实际可能在一个第三包的init函数中写了下面这一行</span></div><div class="line">	net.IPv4zero = net.IPv4<span class="number">(8</span>,<span class="number"> 8</span>,<span class="number"> 8</span>,<span class="number"> 8</span>)</div><div class="line"></div><div class="line">	<span class="comment">// 设置DNS服务器地址</span></div><div class="line">	dnsServer := net.JoinHostPort(net.IPv4zero.String(), <span class="string">"53"</span>)</div><div class="line"></div><div class="line">	<span class="comment">// 创建DNS客户端</span></div><div class="line">	c := <span class="built_in">new</span>(dns.Client)</div><div class="line"></div><div class="line">	<span class="comment">// 构建DNS请求消息</span></div><div class="line">	msg := <span class="built_in">new</span>(dns.Msg)</div><div class="line">	msg.SetQuestion(dns.Fqdn(<span class="string">"rpcx.io"</span>), dns.TypeA)</div><div class="line"></div><div class="line">	<span class="comment">// 发送DNS请求消息</span></div><div class="line">	resp, _, err := c.Exchange(msg, dnsServer)</div><div class="line">	<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">		fmt.Println(<span class="string">"Error sending DNS request:"</span>, err)</div><div class="line">		<span class="keyword">return</span></div><div class="line">	}</div><div class="line"></div><div class="line">	<span class="comment">// 解析DNS响应消息</span></div><div class="line">	ipAddr, err := parseDNSResponse(resp)</div><div class="line">	<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">		fmt.Println(<span class="string">"Error parsing DNS response:"</span>, err)</div><div class="line">		<span class="keyword">return</span></div><div class="line">	}</div><div class="line"></div><div class="line">	<span class="comment">// 输出查询结果</span></div><div class="line">	fmt.Println(<span class="string">"IPv4 Address for google.com:"</span>, ipAddr)</div><div class="line">}</div><div class="line"><span class="keyword">func</span> parseDNSResponse(resp *dns.Msg) (<span class="typename">string</span>, error) {</div><div class="line">	<span class="keyword">if</span> <span class="built_in">len</span>(resp.Answer) ==<span class="number"> 0</span> {</div><div class="line">		<span class="keyword">return</span> <span class="string">""</span>, fmt.Errorf(<span class="string">"No answer in DNS response"</span>)</div><div class="line">	}</div><div class="line"></div><div class="line">	<span class="keyword">for</span> _, ans := <span class="keyword">range</span> resp.Answer {</div><div class="line">		<span class="keyword">if</span> a, ok := ans.(*dns.A); ok {</div><div class="line">			<span class="keyword">return</span> a.A.String(), <span class="constant">nil</span></div><div class="line">		}</div><div class="line">	}</div><div class="line"></div><div class="line">	<span class="keyword">return</span> <span class="string">""</span>, fmt.Errorf(<span class="string">"No A record found in DNS response"</span>)</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>本来我想查询本机的dns服务器，结果却被劫持到谷歌的<code>8.8.8.8</code> DNS服务器上进行查询了。</p>
-<p>惰性初始模式(Lazy initialization, 懒汉式初始化)推迟对象的创建、数据的计算等需要耗费较多资源的操作，只有在第一次访问的时候才执行。<strong>惰性初始</strong>是一种拖延战术。在第一次需求出现以前，先延迟创建对象、计算值或其它昂贵的代码片段。</p>
-<p>一句话，也就是延迟初始化。</p>
-<p>如果你是Java程序员，面试的时候大概率会被问到单例的模式的实现，就像问茴香豆的茴字有几个写法。Java中大概有下面几种单例的实现：</p>
-<ul>
-<li><p>饿汉式（Eager Initialization）</p>
-</li>
-<li><p>懒汉式（Lazy Initialization）</p>
-</li>
-<li><p>双重检查锁（Double-Checked Locking）</p>
-</li>
-<li><p>静态内部类（Static Inner Class）</p>
-</li>
-<li><p>枚举单例（Enum Singleton）</p>
-</li>
-</ul>
-<p>后面四种都属于惰性初始模式，在实例被第一次使用才会初始化。</p>
-<p>Rust语言中常使用<code>lazy_static</code> 宏来实现惰性初始模式实现单例:</p>
-<figure class="highlight rust"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div></pre></td><td class="code"><pre><div class="line">lazy_static! {</div><div class="line">    <span class="keyword">static</span> <span class="keyword">ref</span> SINGLETON: Mutex&lt;Singleton&gt; = Mutex::new(Singleton::new());</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">struct</span> Singleton {</div><div class="line">    <span class="comment">// Add fields and methods as needed</span></div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">impl</span> Singleton {</div><div class="line">    <span class="function"><span class="keyword">fn</span> <span class="title">new</span></span>() -&gt; Self {</div><div class="line">        Singleton {</div><div class="line">            <span class="comment">// Initialize fields</span></div><div class="line">        }</div><div class="line">    }</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>而在Go标准库中，可以使用<code>sync.Once</code>来实现惰性初始单例模式。比如<code>os/user</code>获取当前用户的时候，只需执行一次耗时的系统调用，后续就直接从第一次初始化的结果中获取，即使第一次查询失败：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> Current() (*User, error) {</div><div class="line">	cache.Do(<span class="keyword">func</span>() { cache.u, cache.err = current() })</div><div class="line">	<span class="keyword">if</span> cache.err != <span class="constant">nil</span> {</div><div class="line">		<span class="keyword">return</span> <span class="constant">nil</span>, cache.err</div><div class="line">	}</div><div class="line">	u := *cache.u <span class="comment">// copy</span></div><div class="line">	<span class="keyword">return</span> &u, <span class="constant">nil</span></div><div class="line">}</div><div class="line"></div><div class="line"><span class="comment">// cache of the current user</span></div><div class="line"><span class="keyword">var</span> cache <span class="keyword">struct</span> {</div><div class="line">	sync.Once</div><div class="line">	u   *User</div><div class="line">	err error</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>在即将发布的Go 1.21中，sync.Once又多了三个兄弟：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> OnceFunc(f <span class="keyword">func</span>()) <span class="keyword">func</span>()</div><div class="line"><span class="keyword">func</span> OnceValue(f <span class="keyword">func</span>() T) <span class="keyword">func</span>() T</div><div class="line"><span class="keyword">func</span> OnceValues(f <span class="keyword">func</span>() (T1, T2)) <span class="keyword">func</span>() (T1, T2)</div></pre></td></tr></table></figure>
-
-<p>它们是基于sync.Once实现的辅助函数，比如Current就可以使用OnceValues改写，有兴趣的同学可以试试。</p>
-<p>这三个新函数的讲解可以阅读我先前的一篇文章：<a href="https://colobu.com/2023/05/29/extends-sync-Once/" target="_blank" rel="external">sync.Once的新扩展 (colobu.com)</a></p>
-]]></content>
-    <summary type="html">
-    <![CDATA[<p>在面向对象编程语言中，单例模式(Singleton pattern)确保一个类只有一个实例，并提供对该实例的全局访问。</p>
-<p>那么Go语言中，单例模式确认一个类型只有一个实例，并提供对改实例的全局访问，一般就是直接访问全局变量即可。<br>]]>
     
     </summary>
     
