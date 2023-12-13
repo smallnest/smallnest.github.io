@@ -4,7 +4,7 @@
   <subtitle><![CDATA[大道至简 Simplicity is the ultimate form of sophistication]]></subtitle>
   <link href="/atom.xml" rel="self"/>
   <link href="https://colobu.com/"/>
-  <updated>2023-12-07T00:31:20.572Z</updated>
+  <updated>2023-12-13T15:23:10.188Z</updated>
   <id>https://colobu.com/</id>
   
   <author>
@@ -15,11 +15,123 @@
   <generator uri="http://zespia.tw/hexo/">Hexo</generator>
   
   <entry>
+    <title><![CDATA[卷起来，老程序还得了解errors包的新变化]]></title>
+    <link href="https://colobu.com/2023/12/13/learn-more-about-errors/"/>
+    <id>https://colobu.com/2023/12/13/learn-more-about-errors/</id>
+    <published>2023-12-13T13:11:09.000Z</published>
+    <updated>2023-12-13T15:22:33.989Z</updated>
+    <content type="html"><![CDATA[<p>Go 1.13 中errors包有了一些变化，这些变化是为了更好地支持Go的错误处理提案。Go 1.20中也增加了一个新方法，这个新方法可以代替第三方的库处理多个error，这篇文章将介绍这些变化。</p>
+<p>因为原来的Go的errors中的内容非常的简单，可能会导致大家轻视这个包，对于新的变化不是那么的关注。让我们一一介绍这些新的方法。<br><a id="more"></a></p>
+<h2 id="Unwrap">Unwrap</h2>
+<p>如果一个err实现了<code>Unwrap</code>函数，那么<code>errors.Unwrap</code>会返回这个err的<code>unwrap</code>方法的结果，否则返回nil。<br>一般标准的error都没有实现<code>Unwrap</code>方法，比如<code>io.EOF</code>, 但是也有一小部分的error实现了<code>Unwrap</code>方法，比如<code>os.PathError</code>，<code>os.LinkError</code>、<code>os.SyscallError</code>、<code>net.OpError</code>、<code>net.DNSConfigError</code>等等。</p>
+<p>比如下面的代码:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line">fmt.Println(errors.Unwrap(io.EOF)) <span class="comment">// nil</span></div><div class="line">_, err := net.Dial(<span class="string">"tcp"</span>, <span class="string">"invalid.address:80"</span>)</div><div class="line">fmt.Println(errors.Unwrap(err))</div></pre></td></tr></table></figure>
+
+<p>第一行因为<code>io.EOF</code>没有<code>Unwrap</code>方法，所以输出nil。<br>net.Dial失败返回的err是<code>*net.OpError</code>,它实现了<code>Unwrap</code>方法，返回更底层的<code>*net.DNSError</code>,所以第二行输出为<code>lookup invalid.address: no such host</code>。</p>
+<p>最常用的，我们使用<code>fmt.Errorf</code> + <code>%w</code>包装一个error,比如下面的代码：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div></pre></td><td class="code"><pre><div class="line">e1 := fmt.Errorf(<span class="string">"e1: %w"</span>, io.EOF)</div><div class="line">e2 := fmt.Errorf(<span class="string">"e2: %w + %w"</span>, e1, io.ErrClosedPipe)</div><div class="line">e3 := fmt.Errorf(<span class="string">"e3: %w"</span>, e2)</div><div class="line">e4 := fmt.Errorf(<span class="string">"e4: %w"</span>, e3)</div><div class="line">fmt.Println(errors.Unwrap(e4)) <span class="comment">// e3: e2: e1: EOF + io: read/write on closed pipe</span></div></pre></td></tr></table></figure>
+
+<p>这段代码逐层进行了包装，最后的<code>e4</code>包含了所有的error，我们可以通过<code>errors.Unwrap</code>逐层进行解包，直到最底层的error。<br>fmt.Errorf可以1一次包装多个error，比如上面的<code>e2</code>，它包含了<code>e1</code>和<code>io.ErrClosedPipe</code>两个error。</p>
+<p>我们常常在多层调用的时候，把最底层的error逐层包装传递上去，这个时候我们可以使用<code>fmt.Errorf</code> + <code>%w</code>包装error。<br>在最高层处理error的时候，再逐层<code>Unwrap</code>解开error,逐层处理。</p>
+<h2 id="Is">Is</h2>
+<p><code>Is</code>函数检查error的树中是否包含指定的目标error。</p>
+<p>啥是error的<strong>树</strong>? 一个error的数包括它本身，以及通过<code>Unwrap</code>方法逐层解开的error。<br>error的<code>Unwrap</code>方法的返回值，可能是单个error,也可能是是多个error,在返回多个error的时候，会采用深度优先的方式进行遍历检查，寻找目标error。</p>
+<p>怎么才算找到目标error呢？一种情况就是此err就是目标error,这没有什么好说的，第二种就是此err实现了<code>Is(err)</code>方法，把目标err扔进<code>Is</code>方法返回true。</p>
+<p>所以从功能上看<code>Is</code>函数其实叫做<code>Has</code>函数更贴切些。</p>
+<p>下面是一个例子：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div></pre></td><td class="code"><pre><div class="line">e1 := fmt.Errorf(<span class="string">"e1: %w"</span>, io.EOF)</div><div class="line">e2 := fmt.Errorf(<span class="string">"e2: %w + %w"</span>, e1, io.ErrClosedPipe)</div><div class="line">e3 := fmt.Errorf(<span class="string">"e3: %w"</span>, e2)</div><div class="line">e4 := fmt.Errorf(<span class="string">"e4: %w"</span>, e3)</div><div class="line">fmt.Println(errors.Is(e4, io.EOF)) <span class="comment">// true</span></div><div class="line">fmt.Println(errors.Is(e4, io.ErrClosedPipe)) <span class="comment">// true</span></div><div class="line">fmt.Println(errors.Is(e4, io.ErrUnexpectedEOF)) <span class="comment">// false</span></div></pre></td></tr></table></figure>
+
+<h2 id="As">As</h2>
+<p><code>Is</code>是遍历error的数，检查是否包含目标error。<br><code>As</code>是遍历error的数，检查每一个error,看看是否可以把从error赋值给目标变量，如果是，则返回true,并且目标变量已赋值，否则返回false。</p>
+<p>下面这个例子，我们可以看到<code>As</code>的用法：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">if</span> _, err := os.Open(<span class="string">"non-existing"</span>); err != <span class="constant">nil</span> {</div><div class="line">	<span class="keyword">var</span> pathError *fs.PathError</div><div class="line">	<span class="keyword">if</span> errors.As(err, &pathError) {</div><div class="line">		fmt.Println(<span class="string">"failed at path:"</span>, pathError.Path)</div><div class="line">	} <span class="keyword">else</span> {</div><div class="line">		fmt.Println(err)</div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>如果os.Open返回的error的树中包含<code>*fs.PathError</code>，那么<code>errors.As</code>会把这个error赋值给<code>pathError</code>变量，并且返回true,否则返回false。<br>我们这个例子正好制造的就是文件不存在的error，所以它会输出：<code>failed at path: non-existing</code></p>
+<p>经常常犯的一个错误就是我们使用一个<code>error</code>变量作为<code>As</code>的第二个参数。下面这个例子tmp就是error接口类型，所以origin可以直接赋值给tmp，所以<code>errors.As</code>返回true,并且tmp的值就是origin的值。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">var</span> origin = fmt.Errorf(<span class="string">"error: %w"</span>, io.EOF)</div><div class="line"></div><div class="line"><span class="keyword">var</span> tmp = io.ErrClosedPipe</div><div class="line"><span class="keyword">if</span> errors.As(origin, &tmp) {</div><div class="line">	fmt.Println(tmp) <span class="comment">// error: EOF</span></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p><code>As</code>使用起来总是那么别别扭扭，每次总得声明一个变量，然后把这个变量传递给<code>As</code>函数，在Go支持泛型之后，<code>As</code>应该可以简化成如下的方式:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> As[T error](err error) (T, <span class="typename">bool</span>)</div></pre></td></tr></table></figure>
+
+<p>但是，Go不会修改这个导致不兼容的API，所以我们只能继续保留<code>As</code>函数，增加一个新的函数是一个可行的方法，无论它叫做<code>IsA</code>、<code>AsOf</code>还是<code>AsTarget</code>或者其他。</p>
+<p>如果你已经掌握了Go的泛型，你可以自己实现一个<code>As</code>函数，比如下面的代码：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> AsA[T error](err error) (T, <span class="typename">bool</span>) {</div><div class="line">	<span class="keyword">var</span> isErr T</div><div class="line">	<span class="keyword">if</span> errors.As(err, &isErr) {</div><div class="line">		<span class="keyword">return</span> isErr, <span class="constant">true</span></div><div class="line">	}</div><div class="line"></div><div class="line">	<span class="keyword">var</span> zero T</div><div class="line">	<span class="keyword">return</span> zero, <span class="constant">false</span></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>写段测试代码，我们可以看到它的效果：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> MyError <span class="keyword">struct</span>{}</div><div class="line"></div><div class="line"><span class="keyword">func</span> (*MyError) Error() <span class="typename">string</span> { <span class="keyword">return</span> <span class="string">"MyError"</span> }</div><div class="line"></div><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	<span class="keyword">var</span> err error = fmt.Errorf(<span class="string">"error: %w"</span>, &MyError{})</div><div class="line">	m, ok := AsA[*MyError](err) <span class="comment">// MyError does not implement error (Error method has pointer receiver)</span></div><div class="line">	fmt.Println(m, ok)</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>大家在<a href="https://github.com/golang/go/issues/51945" target="_blank" rel="external">#51945</a>讨论了一段时间，又是无疾而终了。</p>
+<h2 id="Join">Join</h2>
+<p>在我们的项目中，有时候需要处理多个error,比如下面的代码：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> (s *Server) Serve() error {</div><div class="line">    <span class="keyword">var</span> errs []error</div><div class="line">    <span class="keyword">if</span> err := s.init(); err != <span class="constant">nil</span> {</div><div class="line">        errs = <span class="built_in">append</span>(errs, err)</div><div class="line">    }</div><div class="line">    <span class="keyword">if</span> err := s.start(); err != <span class="constant">nil</span> {</div><div class="line">        errs = <span class="built_in">append</span>(errs, err)</div><div class="line">    }</div><div class="line">    <span class="keyword">if</span> err := s.stop(); err != <span class="constant">nil</span> {</div><div class="line">        errs = <span class="built_in">append</span>(errs, err)</div><div class="line">    }</div><div class="line">    <span class="keyword">if</span> <span class="built_in">len</span>(errs) &gt;<span class="number"> 0</span> {</div><div class="line">        <span class="keyword">return</span> fmt.Errorf(<span class="string">"server error: %v"</span>, errs)</div><div class="line">    }</div><div class="line">    <span class="keyword">return</span> <span class="constant">nil</span></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>这段代码中，我们需要处理三个error,如果有一个error不为nil,那么我们就返回errs。<br>当然，为了处理多个errors情况，先前，有很多的第三方库可以供我们使用，比如</p>
+<ul>
+<li>go.uber.org/multierr</li>
+<li>github.com/hashicorp/go-multierror</li>
+<li>github.com/cockroachdb/errors</li>
+</ul>
+<p>但是现在，你不用再造轮子或者使用第三方库了，因为Go 1.20中增加了<code>errors.Join</code>函数，它可以把多个error合并成一个error,比如下面的代码：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">var</span> e1 = io.EOF</div><div class="line"><span class="keyword">var</span> e2 = io.ErrClosedPipe</div><div class="line"><span class="keyword">var</span> e3 = io.ErrNoProgress</div><div class="line"><span class="keyword">var</span> e4 = io.ErrShortBuffer</div><div class="line"></div><div class="line">_, e5 := net.Dial(<span class="string">"tcp"</span>, <span class="string">"invalid.address:80"</span>)</div><div class="line">e6 := os.Remove(<span class="string">"/path/to/nonexistent/file"</span>)</div><div class="line"></div><div class="line"><span class="keyword">var</span> e = errors.Join(e1, e2)</div><div class="line">e = errors.Join(e, e3)</div><div class="line">e = errors.Join(e, e4)</div><div class="line">e = errors.Join(e, e5)</div><div class="line">e = errors.Join(e, e6)</div><div class="line"></div><div class="line">fmt.Println(e.Error())</div><div class="line">   <span class="comment">// 输出如下，每一个err一行</span></div><div class="line">   <span class="comment">//</span></div><div class="line"><span class="comment">// EOF</span></div><div class="line"><span class="comment">// io: read/write on closed pipe</span></div><div class="line"><span class="comment">// multiple Read calls return no data or error</span></div><div class="line"><span class="comment">// short buffer</span></div><div class="line"><span class="comment">// dial tcp: lookup invalid.address: no such host</span></div><div class="line"><span class="comment">// remove /path/to/nonexistent/file: no such file or directory</span></div><div class="line"></div><div class="line"></div><div class="line">fmt.Println(errors.Unwrap(e)) <span class="comment">// nil</span></div><div class="line">fmt.Println(errors.Is(e, e6)) <span class="comment">//true</span></div><div class="line">fmt.Println(errors.Is(e, e3)) <span class="comment">// true</span></div><div class="line">fmt.Println(errors.Is(e, e1)) <span class="comment">// true</span></div></pre></td></tr></table></figure>
+
+<p>你可以使用<code>Is</code>判断是否包含某个error,或者使用<code>As</code>提取出目标error。</p>
+]]></content>
+    <summary type="html">
+    <![CDATA[<p>Go 1.13 中errors包有了一些变化，这些变化是为了更好地支持Go的错误处理提案。Go 1.20中也增加了一个新方法，这个新方法可以代替第三方的库处理多个error，这篇文章将介绍这些变化。</p>
+<p>因为原来的Go的errors中的内容非常的简单，可能会导致大家轻视这个包，对于新的变化不是那么的关注。让我们一一介绍这些新的方法。<br>]]>
+    
+    </summary>
+    
+      <category term="Go" scheme="https://colobu.com/categories/Go/"/>
+    
+  </entry>
+  
+  <entry>
+    <title><![CDATA[Go单线程运行也会有并发问题]]></title>
+    <link href="https://colobu.com/2023/12/11/concurrency-issues-of-the-single-thread-in-Go/"/>
+    <id>https://colobu.com/2023/12/11/concurrency-issues-of-the-single-thread-in-Go/</id>
+    <published>2023-12-11T05:37:51.000Z</published>
+    <updated>2023-12-13T13:09:16.226Z</updated>
+    <content type="html"><![CDATA[<p>一个Go大佬群中严肃的讨论了一个问题：Go程序单线程多goroutine访问一个map会遇到并发读写panic么？</p>
+<a id="more"></a>
+<p>答案是肯定的，因为出现了这个问题所以大家才在群中讨论。</p>
+<p>为什么呢？因为单线程意味着并行单元只有一个(多线程也可能并行单元只有一个)，但是多goroutine意味着并发单元有多个，如果并发单元同时执行，即使是单线程，可能就会产生数据竞争的问题，除非这些goroutine是顺序执行的。</p>
+<p>举一个例子哈：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> TestCounter() {</div><div class="line">    runtime.GOMAXPROCS<span class="number">(1</span>)</div><div class="line">	</div><div class="line">	<span class="keyword">var</span> counter <span class="typename">int</span></div><div class="line"></div><div class="line">	<span class="keyword">var</span> wg sync.WaitGroup</div><div class="line">	wg.Add<span class="number">(10</span>)</div><div class="line">	<span class="keyword">for</span> i :=<span class="number"> 0</span>; i &lt;<span class="number"> 10</span>; i++ {</div><div class="line">		i := i</div><div class="line">		<span class="keyword">go</span> <span class="keyword">func</span>() {</div><div class="line">			fmt.Printf(<span class="string">"start task#%d, counter: %d\n"</span>, i, counter)</div><div class="line">			<span class="keyword">for</span> j :=<span class="number"> 0</span>; j &lt;<span class="number"> 10</span>_0000; j++ {</div><div class="line">				counter++</div><div class="line">			}</div><div class="line">			fmt.Printf(<span class="string">"end task#%d, counter: %d\n"</span>, i, counter)</div><div class="line">			wg.Done()</div><div class="line">		}()</div><div class="line">	}</div><div class="line"></div><div class="line">	wg.Wait()</div><div class="line">	fmt.Println(counter)</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>这段测试代码是启动10个goroutine对计数器加一，每个goroutine负责加10万次。在我的MBP m1笔记本上，每次的结果都是100万，符合期望。如果你运行这段代码，会发现goroutine其实是一个一个串行执行的(9-&gt;0-&gt;1-&gt;2-&gt;3-&gt;4-&gt;5-&gt;6-&gt;7-&gt;8，当然可能在你的机器上不是这样的)，如果是串行执行，不会有并发问题：</p>
+<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div></pre></td><td class="code"><pre><div class="line">start task<span class="comment">#9, counter: 0</span></div><div class="line">end task<span class="comment">#9, counter: 100000</span></div><div class="line">start task<span class="comment">#0, counter: 100000</span></div><div class="line">end task<span class="comment">#0, counter: 200000</span></div><div class="line">start task<span class="comment">#1, counter: 200000</span></div><div class="line">end task<span class="comment">#1, counter: 300000</span></div><div class="line">start task<span class="comment">#2, counter: 300000</span></div><div class="line">end task<span class="comment">#2, counter: 400000</span></div><div class="line">start task<span class="comment">#3, counter: 400000</span></div><div class="line">end task<span class="comment">#3, counter: 500000</span></div><div class="line">start task<span class="comment">#4, counter: 500000</span></div><div class="line">end task<span class="comment">#4, counter: 600000</span></div><div class="line">start task<span class="comment">#5, counter: 600000</span></div><div class="line">end task<span class="comment">#5, counter: 700000</span></div><div class="line">start task<span class="comment">#6, counter: 700000</span></div><div class="line">end task<span class="comment">#6, counter: 800000</span></div><div class="line">start task<span class="comment">#7, counter: 800000</span></div><div class="line">end task<span class="comment">#7, counter: 900000</span></div><div class="line">start task<span class="comment">#8, counter: 900000</span></div><div class="line">end task<span class="comment">#8, counter: 1000000</span></div><div class="line"><span class="number">1000000</span></div></pre></td></tr></table></figure>
+
+<p>为了制造点紧张气氛，我将代码改写成下面这样子，将<code>counter++</code>三条指令明显写成三条语句，并在中间插入<code>runtime.Gosched()</code>,故意给其它goroutine的执行制造机会：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> TestCounter2() {</div><div class="line">    runtime.GOMAXPROCS<span class="number">(1</span>)</div><div class="line"></div><div class="line">	<span class="keyword">var</span> counter <span class="typename">int</span></div><div class="line"></div><div class="line">	<span class="keyword">var</span> wg sync.WaitGroup</div><div class="line">	wg.Add<span class="number">(10</span>)</div><div class="line">	<span class="keyword">for</span> i :=<span class="number"> 0</span>; i &lt;<span class="number"> 10</span>; i++ {</div><div class="line">		i := i</div><div class="line">		<span class="keyword">go</span> <span class="keyword">func</span>() {</div><div class="line">			fmt.Printf(<span class="string">"start task#%d, counter: %d\n"</span>, i, counter)</div><div class="line">			<span class="keyword">for</span> j :=<span class="number"> 0</span>; j &lt;<span class="number"> 10</span>_0000; j++ {</div><div class="line">				temp := counter</div><div class="line">				runtime.Gosched()</div><div class="line">				temp = temp +<span class="number"> 1</span></div><div class="line">				counter = temp</div><div class="line">			}</div><div class="line">			fmt.Printf(<span class="string">"end task#%d, counter: %d\n"</span>, i, counter)</div><div class="line">			wg.Done()</div><div class="line">		}()</div><div class="line">	}</div><div class="line"></div><div class="line">	wg.Wait()</div><div class="line">	fmt.Println(counter)</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>运行这段代码，你就会明显看到数据不一致的效果，即使是单个线程运行goroutine,也出现了数据竞争的问题：</p>
+<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div></pre></td><td class="code"><pre><div class="line">start task<span class="comment">#9, counter: 0</span></div><div class="line">start task<span class="comment">#0, counter: 0</span></div><div class="line">start task<span class="comment">#1, counter: 0</span></div><div class="line">start task<span class="comment">#2, counter: 0</span></div><div class="line">start task<span class="comment">#3, counter: 0</span></div><div class="line">start task<span class="comment">#4, counter: 0</span></div><div class="line">start task<span class="comment">#5, counter: 0</span></div><div class="line">start task<span class="comment">#6, counter: 0</span></div><div class="line">start task<span class="comment">#7, counter: 0</span></div><div class="line">start task<span class="comment">#8, counter: 0</span></div><div class="line">end task<span class="comment">#9, counter: 100000</span></div><div class="line">end task<span class="comment">#1, counter: 100000</span></div><div class="line">end task<span class="comment">#3, counter: 100000</span></div><div class="line">end task<span class="comment">#2, counter: 100000</span></div><div class="line">end task<span class="comment">#5, counter: 100000</span></div><div class="line">end task<span class="comment">#0, counter: 100000</span></div><div class="line">end task<span class="comment">#4, counter: 100000</span></div><div class="line">end task<span class="comment">#6, counter: 100000</span></div><div class="line">end task<span class="comment">#7, counter: 100000</span></div><div class="line">end task<span class="comment">#8, counter: 100000</span></div><div class="line"><span class="number">100000</span></div></pre></td></tr></table></figure>
+
+<p>这个结果非常离谱，期望100万，最后只有10万。</p>
+<p>因为单个线程运行多个goroutine会有数据竞争的问题，所以访问同一个map对象也有可能出现并发bug,比如下面的代码，10个goroutine并发的写同一个map:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> TestMap() {</div><div class="line">	<span class="keyword">var</span> m = <span class="built_in">make</span>(<span class="keyword">map</span>[<span class="typename">int</span>]<span class="typename">int</span>)</div><div class="line">	<span class="keyword">var</span> wg sync.WaitGroup</div><div class="line">	wg.Add<span class="number">(10</span>)</div><div class="line">	<span class="keyword">for</span> i :=<span class="number"> 0</span>; i &lt;<span class="number"> 10</span>; i++ {</div><div class="line">		i := i</div><div class="line">		<span class="keyword">go</span> <span class="keyword">func</span>() {</div><div class="line">			fmt.Printf(<span class="string">"start map task#%d, m: %v\n"</span>, i, <span class="built_in">len</span>(m))</div><div class="line">			<span class="keyword">for</span> j :=<span class="number"> 0</span>; j &lt;<span class="number"> 10</span>_0000; j++ {</div><div class="line">				m[j] = i<span class="number">*10</span>_0000 + j</div><div class="line">			}</div><div class="line">			fmt.Printf(<span class="string">"end map task#%d, m: %v\n"</span>, i, <span class="built_in">len</span>(m))</div><div class="line">			wg.Done()</div><div class="line">		}()</div><div class="line">	}</div><div class="line"></div><div class="line">	wg.Wait()</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>大概率会出现panic:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div></pre></td><td class="code"><pre><div class="line">start <span class="keyword">map</span> task<span class="number">#9</span>, m:<span class="number"> 0</span></div><div class="line">start <span class="keyword">map</span> task<span class="number">#0</span>, m:<span class="number"> 49152</span></div><div class="line">fatal error: concurrent <span class="keyword">map</span> writes</div><div class="line"></div><div class="line">goroutine<span class="number"> 41</span> [running]:</div><div class="line">main.TestMap.func1()</div><div class="line">	/Users/chaoyuepan/study/single_thread/main.<span class="keyword">go</span><span class="number">:72</span><span class="number"> +0</span>xcc</div><div class="line">created by main.TestMap in goroutine<span class="number"> 1</span></div><div class="line">	/Users/chaoyuepan/study/single_thread/main.<span class="keyword">go</span><span class="number">:69</span><span class="number"> +0</span>x4c</div><div class="line"></div><div class="line">goroutine<span class="number"> 1</span> [semacquire]:</div><div class="line">sync.runtime_Semacquire<span class="number">(0</span>x140000021a0?)</div><div class="line">	/usr/local/<span class="keyword">go</span>/src/runtime/sema.<span class="keyword">go</span><span class="number">:62</span><span class="number"> +0</span>x2c</div><div class="line">sync.(*WaitGroup).Wait<span class="number">(0</span>x1400000e1d0)</div><div class="line">	/usr/local/<span class="keyword">go</span>/src/sync/waitgroup.<span class="keyword">go</span><span class="number">:116</span><span class="number"> +0</span>x74</div><div class="line">main.TestMap()</div><div class="line">	/Users/chaoyuepan/study/single_thread/main.<span class="keyword">go</span><span class="number">:79</span><span class="number"> +0</span>xb8</div><div class="line">main.main()</div><div class="line">	/Users/chaoyuepan/study/single_thread/main.<span class="keyword">go</span><span class="number">:15</span><span class="number"> +0</span>x2c</div></pre></td></tr></table></figure>
+
+]]></content>
+    <summary type="html">
+    <![CDATA[<p>一个Go大佬群中严肃的讨论了一个问题：Go程序单线程多goroutine访问一个map会遇到并发读写panic么？</p>
+]]>
+    
+    </summary>
+    
+      <category term="Go" scheme="https://colobu.com/categories/Go/"/>
+    
+  </entry>
+  
+  <entry>
     <title><![CDATA[更精准的sleep]]></title>
     <link href="https://colobu.com/2023/12/07/more-precise-sleep/"/>
     <id>https://colobu.com/2023/12/07/more-precise-sleep/</id>
     <published>2023-12-06T23:18:11.000Z</published>
-    <updated>2023-12-07T00:30:50.236Z</updated>
+    <updated>2023-12-07T00:31:19.208Z</updated>
     <content type="html"><![CDATA[<p>书接上回。昨天我写了一篇《这个限流库两个大bug存在了半年之久，没人发现？》，提到了Go语言中的<code>time.Sleep</code>函数的问题。有网友也私下和我探讨，提到这个可能属于系统的问题，因为现代的操作系统都是分时操作系统，每个线程可能会分配一个或者多个时间片，Windows默认线程时间精度在15毫秒，Linux在1毫秒，所以<code>time.Sleep</code>的精度不可能那么高。</p>
 <a id="more"></a>
 <p>嗯，理论上这可以解释<code>time.Sleep</code>的行为，但是没有办法解释网友提出的在<code>go 1.16</code>之前的版本中，<code>time.Sleep</code>的精度更高，而<code>go 1.16</code>之后的版本中，<code>time.Sleep</code>的精度更低的问题。</p>
@@ -82,6 +194,7 @@
 <li><code>nanosleep</code>的使用方法</li>
 <li><code>nanosleep</code>的陷阱</li>
 </ul>
+<p>算是对上一篇文章的延伸。</p>
 ]]></content>
     <summary type="html">
     <![CDATA[<p>书接上回。昨天我写了一篇《这个限流库两个大bug存在了半年之久，没人发现？》，提到了Go语言中的<code>time.Sleep</code>函数的问题。有网友也私下和我探讨，提到这个可能属于系统的问题，因为现代的操作系统都是分时操作系统，每个线程可能会分配一个或者多个时间片，Windows默认线程时间精度在15毫秒，Linux在1毫秒，所以<code>time.Sleep</code>的精度不可能那么高。</p>
@@ -1571,6 +1684,56 @@ fn wake(&amp;self) {
   </entry>
   
   <entry>
+    <title><![CDATA[何时以及如何高效的使用经典的bpf, 它能到来什么好处？]]></title>
+    <link href="https://colobu.com/2023/09/27/when-and-how-to-use-classical-bpf/"/>
+    <id>https://colobu.com/2023/09/27/when-and-how-to-use-classical-bpf/</id>
+    <published>2023-09-27T05:17:17.000Z</published>
+    <updated>2023-12-13T13:09:16.227Z</updated>
+    <content type="html"><![CDATA[<p>Classical BPF(cBPF, 伯克利包过滤器)是一种用来过滤网络数据包的技术。它像一个钩子一样挂载在网络栈的关键路径上,可以在数据包<strong>进入</strong>协议栈之前,根据预设规则来过滤或处理网络数据包。</p>
+<a id="more"></a>
+<p>相比于一般的软件包过滤方案,Classical BPF有以下优点:</p>
+<ul>
+<li>效率高:因为它运行在内核空间,可以避免不必要的内核态和用户态切换,也省去多次数据复制的开销。</li>
+<li>安全:它不能随意访问系统内存或修改数据包,只能根据规则过滤,不会引起安全隐患。</li>
+<li>灵活:过滤规则可以动态更新,使包过滤功能更加灵活。</li>
+</ul>
+<p>Classical BPF通常应用于网络监控、防火墙、流量控制等场景。它为包过滤提供了一个高效、安全、灵活的解决方案。但功能较为受限,只能过滤包不能修改。</p>
+<p>我在百度做了三年多的网络监控了，我们会使用各种各样的方式来监控整个百度的物理网络，这些监控方式不同于普通的TCP Server/Client或者 UDP程序，一般我们会采用raw socket的方式来做包的探测和网络监控，为了高效的使用raw socket,避免把内核协议层的所有包都复制到应用层，我们会使用cBPF对收到的包进行过滤，我们只从内核层复制特定类型的包到应用层， 比如只复制UDP协议目的端口在20000 ~ 21000的数据包。 </p>
+<p>怎么做到呢？就是使用cBPF。</p>
+<p>我在先前的文章<a href="https://colobu.com/2022/06/05/use-bpf-to-make-the-go-network-program-8x-faster/" target="_blank" rel="external">使用BPF, 将Go网络程序的吞吐提升8倍</a>举了一个使用cBPF的例子：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div></pre></td><td class="code"><pre><div class="line">conn, err := net.ListenPacket(<span class="string">"ip4:udp"</span>, *addr)</div><div class="line"><span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">	<span class="built_in">panic</span>(err)</div><div class="line">}</div><div class="line">cc := conn.(*net.IPConn)</div><div class="line">cc.SetReadBuffer<span class="number">(20</span> *<span class="number"> 1024</span> *<span class="number"> 1024</span>)</div><div class="line">cc.SetWriteBuffer<span class="number">(20</span> *<span class="number"> 1024</span> *<span class="number"> 1024</span>)</div><div class="line">pconn := ipv4.NewPacketConn(conn)</div><div class="line"><span class="keyword">var</span> assembled []bpf.RawInstruction</div><div class="line"><span class="keyword">if</span> assembled, err = bpf.Assemble(filter); err != <span class="constant">nil</span> {</div><div class="line">	log.Print(err)</div><div class="line">	<span class="keyword">return</span></div><div class="line">}</div><div class="line">pconn.SetBPF(assembled)</div><div class="line">handleConn(conn)</div></pre></td></tr></table></figure>
+
+<p>可以使用<code>ipv4.PacketConn</code>的<code>SetBPF</code>方法设置过滤器:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div></pre></td><td class="code"><pre><div class="line"></div><div class="line"><span class="keyword">type</span> Filter []bpf.Instruction</div><div class="line"><span class="keyword">var</span> filter = Filter{</div><div class="line">	bpf.LoadAbsolute{Off:<span class="number"> 22</span>, Size:<span class="number"> 2</span>},                                <span class="comment">// 加载目的端口</span></div><div class="line">	bpf.JumpIf{Cond: bpf.JumpEqual, Val: <span class="typename">uint32</span>(*port), SkipFalse:<span class="number"> 1</span>}, <span class="comment">// 如果目的端口 != 8972，则跳过一行，到了最后一，包丢弃了instruction</span></div><div class="line">	bpf.RetConstant{Val:<span class="number"> 0</span>xffff},                                      <span class="comment">// 返回 0xffff，接收包</span></div><div class="line">	bpf.RetConstant{Val:<span class="number"> 0</span>x0}, <span class="comment">//  返回0字节, 代表忽略这个包</span></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>这里我们根据IP协议进行简单的分析。这里我们没有做过多的兼容检查，因为我们自己知道我们处理的是IPv4的包，而且包中也没有Option选项:<br><img src="IPv4_Packet.png" alt=""></p>
+<p>IP的头部20个字节，payload是UDP包：<br><img src="udp.jpg" alt=""></p>
+<p>可以看到UDP的前两个字节是源端口， 接下来两个字节是目的端口。</p>
+<p>所以从IP header开始，第22 ~ 24字节是目的端口，所以<code>bpf.LoadAbsolute{Off: 22, Size: 2},</code>就是把这两个字节读取出来，和我们的值进行比较，看看是不是我们期望的值。</p>
+<p>那么如果想使用<code>cBPF</code>,就得会写<code>bpf.Instruction</code>, 你得熟悉各种协议，以及bpf的指令。<br>不想学啊！累，麻烦！易出错！不好调试!</p>
+<p>没关系，我写了一个库，只要你会使用tcpdump/wireshark,会使用他们的过滤器写法，就能写出相应的指令来。</p>
+<p>比如 <code>tcpdump -i any -nn -vvvv tcp port 8080</code>这样一个命令，它的过滤器是<code>tcp port 8080</code>, 你这个使用这个库的下面的函数：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">raws, err := ParseTcpdumpFitlerExpr(layers.LinkTypeIPv4, <span class="string">"tcp port 8080"</span>)</div></pre></td></tr></table></figure>
+
+<p>调用这个函数你会得到编译好的指令<code>[]bpf.RawInstruction</code>，然后调用<code>pconn.SetBPF(raws)</code>就可以了。</p>
+<p>如果，你想得到它的Go代码形式，你可以调用<code>s = CreateInstructionsFromExpr(layers.LinkTypeIPv4, &quot;dst host 8.8.8.8 and icmp&quot;)</code>,<br>它会过滤只保留目的IP地址是<code>8.8.8.8</code>并且是icmp的包，生成的指令如下：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">var</span> filter = []bpf.Instruction {</div><div class="line">        	bpf.LoadConstant{Dst:<span class="number"> 0</span>,Val:<span class="number"> 0</span>},</div><div class="line">        	bpf.LoadAbsolute{Off:<span class="number"> 16</span>,Size:<span class="number"> 4</span>},</div><div class="line">        	bpf.JumpIf{Cond:<span class="number"> 1</span>,Val:<span class="number"> 134744072</span>,SkipTrue:<span class="number"> 3</span>} <span class="comment">//  134744072 = 0x8080808,</span></div><div class="line">        	bpf.LoadAbsolute{Off:<span class="number"> 9</span>,Size:<span class="number"> 1</span>},</div><div class="line">        	bpf.JumpIf{Cond:<span class="number"> 1</span>,Val:<span class="number"> 1</span>,SkipTrue:<span class="number"> 1</span>},</div><div class="line">        	bpf.RetConstant{Val:<span class="number"> 0</span>x1},</div><div class="line">        	bpf.RetConstant{Val:<span class="number"> 0</span>x0},</div><div class="line">        }</div></pre></td></tr></table></figure>
+
+<p><code>bpf.LoadAbsolute{Off: 16,Size: 4},</code>是加载IP头中的目的IP地址，检查是不是等于<code>8.8.8.8</code>，如果是，则检查协议(odd:9)是不是ICMP(icmp的协议号是1)。</p>
+<p>所以即使你不熟悉各种协议，根据tcpdump的过滤表达式也能生成编译好的bpf代码，或者得到Go语言的代码片段。</p>
+<p>对了，这个库是<a href="https://github.com/smallnest/qianmo/blob/master/bpf.go" target="_blank" rel="external">阡陌</a>。</p>
+]]></content>
+    <summary type="html">
+    <![CDATA[<p>Classical BPF(cBPF, 伯克利包过滤器)是一种用来过滤网络数据包的技术。它像一个钩子一样挂载在网络栈的关键路径上,可以在数据包<strong>进入</strong>协议栈之前,根据预设规则来过滤或处理网络数据包。</p>
+]]>
+    
+    </summary>
+    
+      <category term="Go" scheme="https://colobu.com/categories/Go/"/>
+    
+  </entry>
+  
+  <entry>
     <title><![CDATA[从头再读取 io.Reader: 覆水难收？]]></title>
     <link href="https://colobu.com/2023/09/24/reread-the-io-Reader/"/>
     <id>https://colobu.com/2023/09/24/reread-the-io-Reader/</id>
@@ -2147,222 +2310,6 @@ fn wake(&amp;self) {
     <![CDATA[<p>项目地址： <a href="https://github.com/smallnest/mping" target="_blank" rel="external">mping</a></p>
 <p>最近在网络探测的分析中，需要做一个使用ICMP协议进行压测的工具， ping或者fping多多少少都不满足需求，所以需要自己写一个。</p>
 <p>使用<a href="https://pkg.go.dev/golang.org/x/net/icmp" target="_blank" rel="external">golang.org/x/net/icmp</a>很容易的实现基于ICMP的工具， <a href="https://github.com/go-ping/ping" target="_blank" rel="external">go-ping</a>就算了，既缺乏维护性能也不佳。所以我最初使用Go官方扩展库实现了这个工具，不过这几天我看到Matt Layher刚推出一个新的ICMP库：<a href="https://github.com/mdlayher/icmpx" target="_blank" rel="external">mdlayher/icmpx</a>， 我决定尝试一下。Matt Layher 是Go网络编程的专家，写了好几个网络相关的库，所以我对他的库还是蛮有信心的。</p>
-]]>
-    
-    </summary>
-    
-      <category term="Go" scheme="https://colobu.com/categories/Go/"/>
-    
-  </entry>
-  
-  <entry>
-    <title><![CDATA[Go 1.21 中的泛型推断]]></title>
-    <link href="https://colobu.com/2023/08/18/go1-21-generics/"/>
-    <id>https://colobu.com/2023/08/18/go1-21-generics/</id>
-    <published>2023-08-18T00:50:46.000Z</published>
-    <updated>2023-08-18T01:41:26.111Z</updated>
-    <content type="html"><![CDATA[<p>原文: <a href="https://encore.dev/blog/go1.21-generics" target="_blank" rel="external">understanding Go 1.21 generics type inference</a></p>
-<p>Go 1.21 已经发布了，带来了一系列的改进，例如更好的泛型类型推断（本文的内容）;新的内置函数<code>min`</code>,<code>max</code>和<code>clear`</code>;以及标准库中的几个新软件包（<code>maps`</code>,<code>slices`</code>,<code>cmp`</code>,<code>log/slog</code>和<code>testing/slogtest`</code>)。在<a href="https://golang.org/doc/go1.21" target="_blank" rel="external">这里</a>阅读完整的发行说明。</p>
-<p>至少对我们Encore来说，特别感兴趣的是对泛型类型推断的改进，因为它会影响Encore的静态分析的工作方式。但是，我们认为发行说明很难理解，因此本文通过更多解释和示例介绍这次的变更。</p>
-<p>我们也刚刚发布了支持 Go 1.21 的 Encore v1.24，所以这是尝试这些新变化的好方法。</p>
-<a id="more"></a>
-<h2 id="部分实例化的泛型函数">部分实例化的泛型函数</h2>
-<p>来自 Go 1.21 发行说明：</p>
-<blockquote>
-<p>现在可以使用本身（可能部分实例化）泛型函数的参数调用（可能部分实例化的泛型）函数。编译器将尝试推断被调用方缺少的类型参数（as before），对于每个未完全实例化的泛型函数的参数，将尝试推断其缺少的类型参数（new）。典型的用例是对在容器上运行的泛型函数的调用（例如<code>slices.IndexFunc</code>），其中函数参数也可以是泛型的，并且被调用函数的类型参数及其参数是从容器类型推断出来的。</p>
-</blockquote>
-<p>啥意思？</p>
-<p>考虑一个函数，该函数需要传入一个值并报告它是否为零值：。</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> IsZero[T comparable](a T) <span class="typename">bool</span></div></pre></td></tr></table></figure>
-
-<p>在 Go 1.21 之前，将这样的函数作为参数传递给另一个（泛型或非泛型）函数需要你显式指定类型参数，即使从上下文中很明显能看出类型。<br>例如：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div></pre></td><td class="code"><pre><div class="line"><span class="comment">// Any reports whether fn returns true for any number in the slice.</span></div><div class="line"><span class="keyword">func</span> Any(numbers []<span class="typename">int</span>, fn <span class="keyword">func</span>(<span class="typename">int</span>) <span class="typename">bool</span>) <span class="typename">bool</span> {</div><div class="line">	<span class="keyword">for</span> i, v := <span class="keyword">range</span> numbers {</div><div class="line">		<span class="keyword">if</span> fn(v) {</div><div class="line">			<span class="keyword">return</span> <span class="constant">true</span></div><div class="line">		}</div><div class="line">	}</div><div class="line">	<span class="keyword">return</span> <span class="constant">false</span></div><div class="line">}</div></pre></td></tr></table></figure>
-
-<blockquote>
-<p>fn处理numbers,只要有一个是true,Any就返回true</p>
-</blockquote>
-<p>使用Go 1.21，您现在就可以这些写：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div></pre></td><td class="code"><pre><div class="line">numbers := []<span class="typename">int</span><span class="number">{1</span>,<span class="number"> 2</span>,<span class="number"> 3</span>}</div><div class="line"></div><div class="line"><span class="comment">// Go 1.21</span></div><div class="line">anyZeroes := Any(numbers, IsZero)</div><div class="line"></div><div class="line"><span class="comment">// Go 1.21之前，你不得不这样写</span></div><div class="line">anyZeroes := Any(numbers, IsZero[<span class="typename">int</span>])</div></pre></td></tr></table></figure>
-
-<p>如发行说明所示，这也适用于泛型函数。所以你也可以写：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div></pre></td><td class="code"><pre><div class="line"><span class="comment">// Go 1.21</span></div><div class="line">firstZeroIndex := slices.IndexFunc(numbers, IsZero)</div><div class="line"></div><div class="line"><span class="comment">// Go 1.21之前，你不得不这样写</span></div><div class="line">firstZeroIndex := slices.IndexFunc(numbers, IsZero[<span class="typename">int</span>])</div></pre></td></tr></table></figure>
-
-<p>Go 1.21可以从类型<code>numbers</code>推断<code>IsZero</code>是<code>IsZero[int]</code> ,即使<code>slices.IndexFunc</code>是一个泛型函数。</p>
-<p>发行说明中在同一段落继续讲到：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">更一般地说，如果可以从赋值推断类型参数，则在将泛型函数分配给变量或作为结果值返回时，现在可以在没有显式实例化的情况下使用泛型函数。</div></pre></td></tr></table></figure>
-
-<p>这意味着以下内容现在有效（在 Go 1.21 之前，您需要显式指定类型参数）:</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div></pre></td><td class="code"><pre><div class="line"><span class="comment">// IsZero 被推断为 IsZero[string]，因为根据类型func(a string) bool可以推断出</span></div><div class="line"><span class="keyword">var</span> isZeroString <span class="keyword">func</span>(a <span class="typename">string</span>) <span class="typename">bool</span> = IsZero</div><div class="line"></div><div class="line"><span class="keyword">func</span> IsNilPointerFactory[T any] <span class="keyword">func</span>() <span class="keyword">func</span>(val *T) <span class="typename">bool</span> {</div><div class="line">  <span class="comment">// IsZero 是 IsZero[*T]， 因为根据返回值func(val *T) bool可以推断出来</span></div><div class="line">  <span class="keyword">return</span> IsZero</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<h2 id="接口赋值推断">接口赋值推断</h2>
-<p>Go 1.21 还改进了泛型接口类型的类型推断。从发行说明：</p>
-<blockquote>
-<p>类型推断现在还会在将值分配给接口时考虑方法：方法签名中使用的类型参数的类型参数可以从匹配方法的相应参数类型推断出来。</p>
-</blockquote>
-<p>这是啥意思呢？请考虑以下泛型接口：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> RandomElementer[T any] <span class="keyword">interface</span> {</div><div class="line">    <span class="comment">// 返回一个随机的元素，如果集合为空，返回(zero, false)</span></div><div class="line">	RandomElement() (T, <span class="typename">bool</span>)</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>然后考虑一个泛型的帮助程序函数，该函数调用某个集合，但如果集合为空，则会panic：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div></pre></td><td class="code"><pre><div class="line"><span class="comment">// 必须返回一个元素，如果集合为空,则panic</span></div><div class="line"><span class="keyword">func</span> MustRandom[T any](collection RandomElementer[T]) T {</div><div class="line">	val, ok := collection.RandomElement()</div><div class="line">	<span class="keyword">if</span> !ok {</div><div class="line">		<span class="built_in">panic</span>(<span class="string">"collection is empty"</span>)</div><div class="line">	}</div><div class="line">	<span class="keyword">return</span> val</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>在 Go 1.21 中，现在可以调用接口类型，并且接口类型将从参数中推断出来。考虑以下两种类型，一种泛型的，一种不是：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div></pre></td><td class="code"><pre><div class="line"><span class="comment">// MyList 泛型集合.</span></div><div class="line"><span class="keyword">type</span> MyList[T any] []T</div><div class="line"><span class="keyword">func</span> (l MyList[T]) RandomElement() (T, <span class="typename">bool</span>) { <span class="comment">/* ... */</span> }</div><div class="line"></div><div class="line"><span class="comment">// IPSet 代表一个IP集合，非泛型的</span></div><div class="line"><span class="keyword">type</span> IPSet <span class="keyword">map</span>[netip.Addr]<span class="typename">bool</span></div><div class="line"><span class="keyword">func</span> (s IPSet) RandomElement() (netip.Addr, <span class="typename">bool</span>) { <span class="comment">/* ... */</span> }</div></pre></td></tr></table></figure>
-
-<p>这些现在（Go1.21）可以像这样使用：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div></pre></td><td class="code"><pre><div class="line">randomInt := MustRandom(MyList[<span class="typename">int</span>]{})</div><div class="line">randomIP := MustRandom(IPSet{})</div><div class="line"></div><div class="line"><span class="comment">// Go 1.20或者以前，你不得不写成如下的方式</span></div><div class="line">randomInt := MustRandom[<span class="typename">int</span>](MyList[<span class="typename">int</span>]{})</div><div class="line">randomIP := MustRandom[netip.Addr](IPSet{})</div></pre></td></tr></table></figure>
-
-<p>优秀！继续前进：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">同样，由于类型参数必须实现其相应约束的所有方法，因此类型参数和约束的方法匹配，这可能导致推断其他类型参数。</div></pre></td></tr></table></figure>
-
-<p>这基本上意味着上述类型推断也扩展到采用额外类型的函数。 例如，<code>MustRandom</code>签名可以重写为：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> MustRandom[R RandomElementer[T], T any](collection R) T</div></pre></td></tr></table></figure>
-
-<p>当调用<code>MustRandom(IPSet{})</code>时,Go 1.21 在调用时正确推断<code>R</code>和<code>T</code>。</p>
-<h2 id="非类型化常量的类型推断">非类型化常量的类型推断</h2>
-<blockquote>
-<p>如果将多个不同类型的非类型化常量参数（如非类型化 int 和非类型化浮点常量）传递给具有相同（未另行指定）类型参数类型的参数，这不会报错，类型推断现在使用与具有非类型化常量操作数的运算符相同的方法确定类型。此更改使从非类型常量参数推断的类型与常量表达式的类型一致</p>
-</blockquote>
-<p>Go 具有非类型常量的概念，并且表达式的类型<code>a+b</code>是从常量值<code>a</code>和<code>b</code>推断出来的:</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">var</span> x =<span class="number"> 1</span> +<span class="number"> 2</span>   <span class="comment">// x 是int</span></div><div class="line"><span class="keyword">var</span> y =<span class="number"> 1</span> +<span class="number"> 2.5</span> <span class="comment">// y 是 float64</span></div></pre></td></tr></table></figure>
-
-<p>现在考虑编写一个行为类似于内置运算符<code>+</code>的泛型函数<code>Add</code>:</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> Add[T <span class="typename">int</span> | <span class="typename">float64</span>](a, b T) T {</div><div class="line">  <span class="keyword">return</span> a + b</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>在 Go 1.21 中，这与您所期望的完全一样工作：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">var</span> x = Add<span class="number">(1</span>,<span class="number"> 2</span>)   <span class="comment">// x 是 int</span></div><div class="line"><span class="keyword">var</span> y = Add<span class="number">(1</span>,<span class="number"> 2.5</span>) <span class="comment">// y 是 float64</span></div></pre></td></tr></table></figure>
-
-<p>在 Go 1.20 中，相同的代码无法编译，因为类型推断将分别考虑每个参数。它将推断 1的类型是int, 然后无法与2.5的类型float64统一，从而导致错误“default type float64 of 2.5 does not match inferred type int for T”。</p>
-<h2 id="总结">总结</h2>
-<p>这就是 Go 1.21 中对泛型类型推断的更改程度。希望这些示例有助于使更改更易于理解;反正经过摸索我更容易理解了，家人们如果理解了请在页面一键三连。</p>
-]]></content>
-    <summary type="html">
-    <![CDATA[<p>原文: <a href="https://encore.dev/blog/go1.21-generics" target="_blank" rel="external">understanding Go 1.21 generics type inference</a></p>
-<p>Go 1.21 已经发布了，带来了一系列的改进，例如更好的泛型类型推断（本文的内容）;新的内置函数<code>min`</code>,<code>max</code>和<code>clear`</code>;以及标准库中的几个新软件包（<code>maps`</code>,<code>slices`</code>,<code>cmp`</code>,<code>log/slog</code>和<code>testing/slogtest`</code>)。在<a href="https://golang.org/doc/go1.21" target="_blank" rel="external">这里</a>阅读完整的发行说明。</p>
-<p>至少对我们Encore来说，特别感兴趣的是对泛型类型推断的改进，因为它会影响Encore的静态分析的工作方式。但是，我们认为发行说明很难理解，因此本文通过更多解释和示例介绍这次的变更。</p>
-<p>我们也刚刚发布了支持 Go 1.21 的 Encore v1.24，所以这是尝试这些新变化的好方法。</p>
-]]>
-    
-    </summary>
-    
-      <category term="Go" scheme="https://colobu.com/categories/Go/"/>
-    
-  </entry>
-  
-  <entry>
-    <title><![CDATA[真实世界的Go设计模式 - 对象池模式]]></title>
-    <link href="https://colobu.com/2023/08/08/go-design-pattern-pool/"/>
-    <id>https://colobu.com/2023/08/08/go-design-pattern-pool/</id>
-    <published>2023-08-07T16:27:13.000Z</published>
-    <updated>2023-08-07T16:28:10.756Z</updated>
-    <content type="html"><![CDATA[<p><strong>对象池</strong>（object pool pattern）是一种设计模式。一个<strong>对象池</strong>包含一组已经初始化过且可以使用的对象，而可以在有需求时创建和销毁对象。池的用户可以从池子中取得对象，对其进行操作处理，并在不需要时归还给池子而非直接销毁它。这是一种特殊的工厂对象。<br><a id="more"></a></p>
-<p>若初始化、实例化的代价高，且有需求需要经常实例化，但每次实例化的数量较少的情况下，使用对象池可以获得显著的效能提升。从池子中取得对象的时间是可预测的，但新建一个实例所需的时间是不确定。</p>
-<p>另外，利用对象池，我们可以重用对象，减少对象的分配，对于垃圾回收的编程语言，也是一种提高性能的手段。</p>
-<p>sync.Pool是Go标准库sync包中的一个非常有用的结构,它可以用来管理和重用临时对象,以减少对象频繁分配和回收的开销。</p>
-<p>sync.Pool的主要特点包括:</p>
-<ul>
-<li>Pool维护一个可存储和共享临时对象的集合,这些对象无需频繁地申请和回收内存。</li>
-<li>Pool通过New字段指定一个函数,用来生成新对象放入pool中。</li>
-<li>通过Get方法可以从pool中获得一个可重用对象,使用后调用Put方法将其放回pool。</li>
-<li>对象在不再需要时不会立即销毁,而是被保留在Pool中以便后续重用。</li>
-<li>Pool会根据需求自动调整对象个数,会定期GC不再使用的对象。</li>
-<li>每个P都有一个本地pool,goroutine优先从本地pool获取和放回对象。</li>
-</ul>
-<p>通过重用对象,可以减少内存分配和垃圾回收的开销,特别适合用于管理许多临时对象的场景,如处理大量并发请求时的缓冲、连接等。</p>
-<p>比如net/rpc包就使用了链表来管理常用的Response、Request等对象的重用。</p>
-<p>Go标准库database/sql包实现了一个连接池,可以重用数据库连接。使用DB.Conn()获取连接对象,操作完成后调用conn.Close()将其放回池中。该连接池默认最大空闲连接数2,可以通过SetMaxIdleConns进行调整。</p>
-<p><a href="https://github.com/fatih/pool" target="_blank" rel="external">fatih/pool</a> 也是一个常用的网络连接池。</p>
-<p>还有一类是goroutine pool,也又叫做worker pool的，这类的库就很多的，而且还有人源源不断的造轮子。比如常用的比如：</p>
-<ul>
-<li><p><a href="https://github.com/Jeffail/tunny" target="_blank" rel="external">Jeffail/tunny</a></p>
-</li>
-<li><p><a href="https://github.com/panjf2000/ants" target="_blank" rel="external">panjf2000/ants</a></p>
-</li>
-<li><p><a href="https://github.com/ivpusic/grpool" target="_blank" rel="external">ivpusic/grpool</a></p>
-</li>
-<li><p><a href="https://github.com/alitto/pond" target="_blank" rel="external">alitto/pond</a></p>
-</li>
-</ul>
-<p>因为使用channel + goroutine很容易实现goroutine pool,所以也有很多关注度不高的轮子，都是作者针对自己的需求定制和改造的。使用也很方便。</p>
-<p>Go标准库还有一个实验性的包<code>arena</code>,本来就在Go 1.20中就要推出的，但是在实现的过程中发现有问题，就一直没有暴露出来。<a href="https://github.com/golang/go/issues/51317" target="_blank" rel="external">proposal: arena: new package providing memory arenas </a>这个提案详细介绍了内容。你也可以把它看成是一个内存池，从其中产生的对象不会被垃圾回收掉，能够提升程序的性能。</p>
-]]></content>
-    <summary type="html">
-    <![CDATA[<p><strong>对象池</strong>（object pool pattern）是一种设计模式。一个<strong>对象池</strong>包含一组已经初始化过且可以使用的对象，而可以在有需求时创建和销毁对象。池的用户可以从池子中取得对象，对其进行操作处理，并在不需要时归还给池子而非直接销毁它。这是一种特殊的工厂对象。<br>]]>
-    
-    </summary>
-    
-      <category term="Go" scheme="https://colobu.com/categories/Go/"/>
-    
-  </entry>
-  
-  <entry>
-    <title><![CDATA[真实世界的Go设计模式 - 原型模式]]></title>
-    <link href="https://colobu.com/2023/08/07/go-design-pattern-prototype/"/>
-    <id>https://colobu.com/2023/08/07/go-design-pattern-prototype/</id>
-    <published>2023-08-07T15:28:50.000Z</published>
-    <updated>2023-08-07T16:25:21.099Z</updated>
-    <content type="html"><![CDATA[<p>*原型模式(Prototype Pattern)是创建型模式的一种，其特点在于通过“复制”一个已经存在的实例来返回新的实例,而不是新建实例。被复制的实例就是我们所称的“原型”，这个原型是可定制的。</p>
-<p>如果你有一个对象，并希望生成与其完全相同或者类似的一个复制品，你该如何实现呢？首先你必须新建一个属于相同类的对象，或者类似的对象，然后你必须遍历原始对象的所有成员变量，并将成员变量值复制到新对象中。在Go生态圈中，我们常常使用下面的库来做这份工作。</p>
-<a id="more"></a>
-<ul>
-<li><a href="https://github.com/jinzhu/copier" target="_blank" rel="external">jinzhu/copier</a>: 张金柱提供的一个优秀的复制库。  </li>
-<li><a href="https://github.com/switchupcb/copygen" target="_blank" rel="external">switchupcb/copygen</a>： 看Readme用起来就非常的复杂，不过它通过生成代码的方式，而不是reflect方式，理论上来说性能应该更好一些。</li>
-<li><a href="https://github.com/jmattheis/goverter" target="_blank" rel="external">jmattheis/goverter</a>： 这个看起来比copygen好多了，我们只需需要定义一个转换接口，然后让它自动生成转换的代码。</li>
-</ul>
-<p>当然你也可以自己实现转换的方法，最简单的方式就是：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">var</span> newValue = value</div><div class="line"><span class="keyword">var</span> newValue = *valuePointer</div></pre></td></tr></table></figure>
-
-<p>但是这种复制也有一些局限性，比如在一些字段复制的值要进行调整，新的对象中有些字段不需要设置等等，所以一般我们有预见对象需要复制(克隆)的话，我们一般会为这个对象类型实现<code>Clone</code>方法，通过这种方式我们实现原型模式。</p>
-<p>实际上，Go标准库有很多实现原型模式的例子。</p>
-<h2 id="strings-Clone">strings.Clone</h2>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> Clone(s <span class="typename">string</span>) <span class="typename">string</span></div></pre></td></tr></table></figure>
-
-<p>Clone返回字符串s的一个全新副本。它保证将字符串s复制到一个新的分配空间中,当只保留一个大字符串的一小部分子串时,这可能非常重要。使用Clone可以帮助这些程序减少内存使用或者说避免内存泄露。</p>
-<h2 id="maps-Clone">maps.Clone</h2>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> Clone[M ~<span class="keyword">map</span>[K]V, K comparable, V any](m M) M</div></pre></td></tr></table></figure>
-
-<p>Clone返回m的一个副本。这是一个浅克隆:新键和值是使用普通赋值设置的。</p>
-<h2 id="http-Transport-Clone">http.Transport.Clone</h2>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> (t *Transport) Clone() *Transport</div></pre></td></tr></table></figure>
-
-<p>Clone返回t的导出字段的深度拷贝。</p>
-<h2 id="arena-Clone">arena.Clone</h2>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> Clone[T any](s T) T</div></pre></td></tr></table></figure>
-
-<p>Clone方法返回一个s的浅拷贝，此拷贝的对象不再在arena中分配。</p>
-<blockquote>
-<p>arena 包还不成熟</p>
-</blockquote>
-<h2 id="slog-Record-Clone">slog.Record.Clone</h2>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> (r Record) Clone() Record</div></pre></td></tr></table></figure>
-
-<p>Clone返回一个没有共享状态的记录副本。原记录和克隆记录都可以修改,而不会相互影响。</p>
-<p>此外，还有Go标准库还有很多类似的实现原型模式的例子，比如:</p>
-<ul>
-<li><p>cmd/distpack/archive.go: Archive.Clone</p>
-</li>
-<li><p>crypto/x509/cert_pool.go: CertPool.Clone</p>
-</li>
-<li><p>text/template/template.go: Template.Clone</p>
-</li>
-<li><p>html/template/template.go: Template.Clone</p>
-</li>
-<li><p>net/http/header.go: Header.Clone</p>
-</li>
-<li><p>net/http/request.go:Request.Clone</p>
-</li>
-<li><p>bytes.Clone</p>
-</li>
-<li><p>crypto/tls/common.go: Config.Clone</p>
-</li>
-<li><p>slices.Clone</p>
-</li>
-</ul>
-<p>还有一些非导出的方法和函数。</p>
-<p>总的来说，如果你想实现原型模式，那么最简单的方式就是为你的类型实现一个Clone方法，或者在你的包下实现一个clone函数。</p>
-]]></content>
-    <summary type="html">
-    <![CDATA[<p>*原型模式(Prototype Pattern)是创建型模式的一种，其特点在于通过“复制”一个已经存在的实例来返回新的实例,而不是新建实例。被复制的实例就是我们所称的“原型”，这个原型是可定制的。</p>
-<p>如果你有一个对象，并希望生成与其完全相同或者类似的一个复制品，你该如何实现呢？首先你必须新建一个属于相同类的对象，或者类似的对象，然后你必须遍历原始对象的所有成员变量，并将成员变量值复制到新对象中。在Go生态圈中，我们常常使用下面的库来做这份工作。</p>
 ]]>
     
     </summary>
