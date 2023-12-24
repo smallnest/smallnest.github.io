@@ -4,7 +4,7 @@
   <subtitle><![CDATA[大道至简 Simplicity is the ultimate form of sophistication]]></subtitle>
   <link href="/atom.xml" rel="self"/>
   <link href="https://colobu.com/"/>
-  <updated>2023-12-23T15:28:31.289Z</updated>
+  <updated>2023-12-24T10:34:13.164Z</updated>
   <id>https://colobu.com/</id>
   
   <author>
@@ -13,6 +13,82 @@
   </author>
   
   <generator uri="http://zespia.tw/hexo/">Hexo</generator>
+  
+  <entry>
+    <title><![CDATA[Go标准库的新 math/rand]]></title>
+    <link href="https://colobu.com/2023/12/24/new-math-rand-in-Go/"/>
+    <id>https://colobu.com/2023/12/24/new-math-rand-in-Go/</id>
+    <published>2023-12-24T08:45:20.000Z</published>
+    <updated>2023-12-24T10:33:41.900Z</updated>
+    <content type="html"><![CDATA[<p>Go 1.22 就要在龙年春节期间发布了。Go 1.22的新特性包括了新的 <code>math/rand</code> 包。这个包的目标是提供一个更好的伪随机数生成器，它的 API 也更加简单易用。本文将介绍这个新的包的特性。<br><a id="more"></a></p>
+<p><a href="https://tip.golang.org/doc/go1.22" target="_blank" rel="external">Go 1.22 release notes</a> 正在编写之中，大家可以关注这个网页以便全面了解Go 1.22的变化，前几天有Gopher制作了一个<a href="https://antonz.org/go-1-22/" target="_blank" rel="external">交互式运行新特性代码的网页</a>，也非常好，在reddit上关注度很高。今天这篇文章只关注于于<code>math/rand/v2</code>这个新的包。</p>
+<h2 id="为什么要新的math/rand包">为什么要新的math/rand包</h2>
+<p>其实大家对<code>math/rand</code>不是那么满意。<br>2017年，<a href="https://github.com/golang/go/issues/20661" target="_blank" rel="external">#20661</a> 中提到<code>math/rand.Read</code>和<code>crypto/rand.Read</code>相近，导致本来应该使用<code>crypto/rand.Read</code>的地方使用了<code>math/rand.Read</code>，导致了安全问题。<br>2017年，<a href="https://github.com/golang/go/issues/21835" target="_blank" rel="external">#21835</a> 中 Rob Pike 提议在Go 2中使用PCG Source。<br>2018年，<a href="https://github.com/golang/go/issues/26263" target="_blank" rel="external">#26263</a> 中 Josh Bleecher Snyder 提议对<code>math/rand</code>进行彻底的重构。<br>2023年6月， Russ Cox基于先前的对<code>math/rand</code>的吐槽，以及和Rob Pike的讨论，建立了一个讨论(<a href="https://github.com/golang/go/discussions/60751" target="_blank" rel="external">#60751</a>),准备新建一个包<code>math/rand/v2</code>,重新设计和实现一个新的伪随机数的库讨论也很热烈，最后实现了一个提案<a href="https://github.com/golang/go/issues/61716" target="_blank" rel="external">#61716</a>，这个提案最直接的动机是清理 <code>math/rand</code> 并解决其中许多悬而未决的问题，特别是使用过时生成器、缓慢的算法，以及与 <code>crypto/rand.Read</code> 的不幸冲突。</p>
+<p>由于go module的支持版本<code>v2、v3、...</code>, Go 1.22中将会有一个新的包<code>math/rand/v2</code>，这个包将会是一个新的包，而不是<code>math/rand</code>的升级版本。这个包的目标是提供一个更好的伪随机数生成器，它的 API 也更加简单易用，同时一些检查工具也能支持这个包，不会报错。</p>
+<p>看样子，<code>math/rand/v2</code>将会是第一个在标准库中建立<code>v2</code>版本的包，如果大家能够接受，将来会有更多的包加入进来，比如<code>sync/v2</code>、<code>encoding/json/v2</code>等等。</p>
+<h2 id="提案的主要内容">提案的主要内容</h2>
+<p><code>math/rand/v2</code> API 以 <code>math/rand</code> 为起点，进行以下<strong>不兼容的更改</strong>：</p>
+<p>1、 移除 <code>Rand.Read</code> 和顶层的 <code>Read</code>。假装伪随机生成器是任意长字节序列的良好来源几乎总是错误的。<code>math/rand</code> 适用于模拟和非确定性算法，几乎从不需要字节序列。<code>Read</code> 是 <code>math/rand</code> 和 <code>crypto/rand</code> 之间唯一共享的 API 部分，代码应该基本上总是使用 <code>crypto/rand.Read</code>。（<code>math/rand.Read</code> 和 <code>crypto/rand.Read</code> 存在问题，因为它们具有相同的签名; <code>math/rand.Int</code> 和 <code>crypto/rand.Int</code> 也都存在，但具有不同的签名，这意味着代码永远不会意外地将一个错认为是另一个。）</p>
+<p>2、 移除 <code>Source.Seed</code>、<code>Rand.Seed</code> 和顶层的 <code>Seed</code>。顶层的 <code>Seed</code> 已在 Go 1.20 中废弃。<code>Source.Seed</code> 和 <code>Rand.Seed</code> 假定底层源可以由单个 <code>int64</code> 作为种子，这只对有限数量的源是真实的。具体的源实现可以提供具有适当签名的 <code>Seed</code> 方法，或者对于不能重新设置种子的生成器根本不提供；简单来说使用一个<code>int64</code> 作为种子没有普适性，不适合定义一个通用的接口。</p>
+<p>注意，移除顶层 <code>Seed</code> 意味着顶层函数如 <code>Int</code> 将始终以随机方式而不是确定性方式生成。<code>math/rand/v2</code> 将不关注 <code>math/rand</code> 所关注的 <a href="https://tip.golang.org/doc/go1.20#mathrandpkgmathrand" target="_blank" rel="external"><code>randautoseed</code></a> GODEBUG 设置；顶层函数的自动设置哦随机种子是唯一的模式。这反过来意味着顶层函数使用的具体 PRNG 算法是未指定的，可以在发布之间更改而不破坏任何现有代码。</p>
+<p>3、 将 <code>Source</code> 接口更改为具有单个 <code>Uint64() uint64</code> 方法，取代 <code>Int63() int64</code>。后者过于拟合原始的 Mitchell &amp; Reeds LFSR 生成器。现代生成器可以提供 <code>uint64</code>。</p>
+<p>4、 移除 <code>Source64</code>，现在不再需要，因为 <code>Source</code> 提供了 <code>Uint64</code> 方法。</p>
+<p>5、 在 <code>Float32</code> 和 <code>Float64</code> 中使用更直观的实现。以 <code>Float64</code> 为例，它最初使用 <code>float64(r.Int63()) / (1&lt;&lt;63)</code>，但这存在问题，偶尔会四舍五入为 <code>1.0</code>。我们尝试将其更改为 <code>float64(r.Int63n(1&lt;&lt;53) / (1&lt;&lt;53)</code>，避免了四舍五入的问题。</p>
+<p>6、 修复 <code>ExpFloat64</code> 和 <code>NormFloat64</code> 中的偏差问题。</p>
+<p>7、 使用 <code>Rand.Shuffle</code> 实现 <code>Rand.Perm</code>。</p>
+<p>8、 将 <code>Intn</code>、<code>Int31</code>、<code>Int31n</code>、<code>Int63</code>、<code>Int64n</code> 重命名为 <code>IntN</code>、<code>Int32</code>、<code>Int32N</code>、<code>Int64</code>、<code>Int64N</code>。原来的名称中的 <code>31</code> 和 <code>63</code> 是令人困惑的，而大写 <code>N</code> 在 Go 中作为名称的第二个“单词”更为习惯。</p>
+<p>9、 添加 <code>Uint32</code>、<code>Uint32N</code>、<code>Uint64</code>、<code>Uint64N</code>、<code>Uint</code>、<code>UintN</code>，既作为顶层函数，也作为 <code>Rand</code> 的方法。</p>
+<p>10、在 <code>N</code>、<code>IntN</code>、<code>UintN</code> 等中使用 <a href="https://lemire.me/blog/2016/06/27/a-fast-alternative-to-the-modulo-reduction" target="_blank" rel="external">Lemire</a> 的算法。初步基准测试显示，与 <code>v1 Int31n</code> 相比，节省了 40%，与 <code>v1 Int63n</code> 相比，节省了 75%。</p>
+<p>11、添加一个通用的顶层函数 <code>N</code>，类似于 <code>Int64N</code> 或 <code>Uint64N</code>，但适用于任何整数类型。特别是这允许使用 <code>rand.N(1*time.Minute)</code> 来获取范围在 <code>[0, 1*time.Minute)</code> 内的随机持续时间。</p>
+<p>12、添加一个新的 <code>Source</code> 实现，<code>PCG-DXSM</code>。PCG 是一个简单、高效的算法，具有良好的统计随机性质。DXSM 变体是作者专门为纠正原始 (PCG-XSLRR) 中的一种罕见、隐晦的缺陷而引入的，并且现在是 Numpy 中的默认生成器。</p>
+<p>13、移除 Mitchell &amp; Reeds LFSR 生成器和 NewSource。</p>
+<p>14、添加一个新的 Source 实现，<code>ChaCha8</code>。ChaCha8 是从 ChaCha8 流密码派生的具有强密码学随机性质的随机数生成器。它提供与 ChaCha8 加密等效的安全性。</p>
+<p>15、在 <code>math/rand/v2</code> 和 <code>math/rand</code>（未设置种子时）中使用每个 OS 线程的 ChaCha8 作为全局随机生成器。</p>
+<h2 id="math/rand/v2介绍">math/rand/v2介绍</h2>
+<p>注意，根据go module的定义，<code>v2</code>只是版本号，新的包名还是叫做<code>rand</code>。</p>
+<p><code>rand</code> 包实现了适用于模拟(<code>simulation</code>)等任务的伪随机数生成器，但<strong>不应用于对安全性敏感</strong>的工作。</p>
+<p>随机数由 <code>Source</code>生成，通常包装在 <code>Rand</code> 中。这两种类型应该一次由单个 goroutine 使用：在多个 goroutine 之间共享<strong>需要某种形式的同步</strong>。</p>
+<p>顶层函数，如 <code>Float64</code> 和 <code>Int</code>，对于多个 goroutine 的<strong>并发使用是安全</strong>的。</p>
+<p>该包的输出可能在设置种子的方式不同的情况下很容易可预测。对于适用于对安全性敏感的工作的随机数，请参阅 <code>crypto/rand</code> 包。</p>
+<p>简单综述：所以你考虑到安全避免被人预测的场景下，还是要使用<code>crypto/rand</code> 包。 包级别的函数比如<code>Int</code>是线程安全的，但是如果你自己生成一个<code>Rand</code>对象，那么就要注意了，因为<code>Rand</code>对象是非线程安全的。</p>
+<h3 id="包级别的函数">包级别的函数</h3>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> ExpFloat64() <span class="typename">float64</span></div><div class="line"><span class="keyword">func</span> Float32() <span class="typename">float32</span></div><div class="line"><span class="keyword">func</span> Float64() <span class="typename">float64</span></div><div class="line"><span class="keyword">func</span> Int() <span class="typename">int</span></div><div class="line"><span class="keyword">func</span> Int32() <span class="typename">int32</span></div><div class="line"><span class="keyword">func</span> Int32N(n <span class="typename">int32</span>) <span class="typename">int32</span></div><div class="line"><span class="keyword">func</span> Int64() <span class="typename">int64</span></div><div class="line"><span class="keyword">func</span> Int64N(n <span class="typename">int64</span>) <span class="typename">int64</span></div><div class="line"><span class="keyword">func</span> IntN(n <span class="typename">int</span>) <span class="typename">int</span></div><div class="line"><span class="keyword">func</span> N[Int intType](n Int) Int</div><div class="line"><span class="keyword">func</span> NormFloat64() <span class="typename">float64</span></div><div class="line"><span class="keyword">func</span> Perm(n <span class="typename">int</span>) []<span class="typename">int</span></div><div class="line"><span class="keyword">func</span> Shuffle(n <span class="typename">int</span>, swap <span class="keyword">func</span>(i, j <span class="typename">int</span>))</div><div class="line"><span class="keyword">func</span> Uint32() <span class="typename">uint32</span></div><div class="line"><span class="keyword">func</span> Uint32N(n <span class="typename">uint32</span>) <span class="typename">uint32</span></div><div class="line"><span class="keyword">func</span> Uint64() <span class="typename">uint64</span></div><div class="line"><span class="keyword">func</span> Uint64N(n <span class="typename">uint64</span>) <span class="typename">uint64</span></div><div class="line"><span class="keyword">func</span> UintN(n <span class="typename">uint</span>) <span class="typename">uint</span></div></pre></td></tr></table></figure>
+
+<p>针对<code>int32</code>、<code>int64</code>、<code>uint32</code>、<code>uint64</code>,分别有<code>Xxxxx()</code>和<code>XxxxxN()</code>两种函数，前者返回一个随机数，后者返回一个范围在<code>[0,n)</code>的随机数。<br><code>Float32</code>和<code>Float64</code>返回范围在<code>[0.0, 1.0)</code>的随机浮点数。<br><code>IntN</code>返回一个范围在<code>[0,n)</code>的随机数，数据类型是<code>int</code>类型。<br><code>N</code>是一个泛型的函数，返回一个范围在<code>[0,n)</code>的随机数，底层数据是int类型的，特别适合<code>time.Duration</code>这样的类型。</p>
+<p><code>Perm</code>返回一个长度为<code>n</code>的随机排列的<code>int</code>数组。<br><code>Shuffle</code>洗牌算法</p>
+<p><code>NormFloat64</code>返回一个标准正态分布的随机数。<br><code>ExpFloat64</code>返回一个指数分布的随机数。</p>
+<h3 id="三种伪随机数生成器">三种伪随机数生成器</h3>
+<p><code>ChaCha8</code> 也是包级别的函数使用的伪随机数生成器。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> ChaCha8</div><div class="line"><span class="keyword">func</span> NewChaCha8(seed <span class="number">[32</span>]<span class="typename">byte</span>) *ChaCha8</div><div class="line"><span class="keyword">func</span> (c *ChaCha8) MarshalBinary() ([]<span class="typename">byte</span>, error)</div><div class="line"><span class="keyword">func</span> (c *ChaCha8) Seed(seed <span class="number">[32</span>]<span class="typename">byte</span>)</div><div class="line"><span class="keyword">func</span> (c *ChaCha8) Uint64() <span class="typename">uint64</span></div><div class="line"><span class="keyword">func</span> (c *ChaCha8) UnmarshalBinary(data []<span class="typename">byte</span>) error</div></pre></td></tr></table></figure>
+
+<p><code>PCG</code> 是另外一种伪随机数生成器。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> PCG</div><div class="line"><span class="keyword">func</span> NewPCG(seed1, seed2 <span class="typename">uint64</span>) *PCG</div><div class="line"><span class="keyword">func</span> (p *PCG) MarshalBinary() ([]<span class="typename">byte</span>, error)</div><div class="line"><span class="keyword">func</span> (p *PCG) Seed(seed1, seed2 <span class="typename">uint64</span>)</div><div class="line"><span class="keyword">func</span> (p *PCG) Uint64() <span class="typename">uint64</span></div><div class="line"><span class="keyword">func</span> (p *PCG) UnmarshalBinary(data []<span class="typename">byte</span>) error</div></pre></td></tr></table></figure>
+
+<p><code>Zipf</code>是生成Zipf分布的伪随机数生成器。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> Zipf</div><div class="line"><span class="keyword">func</span> NewZipf(r *Rand, s <span class="typename">float64</span>, v <span class="typename">float64</span>, imax <span class="typename">uint64</span>) *Zipf</div><div class="line"><span class="keyword">func</span> (z *Zipf) Uint64() <span class="typename">uint64</span></div></pre></td></tr></table></figure>
+
+<p>相信后续还会有一些第三方的伪随机数生成器出现。</p>
+<p>它们都实现了接口<code>Source</code>,<code>Source</code>接口只有一个方法<code>Uint64()</code>:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> Source <span class="keyword">interface</span> {</div><div class="line">	Uint64() <span class="typename">uint64</span></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>所有的伪随机数生成器都可以包装成一个<code>Rand</code>对象，<code>Rand</code>对象是非线程安全的，所以要注意。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> New(src Source) *Rand</div></pre></td></tr></table></figure>
+
+<blockquote>
+<p>这和Rust中的实现模式类似。&lt;<programming rust="">&gt;第一版把它叫做伴型特性，第二版中不知道为什么把这一节去掉了。<br>Rust中的<code>Rng</code>类似这里的Go的<code>Source</code>,可以有多种实现生成器。Rust中的<code>Rand</code>也类似这里Go的<code>Rand</code>,基于<code>Uint64() uint64</code>提供各种类型的随机数。</programming></p>
+</blockquote>
+<p><code>Rand</code>提供了各种便利的方法，这些方法其实和包级别的函数是一样的，只是它们是<code>Rand</code>对象的方法而已：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> (r *Rand) Float32() <span class="typename">float32</span></div><div class="line"><span class="keyword">func</span> (r *Rand) Float64() <span class="typename">float64</span></div><div class="line"><span class="keyword">func</span> (r *Rand) Int() <span class="typename">int</span></div><div class="line"><span class="keyword">func</span> (r *Rand) Int32() <span class="typename">int32</span></div><div class="line"><span class="keyword">func</span> (r *Rand) Int32N(n <span class="typename">int32</span>) <span class="typename">int32</span></div><div class="line"><span class="keyword">func</span> (r *Rand) Int64() <span class="typename">int64</span></div><div class="line"><span class="keyword">func</span> (r *Rand) Int64N(n <span class="typename">int64</span>) <span class="typename">int64</span></div><div class="line"><span class="keyword">func</span> (r *Rand) IntN(n <span class="typename">int</span>) <span class="typename">int</span></div><div class="line"><span class="keyword">func</span> (r *Rand) NormFloat64() <span class="typename">float64</span></div><div class="line"><span class="keyword">func</span> (r *Rand) Perm(n <span class="typename">int</span>) []<span class="typename">int</span></div><div class="line"><span class="keyword">func</span> (r *Rand) Shuffle(n <span class="typename">int</span>, swap <span class="keyword">func</span>(i, j <span class="typename">int</span>))</div><div class="line"><span class="keyword">func</span> (r *Rand) Uint32() <span class="typename">uint32</span></div><div class="line"><span class="keyword">func</span> (r *Rand) Uint32N(n <span class="typename">uint32</span>) <span class="typename">uint32</span></div><div class="line"><span class="keyword">func</span> (r *Rand) Uint64() <span class="typename">uint64</span></div><div class="line"><span class="keyword">func</span> (r *Rand) Uint64N(n <span class="typename">uint64</span>) <span class="typename">uint64</span></div><div class="line"><span class="keyword">func</span> (r *Rand) UintN(n <span class="typename">uint</span>) <span class="typename">uint</span></div></pre></td></tr></table></figure>
+
+]]></content>
+    <summary type="html">
+    <![CDATA[<p>Go 1.22 就要在龙年春节期间发布了。Go 1.22的新特性包括了新的 <code>math/rand</code> 包。这个包的目标是提供一个更好的伪随机数生成器，它的 API 也更加简单易用。本文将介绍这个新的包的特性。<br>]]>
+    
+    </summary>
+    
+      <category term="Go" scheme="https://colobu.com/categories/Go/"/>
+    
+  </entry>
   
   <entry>
     <title><![CDATA[从Go channel中批量读取数据]]></title>
@@ -2014,59 +2090,6 @@ fn wake(&amp;self) {
 ]]></content>
     <summary type="html">
     <![CDATA[<p>Classical BPF(cBPF, 伯克利包过滤器)是一种用来过滤网络数据包的技术。它像一个钩子一样挂载在网络栈的关键路径上,可以在数据包<strong>进入</strong>协议栈之前,根据预设规则来过滤或处理网络数据包。</p>
-]]>
-    
-    </summary>
-    
-      <category term="Go" scheme="https://colobu.com/categories/Go/"/>
-    
-  </entry>
-  
-  <entry>
-    <title><![CDATA[从头再读取 io.Reader: 覆水难收？]]></title>
-    <link href="https://colobu.com/2023/09/24/reread-the-io-Reader/"/>
-    <id>https://colobu.com/2023/09/24/reread-the-io-Reader/</id>
-    <published>2023-09-24T14:17:38.000Z</published>
-    <updated>2023-09-24T14:44:08.094Z</updated>
-    <content type="html"><![CDATA[<p>前几天，我们百度的同学分享了Go标准库中一段好玩的好玩的代码， <code>net/http/response.go</code>中一段检查HTTP的headser中<code>Content-Length</code>未设置的情况下，对<code>http.Body</code>的有趣的处理。</p>
-<a id="more"></a>
-<p>我们知道<code>io.Reader</code>提供了<code>Read</code>方法，并没有将读取的数据再塞回去的方法，而且对于流式的Reader,也绝无可能将数据塞回去。就像覆水难收一样，泼出去的水，没办法收回来了。</p>
-<p>如果我们想从Reader读取一部分字节，做一些处理(一般是做一些检查)，然后想再让调用者从头开始读取咋办？</p>
-<p><code>net/http/response.go</code>中就有这么一段代码</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div></pre></td><td class="code"><pre><div class="line"><span class="comment">// Clone it, so we can modify r1 as needed.</span></div><div class="line">r1 := <span class="built_in">new</span>(Response)</div><div class="line">*r1 = *r</div><div class="line"><span class="keyword">if</span> r1.ContentLength ==<span class="number"> 0</span> && r1.Body != <span class="constant">nil</span> {</div><div class="line">	<span class="comment">// Is it actually 0 length? Or just unknown?</span></div><div class="line">	<span class="keyword">var</span> buf <span class="number">[1</span>]<span class="typename">byte</span></div><div class="line">	n, err := r1.Body.Read(buf[:])</div><div class="line">	<span class="keyword">if</span> err != <span class="constant">nil</span> && err != io.EOF {</div><div class="line">		<span class="keyword">return</span> err</div><div class="line">	}</div><div class="line">	<span class="keyword">if</span> n ==<span class="number"> 0</span> {</div><div class="line">		<span class="comment">// Reset it to a known zero reader, in case underlying one</span></div><div class="line">		<span class="comment">// is unhappy being read repeatedly.</span></div><div class="line">		r1.Body = NoBody</div><div class="line">	} <span class="keyword">else</span> {</div><div class="line">		r1.ContentLength =<span class="number"> -1</span></div><div class="line">		r1.Body = <span class="keyword">struct</span> {</div><div class="line">			io.Reader</div><div class="line">			io.Closer</div><div class="line">		}{</div><div class="line">			io.MultiReader(bytes.NewReader(buf[<span class="number">:1</span>]), r.Body),</div><div class="line">			r.Body,</div><div class="line">		}</div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>这段代码主要是针对响应(Response)对象做了一次克隆(Clone),目的是为了能够安全地修改响应对象,而不影响原始的响应对象。</p>
-<p>具体来看:</p>
-<ol>
-<li>r1 := new(Response) 创建一个新的响应对象</li>
-<li>r1 = r 让r1成为原始响应r的克隆</li>
-<li>接下来判断如果响应内容长度r1.ContentLength == 0 且响应体r1.Body != nil</li>
-<li>这说明内容长度标记为0,但实际上响应体不为空。这种情况下无法确定内容究竟是0长度还是长度未知。</li>
-<li>所以读取1字节到buf,以判断响应体是否真是0长度。</li>
-<li>如果读取到EOF,说明响应体确实长度为0,将Body重置为NoBody。</li>
-<li>否则说明长度未知,将ContentLength设置为-1,并用MultiReader将已读取的1字节内容和原Body组合,作为新Body。</li>
-<li>这样通过克隆的响应对象r1,可以安全地修改ContentLength和Body,而不影响原始响应对象r。</li>
-</ol>
-<p>这段代码通过克隆请求对象,巧妙地处理了内容长度标记为0但实际有内容的情况,避免了对原始响应对象的修改。</p>
-<p>它先读取了1个字节，来判断Body是否为空，不为空在通过<code>io.MultiReader(bytes.NewReader(buf[:1]), r.Body),</code>把这一个字节和原来的io.Reader(<code>r.Body</code>)在捏合在一起，形成一个新的io.Reader。</p>
-<p>通过<code>io.MultiReader</code>新建一个 io.Reader,就可以把已读取的字节和剩余未读取的字节组合起来，形成都未读取的Reader。</p>
-<p>标准库<code>net/http/transfer.go</code>中也有一段相同的逻辑处理。</p>
-<p>这让我想起了<a href="https://github.com/soheilhy/cmux" target="_blank" rel="external">soheilhy/cmux</a>, <a href="http://rpcx.io" target="_blank" rel="external">rpcx</a>最早使用它在一个端口上提供不同传输的协议。</p>
-<p>cmux也是预先读取一部分数据，和预先配置的Matcher进行匹配，如果匹配成功，比如HTTP1.1协议，那么这个连接后续就按照HTTP1.1协议进行解析。那么预先读取的这些字节也得交给解析器从头开始解析，否则数据就缺失了，那么它是怎么实现的呢？</p>
-<p>cmux使用老二另外一个方法，它创建了一个bufferedReader:</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> bufferedReader <span class="keyword">struct</span> {</div><div class="line">	source     io.Reader</div><div class="line">	buffer     bytes.Buffer</div><div class="line">	bufferRead <span class="typename">int</span></div><div class="line">	bufferSize <span class="typename">int</span></div><div class="line">	sniffing   <span class="typename">bool</span></div><div class="line">	lastErr    error</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>当连接开始在侦探和哪个Matcher匹配的时候， conn连接会把数据写入到这个buffer中：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> (s *bufferedReader) Read(p []<span class="typename">byte</span>) (<span class="typename">int</span>, error) {</div><div class="line">	<span class="keyword">if</span> s.bufferSize &gt; s.bufferRead { <span class="comment">// buffer中有未读的数据，先读取这个</span></div><div class="line">		bn := <span class="built_in">copy</span>(p, s.buffer.Bytes()[s.bufferRead:s.bufferSize])</div><div class="line">		s.bufferRead += bn</div><div class="line">		<span class="keyword">return</span> bn, s.lastErr</div><div class="line">	} <span class="keyword">else</span> <span class="keyword">if</span> !s.sniffing && s.buffer.Cap() !=<span class="number"> 0</span> {</div><div class="line">		s.buffer = bytes.Buffer{}</div><div class="line">	}</div><div class="line"></div><div class="line">	<span class="comment">// 从原始的conn中读取</span></div><div class="line">	sn, sErr := s.source.Read(p)</div><div class="line">	<span class="keyword">if</span> sn &gt;<span class="number"> 0</span> && s.sniffing { <span class="comment">// 如果还在侦探状态，把读取的数据写入到buffer中</span></div><div class="line">		s.lastErr = sErr</div><div class="line">		<span class="keyword">if</span> wn, wErr := s.buffer.Write(p[:sn]); wErr != <span class="constant">nil</span> {</div><div class="line">			<span class="keyword">return</span> wn, wErr</div><div class="line">		}</div><div class="line">	}</div><div class="line">	<span class="keyword">return</span> sn, sErr</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>一旦侦探完成(match一个协议)，那么就会把读取的指针置为最开始的地方，从头开始读取，根据上面的方法的逻辑，读取完buffer就从原始conn中读取，也不会再往buffer中写。</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> (m *MuxConn) doneSniffing() {</div><div class="line">	m.buf.reset(<span class="constant">false</span>)</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> (s *bufferedReader) reset(snif <span class="typename">bool</span>) {</div><div class="line">	s.sniffing = snif</div><div class="line">	s.bufferRead =<span class="number"> 0</span> <span class="comment">// 退回到原点，从最开始的数据开始读</span></div><div class="line">	s.bufferSize = s.buffer.Len() <span class="comment">// 已读取的数据</span></div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>通过这种方式，也实现了预读取的功能。</p>
-<p>看起来，在Go语言中，还真的能覆水再回收。</p>
-]]></content>
-    <summary type="html">
-    <![CDATA[<p>前几天，我们百度的同学分享了Go标准库中一段好玩的好玩的代码， <code>net/http/response.go</code>中一段检查HTTP的headser中<code>Content-Length</code>未设置的情况下，对<code>http.Body</code>的有趣的处理。</p>
 ]]>
     
     </summary>
