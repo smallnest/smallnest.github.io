@@ -4,7 +4,7 @@
   <subtitle><![CDATA[大道至简 Simplicity is the ultimate form of sophistication]]></subtitle>
   <link href="/atom.xml" rel="self"/>
   <link href="https://colobu.com/"/>
-  <updated>2023-12-24T10:34:13.164Z</updated>
+  <updated>2023-12-25T15:24:05.834Z</updated>
   <id>https://colobu.com/</id>
   
   <author>
@@ -13,6 +13,62 @@
   </author>
   
   <generator uri="http://zespia.tw/hexo/">Hexo</generator>
+  
+  <entry>
+    <title><![CDATA[Go http.ServeMux中的模式匹配]]></title>
+    <link href="https://colobu.com/2023/12/25/patterns-in-ServeMux-HandleFunc/"/>
+    <id>https://colobu.com/2023/12/25/patterns-in-ServeMux-HandleFunc/</id>
+    <published>2023-12-25T14:42:10.000Z</published>
+    <updated>2023-12-25T15:22:52.074Z</updated>
+    <content type="html"><![CDATA[<p>Go 1.22中一个很大的变化是<code>http.ServeMux</code>中的模式匹配，先前这个功能是很多第三方的web框架或者router库实现的。</p>
+<p>我们很有必要好好研究它，将来在实现HTTP API的时候可能优先使用它。</p>
+<a id="more"></a>
+<p><code>http.ServeMux</code>是一个HTTP请求多路复用器,它将每个传入请求的URL与已注册的模式列表进行匹配，并调用与最接近URL匹配的模式对应的处理程序。</p>
+<p>比如:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div></pre></td><td class="code"><pre><div class="line">mux.HandleFunc(<span class="string">"POST /items/create"</span>, <span class="keyword">func</span>(w http.ResponseWriter, r *http.Request) {</div><div class="line">    fmt.Fprint(w, <span class="string">"POST item created"</span>)</div><div class="line">})</div><div class="line"></div><div class="line">mux.HandleFunc(<span class="string">"/items/create"</span>, <span class="keyword">func</span>(w http.ResponseWriter, r *http.Request) {</div><div class="line">    fmt.Fprint(w, <span class="string">"item created"</span>)</div><div class="line">})</div><div class="line"></div><div class="line">mux.HandleFunc(<span class="string">"/items/{id}"</span>, <span class="keyword">func</span>(w http.ResponseWriter, r *http.Request) {</div><div class="line">    id := r.PathValue(<span class="string">"id"</span>)</div><div class="line">    fmt.Fprintf(w, <span class="string">"Item ID = %s"</span>, id)</div><div class="line">})</div><div class="line"></div><div class="line">mux.HandleFunc(<span class="string">"/files/{path...}"</span>, <span class="keyword">func</span>(w http.ResponseWriter, r *http.Request) {</div><div class="line">    path := r.PathValue(<span class="string">"path"</span>)</div><div class="line">    fmt.Fprintf(w, <span class="string">"File path = %s"</span>, path)</div><div class="line">})</div></pre></td></tr></table></figure>
+
+<p>和原来的<code>HandleFunc</code>相比，第一个参数貌似有了不一样的变化，除了正常的path之外，还有HTTP POST Method，还有<code>{id}</code>和<code>{path...}</code>这样的变量，这就是Go 1.22中新增加的模式匹配。</p>
+<p>通过<code>PathValue</code>可以获取路径中的通配符匹配的值。</p>
+<h2 id="模式匹配">模式匹配</h2>
+<p>模式匹配用在注册handler的时候，如下：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> Handle(pattern <span class="typename">string</span>, handler Handler)</div><div class="line"><span class="keyword">func</span> HandleFunc(pattern <span class="typename">string</span>, handler <span class="keyword">func</span>(ResponseWriter, *Request))</div></pre></td></tr></table></figure>
+
+<p>其中<code>pattern</code>模式的格式是这样子的:<code>[METHOD ][HOST]/[PATH]</code>, 中括号代表这一项可以省略。<br>因此<code>POST /items/create</code>、<code>POST rpcx.io/items/create</code>、<code>GET /items/123</code>、<code>/items/123</code>都是合法的模式。</p>
+<p>如果不设置HTTP Method如<code>POST</code>,那么默认是匹配所有的HTTP Method。注意HTTP Method 之后有一个空格。<br>模式匹配<code>GET</code>会匹配<code>GET</code>和<code>HEAD</code>,除此之外，其他的HTTP Method都是精确匹配。</p>
+<p>如果未设置HOST，那么默认是匹配所有的HOST。否则，HOST必须完全匹配。</p>
+<h3 id="通配符">通配符</h3>
+<p>请求的路径中可以包含通配符，如<code>&quot;/b/{bucket}/o/{objectname...}&quot;</code>。配符名称必须是有效的Go标识符。通配符必须是完整的路径段，例如<code>/b_{bucket}</code>就不是一个合法的通配符。</p>
+<ul>
+<li><code>/items/{id}</code>: 正常情况下一个通配符只匹配一个路径段，比如匹配<code>/items/123</code>，但是不匹配<code>/items/123/456</code>。</li>
+<li><code>/items/{apth...}</code>: 但是如果通配符后面跟着<code>...</code>，那么它就会匹配多个路径段，比如<code>/items/123</code>、<code>/items/123/456</code>都会匹配这个模式。</li>
+<li><code>/items/{$}</code>: 以<code>/</code>结尾的模式会匹配所有以它为前缀的路径，比如<code>/items/</code>、<code>/items/123</code>、<code>/items/123/456</code>都会匹配这个模式。如果以<code>/{$}</code>为后缀，那么表示严格匹配路径，不会匹配带后缀的路径，比如这个例子只会匹配<code>/items/</code>，不会匹配<code>/items/123</code>、<code>/items/123/456</code>。</li>
+</ul>
+<p>在匹配过程中，模式路径和传入请求路径都会逐段解码。因此，例如，路径 <code>/a%2Fb/100%25</code> 被视为具有两个段，<code>a/b</code> 和 <code>100%</code>。模式 <code>/a%2fb/</code> 与之匹配，但模式 <code>/a/b/</code> 则不匹配。</p>
+<h3 id="优先级">优先级</h3>
+<p>如果两个模式都可以匹配同一个路径咋办呢？比如<code>/items/{id}</code>和<code>/items/{path...}</code>都可以匹配<code>/items/123</code>，那么谁优先呢？</p>
+<ul>
+<li>最具体的模式具有优先权。比如<code>/items/{id}</code>比<code>/items/</code>更具体。</li>
+<li>如果两者都不更具体，则模式冲突。<ul>
+<li>在冲突的情况下，具有主机的模式具有优先权 <code>rpcx.io/items/{id}</code>比<code>/items/{id}</code>优先权更高。</li>
+<li>如果两者都没有HOST，则模式冲突,panic。 <code>items/{id}</code>和<code>/items/{index}</code>都没有HOST，所以会panic。</li>
+</ul>
+</li>
+</ul>
+<h2 id="后缀/的转发">后缀<code>/</code>的转发</h2>
+<p><code>/images/</code> 会导致<code>ServeMux</code>把<code>/images</code>重定向到<code>/images/</code>除非你注册了<code>/images</code>的handler。</p>
+<h2 id="请求清理">请求清理</h2>
+<p><code>ServeMux</code> 还负责清理URL请求路径和Host标头，去除端口号，并将包含 <code>.</code> 或 <code>..</code> 段或重复斜杠的任何请求重定向到等效、更清晰的URL。</p>
+]]></content>
+    <summary type="html">
+    <![CDATA[<p>Go 1.22中一个很大的变化是<code>http.ServeMux</code>中的模式匹配，先前这个功能是很多第三方的web框架或者router库实现的。</p>
+<p>我们很有必要好好研究它，将来在实现HTTP API的时候可能优先使用它。</p>
+]]>
+    
+    </summary>
+    
+      <category term="Go" scheme="https://colobu.com/categories/Go/"/>
+    
+  </entry>
   
   <entry>
     <title><![CDATA[Go标准库的新 math/rand]]></title>
@@ -2045,56 +2101,6 @@ fn wake(&amp;self) {
     </summary>
     
       <category term="rust" scheme="https://colobu.com/categories/rust/"/>
-    
-  </entry>
-  
-  <entry>
-    <title><![CDATA[何时以及如何高效的使用经典的bpf, 它能到来什么好处？]]></title>
-    <link href="https://colobu.com/2023/09/27/when-and-how-to-use-classical-bpf/"/>
-    <id>https://colobu.com/2023/09/27/when-and-how-to-use-classical-bpf/</id>
-    <published>2023-09-27T05:17:17.000Z</published>
-    <updated>2023-12-13T13:09:16.227Z</updated>
-    <content type="html"><![CDATA[<p>Classical BPF(cBPF, 伯克利包过滤器)是一种用来过滤网络数据包的技术。它像一个钩子一样挂载在网络栈的关键路径上,可以在数据包<strong>进入</strong>协议栈之前,根据预设规则来过滤或处理网络数据包。</p>
-<a id="more"></a>
-<p>相比于一般的软件包过滤方案,Classical BPF有以下优点:</p>
-<ul>
-<li>效率高:因为它运行在内核空间,可以避免不必要的内核态和用户态切换,也省去多次数据复制的开销。</li>
-<li>安全:它不能随意访问系统内存或修改数据包,只能根据规则过滤,不会引起安全隐患。</li>
-<li>灵活:过滤规则可以动态更新,使包过滤功能更加灵活。</li>
-</ul>
-<p>Classical BPF通常应用于网络监控、防火墙、流量控制等场景。它为包过滤提供了一个高效、安全、灵活的解决方案。但功能较为受限,只能过滤包不能修改。</p>
-<p>我在百度做了三年多的网络监控了，我们会使用各种各样的方式来监控整个百度的物理网络，这些监控方式不同于普通的TCP Server/Client或者 UDP程序，一般我们会采用raw socket的方式来做包的探测和网络监控，为了高效的使用raw socket,避免把内核协议层的所有包都复制到应用层，我们会使用cBPF对收到的包进行过滤，我们只从内核层复制特定类型的包到应用层， 比如只复制UDP协议目的端口在20000 ~ 21000的数据包。 </p>
-<p>怎么做到呢？就是使用cBPF。</p>
-<p>我在先前的文章<a href="https://colobu.com/2022/06/05/use-bpf-to-make-the-go-network-program-8x-faster/" target="_blank" rel="external">使用BPF, 将Go网络程序的吞吐提升8倍</a>举了一个使用cBPF的例子：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div></pre></td><td class="code"><pre><div class="line">conn, err := net.ListenPacket(<span class="string">"ip4:udp"</span>, *addr)</div><div class="line"><span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">	<span class="built_in">panic</span>(err)</div><div class="line">}</div><div class="line">cc := conn.(*net.IPConn)</div><div class="line">cc.SetReadBuffer<span class="number">(20</span> *<span class="number"> 1024</span> *<span class="number"> 1024</span>)</div><div class="line">cc.SetWriteBuffer<span class="number">(20</span> *<span class="number"> 1024</span> *<span class="number"> 1024</span>)</div><div class="line">pconn := ipv4.NewPacketConn(conn)</div><div class="line"><span class="keyword">var</span> assembled []bpf.RawInstruction</div><div class="line"><span class="keyword">if</span> assembled, err = bpf.Assemble(filter); err != <span class="constant">nil</span> {</div><div class="line">	log.Print(err)</div><div class="line">	<span class="keyword">return</span></div><div class="line">}</div><div class="line">pconn.SetBPF(assembled)</div><div class="line">handleConn(conn)</div></pre></td></tr></table></figure>
-
-<p>可以使用<code>ipv4.PacketConn</code>的<code>SetBPF</code>方法设置过滤器:</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div></pre></td><td class="code"><pre><div class="line"></div><div class="line"><span class="keyword">type</span> Filter []bpf.Instruction</div><div class="line"><span class="keyword">var</span> filter = Filter{</div><div class="line">	bpf.LoadAbsolute{Off:<span class="number"> 22</span>, Size:<span class="number"> 2</span>},                                <span class="comment">// 加载目的端口</span></div><div class="line">	bpf.JumpIf{Cond: bpf.JumpEqual, Val: <span class="typename">uint32</span>(*port), SkipFalse:<span class="number"> 1</span>}, <span class="comment">// 如果目的端口 != 8972，则跳过一行，到了最后一，包丢弃了instruction</span></div><div class="line">	bpf.RetConstant{Val:<span class="number"> 0</span>xffff},                                      <span class="comment">// 返回 0xffff，接收包</span></div><div class="line">	bpf.RetConstant{Val:<span class="number"> 0</span>x0}, <span class="comment">//  返回0字节, 代表忽略这个包</span></div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>这里我们根据IP协议进行简单的分析。这里我们没有做过多的兼容检查，因为我们自己知道我们处理的是IPv4的包，而且包中也没有Option选项:<br><img src="IPv4_Packet.png" alt=""></p>
-<p>IP的头部20个字节，payload是UDP包：<br><img src="udp.jpg" alt=""></p>
-<p>可以看到UDP的前两个字节是源端口， 接下来两个字节是目的端口。</p>
-<p>所以从IP header开始，第22 ~ 24字节是目的端口，所以<code>bpf.LoadAbsolute{Off: 22, Size: 2},</code>就是把这两个字节读取出来，和我们的值进行比较，看看是不是我们期望的值。</p>
-<p>那么如果想使用<code>cBPF</code>,就得会写<code>bpf.Instruction</code>, 你得熟悉各种协议，以及bpf的指令。<br>不想学啊！累，麻烦！易出错！不好调试!</p>
-<p>没关系，我写了一个库，只要你会使用tcpdump/wireshark,会使用他们的过滤器写法，就能写出相应的指令来。</p>
-<p>比如 <code>tcpdump -i any -nn -vvvv tcp port 8080</code>这样一个命令，它的过滤器是<code>tcp port 8080</code>, 你这个使用这个库的下面的函数：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">raws, err := ParseTcpdumpFitlerExpr(layers.LinkTypeIPv4, <span class="string">"tcp port 8080"</span>)</div></pre></td></tr></table></figure>
-
-<p>调用这个函数你会得到编译好的指令<code>[]bpf.RawInstruction</code>，然后调用<code>pconn.SetBPF(raws)</code>就可以了。</p>
-<p>如果，你想得到它的Go代码形式，你可以调用<code>s = CreateInstructionsFromExpr(layers.LinkTypeIPv4, &quot;dst host 8.8.8.8 and icmp&quot;)</code>,<br>它会过滤只保留目的IP地址是<code>8.8.8.8</code>并且是icmp的包，生成的指令如下：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">var</span> filter = []bpf.Instruction {</div><div class="line">        	bpf.LoadConstant{Dst:<span class="number"> 0</span>,Val:<span class="number"> 0</span>},</div><div class="line">        	bpf.LoadAbsolute{Off:<span class="number"> 16</span>,Size:<span class="number"> 4</span>},</div><div class="line">        	bpf.JumpIf{Cond:<span class="number"> 1</span>,Val:<span class="number"> 134744072</span>,SkipTrue:<span class="number"> 3</span>} <span class="comment">//  134744072 = 0x8080808,</span></div><div class="line">        	bpf.LoadAbsolute{Off:<span class="number"> 9</span>,Size:<span class="number"> 1</span>},</div><div class="line">        	bpf.JumpIf{Cond:<span class="number"> 1</span>,Val:<span class="number"> 1</span>,SkipTrue:<span class="number"> 1</span>},</div><div class="line">        	bpf.RetConstant{Val:<span class="number"> 0</span>x1},</div><div class="line">        	bpf.RetConstant{Val:<span class="number"> 0</span>x0},</div><div class="line">        }</div></pre></td></tr></table></figure>
-
-<p><code>bpf.LoadAbsolute{Off: 16,Size: 4},</code>是加载IP头中的目的IP地址，检查是不是等于<code>8.8.8.8</code>，如果是，则检查协议(odd:9)是不是ICMP(icmp的协议号是1)。</p>
-<p>所以即使你不熟悉各种协议，根据tcpdump的过滤表达式也能生成编译好的bpf代码，或者得到Go语言的代码片段。</p>
-<p>对了，这个库是<a href="https://github.com/smallnest/qianmo/blob/master/bpf.go" target="_blank" rel="external">阡陌</a>。</p>
-]]></content>
-    <summary type="html">
-    <![CDATA[<p>Classical BPF(cBPF, 伯克利包过滤器)是一种用来过滤网络数据包的技术。它像一个钩子一样挂载在网络栈的关键路径上,可以在数据包<strong>进入</strong>协议栈之前,根据预设规则来过滤或处理网络数据包。</p>
-]]>
-    
-    </summary>
-    
-      <category term="Go" scheme="https://colobu.com/categories/Go/"/>
     
   </entry>
   
