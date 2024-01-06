@@ -4,7 +4,7 @@
   <subtitle><![CDATA[大道至简 Simplicity is the ultimate form of sophistication]]></subtitle>
   <link href="/atom.xml" rel="self"/>
   <link href="https://colobu.com/"/>
-  <updated>2024-01-06T15:44:19.979Z</updated>
+  <updated>2024-01-06T16:28:35.089Z</updated>
   <id>https://colobu.com/</id>
   
   <author>
@@ -876,8 +876,9 @@
     <link href="https://colobu.com/2023/12/07/more-precise-sleep/"/>
     <id>https://colobu.com/2023/12/07/more-precise-sleep/</id>
     <published>2023-12-06T23:18:11.000Z</published>
-    <updated>2023-12-07T00:31:19.208Z</updated>
+    <updated>2024-01-06T16:27:01.367Z</updated>
     <content type="html"><![CDATA[<p>书接上回。昨天我写了一篇《这个限流库两个大bug存在了半年之久，没人发现？》，提到了Go语言中的<code>time.Sleep</code>函数的问题。有网友也私下和我探讨，提到这个可能属于系统的问题，因为现代的操作系统都是分时操作系统，每个线程可能会分配一个或者多个时间片，Windows默认线程时间精度在15毫秒，Linux在1毫秒，所以<code>time.Sleep</code>的精度不可能那么高。</p>
+<p><strong>本文原文有误导，结论部分正确，我在文章末尾作了更正</strong></p>
 <a id="more"></a>
 <p>嗯，理论上这可以解释<code>time.Sleep</code>的行为，但是没有办法解释网友提出的在<code>go 1.16</code>之前的版本中，<code>time.Sleep</code>的精度更高，而<code>go 1.16</code>之后的版本中，<code>time.Sleep</code>的精度更低的问题。</p>
 <p>这个问题在Go的bug系统中有很多，不只是单单上篇文章介绍的#44343, 比如#29485、#61456、#44476、#44608、#61042。这些bug中Ian Lance Taylor的有些评论很有价值，对于了解Go运行时的Sleep很有帮助。但是阅览了这么多的bug,没有人给出为啥<code>go 1.16</code>之后的版本中，<code>time.Sleep</code>的精度更低的解释，到底发生了啥？或许和Timer调度的变化有关。</p>
@@ -940,9 +941,26 @@
 <li><code>nanosleep</code>的陷阱</li>
 </ul>
 <p>算是对上一篇文章的延伸。</p>
+<h2 id="更正">更正</h2>
+<p>基于网友在评论中指出我把时间单位看错了，我重新测试并做了更正。老眼昏花，先前确实看错了。</p>
+<p>我想基于三个interval做测试： 50纳秒、50微秒、1毫秒。我使用了<code>time.Sleep</code>和<code>syscall.Nanosleep</code>两种方式，在阿里云的一台轻量级虚机(Ubuntu 22.04)上做了测试。</p>
+<p>因为先前大家反映<code>time.Sleep</code>的精度不高，Linux只能达到毫秒级别，所以使用了50纳秒和50微秒。</p>
+<p>下面是<code>time.Sleep</code>的测试结果：<br>50纳秒的情况下，实际达到了954纳秒，比预期的50纳秒要高很多。<br>50微秒的情况下，实际达到了1.08毫秒，比预期的50微秒要高很多。<br>1毫秒的情况下，实际达到了1.07毫秒，和预期的1毫秒差不多。</p>
+<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div></pre></td><td class="code"><pre><div class="line"></div><div class="line"></div></pre></td></tr></table></figure>
+
+<p>sh<br>sleep 50ns<br>  avg 954ns;  min 350ns;  p50 421ns;  max 30.3µs;<br>  p90 573ns;  p99 30.3µs;  p999 30.3µs;  p9999 30.3µs;<br>      350ns [ 98] ████████████████████████████████████████<br>        5µs [  0]<br>       10µs [  0]<br>       15µs [  1]<br>       20µs [  0]<br>       25µs [  0]<br>       30µs [  1]<br>       35µs [  0]<br>       40µs [  0]<br>       45µs [  0]</p>
+<p>sleep 50µs<br>  avg 1.08ms;  min 1.05ms;  p50 1.08ms;  max 1.14ms;<br>  p90 1.09ms;  p99 1.14ms;  p999 1.14ms;  p9999 1.14ms;<br>     1.05ms [  1] ▌<br>     1.06ms [  1] ▌<br>     1.07ms [ 24] █████████████████<br>     1.08ms [ 56] ████████████████████████████████████████<br>     1.09ms [  9] ██████<br>      1.1ms [  6] ████<br>     1.11ms [  2] █<br>     1.12ms [  0]<br>     1.13ms [  0]<br>     1.14ms [  1] ▌</p>
+<p>sleep 1ms<br>  avg 1.07ms;  min 1.06ms;  p50 1.07ms;  max 1.11ms;<br>  p90 1.09ms;  p99 1.11ms;  p999 1.11ms;  p9999 1.11ms;<br>     1.06ms [  2] ██<br>     1.07ms [ 35] ████████████████████████████████████████<br>     1.07ms [  6] ██████▌<br>     1.08ms [ 10] ███████████<br>     1.08ms [ 19] █████████████████████▌<br>     1.09ms [  9] ██████████<br>     1.09ms [  8] █████████<br>      1.1ms [  8] █████████<br>      1.1ms [  1] █<br>     1.11ms+[  2] ██</p>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div></pre></td><td class="code"><pre><div class="line"></div><div class="line">下面是<span class="string">`syscall.Nanosleep`</span>的测试结果。</div><div class="line">在<span class="number">50</span>纳秒的情况下，实际达到了<span class="number">62.9</span>毫秒，比预期的<span class="number">50</span>纳秒要高了很多。</div><div class="line">在<span class="number">50</span>微秒的情况下，实际达到了<span class="number">118</span>微秒，比预期的<span class="number">50</span>微秒要翻倍，但是比<span class="keyword">time</span>.Sleep要好很多。</div><div class="line">在<span class="number">1</span>毫秒的情况下，实际达到了<span class="number">1.06</span>毫秒，和预期的<span class="number">1</span>毫秒差不多。</div></pre></td></tr></table></figure>
+
+<p>sh<br>nanosleep 50ns<br>  avg 62.9µs;  min 58.7µs;  p50 60.6µs;  max 130µs;<br>  p90 65.7µs;  p99 130µs;  p999 130µs;  p9999 130µs;<br>     58.7µs [ 32] █████████████████████▌<br>       60µs [ 59] ████████████████████████████████████████<br>       70µs [  5] ███<br>       80µs [  2] █<br>       90µs [  1] ▌<br>      100µs [  0]<br>      110µs [  0]<br>      120µs [  0]<br>      130µs [  1] ▌<br>      140µs [  0]</p>
+<p>nanosleep 50µs<br>  avg 118µs;  min 109µs;  p50 111µs;  max 223µs;<br>  p90 137µs;  p99 223µs;  p999 223µs;  p9999 223µs;<br>      109µs [ 83] ████████████████████████████████████████<br>      120µs [  8] ███▌<br>      140µs [  7] ███<br>      160µs [  0]<br>      180µs [  0]<br>      200µs [  1]<br>      220µs [  1]<br>      240µs [  0]<br>      260µs [  0]<br>      280µs [  0]</p>
+<p>nanosleep 1ms<br>  avg 1.06ms;  min 1.06ms;  p50 1.06ms;  max 1.08ms;<br>  p90 1.07ms;  p99 1.08ms;  p999 1.08ms;  p9999 1.08ms;<br>     1.06ms [ 10] █████▌<br>     1.07ms [ 69] ████████████████████████████████████████<br>     1.07ms [ 13] ███████▌<br>     1.08ms [  3] █▌<br>     1.08ms [  2] █<br>     1.09ms [  3] █▌<br>     1.09ms [  0]<br>      1.1ms [  0]<br>      1.1ms [  0]<br>     1.11ms [  0]<br><code>`</code></p>
+<p>综合比较，<code>syscall.Nanosleep</code>的精度要比<code>time.Sleep</code>高很多，纳秒级别的精度虽然达不到，但是在微秒级别的精度上勉强还可以接受。</p>
 ]]></content>
     <summary type="html">
     <![CDATA[<p>书接上回。昨天我写了一篇《这个限流库两个大bug存在了半年之久，没人发现？》，提到了Go语言中的<code>time.Sleep</code>函数的问题。有网友也私下和我探讨，提到这个可能属于系统的问题，因为现代的操作系统都是分时操作系统，每个线程可能会分配一个或者多个时间片，Windows默认线程时间精度在15毫秒，Linux在1毫秒，所以<code>time.Sleep</code>的精度不可能那么高。</p>
+<p><strong>本文原文有误导，结论部分正确，我在文章末尾作了更正</strong></p>
 ]]>
     
     </summary>
