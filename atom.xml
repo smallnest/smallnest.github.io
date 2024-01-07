@@ -4,7 +4,7 @@
   <subtitle><![CDATA[大道至简 Simplicity is the ultimate form of sophistication]]></subtitle>
   <link href="/atom.xml" rel="self"/>
   <link href="https://colobu.com/"/>
-  <updated>2024-01-07T11:00:40.893Z</updated>
+  <updated>2024-01-07T11:32:43.934Z</updated>
   <id>https://colobu.com/</id>
   
   <author>
@@ -19,10 +19,9 @@
     <link href="https://colobu.com/2024/01/07/concurrent-codes-in-Go-runtime-and-standard-library/"/>
     <id>https://colobu.com/2024/01/07/concurrent-codes-in-Go-runtime-and-standard-library/</id>
     <published>2024-01-07T05:40:31.000Z</published>
-    <updated>2024-01-07T11:00:10.839Z</updated>
+    <updated>2024-01-07T11:32:14.892Z</updated>
     <content type="html"><![CDATA[<p>这篇文章我们来了解一下隐藏在Go运行时中的一些并发原语， 因为运行时是底座和包循环依赖等原因，运行时中很少使用标准库中的并发原语，它有自己的并发原语。</p>
 <a id="more"></a>
-<h2 id="运行时中的并发原语">运行时中的并发原语</h2>
 <h3 id="mutex">mutex</h3>
 <p>在<a href="https://github.com/golang/go/blob/master/src/runtime/runtime2.go#L164" target="_blank" rel="external">runtime/runtime2.go</a> 定义了一个互斥锁，它的定义如下:</p>
 <figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> mutex <span class="keyword">struct</span> {</div><div class="line">	lockRankStruct</div><div class="line">	key <span class="typename">uintptr</span></div><div class="line">}</div></pre></td></tr></table></figure>
@@ -45,7 +44,7 @@
 <figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> rwmutex <span class="keyword">struct</span> {</div><div class="line">	rLock      mutex    <span class="comment">// protects readers, readerPass, writer</span></div><div class="line">	readers    muintptr <span class="comment">// list of pending readers</span></div><div class="line">	readerPass <span class="typename">uint32</span>   <span class="comment">// number of pending readers to skip readers list</span></div><div class="line"></div><div class="line">	wLock  mutex    <span class="comment">// serializes writers</span></div><div class="line">	writer muintptr <span class="comment">// pending writer waiting for completing readers</span></div><div class="line"></div><div class="line">	readerCount atomic.Int32 <span class="comment">// number of pending readers</span></div><div class="line">	readerWait  atomic.Int32 <span class="comment">// number of departing readers</span></div><div class="line"></div><div class="line">	readRank  lockRank <span class="comment">// semantic lock rank for read locking</span></div><div class="line">	writeRank lockRank <span class="comment">// semantic lock rank for write locking</span></div><div class="line">}</div></pre></td></tr></table></figure>
 
 <p><code>mutex</code>和<code>rwmutex</code>会直接阻塞<code>M</code>。</p>
-<h2 id="gopark/goready">gopark/goready</h2>
+<h3 id="gopark/goready">gopark/goready</h3>
 <p>在其它编程语言中，会直接提供<code>park</code>和<code>unpark</code>的功能，比如rust,提供对并发单元的更底层的控制。</p>
 <p><code>park</code>就是停止一会，很形象，就是暂时让并发单元阻塞，不再参与调度，直到<code>unpark</code>它，它才会重新参与调度。</p>
 <p>Go运行时并没有直接提供<code>park</code>和<code>unpark</code>的功能，它提供了<code>gopark</code>和<code>goready</code>的功能，它们的实现在<a href="https://github.com/golang/go/blob/master/src/runtime/proc.go#L385" target="_blank" rel="external">runtime/proc.go</a>。</p>
@@ -95,7 +94,7 @@
 <p>因为它在特定场景下很有用，Go的扩展库中也同样实现了它。</p>
 <p>它没有定义在运行时中，而是定义在<a href="https://github.com/golang/go/tree/master/src/internal/singleflight" target="_blank" rel="external">internal/singleflight</a>中。</p>
 <p>比如在包<code>net</code>中，我们查找一台主机的IP地址时，如果并发的请求，对资源是很大的浪费，这个时候我们只让一个请求处理就好了：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> Resolver <span class="keyword">struct</span> {</div><div class="line">	...</div><div class="line"></div><div class="line">	<span class="comment">// lookupGroup merges LookupIPAddr calls together for lookups for the same</span></div><div class="line">	<span class="comment">// host. The lookupGroup key is the LookupIPAddr.host argument.</span></div><div class="line">	<span class="comment">// The return values are ([]IPAddr, error).</span></div><div class="line">	lookupGroup singleflight.Group</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> (r *Resolver) lookupIPAddr(ctx context.Context, network, host <span class="typename">string</span>) ([]IPAddr, error) {</div><div class="line">	...</div><div class="line">    </div><div class="line">	ch := r.getLookupGroup().DoChan(lookupKey, <span class="keyword">func</span>() (any, error) {</div><div class="line">		<span class="keyword">return</span> testHookLookupIP(lookupGroupCtx, resolverFunc, network, host)</div><div class="line">	})</div><div class="line"></div><div class="line">    ...</div><div class="line">}</div></pre></td></tr></table></figure>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> Resolver <span class="keyword">struct</span> {</div><div class="line">	...</div><div class="line"></div><div class="line">	<span class="comment">// lookupGroup merges LookupIPAddr calls together for lookups for the same</span></div><div class="line">	<span class="comment">// host. The lookupGroup key is the LookupIPAddr.host argument.</span></div><div class="line">	<span class="comment">// The return values are ([]IPAddr, error).</span></div><div class="line">	lookupGroup singleflight.Group</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> (r *Resolver) lookupIPAddr(ctx context.Context, network, host <span class="typename">string</span>) ([]IPAddr, error) {</div><div class="line">	...</div><div class="line"></div><div class="line">	ch := r.getLookupGroup().DoChan(lookupKey, <span class="keyword">func</span>() (any, error) {</div><div class="line">		<span class="keyword">return</span> testHookLookupIP(lookupGroupCtx, resolverFunc, network, host)</div><div class="line">	})</div><div class="line"></div><div class="line">    ...</div><div class="line">}</div></pre></td></tr></table></figure>
 
 ]]></content>
     <summary type="html">
