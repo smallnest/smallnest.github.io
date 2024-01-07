@@ -4,7 +4,7 @@
   <subtitle><![CDATA[大道至简 Simplicity is the ultimate form of sophistication]]></subtitle>
   <link href="/atom.xml" rel="self"/>
   <link href="https://colobu.com/"/>
-  <updated>2024-01-06T16:28:35.089Z</updated>
+  <updated>2024-01-07T11:00:40.893Z</updated>
   <id>https://colobu.com/</id>
   
   <author>
@@ -13,6 +13,100 @@
   </author>
   
   <generator uri="http://zespia.tw/hexo/">Hexo</generator>
+  
+  <entry>
+    <title><![CDATA[Go运行时的并发原语]]></title>
+    <link href="https://colobu.com/2024/01/07/concurrent-codes-in-Go-runtime-and-standard-library/"/>
+    <id>https://colobu.com/2024/01/07/concurrent-codes-in-Go-runtime-and-standard-library/</id>
+    <published>2024-01-07T05:40:31.000Z</published>
+    <updated>2024-01-07T11:00:10.839Z</updated>
+    <content type="html"><![CDATA[<p>这篇文章我们来了解一下隐藏在Go运行时中的一些并发原语， 因为运行时是底座和包循环依赖等原因，运行时中很少使用标准库中的并发原语，它有自己的并发原语。</p>
+<a id="more"></a>
+<h2 id="运行时中的并发原语">运行时中的并发原语</h2>
+<h3 id="mutex">mutex</h3>
+<p>在<a href="https://github.com/golang/go/blob/master/src/runtime/runtime2.go#L164" target="_blank" rel="external">runtime/runtime2.go</a> 定义了一个互斥锁，它的定义如下:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> mutex <span class="keyword">struct</span> {</div><div class="line">	lockRankStruct</div><div class="line">	key <span class="typename">uintptr</span></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>它可是运行时中的大红人了，在很多数据结构中都被广泛的使用，凡事涉及到并发访问的地方都会用到它，你在<code>runtime2.go</code>文件中就能看到多处使用它的地方，因为很多地方都在使用它，我就不一一列举了在runtime这个文件夹中搜<code>mutex</code>这个关键子就都搜出来了。</p>
+<p>举一个大家常用来底层分析的数据结构<code>channel</code>为例，channel的数据结构定义如下：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> hchan <span class="keyword">struct</span> {</div><div class="line">	qcount   <span class="typename">uint</span>           </div><div class="line">	dataqsiz <span class="typename">uint</span>           </div><div class="line">	buf      unsafe.Pointer </div><div class="line">	elemsize <span class="typename">uint16</span></div><div class="line">	closed   <span class="typename">uint32</span></div><div class="line">	elemtype *_type </div><div class="line">	sendx    <span class="typename">uint</span>   </div><div class="line">	recvx    <span class="typename">uint</span>   </div><div class="line">	recvq    waitq  </div><div class="line">	sendq    waitq  </div><div class="line"></div><div class="line">	lock mutex</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>最后哪个字段<code>lock mutex</code>就是使用的这个互斥锁。因为一个通道在发送和接收的时候都会涉及到对通道的修改，在多发送者或者接收者情况下，需要使用互斥锁来保护。</p>
+<p>这个互斥锁的使用需要调用几个函数。</p>
+<ul>
+<li>lockInit: 需要初始化这个锁，比如在channel的实现中，有如下的初始化代码：<code>lockInit(&amp;c.lock, lockRankHchan)</code>, 它将lock初始化(lockInit)时设置锁的等级(rank)。如果不明确去初始化一个锁,那么可以在调用lock自身的时候通过lockWithRank指定这个锁的等级。这个等级在启用<code>GOEXPERIMENT=staticlockranking</code>用来加强锁的静态分析。</li>
+<li>lock: 加锁，在不同的操作系统下有不同的实现。如channel使用这个代码进行加锁：<code>lock(&amp;c.lock)</code></li>
+<li>unlock: 解锁，在不同的操作系统下有不同的实现。如channel使用这个代码进行解锁：<code>unlock(&amp;c.lock)</code></li>
+</ul>
+<p>我在<a href="https://colobu.com/2020/12/06/mutex-in-go-runtime/" target="_blank" rel="external">Go运行时中的 Mutex</a>中详细介绍了它，这里就不再赘述了。</p>
+<h3 id="rwmutex">rwmutex</h3>
+<p>运行时中还实现了读写锁<a href="https://github.com/golang/go/blob/master/src/runtime/rwmutex.go" target="_blank" rel="external">rwmutex</a>。<br>这个读写锁完全是从<code>sync.RWMutex</code>中拷贝过来的，只是将<code>sync.RWMutex</code>中的<code>sync</code>包替换成了<code>runtime</code>包，因为<code>sync</code>包依赖了<code>runtime</code>包，所以不能直接使用。</p>
+<p>你看它的数据结构定义和<code>sync.RWMutex</code>几乎是一样的：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> rwmutex <span class="keyword">struct</span> {</div><div class="line">	rLock      mutex    <span class="comment">// protects readers, readerPass, writer</span></div><div class="line">	readers    muintptr <span class="comment">// list of pending readers</span></div><div class="line">	readerPass <span class="typename">uint32</span>   <span class="comment">// number of pending readers to skip readers list</span></div><div class="line"></div><div class="line">	wLock  mutex    <span class="comment">// serializes writers</span></div><div class="line">	writer muintptr <span class="comment">// pending writer waiting for completing readers</span></div><div class="line"></div><div class="line">	readerCount atomic.Int32 <span class="comment">// number of pending readers</span></div><div class="line">	readerWait  atomic.Int32 <span class="comment">// number of departing readers</span></div><div class="line"></div><div class="line">	readRank  lockRank <span class="comment">// semantic lock rank for read locking</span></div><div class="line">	writeRank lockRank <span class="comment">// semantic lock rank for write locking</span></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p><code>mutex</code>和<code>rwmutex</code>会直接阻塞<code>M</code>。</p>
+<h2 id="gopark/goready">gopark/goready</h2>
+<p>在其它编程语言中，会直接提供<code>park</code>和<code>unpark</code>的功能，比如rust,提供对并发单元的更底层的控制。</p>
+<p><code>park</code>就是停止一会，很形象，就是暂时让并发单元阻塞，不再参与调度，直到<code>unpark</code>它，它才会重新参与调度。</p>
+<p>Go运行时并没有直接提供<code>park</code>和<code>unpark</code>的功能，它提供了<code>gopark</code>和<code>goready</code>的功能，它们的实现在<a href="https://github.com/golang/go/blob/master/src/runtime/proc.go#L385" target="_blank" rel="external">runtime/proc.go</a>。</p>
+<p><code>gopark</code>会将goroutine放到等待队列中，从调度器的运行队列中移出去，等待被唤醒。<br><code>goready</code>会将goroutine放到可运行队列中，加入到调度器的运行队列，等待被调度。</p>
+<h3 id="note">note</h3>
+<p><code>note</code>实现一次性的通知机制。</p>
+<p><code>note</code>的数据结构如下：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> note <span class="keyword">struct</span> {</div><div class="line">	key <span class="typename">uintptr</span></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>可以使用<code>notesleep</code>和<code>notewakeup</code>进行休眠和唤醒。</p>
+<p>就像<code>mutex</code>一样，<code>notesleep</code>会阻塞<code>M</code>，<code>notewakeup</code>会唤醒一个<code>M</code>，并且不会重新调度<code>G</code>和<code>P</code>,而<code>notetsleepg</code>就像一个阻塞的系统调用一样，允许<code>P</code>选择另外一个<code>G</code>运行。<br><code>noteclear</code>用来重置<code>note</code></p>
+<p>总结一下， 上面几种同步原语阻塞的角色如下：</p>
+<table><tbody><tr><th></th><th colspan="3">阻塞角色</th></tr><br><tr><th>同步原语</th><th>G</th><th>M</th><th>P</th></tr><br><tr><td>mutex/rwmutex</td><td>Y</td><td>Y</td><td>Y</td></tr><br><tr><td>note</td><td>Y</td><td>Y</td><td>Y/N</td></tr><br><tr><td>park</td><td>Y</td><td>N</td><td>N</td></tr><br></tbody></table>
+
+<h3 id="filelock">filelock</h3>
+<p>&quot;filelock&quot;（文件锁）通常是指在计算机系统中使用的一种机制，用于确保对文件的独占性访问，以防止多个进程或线程同时修改文件而导致数据不一致或损坏。</p>
+<p>一些应用程序经常利用文件锁，来控制只有一个实例在运行，在linux环境下非常常见，比如mysql等。</p>
+<p>在不同的操作系统和编程语言中，文件锁的实现方式可能会有所不同。一般而言，文件锁可以分为两种主要类型：</p>
+<ul>
+<li>共享锁（Shared Lock）： 多个进程或线程可以同时获取共享锁，允许它们同时读取文件，但阻止其他进程或线程获取独占锁进行写操作。</li>
+<li>独占锁（Exclusive Lock）： 只允许一个进程或线程获取独占锁，阻止其他进程或线程同时进行读或写操作。</li>
+</ul>
+<p>文件锁的代码在<a href="https://github.com/golang/go/tree/8db131082d08e497fd8e9383d0ff7715e1bef478/src/cmd/go/internal/lockedfile" target="_blank" rel="external">cmd/go/internal/lockedfile</a>中,我们以Linux为例，看看它的实现：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> lockType <span class="typename">int16</span></div><div class="line"></div><div class="line"><span class="keyword">const</span> (</div><div class="line">	readLock  lockType = syscall.LOCK_SH</div><div class="line">	writeLock lockType = syscall.LOCK_EX</div><div class="line">)</div><div class="line"></div><div class="line"><span class="keyword">func</span> lock(f File, lt lockType) (err error) {</div><div class="line">	<span class="keyword">for</span> {</div><div class="line">		err = syscall.Flock(<span class="typename">int</span>(f.Fd()), <span class="typename">int</span>(lt))</div><div class="line">		<span class="keyword">if</span> err != syscall.EINTR {</div><div class="line">			<span class="keyword">break</span></div><div class="line">		}</div><div class="line">	}</div><div class="line">	<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">		<span class="keyword">return</span> &fs.PathError{</div><div class="line">			Op:   lt.String(),</div><div class="line">			Path: f.Name(),</div><div class="line">			Err:  err,</div><div class="line">		}</div><div class="line">	}</div><div class="line">	<span class="keyword">return</span> <span class="constant">nil</span></div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> unlock(f File) error {</div><div class="line">	<span class="keyword">return</span> lock(f, syscall.LOCK_UN)</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>可以看到它实际是调用系统调用<code>syscall.Flock</code>实现的。</p>
+<p>这不属于运行时内定义的同步原语，但是它给我们提供了一个实现文件锁的思路，它甚至还封装了一个<code>Mutex</code>供我们使用。如果有类似的需求，我们可以参考它的实现。</p>
+<h3 id="sema">sema</h3>
+<p>不太清楚Go为啥不在运行时或者标准库sync中实现信号量，而是在扩展包中去实现，信号量可以说是一个非常广泛使用的同步原语了。</p>
+<p>虽然没有在运行时中没有明确实现，但是运行时中的<a href="https://github.com/golang/go/blob/master/src/runtime/sema.go" target="_blank" rel="external">runtime/sema.go</a>提供了与信号量相近功能，而且<code>sync.Mutex</code>严重依赖它。</p>
+<p>这个实现旨在提供一个可以在其他同步原语争用的情况下使用的睡眠和唤醒原语，因此，它的目标与Linux的futex相同，但语义要简单得多。<br>Go团队说你不要将这些视为信号量，而是将它们视为一种实现睡眠和唤醒的方式，以确保每个睡眠都与单个唤醒配对，<br>这是有历史原因，这些从贝尔实验室出来的大佬，对于先前他们在Plan 9中的一些想法一脉相承的继承下来，这个设计可以参见 Mullender 和 Cox 的<a href="https://swtch.com/semaphore.pdf" target="_blank" rel="external">Plan 9中的信号量</a>。</p>
+<p>比如<code>sync.Mutex</code>睡眠和唤醒的函数其实就是这里实现的：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div></pre></td><td class="code"><pre><div class="line"><span class="comment">//go:linkname sync_runtime_Semacquire sync.runtime_Semacquire</span></div><div class="line"><span class="keyword">func</span> sync_runtime_Semacquire(addr *<span class="typename">uint32</span>) {</div><div class="line">	semacquire1(addr, <span class="constant">false</span>, semaBlockProfile,<span class="number"> 0</span>, waitReasonSemacquire)</div><div class="line">}</div><div class="line"></div><div class="line"><span class="comment">//go:linkname poll_runtime_Semacquire internal/poll.runtime_Semacquire</span></div><div class="line"><span class="keyword">func</span> poll_runtime_Semacquire(addr *<span class="typename">uint32</span>) {</div><div class="line">	semacquire1(addr, <span class="constant">false</span>, semaBlockProfile,<span class="number"> 0</span>, waitReasonSemacquire)</div><div class="line">}</div><div class="line"></div><div class="line"><span class="comment">//go:linkname sync_runtime_Semrelease sync.runtime_Semrelease</span></div><div class="line"><span class="keyword">func</span> sync_runtime_Semrelease(addr *<span class="typename">uint32</span>, handoff <span class="typename">bool</span>, skipframes <span class="typename">int</span>) {</div><div class="line">	semrelease1(addr, handoff, skipframes)</div><div class="line">}</div><div class="line"></div><div class="line"><span class="comment">//go:linkname sync_runtime_SemacquireMutex sync.runtime_SemacquireMutex</span></div><div class="line"><span class="keyword">func</span> sync_runtime_SemacquireMutex(addr *<span class="typename">uint32</span>, lifo <span class="typename">bool</span>, skipframes <span class="typename">int</span>) {</div><div class="line">	semacquire1(addr, lifo, semaBlockProfile|semaMutexProfile, skipframes, waitReasonSyncMutexLock)</div><div class="line">}</div><div class="line"></div><div class="line"><span class="comment">// RWMutex使用的一些函数</span></div><div class="line">...</div></pre></td></tr></table></figure>
+
+<h3 id="atomic">atomic</h3>
+<p><a href="https://github.com/golang/go/tree/master/src/runtime/internal/atomic" target="_blank" rel="external">atomic</a> 提供原子操作，独立于<code>sync/atomic</code>，仅供运行时使用。</p>
+<p>在大多数平台上，编译器能够识别此包中定义的函数，并用平台特定的内部函数替换它们。在其他平台上，提供了通用的实现。<br>除非另有说明，在此包中定义的操作在处理它们所操作的值时对线程是有序一致的(sequentially consistent)。更具体地说，在一个线程上按特定顺序发生的操作，将始终被另一个线程观察到以完全相同的顺序发生。</p>
+<p>因为和特定的CPU架构有关，它的实现针对不同的CPU架构，由不同的指令实现而成，而且基本使用汇编实现，比如AMD64下的Cas实现，使用了<code>LOCK</code> + <code>CMPXCHGL</code>指令：</p>
+<figure class="highlight asm"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div></pre></td><td class="code"><pre><div class="line">TEXT ·Cas(SB),<span class="preprocessor">NOSPLIT</span>,<span class="number">$0</span>-<span class="number">17</span></div><div class="line">	<span class="keyword">MOVQ</span>	<span class="preprocessor">ptr</span>+<span class="number">0</span>(FP), <span class="number">BX</span></div><div class="line">	MOVL	old+<span class="number">8</span>(FP), <span class="number">AX</span></div><div class="line">	MOVL	new+<span class="number">12</span>(FP), <span class="number">CX</span></div><div class="line">	<span class="keyword">LOCK</span></div><div class="line">	CMPXCHGL	<span class="number">CX</span>, <span class="number">0</span>(<span class="number">BX</span>)</div><div class="line">	SETEQ	<span class="keyword">ret</span>+<span class="number">16</span>(FP)</div><div class="line">	<span class="keyword">RET</span></div></pre></td></tr></table></figure>
+
+<p>其实<code>sync/atomic</code>下的实现，也是调用这里的实现，否则维护两套代码就太麻烦了，而且可能出现不一致的现象。你看<code>sync/atomic/asm.s</code>:</p>
+<figure class="highlight asm"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">...</span></div><div class="line">TEXT ·CompareAndSwapInt64(SB),NOSPLIT,$<span class="number">0</span></div><div class="line">	JMP	runtime∕internal∕atomic·Cas64(SB)</div><div class="line"></div><div class="line">TEXT ·CompareAndSwapUint64(SB),NOSPLIT,$<span class="number">0</span></div><div class="line">	JMP	runtime∕internal∕atomic·Cas64(SB)</div><div class="line"><span class="keyword">...</span></div></pre></td></tr></table></figure>
+
+<p>它也是调用<code>untime∕internal∕atomic</code>下对应的函数。</p>
+<h3 id="singleflight">singleflight</h3>
+<p><code>singleflight</code>特别适合大并发情况下许多请求做同一件事情的场景，这个时候只处理一个请求就可以了，其它请求等待那一个请求的结果，这样对下游的压力大大减少，比如在读取cache的时候。</p>
+<p>因为它在特定场景下很有用，Go的扩展库中也同样实现了它。</p>
+<p>它没有定义在运行时中，而是定义在<a href="https://github.com/golang/go/tree/master/src/internal/singleflight" target="_blank" rel="external">internal/singleflight</a>中。</p>
+<p>比如在包<code>net</code>中，我们查找一台主机的IP地址时，如果并发的请求，对资源是很大的浪费，这个时候我们只让一个请求处理就好了：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> Resolver <span class="keyword">struct</span> {</div><div class="line">	...</div><div class="line"></div><div class="line">	<span class="comment">// lookupGroup merges LookupIPAddr calls together for lookups for the same</span></div><div class="line">	<span class="comment">// host. The lookupGroup key is the LookupIPAddr.host argument.</span></div><div class="line">	<span class="comment">// The return values are ([]IPAddr, error).</span></div><div class="line">	lookupGroup singleflight.Group</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> (r *Resolver) lookupIPAddr(ctx context.Context, network, host <span class="typename">string</span>) ([]IPAddr, error) {</div><div class="line">	...</div><div class="line">    </div><div class="line">	ch := r.getLookupGroup().DoChan(lookupKey, <span class="keyword">func</span>() (any, error) {</div><div class="line">		<span class="keyword">return</span> testHookLookupIP(lookupGroupCtx, resolverFunc, network, host)</div><div class="line">	})</div><div class="line"></div><div class="line">    ...</div><div class="line">}</div></pre></td></tr></table></figure>
+
+]]></content>
+    <summary type="html">
+    <![CDATA[<p>这篇文章我们来了解一下隐藏在Go运行时中的一些并发原语， 因为运行时是底座和包循环依赖等原因，运行时中很少使用标准库中的并发原语，它有自己的并发原语。</p>
+]]>
+    
+    </summary>
+    
+      <category term="Go" scheme="https://colobu.com/categories/Go/"/>
+    
+  </entry>
   
   <entry>
     <title><![CDATA[学习C++20, 为Go的atomic类型插上一双翅膀]]></title>
@@ -2076,70 +2170,6 @@ fn wake(&amp;self) {
     </summary>
     
       <category term="Rust" scheme="https://colobu.com/categories/Rust/"/>
-    
-  </entry>
-  
-  <entry>
-    <title><![CDATA[不看就落后了，Go 1.22 中更好的http router]]></title>
-    <link href="https://colobu.com/2023/10/19/better-http-server-routing-in-go-112/"/>
-    <id>https://colobu.com/2023/10/19/better-http-server-routing-in-go-112/</id>
-    <published>2023-10-19T14:45:18.000Z</published>
-    <updated>2023-10-19T15:21:34.723Z</updated>
-    <content type="html"><![CDATA[<p>很多人为了使用Go web中更好的路由，会使用第三方的库 <code>httprouter</code>、<code>gorilla/mux</code>等。在明年的春节左右发布的Go 1.22中，Go官方终于对标准库中的<code>http.ServeMux</code>下手了，对它的功能进行了优化，终于可以抛弃第三方库了。</p>
-<p>一个令人兴奋的<a href="https://github.com/golang/go/issues/61410" target="_blank" rel="external">提案</a>预计将在Go 1.22中实现—— 增强标准库<code>net/http</code>包中默认HTTP服务多路复用器的模式匹配能力。</p>
-<a id="more"></a>
-<p>现有的多路复用器（<code>http.ServeMux</code>）提供了基本的路径匹配，但除此之外没有太多。这导致了一堆的第三方库实现了更强大的功能。</p>
-<p>Go 1.22中的新多路复用器将通过提供高级匹配能力来显著弥合与第三方库的差距。在这篇短文中，我将快速介绍新的多路复用器（<code>mux</code>）。我还将给出REST服务器的示例，并比较新的标准库<code>mux</code>与<code>gorilla/mux</code>的性能。</p>
-<h2 id="使用新的mux">使用新的mux</h2>
-<p>如果你曾经在Go中使用过第三方 mux/router（比如<code>gorilla/mux</code>），那么使用新的标准mux将是简单而熟悉的。从阅读它的文档开始——它简短丝滑。</p>
-<p>让我们来看几个基本用法示例。我们的第一个示例演示了mux的一些新模式匹配功能：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> main</div><div class="line"></div><div class="line"><span class="keyword">import</span> (</div><div class="line">  <span class="string">"fmt"</span></div><div class="line">  <span class="string">"net/http"</span></div><div class="line">)</div><div class="line"></div><div class="line"><span class="keyword">func</span> main() {</div><div class="line">  mux := http.NewServeMux()</div><div class="line">  mux.HandleFunc(<span class="string">"GET /path/"</span>, <span class="keyword">func</span>(w http.ResponseWriter, r *http.Request) {</div><div class="line">    fmt.Fprint(w, <span class="string">"got path\n"</span>)</div><div class="line">  })</div><div class="line"></div><div class="line">  mux.HandleFunc(<span class="string">"/task/{id}/"</span>, <span class="keyword">func</span>(w http.ResponseWriter, r *http.Request) {</div><div class="line">    id := r.PathValue(<span class="string">"id"</span>)</div><div class="line">    fmt.Fprintf(w, <span class="string">"handling task with id=%v\n"</span>, id)</div><div class="line">  })</div><div class="line"></div><div class="line">  http.ListenAndServe(<span class="string">"localhost:8090"</span>, mux)</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>经验丰富的Go程序员会立即注意到两个新功能：</p>
-<ul>
-<li>在第一个处理程序中，HTTP method（在本例中为<code>GET</code>）被明确指定为模式的一部分。这意味着该处理程序将只触发以<code>/path/</code>开头的路径的<code>GET</code>请求，而不触发其他HTTP method。</li>
-<li>在第二个处理程序中，第二个路径组件 - <code>{id}</code>中有一个通配符，这是以前不支持的。通配符将匹配单个路径组件，然后处理程序可以通过请求的<code>PathValue</code>方法访问匹配的值。</li>
-</ul>
-<p>由于Go 1.22尚未发布，你可以使用<code>gotip</code>运行此示例。请参阅完整的<a href="https://github.com/eliben/code-for-blog/tree/master/2023/http-newmux-samples" target="_blank" rel="external">代码示例</a>以及运行此程序的完整说明。让我们来试试这个服务器：</p>
-<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">$ gotip run sample.go</div></pre></td></tr></table></figure>
-
-<p>在一个单独的终端中，我们可以发出一些curl调用来测试它：</p>
-<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div></pre></td><td class="code"><pre><div class="line">$ curl localhost:<span class="number">8090</span>/what/</div><div class="line"><span class="number">404</span> page not found</div><div class="line"></div><div class="line">$ curl localhost:<span class="number">8090</span>/path/</div><div class="line">got path</div><div class="line"></div><div class="line">$ curl -X POST localhost:<span class="number">8090</span>/path/</div><div class="line">Method Not Allowed</div><div class="line"></div><div class="line">$ curl localhost:<span class="number">8090</span>/task/f0<span class="built_in">cd</span>2e/</div><div class="line">handling task with id=f0<span class="built_in">cd</span>2e</div></pre></td></tr></table></figure>
-
-<p>请注意，服务器如何拒绝对<code>/path/</code>的POST请求，同时允许（curl的默认值）<code>GET</code>请求。还要注意，当请求匹配时，<code>id</code>通配符是如何被分配一个值的。我再次鼓励您查看新<a href="https://pkg.go.dev/net/http@master#ServeMux" target="_blank" rel="external">ServeMux</a>的文档。您将了解其他功能，如将尾随路径与带有<code>{id}</code>的通配符匹配，路径以<code>{$}</code>结尾的严格匹配以及其他规则。</p>
-<p>提案中特别注意不同模式之间的潜在冲突。请考虑此设置：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div></pre></td><td class="code"><pre><div class="line">mux := http.NewServeMux()</div><div class="line">mux.HandleFunc(<span class="string">"/task/{id}/status/"</span>, <span class="keyword">func</span>(w http.ResponseWriter, r *http.Request) {</div><div class="line">        id := r.PathValue(<span class="string">"id"</span>)</div><div class="line">        fmt.Fprintf(w, <span class="string">"handling task status with id=%v\n"</span>, id)</div><div class="line">})</div><div class="line">mux.HandleFunc(<span class="string">"/task/0/{action}/"</span>, <span class="keyword">func</span>(w http.ResponseWriter, r *http.Request) {</div><div class="line">        action := r.PathValue(<span class="string">"action"</span>)</div><div class="line">        fmt.Fprintf(w, <span class="string">"handling task 0 with action=%v\n"</span>, action)</div><div class="line">})</div></pre></td></tr></table></figure>
-
-<p>假设服务器收到<code>/task/0/status/</code>的请求——它应该转到哪个处理程序？两者都匹配！因此，新的<code>ServeMux</code>文档仔细地描述了模式的优先级规则以及潜在的冲突。如果发生冲突，注册会panic。事实上，对于上面的例子，我们得到了如下内容：</p>
-<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div></pre></td><td class="code"><pre><div class="line">panic: pattern <span class="string">"/task/0/{action}/"</span> (registered at sample-conflict.go:<span class="number">14</span>) conflicts with pattern <span class="string">"/task/{id}/status/"</span> (registered at sample-conflict.go:<span class="number">10</span>):</div><div class="line">/task/<span class="number">0</span>/{action}/ and /task/{id}/status/ both match some paths, like <span class="string">"/task/0/status/"</span>.</div><div class="line">But neither is more specific than the other.</div><div class="line">/task/<span class="number">0</span>/{action}/ matches <span class="string">"/task/0/action/"</span>, but /task/{id}/status/ doesn<span class="string">'t.</span></div><div class="line">/task/{id}/status/ matches "/task/id/status/", but /task/0/{action}/ doesn't.</div></pre></td></tr></table></figure>
-
-<p>该信息详细且有用。如果我们在复杂的注册方案中遇到冲突（尤其是当模式在源代码中的多个位置注册时），这些细节会非常有用。</p>
-<h2 id="用新的mux实现服务器">用新的mux实现服务器</h2>
-<p><code>REST Servers in Go series</code>的REST服务器使用几种不同的方法为Go中的任务/待办事项列表应用程序实现了一个简单的服务器。<a href="https://eli.thegreenplace.net/2021/rest-servers-in-go-part-1-standard-library/" target="_blank" rel="external">第1部分</a>从标准库开始，<a href="https://eli.thegreenplace.net/2021/rest-servers-in-go-part-2-using-a-router-package/" target="_blank" rel="external">第2部分</a>使用<code>gorilla/mux</code>路由器重新实现了相同的服务器。</p>
-<p>现在是再次实现它的好时机，但有了Go 1.22的增强<code>mux</code>；将该解决方案与使用<code>gorilla/mux</code>的解决方案进行比较将特别有趣。</p>
-<p>此项目的完整代码可在<a href="https://github.com/eliben/code-for-blog/tree/master/2021/go-rest-servers/stdlib-newmux" target="_blank" rel="external">此处</a>获得。让我们看看几个有代表性的代码示例，从<a href="https://eli.thegreenplace.net/2023/better-http-server-routing-in-go-122/#footnote-1" target="_blank" rel="external">模式注册</a>开始：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div></pre></td><td class="code"><pre><div class="line">mux := http.NewServeMux()</div><div class="line">server := NewTaskServer()</div><div class="line"></div><div class="line">mux.HandleFunc(<span class="string">"POST /task/"</span>, server.createTaskHandler)</div><div class="line">mux.HandleFunc(<span class="string">"GET /task/"</span>, server.getAllTasksHandler)</div><div class="line">mux.HandleFunc(<span class="string">"DELETE /task/"</span>, server.deleteAllTasksHandler)</div><div class="line">mux.HandleFunc(<span class="string">"GET /task/{id}/"</span>, server.getTaskHandler)</div><div class="line">mux.HandleFunc(<span class="string">"DELETE /task/{id}/"</span>, server.deleteTaskHandler)</div><div class="line">mux.HandleFunc(<span class="string">"GET /tag/{tag}/"</span>, server.tagHandler)</div><div class="line">mux.HandleFunc(<span class="string">"GET /due/{year}/{month}/{day}/"</span>, server.dueHandler)</div></pre></td></tr></table></figure>
-
-<p>就像在<code>gorilla/mux</code>示例中一样，这里我们使用特定的HTTP method将请求（具有相同路径）路由到不同的处理程序；使用旧的<code>http.ServeMux</code>这样的匹配器就必须转到同一个处理程序，然后由该处理程序根据该方法决定要做什么。</p>
-<p>让我们看看其中一个处理程序：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> (ts *taskServer) getTaskHandler(w http.ResponseWriter, req *http.Request) {</div><div class="line">  log.Printf(<span class="string">"handling get task at %s\n"</span>, req.URL.Path)</div><div class="line"></div><div class="line">  id, err := strconv.Atoi(req.PathValue(<span class="string">"id"</span>))</div><div class="line">  <span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">    http.Error(w, <span class="string">"invalid id"</span>, http.StatusBadRequest)</div><div class="line">    <span class="keyword">return</span></div><div class="line">  }</div><div class="line"></div><div class="line">  task, err := ts.store.GetTask(id)</div><div class="line">  <span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">    http.Error(w, err.Error(), http.StatusNotFound)</div><div class="line">    <span class="keyword">return</span></div><div class="line">  }</div><div class="line"></div><div class="line">  renderJSON(w, task)</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>它从<code>req.PathValue(&quot;id&quot;)</code>中提取ID值。类似于Gorilla方法；然而，由于我们没有正则表达式指定<code>{id}</code>只匹配整数，因此我们必须注意<code>strconv.Atoi</code>返回的错误。</p>
-<p>总之，最终结果与第2部分中使用<code>gorilla/mux</code>的解决方案非常相似。与普通的标准库方法相比，处理程序的方式要好得多，因为mux现在可以进行更复杂的路由，而不会将许多路由决策留给处理程序本身。</p>
-<h2 id="结论">结论</h2>
-<p>“我应该使用哪个router库？”一直是Go初学者的常见问题。我相信在Go 1.22发布后，这个问题的常见答案会发生变化，因为许多人会发现新的标准库 mux足以满足他们的需求，而无需求助于第三方软件包。</p>
-<p>其他人会坚持熟悉的第三方库，这完全没关系。像<code>gorilla/mux</code>这样的路由器仍然提供比标准库更多的功能；除此之外，许多Go程序员选择了像Gin这样的轻量级框架，它提供了一个路由器，但也提供了用于构建web后端的额外工具。</p>
-<p>总而言之，这对所有Go用户来说无疑是一个积极的变化。无论人们是使用第三方软件包还是坚持使用标准库，让标准库更有能力对整个社区来说都是一个积极的方面。</p>
-<p>翻译自<a href="https://eli.thegreenplace.net/2023/better-http-server-routing-in-go-122/" target="_blank" rel="external">Better HTTP server routing in Go 1.22</a>。</p>
-]]></content>
-    <summary type="html">
-    <![CDATA[<p>很多人为了使用Go web中更好的路由，会使用第三方的库 <code>httprouter</code>、<code>gorilla/mux</code>等。在明年的春节左右发布的Go 1.22中，Go官方终于对标准库中的<code>http.ServeMux</code>下手了，对它的功能进行了优化，终于可以抛弃第三方库了。</p>
-<p>一个令人兴奋的<a href="https://github.com/golang/go/issues/61410" target="_blank" rel="external">提案</a>预计将在Go 1.22中实现—— 增强标准库<code>net/http</code>包中默认HTTP服务多路复用器的模式匹配能力。</p>
-]]>
-    
-    </summary>
-    
-      <category term="Go" scheme="https://colobu.com/categories/Go/"/>
     
   </entry>
   
