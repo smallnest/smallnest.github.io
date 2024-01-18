@@ -4,7 +4,7 @@
   <subtitle><![CDATA[大道至简 Simplicity is the ultimate form of sophistication]]></subtitle>
   <link href="/atom.xml" rel="self"/>
   <link href="https://colobu.com/"/>
-  <updated>2024-01-14T09:41:36.050Z</updated>
+  <updated>2024-01-18T14:55:59.832Z</updated>
   <id>https://colobu.com/</id>
   
   <author>
@@ -13,6 +13,125 @@
   </author>
   
   <generator uri="http://zespia.tw/hexo/">Hexo</generator>
+  
+  <entry>
+    <title><![CDATA[迭代函数？Go 1.22中隐藏的功能]]></title>
+    <link href="https://colobu.com/2024/01/18/range-over-func/"/>
+    <id>https://colobu.com/2024/01/18/range-over-func/</id>
+    <published>2024-01-18T13:29:15.000Z</published>
+    <updated>2024-01-18T14:54:28.119Z</updated>
+    <content type="html"><![CDATA[<p>Go 1.22中可以 range 一个整数，比如下面的代码：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">for</span> i := <span class="keyword">range</span><span class="number"> 10</span> {</div><div class="line">    fmt.Println(i)</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>这个大家都已经知道了，其实对应的提案中还有一个隐藏的功能，就是可以 range 一个函数，比如下面的代码(摘自官方代码库<a href="https://github.com/golang/go/blob/97daa6e94296980b4aa2dac93a938a5edd95ce93/src/internal/trace/v2/event.go#L262" target="_blank" rel="external">internal/trace/v2/event.go</a>)：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div></pre></td><td class="code"><pre><div class="line"><span class="comment">// Frames is an iterator over the frames in a Stack.</span></div><div class="line"><span class="keyword">func</span> (s Stack) Frames(yield <span class="keyword">func</span>(f StackFrame) <span class="typename">bool</span>) <span class="typename">bool</span> {</div><div class="line">	<span class="keyword">if</span> s.id ==<span class="number"> 0</span> {</div><div class="line">		<span class="keyword">return</span> <span class="constant">true</span></div><div class="line">	}</div><div class="line">	stk := s.table.stacks.mustGet(s.id)</div><div class="line">	<span class="keyword">for</span> _, f := <span class="keyword">range</span> stk.frames {</div><div class="line">		sf := StackFrame{</div><div class="line">			PC:   f.pc,</div><div class="line">			Func: s.table.strings.mustGet(f.funcID),</div><div class="line">			File: s.table.strings.mustGet(f.fileID),</div><div class="line">			Line: f.line,</div><div class="line">		}</div><div class="line">		<span class="keyword">if</span> !yield(sf) {</div><div class="line">			<span class="keyword">return</span> <span class="constant">false</span></div><div class="line">		}</div><div class="line">	}</div><div class="line">	<span class="keyword">return</span> <span class="constant">true</span></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>就少有介绍了。</p>
+<p>本文尝试介绍它，让读者先了解一下，它在Go 1.22 中是一个实验性的功能，还不确定未来在哪个版本中会被正式支持。</p>
+<p>官方wiki中也有一篇介绍: <a href="https://go.dev/wiki/RangefuncExperiment" target="_blank" rel="external">Rangefunc Experiment</a>，类似问答的形式，也是必读的知识库。<br><a id="more"></a></p>
+<p>这个功能去年Russ Cox发起讨论(<a href="https://github.com/golang/go/discussions/56413" target="_blank" rel="external">#56413</a>), 并建立一个提案(<a href="https://github.com/golang/go/issues/61405" target="_blank" rel="external">#61405</a>),大家讨论都很激烈啊，几百次的讨论，所以我也不准备介绍前因后果了，直接了当的说结论。<br>先前, <code>for-range</code>所能遍历(迭代)的类型很有限，只能是slice、数组、map、字符串、channel等。<br>现在，除了上面的五种类型，还可以是整数和三种三种函数。</p>
+<p>当然<code>for x := range n { ... }</code>等价于<code>for x := T(0); x &lt; n; x++ { ... }</code>, 其中T是n的类型。这个大家都知道了。</p>
+<p>三个函数可能大家不是很了解，很正常，目前这只是一个实验性的功能。当然range的类型如下：</p>
+<table>
+<thead>
+<tr>
+<th>Range 表达式</th>
+<th>第一个值</th>
+<th>第二个值</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>array or slice      a  [n]E, *[n]E, or []E</td>
+<td>index    i  int</td>
+<td>a[i]       E</td>
+</tr>
+<tr>
+<td>string              s  string type</td>
+<td>index    i  int</td>
+<td>see below  rune</td>
+</tr>
+<tr>
+<td>map                 m  map[K]V</td>
+<td>key      k  K</td>
+<td>m[k]       V</td>
+</tr>
+<tr>
+<td>channel             c  chan E, &lt;-chan E</td>
+<td>element  e  E</td>
+<td></td>
+</tr>
+<tr>
+<td>integer             n  integer type</td>
+<td>index    i int</td>
+<td></td>
+</tr>
+<tr>
+<td>function, 0 values  f  func(func()bool) bool</td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>function, 1 value   f  func(func(V)bool) bool</td>
+<td>value    v  V</td>
+<td></td>
+</tr>
+<tr>
+<td>function, 2 values  f  func(func(K, V)bool) bool</td>
+<td>key      k  K</td>
+<td>v          V</td>
+</tr>
+</tbody>
+</table>
+<p>本文介绍的就是后三种形式</p>
+<h2 id="三种可遍历的函数">三种可遍历的函数</h2>
+<p>假设<code>f</code>是一个这样的函数:<code>func(func()bool) bool</code>, 那么<code>for x := range f { ... }</code>类似于<code>f(func(x T1, y T2) bool { ... })</code>，其中for循环移动到方法体中了。<code>yield</code>的bool返回值指示是否还要继续遍历。</p>
+<p>对于这样一个<code>f</code>,下面的格式都可以:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">for</span> x, y := <span class="keyword">range</span> f { ... }</div><div class="line"><span class="keyword">for</span> x, _ := <span class="keyword">range</span> f { ... }</div><div class="line"><span class="keyword">for</span> _, y := <span class="keyword">range</span> f { ... }</div><div class="line"><span class="keyword">for</span> x := <span class="keyword">range</span> f { ... }</div><div class="line"><span class="keyword">for</span> <span class="keyword">range</span> f { ... }</div></pre></td></tr></table></figure>
+
+<p>下面是一个例子：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">var</span> fn = <span class="keyword">func</span>(yield <span class="keyword">func</span>(k <span class="typename">int</span>, v <span class="typename">byte</span>) <span class="typename">bool</span>) {</div><div class="line">	<span class="keyword">for</span> i :=<span class="number"> 0</span>; i &lt;<span class="number"> 26</span>; i++ {</div><div class="line">		<span class="keyword">if</span> !yield(i, <span class="typename">byte</span>(<span class="string">'a'</span>+i)) {</div><div class="line">			<span class="keyword">return</span></div><div class="line">		}</div><div class="line">	}</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">for</span> k, v := <span class="keyword">range</span> fn {</div><div class="line">	fmt.Printf(<span class="string">"%d: %c\n"</span>, k, v)</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>运行可以看到结果符合预期，我们遍历了26个小写字母，注意range的数据类型是我们的函数:<br><img src="range-func.png" alt=""></p>
+<p>这里，fn这个函数没有返回值，其实也可以有bool返回值，有bool返回值就可以组合多个range函数，可以容易写出复杂且难以维护的代码，减少自己失业的可能。<br>这里的<code>yield</code>函数接收两个参数，第一个是<code>int</code>类型，第二个是<code>byte</code>类型，返回值是<code>bool</code>类型，这个<code>yield</code>函数的返回值决定了是否继续遍历。当然这里我们可以写泛型的程序，这里为了简单，就不写了。</p>
+<p>下面是一个<code>f</code>是<code>func(func(V)bool) bool</code>的例子：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">var</span> fn = <span class="keyword">func</span>(yield <span class="keyword">func</span>(v <span class="typename">byte</span>) <span class="typename">bool</span>) {</div><div class="line">    <span class="keyword">for</span> i :=<span class="number"> 0</span>; i &lt;<span class="number"> 26</span>; i++ {</div><div class="line">        <span class="keyword">if</span> !yield(<span class="typename">byte</span>(<span class="string">'a'</span> + i)) {</div><div class="line">            <span class="keyword">return</span></div><div class="line">        }</div><div class="line">    }</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">for</span> v := <span class="keyword">range</span> fn {</div><div class="line">    fmt.Printf(<span class="string">"%c\n"</span>, v)</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p><img src="range-func2.png" alt=""></p>
+<p>当然yield函数也可以没有参数，比如<code>func(func()bool) bool</code>，下面这个例子就是无参数的形式，输出结果是26。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> main</div><div class="line"></div><div class="line"><span class="keyword">import</span> <span class="string">"fmt"</span></div><div class="line"></div><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	<span class="keyword">var</span> fn = <span class="keyword">func</span>(yield <span class="keyword">func</span>() <span class="typename">bool</span>) {</div><div class="line">		<span class="keyword">for</span> i :=<span class="number"> 0</span>; i &lt;<span class="number"> 26</span>; i++ {</div><div class="line">			<span class="keyword">if</span> !yield() {</div><div class="line">				<span class="keyword">return</span></div><div class="line">			}</div><div class="line">		}</div><div class="line">	}</div><div class="line"></div><div class="line">	<span class="keyword">var</span> count <span class="typename">int</span></div><div class="line">	<span class="keyword">for</span> <span class="keyword">range</span> fn {</div><div class="line">		count++</div><div class="line">	}</div><div class="line">	fmt.Println(count)</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>如果不使用for-range 函数的形式，我们可以进行改写，比如两个参数的列子：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">var</span> fn = <span class="keyword">func</span>(yield <span class="keyword">func</span>(k <span class="typename">int</span>, v <span class="typename">byte</span>) <span class="typename">bool</span>) {</div><div class="line">	<span class="keyword">for</span> i :=<span class="number"> 0</span>; i &lt;<span class="number"> 26</span>; i++ {</div><div class="line">		<span class="keyword">if</span> !yield(i, <span class="typename">byte</span>(<span class="string">'a'</span>+i)) {</div><div class="line">			<span class="keyword">return</span></div><div class="line">		}</div><div class="line">	}</div><div class="line">}</div><div class="line"></div><div class="line">fn(<span class="keyword">func</span>(k <span class="typename">int</span>, v <span class="typename">byte</span>) <span class="typename">bool</span> {</div><div class="line">	fmt.Printf(<span class="string">"%d: %c\n"</span>, k, v)</div><div class="line">	<span class="keyword">return</span> <span class="constant">true</span></div><div class="line">})</div></pre></td></tr></table></figure>
+
+<p>注意<code>yield</code>参数名称不是一个关键字，它只是一个普通的参数名称，可以随便取名字，但是为了模仿和其它语言中的<code>generator</code>,使用了<code>yield</code>这样一个名称，以至于代码更加易读。</p>
+<p>看起来这个功能就是一个语法糖， 代码<a href="https://go.googlesource.com/go/+/refs/changes/41/510541/7/src/cmd/compile/internal/rangefunc/rewrite.go" target="_blank" rel="external">rangefunc/rewrite</a>将range-over-func代码写成非range-over-func代码的形式。</p>
+<h2 id="为什么要这样做？">为什么要这样做？</h2>
+<p>标准库中就有 <code>archive/tar.Reader.Next</code>, <code>bufio.Reader.ReadByte</code>, <code>bufio.Scanner.Scan</code>, <code>container/ring.Ring.Do</code>, <code>database/sql.Rows</code>, <code>expvar.Do</code>, <code>flag.Visit</code>, <code>go/token.FileSet.Iterate</code>, <code>path/filepath.Walk</code>, <code>go/token.FileSet.Iterate</code>, <code>runtime.Frames.Next</code> 和<code>sync.Map.Range</code>等各种遍历的函数，所以如果有一种统一的格式更好。</p>
+<p>第三方库中有更多的类似代码。</p>
+<p>虽然这个功能还没有正式支持，但是我看到有些库摩拳擦掌准备使用了，而<a href="https://github.com/achille-roussel/sqlrange" target="_blank" rel="external">sqlrange</a>更进一步，已经支持了。</p>
+<p>当然你使用它必须下载Go 1.22或者gotip, 并且设置<code>export GOEXPERIMENT=rangefunc</code>。</p>
+<p>它提供了<code>Query</code>和<code>Exec</code>可遍历函数。比如<code>Query</code>从一个表中查询<code>Point</code>数据：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> Point <span class="keyword">struct</span> {</div><div class="line">    X <span class="typename">float64</span> <span class="string">`sql:"x"`</span></div><div class="line">    Y <span class="typename">float64</span> <span class="string">`sql:"y"`</span></div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">for</span> p, err := <span class="keyword">range</span> sqlrange.Query[Point](db, <span class="string">`select x, y from points`</span>) {</div><div class="line">    <span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">        ...</div><div class="line">    }</div><div class="line">    ...</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>遍历查询和ORM一气呵成。这里的资源管理是自动的,底层的<code>*sql.Rows</code>遍历完会自动关闭。</p>
+]]></content>
+    <summary type="html">
+    <![CDATA[<p>Go 1.22中可以 range 一个整数，比如下面的代码：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">for</span> i := <span class="keyword">range</span><span class="number"> 10</span> {</div><div class="line">    fmt.Println(i)</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>这个大家都已经知道了，其实对应的提案中还有一个隐藏的功能，就是可以 range 一个函数，比如下面的代码(摘自官方代码库<a href="https://github.com/golang/go/blob/97daa6e94296980b4aa2dac93a938a5edd95ce93/src/internal/trace/v2/event.go#L262" target="_blank" rel="external">internal/trace/v2/event.go</a>)：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div></pre></td><td class="code"><pre><div class="line"><span class="comment">// Frames is an iterator over the frames in a Stack.</span></div><div class="line"><span class="keyword">func</span> (s Stack) Frames(yield <span class="keyword">func</span>(f StackFrame) <span class="typename">bool</span>) <span class="typename">bool</span> {</div><div class="line">	<span class="keyword">if</span> s.id ==<span class="number"> 0</span> {</div><div class="line">		<span class="keyword">return</span> <span class="constant">true</span></div><div class="line">	}</div><div class="line">	stk := s.table.stacks.mustGet(s.id)</div><div class="line">	<span class="keyword">for</span> _, f := <span class="keyword">range</span> stk.frames {</div><div class="line">		sf := StackFrame{</div><div class="line">			PC:   f.pc,</div><div class="line">			Func: s.table.strings.mustGet(f.funcID),</div><div class="line">			File: s.table.strings.mustGet(f.fileID),</div><div class="line">			Line: f.line,</div><div class="line">		}</div><div class="line">		<span class="keyword">if</span> !yield(sf) {</div><div class="line">			<span class="keyword">return</span> <span class="constant">false</span></div><div class="line">		}</div><div class="line">	}</div><div class="line">	<span class="keyword">return</span> <span class="constant">true</span></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>就少有介绍了。</p>
+<p>本文尝试介绍它，让读者先了解一下，它在Go 1.22 中是一个实验性的功能，还不确定未来在哪个版本中会被正式支持。</p>
+<p>官方wiki中也有一篇介绍: <a href="https://go.dev/wiki/RangefuncExperiment" target="_blank" rel="external">Rangefunc Experiment</a>，类似问答的形式，也是必读的知识库。<br>]]>
+    
+    </summary>
+    
+      <category term="Go" scheme="https://colobu.com/categories/Go/"/>
+    
+  </entry>
   
   <entry>
     <title><![CDATA[Linux 6.8 网络优化, 大量并发连接的TCP性能提高40%左右]]></title>
@@ -1766,50 +1885,6 @@ fn wake(&amp;self) {
 ]]></content>
     <summary type="html">
     <![CDATA[<p><code>iptables</code> 是 Linux 系统中的一个非常强大的防火墙工具，它可以用于过滤、修改、重定向和处理网络数据包。iptables 是基于 Netfilter 框架的，Netfilter 是 Linux 内核的一部分，它提供了在内核级别处理网络数据包的能力。</p>
-]]>
-    
-    </summary>
-    
-      <category term="Go" scheme="https://colobu.com/categories/Go/"/>
-    
-  </entry>
-  
-  <entry>
-    <title><![CDATA[像Redis作者那样，使用Go实现一个聊天服务器，不到100行代码]]></title>
-    <link href="https://colobu.com/2023/10/29/implement-a-small-chat-server-like-antirez-in-100-lines/"/>
-    <id>https://colobu.com/2023/10/29/implement-a-small-chat-server-like-antirez-in-100-lines/</id>
-    <published>2023-10-29T13:14:57.000Z</published>
-    <updated>2023-10-30T13:33:08.332Z</updated>
-    <content type="html"><![CDATA[<p>昨天Redis的作者 antirez (Salvatore Sanfilippo) 昨天创建一个新的演示项目：<a href="https://github.com/smallnest/smallchat" target="_blank" rel="external">smallchat</a>，用了200行C语言代码实现了一个聊天室。我看了一下，觉得很有意思，于是就用Go语言实现了一下，代码不到100行，功能和antirez的实现一样。</p>
-<a id="more"></a>
-<p>antirez 三年前停止写代码，专心写他的科幻小说《Wohpe》，今天看起来他有回到编程的状态了。关于这个小项目的背景是：</p>
-<blockquote>
-<p>昨天我正在与几个前端开发者朋友闲聊,他们距离系统编程有些远。我们回忆起了过去的IRC时光。不可避免地,我说:编写一个非常简单的IRC服务器每个人都应该做一次。这样程序中有非常有趣的部分。一个进程进行多路复用,维护客户端状态,可以用不同的方式实现等等。</p>
-<p>然后讨论继续,我想,我会给你们展示一个极简的C语言例子。但是你能编写出啥样的最小聊天服务器呢?要真正做到极简,我们不应该需要任何特殊的客户端，即使不是很完美,它应该可以用<code>telnet</code>或<code>nc</code>(netcat)作为客户端连接。服务器的主要功能只是接收一些聊天信息并发送给所有其他客户端,这有时称为<strong>扇出</strong>操作。这还需要一个合适的<code>readline()</code>函数,然后是缓冲等等。我们想要更简单的:利用内核缓冲区,假装我们每次都从客户端收到一个完整的行(这个假设在实际中通常是正确的,所以这个假设没啥问题)。</p>
-<p>好吧,有了这些技巧,我们可以用只有200行代码实现一个聊天室,用户甚至可以设置昵称(当然,不计空格和注释)。由于我将这个小程序作为示例编写给我的朋友,我决定也把它推到Github上。</p>
-</blockquote>
-<p>嗯，挺有趣的事情，我也很羡慕 antirez 有时间聊一聊编程中的一些趣事和想法。</p>
-<p>这也不免让我想起上大学的时候，大家还沉迷于在终端中使用telnet连接BBS服务器，或者玩mud的游戏，窗外还飘着《Yesterday Once More》的旋律。那时候的互联网刚刚开始。</p>
-<p>嗯，然后这个无聊的下午，我就想使用Go实现antirez的这个程序，我也不知道目的是啥，就纯粹想玩一玩，练一练手，最终用了不到100行代码实现了一个聊天服务器，功能和antirez的实现一样。</p>
-<p>这个代码我也放到了github上: <a href="https://github.com/smallnest/smallchat" target="_blank" rel="external">smallnest/smallchat</a>。</p>
-<p>我们不妨看看代码：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div><div class="line">35</div><div class="line">36</div><div class="line">37</div><div class="line">38</div><div class="line">39</div><div class="line">40</div><div class="line">41</div><div class="line">42</div><div class="line">43</div><div class="line">44</div><div class="line">45</div><div class="line">46</div><div class="line">47</div><div class="line">48</div><div class="line">49</div><div class="line">50</div><div class="line">51</div><div class="line">52</div><div class="line">53</div><div class="line">54</div><div class="line">55</div><div class="line">56</div><div class="line">57</div><div class="line">58</div><div class="line">59</div><div class="line">60</div><div class="line">61</div><div class="line">62</div><div class="line">63</div><div class="line">64</div><div class="line">65</div><div class="line">66</div><div class="line">67</div><div class="line">68</div><div class="line">69</div><div class="line">70</div><div class="line">71</div><div class="line">72</div><div class="line">73</div><div class="line">74</div><div class="line">75</div><div class="line">76</div><div class="line">77</div><div class="line">78</div><div class="line">79</div><div class="line">80</div><div class="line">81</div><div class="line">82</div><div class="line">83</div><div class="line">84</div><div class="line">85</div><div class="line">86</div><div class="line">87</div><div class="line">88</div><div class="line">89</div><div class="line">90</div><div class="line">91</div><div class="line">92</div><div class="line">93</div><div class="line">94</div><div class="line">95</div><div class="line">96</div><div class="line">97</div><div class="line">98</div><div class="line">99</div><div class="line">100</div><div class="line">101</div><div class="line">102</div><div class="line">103</div><div class="line">104</div><div class="line">105</div><div class="line">106</div><div class="line">107</div><div class="line">108</div><div class="line">109</div><div class="line">110</div><div class="line">111</div><div class="line">112</div><div class="line">113</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> main</div><div class="line"></div><div class="line"><span class="keyword">import</span> (</div><div class="line">	<span class="string">"flag"</span></div><div class="line">	<span class="string">"fmt"</span></div><div class="line">	<span class="string">"net"</span></div><div class="line">	<span class="string">"os"</span></div><div class="line">	<span class="string">"strings"</span></div><div class="line">	<span class="string">"sync"</span></div><div class="line">)</div><div class="line"></div><div class="line"><span class="keyword">const</span> (</div><div class="line">	maxClients =<span class="number"> 1000</span></div><div class="line">	maxNickLen =<span class="number"> 32</span></div><div class="line">)</div><div class="line"></div><div class="line"><span class="keyword">var</span> (</div><div class="line">	serverPort = flag.Int(<span class="string">"p"</span>,<span class="number"> 8972</span>, <span class="string">"server port"</span>)</div><div class="line">)</div><div class="line"></div><div class="line"><span class="keyword">type</span> Client <span class="keyword">struct</span> {</div><div class="line">	conn net.Conn</div><div class="line">	nick <span class="typename">string</span></div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">type</span> ChatState <span class="keyword">struct</span> {</div><div class="line">	listener net.Listener</div><div class="line"></div><div class="line">	clientsLock sync.RWMutex</div><div class="line">	clients     <span class="keyword">map</span>[net.Conn]*Client</div><div class="line">	numClients  <span class="typename">int</span></div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">var</span> chatState = &ChatState{</div><div class="line">	clients: <span class="built_in">make</span>(<span class="keyword">map</span>[net.Conn]*Client),</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> initChat() {</div><div class="line">	<span class="keyword">var</span> err error</div><div class="line">	chatState.listener, err = net.Listen(<span class="string">"tcp"</span>, fmt.Sprintf(<span class="string">":%d"</span>, *serverPort))</div><div class="line">	<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">		fmt.Println(<span class="string">"listen error:"</span>, err)</div><div class="line">		os.Exit<span class="number">(1</span>)</div><div class="line">	}</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> handleClient(client *Client) {</div><div class="line">	<span class="comment">// 发送欢迎信息</span></div><div class="line">	welcomeMsg := <span class="string">"Welcome Simple Chat! Use /nick to change nick name.\n"</span></div><div class="line">	client.conn.Write([]<span class="typename">byte</span>(welcomeMsg))</div><div class="line"></div><div class="line">	buf := <span class="built_in">make</span>([]<span class="typename">byte</span>,<span class="number"> 256</span>)</div><div class="line">	<span class="keyword">for</span> {</div><div class="line">		n, err := client.conn.Read(buf)</div><div class="line">		<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">			fmt.Printf(<span class="string">"client left: %s\n"</span>, client.conn.RemoteAddr())</div><div class="line">			chatState.clientsLock.Lock()</div><div class="line">			<span class="built_in">delete</span>(chatState.clients, client.conn)</div><div class="line">			chatState.numClients--</div><div class="line">			chatState.clientsLock.Unlock()</div><div class="line">			<span class="keyword">return</span></div><div class="line">		}</div><div class="line"></div><div class="line">		msg := <span class="typename">string</span>(buf[:n])</div><div class="line">		msg = strings.TrimSpace(msg)</div><div class="line">		<span class="keyword">if</span> msg<span class="number">[0</span>] == <span class="string">'/'</span> {</div><div class="line">			<span class="comment">// 处理命令</span></div><div class="line">			parts := strings.SplitN(msg, <span class="string">" "</span>,<span class="number"> 2</span>)</div><div class="line">			cmd := parts<span class="number">[0</span>]</div><div class="line">			<span class="keyword">if</span> cmd == <span class="string">"/nick"</span> && <span class="built_in">len</span>(parts) &gt;<span class="number"> 1</span> {</div><div class="line">				client.nick = parts<span class="number">[1</span>]</div><div class="line">			}</div><div class="line">			<span class="keyword">continue</span></div><div class="line">		}</div><div class="line"></div><div class="line">		fmt.Printf(<span class="string">"%s: %s\n"</span>, client.nick, msg)</div><div class="line"></div><div class="line">		<span class="comment">// 将消息转发给其他客户端</span></div><div class="line">		chatState.clientsLock.RLock()</div><div class="line">		<span class="keyword">for</span> conn, cl := <span class="keyword">range</span> chatState.clients {</div><div class="line">			<span class="keyword">if</span> cl != client {</div><div class="line">				conn.Write([]<span class="typename">byte</span>(client.nick + <span class="string">": "</span> + msg))</div><div class="line">			}</div><div class="line">		}</div><div class="line">		chatState.clientsLock.RUnlock()</div><div class="line">	}</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	flag.Parse()</div><div class="line"></div><div class="line">	initChat()</div><div class="line"></div><div class="line">	<span class="keyword">for</span> {</div><div class="line">		conn, err := chatState.listener.Accept()</div><div class="line">		<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">			fmt.Println(<span class="string">"accept error:"</span>, err)</div><div class="line">			<span class="keyword">continue</span></div><div class="line">		}</div><div class="line"></div><div class="line">		client := &Client{conn: conn}</div><div class="line">		client.nick = fmt.Sprintf(<span class="string">"user%d"</span>, conn.RemoteAddr().(*net.TCPAddr).Port)</div><div class="line"></div><div class="line">		chatState.clientsLock.Lock()</div><div class="line">		chatState.clients[conn] = client</div><div class="line">		chatState.numClients++</div><div class="line">		chatState.clientsLock.Unlock()</div><div class="line"></div><div class="line">		<span class="keyword">go</span> handleClient(client)</div><div class="line"></div><div class="line">		fmt.Printf(<span class="string">"new client: %s\n"</span>, conn.RemoteAddr())</div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>首先我们从<code>main</code>函数说起。</p>
-<p><code>main</code>函数中我们首先调用<code>initChat</code>函数，这个函数中我们使用<code>net.Listen</code>创建了一个<code>net.Listener</code>，然后使用<code>Accept</code>方法接收客户端的连接。<code>Accept</code>方法返回一个<code>net.Conn</code>，这个<code>net.Conn</code>代表了一个客户端的连接，我们可以使用<code>Read</code>和<code>Write</code>方法读写数据。</p>
-<p>为了跟踪每一个用户，我们定义了一个<code>Client</code>结构体，其中包含了一个<code>net.Conn</code>和一个<code>nick</code>字段，<code>nick</code>字段代表了用户的昵称。</p>
-<p>我们使用一个<code>ChatState</code>结构体来保存聊天室的状态，其中包含了一个<code>net.Listener</code>和一个<code>clients</code>字段，<code>clients</code>字段是一个<code>map[net.Conn]*Client</code>，用来保存所有的客户端连接。<code>ChatState</code>还包含了一个<code>clientsLock</code>字段，这个字段是一个<code>sync.RWMutex</code>，用来保护<code>clients</code>字段，因为<code>clients</code>字段会被多个goroutine访问。</p>
-<p><code>main</code>函数中我们使用一个<code>for</code>循环来接收客户端的连接，然后调用<code>handleClient</code>函数来处理客户端的连接。</p>
-<p>接下来就是<code>handleClient</code>函数了，这个函数中我们首先发送一个欢迎信息给客户端，然后使用一个<code>for</code>循环来读取客户端发送的消息，如果客户端断开连接，我们就从<code>clients</code>中删除这个客户端，然后退出循环。</p>
-<p>我们假定用户的输入不超过256字节，然后我们使用<code>strings.TrimSpace</code>函数去掉消息前后的空格，然后判断消息是否以<code>/</code>开头。</p>
-<p>如果客户端发送的消息以<code>/</code>开头，我们就认为这是一个命令，我们只处理<code>/nick</code>命令，这个命令用来设置客户端的昵称。</p>
-<p>如果客户端发送的消息不是以<code>/</code>开头，我们就认为这是一个聊天消息，我们将这个消息转发给所有的客户端。</p>
-<p><code>handleClient</code>函数中我们使用了<code>chatState.clientsLock</code>来保护<code>clients</code>字段，因为<code>clients</code>字段会被多个goroutine访问。</p>
-<p>这就是一个可工作的聊天服务器了，我们可以使用<code>telnet</code>或<code>nc</code>来连接这个服务器，然后就可以跟其他用户聊天了。登录进去后你可以使用<code>/nick</code>命令进行改名。</p>
-<p>当然这只是一个玩具，没有任何的安全性检查，也没有任何的错误处理，但是它可以工作，而且代码很简单。</p>
-]]></content>
-    <summary type="html">
-    <![CDATA[<p>昨天Redis的作者 antirez (Salvatore Sanfilippo) 昨天创建一个新的演示项目：<a href="https://github.com/smallnest/smallchat" target="_blank" rel="external">smallchat</a>，用了200行C语言代码实现了一个聊天室。我看了一下，觉得很有意思，于是就用Go语言实现了一下，代码不到100行，功能和antirez的实现一样。</p>
 ]]>
     
     </summary>
