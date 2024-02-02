@@ -137,11 +137,11 @@
       <div class="outer">
         <section id="main">
   
-    <article id="post-cgo-articles" class="article article-type-post" itemscope
+    <article id="post-go-reflect-performance" class="article article-type-post" itemscope
   itemprop="blogPost">
   <div class="article-meta">
-    <a href="/2018/06/13/cgo-articles/" class="article-date">
-  <time datetime="2018-06-13T10:08:15.000Z" itemprop="datePublished">2018年06月13日</time>
+    <a href="/2019/01/29/go-reflect-performance/" class="article-date">
+  <time datetime="2019-01-29T06:26:41.000Z" itemprop="datePublished">2019年01月29日</time>
 </a>
     
   <div class="article-category">
@@ -159,7 +159,121 @@
       
   
     <h1 itemprop="name">
-      <a class="article-title" href="/2018/06/13/cgo-articles/">CGO 文章整理</a>
+      <a class="article-title" href="/2019/01/29/go-reflect-performance/">Go Reflect 性能</a>
+    </h1>
+  
+
+    </header>
+    
+    <div class="article-entry" itemprop="articleBody">
+      
+      
+      <img class="article-post-image" src="/images/logos/golang7.png">
+      
+      
+      <p>Go <a href="https://golang.org/pkg/reflect/" target="_blank" rel="external">reflect包</a>提供了运行时获取对象的类型和值的能力，它可以帮助我们实现代码的抽象和简化，实现动态的数据获取和方法调用， 提高开发效率和可读性， 也弥补Go在缺乏泛型的情况下对数据的统一处理能力。</p>
+<p>通过reflect，我们可以实现获取对象类型、对象字段、对象方法的能力，获取struct的tag信息，动态创建对象，对象是否实现特定的接口，对象的转换、对象值的获取和设置、Select分支动态调用等功能， 看起来功能不错，但是大家也都知道一点: <strong>使用reflect是有性能代价的!</strong></p>
+
+      
+      <p class="article-more-link">
+        <a href="/2019/01/29/go-reflect-performance/#more">阅读全文</a>
+      </p>
+      
+      
+    </div>
+    <footer class="article-footer">
+      
+
+      
+
+    </footer>
+  </div>
+  
+</article>
+  
+    <article id="post-cacheline-affects-performance-in-go" class="article article-type-post" itemscope
+  itemprop="blogPost">
+  <div class="article-meta">
+    <a href="/2019/01/24/cacheline-affects-performance-in-go/" class="article-date">
+  <time datetime="2019-01-24T09:13:44.000Z" itemprop="datePublished">2019年01月24日</time>
+</a>
+    
+  <div class="article-category">
+    <a class="article-category-link" href="/categories/Go/">Go</a>
+  </div>
+
+    
+  <div class="article-author"> by smallnest</div>
+
+  </div>
+  <div class="article-inner">
+    
+    
+    <header class="article-header">
+      
+  
+    <h1 itemprop="name">
+      <a class="article-title" href="/2019/01/24/cacheline-affects-performance-in-go/">cacheline 对 Go 程序的影响</a>
+    </h1>
+  
+
+    </header>
+    
+    <div class="article-entry" itemprop="articleBody">
+      
+      
+      <img class="article-post-image" src="/images/logos/golang7.png">
+      
+      
+      <p>首先来了解一下来自维基百科上关于CPU缓存的介绍。</p>
+<blockquote>
+<p>在计算机系统中，CPU高速缓存（英语：CPU Cache，在本文中简称缓存）是用于减少处理器访问内存所需平均时间的部件。在金字塔式存储体系中它位于自顶向下的第二层，仅次于CPU寄存器。其容量远小于内存，但速度却可以接近处理器的频率。</p>
+<p>当处理器发出内存访问请求时，会先查看缓存内是否有请求数据。如果存在（命中），则不经访问内存直接返回该数据；如果不存在（失效），则要先把内存中的相应数据载入缓存，再将其返回处理器。<br>缓存之所以有效，主要是因为程序运行时对内存的访问呈现局部性（Locality）特征。这种局部性既包括空间局部性（Spatial Locality），也包括时间局部性（Temporal Locality）。有效利用这种局部性，缓存可以达到极高的命中率。<br>在处理器看来，缓存是一个透明部件。因此，程序员通常无法直接干预对缓存的操作。但是，确实可以根据缓存的特点对程序代码实施特定优化，从而更好地利用缓存。</p>
+<p>结构上，一个直接映射（Direct Mapped）缓存由若干缓存块（Cache Block，或Cache Line）构成。每个缓存块存储具有连续内存地址的若干个存储单元。在32位计算机上这通常是一个双字（dword），即四个字节。因此，每个双字具有唯一的块内偏移量。每个缓存块还可对应若干标志位，包括有效位（valid bit）、脏位（dirty bit）、使用位（use bit）等。这些位在保证正确性、排除冲突、优化性能等方面起着重要作用。</p>
+<p><img src="cpu_cache.png" alt="来自维基百科"></p>
+<p>Intel的x86架构CPU从386开始引入使用SRAM技术的主板缓存，大小从16KB到64KB不等。486引入两级缓存。其中8KBL1缓存和CPU同片，而L2缓存仍然位于主板上，大小可达268KB。将二级缓存置于主板上在此后十余年间一直设计主流。但是由于SDRAM技术的引入，以及CPU主频和主板总线频率的差异不断拉大，主板缓存在速度上的对内存优势不断缩水。因此，从Pentium Pro起，二级缓存开始和处理器一起封装，频率亦与CPU相同（称为全速二级缓存）或为CPU主频的一半（称为半速二级缓存）。<br>AMD则从K6-III开始引入三级缓存。基于Socket 7接口的K6-III拥有64KB和256KB的同片封装两级缓存，以及可达2MB的三级主板缓存。<br>今天的CPU将三级缓存全部集成到CPU芯片上。多核CPU通常为每个核配有独享的一级和二级缓存，以及各核之间共享的三级缓存。</p>
+</blockquote>
+
+      
+      <p class="article-more-link">
+        <a href="/2019/01/24/cacheline-affects-performance-in-go/#more">阅读全文</a>
+      </p>
+      
+      
+    </div>
+    <footer class="article-footer">
+      
+
+      
+
+    </footer>
+  </div>
+  
+</article>
+  
+    <article id="post-Runtime-overhead-of-using-defer-in-go" class="article article-type-post" itemscope
+  itemprop="blogPost">
+  <div class="article-meta">
+    <a href="/2019/01/22/Runtime-overhead-of-using-defer-in-go/" class="article-date">
+  <time datetime="2019-01-22T10:08:13.000Z" itemprop="datePublished">2019年01月22日</time>
+</a>
+    
+  <div class="article-category">
+    <a class="article-category-link" href="/categories/Go/">Go</a>
+  </div>
+
+    
+  <div class="article-author"> by smallnest</div>
+
+  </div>
+  <div class="article-inner">
+    
+    
+    <header class="article-header">
+      
+  
+    <h1 itemprop="name">
+      <a class="article-title" href="/2019/01/22/Runtime-overhead-of-using-defer-in-go/">使用 defer 还是不使用 defer?</a>
     </h1>
   
 
@@ -171,11 +285,11 @@
       <img class="article-post-image" src="/images/logos/golang6.png">
       
       
-      <p>虽然<code>CGO</code>属于不太常用的技术，但是偶尔在一些场景中还是会用到的，本文搜集了一些<code>CGO</code>的文章, 方便大家学习和参考。</p>
+      <p>对于Go语言的defer语句，或许你回经历一个 <strong>赞赏</strong> --&gt; <strong>怀疑</strong> --&gt; <strong>肯定</strong> --&gt; <strong>再怀疑</strong>的一个过程，本文带你回顾一下defer的故事，以及如何在代码中使用defer语句。</p>
 
       
       <p class="article-more-link">
-        <a href="/2018/06/13/cgo-articles/#more">阅读全文</a>
+        <a href="/2019/01/22/Runtime-overhead-of-using-defer-in-go/#more">阅读全文</a>
       </p>
       
       
@@ -190,11 +304,11 @@
   
 </article>
   
-    <article id="post-channel-patterns" class="article article-type-post" itemscope
+    <article id="post-get-assembly-output-for-go-programs" class="article article-type-post" itemscope
   itemprop="blogPost">
   <div class="article-meta">
-    <a href="/2018/03/26/channel-patterns/" class="article-date">
-  <time datetime="2018-03-26T14:00:35.000Z" itemprop="datePublished">2018年03月26日</time>
+    <a href="/2018/12/29/get-assembly-output-for-go-programs/" class="article-date">
+  <time datetime="2018-12-29T02:58:37.000Z" itemprop="datePublished">2018年12月29日</time>
 </a>
     
   <div class="article-category">
@@ -212,183 +326,7 @@
       
   
     <h1 itemprop="name">
-      <a class="article-title" href="/2018/03/26/channel-patterns/">Go Channel 应用模式</a>
-    </h1>
-  
-
-    </header>
-    
-    <div class="article-entry" itemprop="articleBody">
-      
-      
-      <img class="article-post-image" src="/images/logos/golang6.png">
-      
-      
-      <p>Channel是Go中的一种类型，和goroutine一起为Go提供了并发技术， 它在开发中得到了广泛的应用。Go鼓励人们通过Channel在goroutine之间传递数据的引用(就像把数据的owner从一个goroutine传递给另外一个goroutine), <a href="http://golang.org/doc/effective_go.html" target="_blank" rel="external">Effective Go</a>总结了这么一句话：</p>
-<blockquote>
-<p>Do not communicate by sharing memory; instead, share memory by communicating.</p>
-</blockquote>
-<p>在 <a href="https://golang.org/ref/mem" target="_blank" rel="external">Go内存模型</a>指出了channel作为并发控制的一个特性：</p>
-<blockquote>
-<p>A send on a channel happens before the corresponding receive from that channel completes. (Golang Spec)</p>
-</blockquote>
-<p>除了正常的在goroutine之间安全地传递共享数据， Channel还可以玩出很多的花样(模式)， 本文列举了一些channel的应用模式。</p>
-<p>促成本文诞生的因素主要包括：</p>
-<ol>
-<li>eapache的channels库</li>
-<li>concurrency in go 这本书</li>
-<li>Francesc Campoy的 justforfun系列中关于merge channel的实现</li>
-<li>我在出版Scala集合手册这本书中对Scala集合的启发</li>
-</ol>
-<p>下面就让我们以实例的方式看看这么模式吧。</p>
-
-      
-      <p class="article-more-link">
-        <a href="/2018/03/26/channel-patterns/#more">阅读全文</a>
-      </p>
-      
-      
-    </div>
-    <footer class="article-footer">
-      
-
-      
-
-    </footer>
-  </div>
-  
-</article>
-  
-    <article id="post-Debugging-Go-Code-with-LLDB" class="article article-type-post" itemscope
-  itemprop="blogPost">
-  <div class="article-meta">
-    <a href="/2018/03/12/Debugging-Go-Code-with-LLDB/" class="article-date">
-  <time datetime="2018-03-12T04:09:38.000Z" itemprop="datePublished">2018年03月12日</time>
-</a>
-    
-  <div class="article-category">
-    <a class="article-category-link" href="/categories/Go/">Go</a>
-  </div>
-
-    
-  <div class="article-author"> by smallnest</div>
-
-  </div>
-  <div class="article-inner">
-    
-    
-    <header class="article-header">
-      
-  
-    <h1 itemprop="name">
-      <a class="article-title" href="/2018/03/12/Debugging-Go-Code-with-LLDB/">[译]使用 LLDB 调试 Go 程序</a>
-    </h1>
-  
-
-    </header>
-    
-    <div class="article-entry" itemprop="articleBody">
-      
-      
-      <img class="article-post-image" src="/images/logos/golang7.png">
-      
-      
-      <p>我一般调试Go程序都是通过log日志，性能调试的话通过 pprof 、trace、flamegraph等，主要是Go没有一个很好的集成的debugger,前两年虽然关注了delve，但是在IDE中集成比较粗糙，调试也很慢，所以基本不使用debugger进行调试， 最近看到滴滴的工程师分享的使用debugger在调试Go程序，我觉得有必要在尝试一下这方面的技术了。</p>
-<p>本文翻译自 <a href="http://ribrdb.github.io/lldb/" target="_blank" rel="external">Debugging Go Code with LLDB</a>, 更好的调试Go程序的工具是<a href="https://github.com/derekparker/delve" target="_blank" rel="external">delve</a>, 因为它是专门为Go开发， 使用起来也很简单，并且还可以远程调试。delve的命令还可参考： <a href="https://github.com/derekparker/delve/tree/master/Documentation/cli" target="_blank" rel="external">dlv cli</a>，但是流行的通用的基础的debugger也是常用的手段之一。我在译文后面也列出了几篇其它关于go debug的相关文章，有兴趣的话也可以扩展阅读一下。</p>
-
-      
-      <p class="article-more-link">
-        <a href="/2018/03/12/Debugging-Go-Code-with-LLDB/#more">阅读全文</a>
-      </p>
-      
-      
-    </div>
-    <footer class="article-footer">
-      
-
-      
-
-    </footer>
-  </div>
-  
-</article>
-  
-    <article id="post-two-issues-in-go-development" class="article article-type-post" itemscope
-  itemprop="blogPost">
-  <div class="article-meta">
-    <a href="/2018/03/08/two-issues-in-go-development/" class="article-date">
-  <time datetime="2018-03-08T07:32:50.000Z" itemprop="datePublished">2018年03月08日</time>
-</a>
-    
-  <div class="article-category">
-    <a class="article-category-link" href="/categories/Go/">Go</a>
-  </div>
-
-    
-  <div class="article-author"> by smallnest</div>
-
-  </div>
-  <div class="article-inner">
-    
-    
-    <header class="article-header">
-      
-  
-    <h1 itemprop="name">
-      <a class="article-title" href="/2018/03/08/two-issues-in-go-development/">Go网络开发中的两个技术点</a>
-    </h1>
-  
-
-    </header>
-    
-    <div class="article-entry" itemprop="articleBody">
-      
-      
-      <img class="article-post-image" src="/images/logos/golang7.png">
-      
-      
-      <p>最近碰到群里网友问如果检查网络连接的Timeout,联想最近看到的另一个问题， 在这篇文章统一记录一下。</p>
-
-      
-      <p class="article-more-link">
-        <a href="/2018/03/08/two-issues-in-go-development/#more">阅读全文</a>
-      </p>
-      
-      
-    </div>
-    <footer class="article-footer">
-      
-
-      
-
-    </footer>
-  </div>
-  
-</article>
-  
-    <article id="post-go-addressable" class="article article-type-post" itemscope
-  itemprop="blogPost">
-  <div class="article-meta">
-    <a href="/2018/02/27/go-addressable/" class="article-date">
-  <time datetime="2018-02-27T10:48:46.000Z" itemprop="datePublished">2018年02月27日</time>
-</a>
-    
-  <div class="article-category">
-    <a class="article-category-link" href="/categories/Go/">Go</a>
-  </div>
-
-    
-  <div class="article-author"> by smallnest</div>
-
-  </div>
-  <div class="article-inner">
-    
-    
-    <header class="article-header">
-      
-  
-    <h1 itemprop="name">
-      <a class="article-title" href="/2018/02/27/go-addressable/">go addressable 详解</a>
+      <a class="article-title" href="/2018/12/29/get-assembly-output-for-go-programs/">得到Go程序的汇编代码的方法</a>
     </h1>
   
 
@@ -400,15 +338,11 @@
       <img class="article-post-image" src="/images/logos/golang5.png">
       
       
-      <p>Go语言规范中规定了可寻址(addressable)对象的定义,</p>
-<blockquote>
-<p>For an operand x of type T, the address operation &amp;x generates a pointer of type *T to x. The operand must be addressable, that is, either a variable, pointer indirection, or slice indexing operation; or a field selector of an addressable struct operand; or an array indexing operation of an addressable array. As an exception to the addressability requirement, x may also be a (possibly parenthesized) composite literal. If the evaluation of x would cause a run-time panic, then the evaluation of &amp;x does too.</p>
-</blockquote>
-<p>对于一个对象<code>x</code>, 如果它的类型为<code>T</code>, 那么<code>&amp;x</code>则会产生一个类型为<code>*T</code>的指针，这个指针指向<code>x</code>, 这是这一段的第一句话，也是我们在开发过程中经常使用的一种获取对象指针的一种方式。 </p>
+      <p>有多种方式可以获得Go程序的汇编代码， 尽管输出的格式有些不同，但是都是方便阅读的汇编代码，可以帮助我们更好的了解程序的底层运行方式。</p>
 
       
       <p class="article-more-link">
-        <a href="/2018/02/27/go-addressable/#more">阅读全文</a>
+        <a href="/2018/12/29/get-assembly-output-for-go-programs/#more">阅读全文</a>
       </p>
       
       
@@ -423,11 +357,11 @@
   
 </article>
   
-    <article id="post-make-your-methods-as-services-in-10-seconds" class="article article-type-post" itemscope
+    <article id="post-get-function-name-in-go" class="article article-type-post" itemscope
   itemprop="blogPost">
   <div class="article-meta">
-    <a href="/2018/02/13/make-your-methods-as-services-in-10-seconds/" class="article-date">
-  <time datetime="2018-02-13T06:04:01.000Z" itemprop="datePublished">2018年02月13日</time>
+    <a href="/2018/11/03/get-function-name-in-go/" class="article-date">
+  <time datetime="2018-11-03T08:17:54.000Z" itemprop="datePublished">2018年11月03日</time>
 </a>
     
   <div class="article-category">
@@ -445,7 +379,7 @@
       
   
     <h1 itemprop="name">
-      <a class="article-title" href="/2018/02/13/make-your-methods-as-services-in-10-seconds/">10秒钟，让你的方法变为RPC服务</a>
+      <a class="article-title" href="/2018/11/03/get-function-name-in-go/">如何在Go的函数中得到调用者函数名?</a>
     </h1>
   
 
@@ -457,17 +391,13 @@
       <img class="article-post-image" src="/images/logos/golang5.png">
       
       
-      <p><a href="https://github.com/smallnest/rpcx" target="_blank" rel="external"><img src="https://img.shields.io/github/stars/smallnest/rpcx.svg?style=social&amp;logo=github&amp;label=Stars" alt="GitHub stars"></a></p>
-<p><a href="https://github.com/smallnest/rpcx" target="_blank" rel="external">rpcx</a>一个服务治理的Go RPC框架， 拥有非常多的特性，支持跨语言的服务调用。 众多的特性可以参考<a href="https://doc.rpcx.io" target="_blank" rel="external">doc.rpcx.io</a>。它的服务治理的特性深受阿里巴巴的Dubbo框架的启发。</p>
-<p>在实际的产品应用中，用户使用两台服务器+8台日志搜集服务(Client)，轻松处理每天几十亿的服务调用， 除了中间一个路由器硬件闪断， 整个系统平稳运行多半年。 相比较之前Java的实现， 服务器节省了一半。 用户使用rpcx框架重构后的系统每月为公司节省了几十万元的成本。</p>
-<p>rpcx框架的一个设计哲学就是<strong>简单</strong>。不希望用户需要花费大量的时间在框架的学习上，并且不需要proto文件或者重复且冗余的服务配置。最少只需要10行代码就可以创建一个服务， 如果需要额外的配置，也只需要几十行的代码。</p>
-<p>虽然rpcx开发简单，但是作为开发人员来说，如果可以更加的偷懒， 那更是极好的一件事情了，这就是<a href="https://github.com/smallnest/rpcx/tree/master/tool/xgen" target="_blank" rel="external">xgen</a>开发的目的。</p>
-<p>这个工具可以搜寻指定的<code>package</code>下可以配置成rpcx服务的类型， 并且生成一个服务器程序，将这些服务注册到服务器程序中。你可以指定是否需要<code>zookeeper</code>、<code>etcd</code>、<code>consul</code>作为注册中心。</p>
-<p>这个工具的开发参考了Go的tools的实现以及DigitalOcean公司的Fatih Arslan<br>开发的<a href="https://github.com/fatih/gomodifytags" target="_blank" rel="external">gomodifytags</a>的实现。</p>
+      <p>有时候在Go的函数调用的过程中，我们需要知道函数被谁调用，比如打印日志信息等。例如下面的函数，我们希望在日志中打印出调用者的名字。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> Foo() {</div><div class="line">	fmt.Println(<span class="string">"谁在调用我？"</span>)</div><div class="line">	bar()</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> Bar() {</div><div class="line">	fmt.Println(<span class="string">"谁又在调用我？"</span>)</div><div class="line">}</div></pre></td></tr></table></figure>
+
 
       
       <p class="article-more-link">
-        <a href="/2018/02/13/make-your-methods-as-services-in-10-seconds/#more">阅读全文</a>
+        <a href="/2018/11/03/get-function-name-in-go/#more">阅读全文</a>
       </p>
       
       
@@ -482,11 +412,11 @@
   
 </article>
   
-    <article id="post-code-your-own-blockchain-in-less-than-200-lines-of-go" class="article article-type-post" itemscope
+    <article id="post-cookie-and-session-in-go" class="article article-type-post" itemscope
   itemprop="blogPost">
   <div class="article-meta">
-    <a href="/2018/02/05/code-your-own-blockchain-in-less-than-200-lines-of-go/" class="article-date">
-  <time datetime="2018-02-05T05:23:12.000Z" itemprop="datePublished">2018年02月05日</time>
+    <a href="/2018/09/28/cookie-and-session-in-go/" class="article-date">
+  <time datetime="2018-09-28T08:45:32.000Z" itemprop="datePublished">2018年09月28日</time>
 </a>
     
   <div class="article-category">
@@ -499,29 +429,22 @@
   </div>
   <div class="article-inner">
     
-    
-    <header class="article-header">
-      
-  
-    <h1 itemprop="name">
-      <a class="article-title" href="/2018/02/05/code-your-own-blockchain-in-less-than-200-lines-of-go/">[转][译]只用200行Go代码写一个自己的区块链</a>
-    </h1>
-  
-
-    </header>
     
     <div class="article-entry" itemprop="articleBody">
       
       
-      <img class="article-post-image" src="/images/logos/blockchain.png">
+      <img class="article-post-image" src="/images/logos/golang.png">
       
       
-      <p>这篇文章的原文为英文，出自 Coral Health公司: <a href="https://medium.com/@mycoralhealth/code-your-own-blockchain-in-less-than-200-lines-of-go-e296282bcffc" target="_blank" rel="external">Code your own blockchain in less than 200 lines of Go!</a>，</p>
-<p>本篇转载的译文来自魏佳翻译的: <a href="http://www.10tiao.com/html/175/201801/2653549361/1.html" target="_blank" rel="external">只用200行Go代码写一个自己的区块链！</a>,高可用架构的公众号， 开头部分我改为了原文的直接翻译。</p>
+      <p>Cookie是指网站为了辨别用户身份而储存于客户端的数据，由网景公司的前雇员卢·蒙特利在1993年3月发明。最初定义于<a href="https://tools.ietf.org/html/rfc2109" target="_blank" rel="external">RFC 2109</a>, 以及后续的规范 <a href="https://tools.ietf.org/html/rfc2965" target="_blank" rel="external">RFC 2965</a>、<a href="https://tools.ietf.org/html/rfc6265" target="_blank" rel="external">RFC 6265</a>。</p>
+<p>服务器可以设置或读取Cookies中包含信息，借此维护用户跟服务器会话中的状态，并且可以基于Cookie实现Session,用来在服务器端存储用户的数据。</p>
+<p>现在，几乎所有的商业网站都会使用Cookie技术用来标示浏览的用户，比如电子商务中的购物车、广告追踪系统等，并且涉及到一系列的安全问题和隐私问题。</p>
+<p>Go的标准库中提供了Cookie的操作，并且第三方的库提供了Session的实现，所以在使用Go开发web应用中，我们可以很方便的实现session的管理，但是也有一些安全方面的设置需要注意。</p>
+<p>本文介绍了使用Go语言开发web应用的时候，服务器端Cookie和Session的使用。</p>
 
       
       <p class="article-more-link">
-        <a href="/2018/02/05/code-your-own-blockchain-in-less-than-200-lines-of-go/#more">阅读全文</a>
+        <a href="/2018/09/28/cookie-and-session-in-go/#more">阅读全文</a>
       </p>
       
       
@@ -536,11 +459,11 @@
   
 </article>
   
-    <article id="post-use-binary-package-in-go" class="article article-type-post" itemscope
+    <article id="post-image-similarity-algorithms-in-go" class="article article-type-post" itemscope
   itemprop="blogPost">
   <div class="article-meta">
-    <a href="/2018/01/10/use-binary-package-in-go/" class="article-date">
-  <time datetime="2018-01-10T08:25:08.000Z" itemprop="datePublished">2018年01月10日</time>
+    <a href="/2018/09/07/image-similarity-algorithms-in-go/" class="article-date">
+  <time datetime="2018-09-07T03:37:48.000Z" itemprop="datePublished">2018年09月07日</time>
 </a>
     
   <div class="article-category">
@@ -558,7 +481,7 @@
       
   
     <h1 itemprop="name">
-      <a class="article-title" href="/2018/01/10/use-binary-package-in-go/">使用二进制形式发布go package</a>
+      <a class="article-title" href="/2018/09/07/image-similarity-algorithms-in-go/">图像相似性比较实践</a>
     </h1>
   
 
@@ -570,12 +493,13 @@
       <img class="article-post-image" src="/images/logos/golang7.png">
       
       
-      <p>我们在使用Go进行开发的时候， 经常会使用到第三方的库， 这时候我们一般都会通过<code>go get</code>到github.com、bitbucket或者自己私有库中去拉取第三库的源代码。 今天正好群里有网友问能不能将自己开发的库以二进制形式提供给用户，我就顺便整理了一下。</p>
-<p>以二进制方式提供库的动机可能是为了保护自己公司的知识产权，也有可能是从安全的角度考虑，避免一些关键信息的泄漏等等，这不是本文讨论的范围。</p>
+      <p>2008年TinEye上线了图片搜索，开始是注册制，后来逐步放开。2011年， Google也上线了相似图片搜索，通过用户上传的图片，可以搜索相似的图片。<br>参考文档中提供了一些介绍图像搜索的一些文章， 尤其是阮一峰2011年和2013年两篇普及性的文章，可以帮助你了解图像相似搜索的原理。</p>
+<p>图像相似性搜索应用广泛、除了使用搜索引擎搜索类似图片外，像淘宝可以让顾客直接拍照搜索类似的商品信息、应用在商品购物上。也可以应用物体识别比如拍图识花等领域。目前我在调研图片鉴权的方案，通过一张图片和图片库中的图片进行比对，来确定这张图片是否侵权，或者退一步讲，图片库中是否包含和这张图片类似。 这个需求和目前深度学习应用中的图像识别还不一样， 图像识别是需要将图像中的物体识别出来， 猫啊狗啊什么的，而我所要做的就是一个查找相似图片的东西。</p>
+<p>Neal Krawetz博士看到了一些关于TinEye原理的询问， 虽然他并不知道TinEye是怎么实现的，但是根据搜索结果，他判断是基于感知哈希算法(Perceptual hash algorithm)的变种，他于2011年5月写了一篇文章，介绍相关的技术。</p>
 
       
       <p class="article-more-link">
-        <a href="/2018/01/10/use-binary-package-in-go/#more">阅读全文</a>
+        <a href="/2018/09/07/image-similarity-algorithms-in-go/#more">阅读全文</a>
       </p>
       
       
@@ -590,11 +514,11 @@
   
 </article>
   
-    <article id="post-best-practices-for-writing-high-performance-Go-code" class="article article-type-post" itemscope
+    <article id="post-Go-http2-和-h2c" class="article article-type-post" itemscope
   itemprop="blogPost">
   <div class="article-meta">
-    <a href="/2017/12/29/best-practices-for-writing-high-performance-Go-code/" class="article-date">
-  <time datetime="2017-12-29T03:43:09.000Z" itemprop="datePublished">2017年12月29日</time>
+    <a href="/2018/09/06/Go-http2-和-h2c/" class="article-date">
+  <time datetime="2018-09-06T10:10:40.000Z" itemprop="datePublished">2018年09月06日</time>
 </a>
     
   <div class="article-category">
@@ -612,7 +536,113 @@
       
   
     <h1 itemprop="name">
-      <a class="article-title" href="/2017/12/29/best-practices-for-writing-high-performance-Go-code/">[转]编写高性能的Go代码的最佳实践</a>
+      <a class="article-title" href="/2018/09/06/Go-http2-和-h2c/">Go http2 和 h2c</a>
+    </h1>
+  
+
+    </header>
+    
+    <div class="article-entry" itemprop="articleBody">
+      
+      
+      <img class="article-post-image" src="/images/logos/golang.png">
+      
+      
+      <p>了解一下http2和h2c (HTTP/2 over TCP,HTTP/2 without TLS)。</p>
+
+      
+      <p class="article-more-link">
+        <a href="/2018/09/06/Go-http2-和-h2c/#more">阅读全文</a>
+      </p>
+      
+      
+    </div>
+    <footer class="article-footer">
+      
+
+      
+
+    </footer>
+  </div>
+  
+</article>
+  
+    <article id="post-generate-random-string-in-Go" class="article article-type-post" itemscope
+  itemprop="blogPost">
+  <div class="article-meta">
+    <a href="/2018/09/02/generate-random-string-in-Go/" class="article-date">
+  <time datetime="2018-09-02T06:41:49.000Z" itemprop="datePublished">2018年09月02日</time>
+</a>
+    
+  <div class="article-category">
+    <a class="article-category-link" href="/categories/Go/">Go</a>
+  </div>
+
+    
+  <div class="article-author"> by smallnest</div>
+
+  </div>
+  <div class="article-inner">
+    
+    
+    <header class="article-header">
+      
+  
+    <h1 itemprop="name">
+      <a class="article-title" href="/2018/09/02/generate-random-string-in-Go/">快速产生一个随机字符串</a>
+    </h1>
+  
+
+    </header>
+    
+    <div class="article-entry" itemprop="articleBody">
+      
+      
+      <img class="article-post-image" src="/images/logos/golang.png">
+      
+      
+      <p>如何高效的产生一个随机字符串？这看似是一个简单的问题，但是icza却通过例子，逐步优化，实现了一个更高效的随机字符串的算法。这是来自的来自stackoverflow上的一个问题：<a href="https://stackoverflow.com/questions/22892120/how-to-generate-a-random-string-of-a-fixed-length-in-go" target="_blank" rel="external">How to generate a random string of a fixed length in Go?</a>, 大家群策群力，提出了很好的方案和反馈，尤其是icza的回答。 本文翻译和整理自这条问答。</p>
+
+      
+      <p class="article-more-link">
+        <a href="/2018/09/02/generate-random-string-in-Go/#more">阅读全文</a>
+      </p>
+      
+      
+    </div>
+    <footer class="article-footer">
+      
+
+      
+
+    </footer>
+  </div>
+  
+</article>
+  
+    <article id="post-c-and-go-calling-interaction" class="article article-type-post" itemscope
+  itemprop="blogPost">
+  <div class="article-meta">
+    <a href="/2018/08/28/c-and-go-calling-interaction/" class="article-date">
+  <time datetime="2018-08-28T11:45:46.000Z" itemprop="datePublished">2018年08月28日</time>
+</a>
+    
+  <div class="article-category">
+    <a class="article-category-link" href="/categories/Go/">Go</a>
+  </div>
+
+    
+  <div class="article-author"> by smallnest</div>
+
+  </div>
+  <div class="article-inner">
+    
+    
+    <header class="article-header">
+      
+  
+    <h1 itemprop="name">
+      <a class="article-title" href="/2018/08/28/c-and-go-calling-interaction/">C和Go相互调用</a>
     </h1>
   
 
@@ -624,70 +654,12 @@
       <img class="article-post-image" src="/images/logos/golang5.png">
       
       
-      <p>原文: <a href="https://github.com/dgryski/go-perfbook/blob/master/performance.md" target="_blank" rel="external">go-perfbook/performance</a></p>
-<p>This document outlines best practices for writing high-performance Go code.</p>
-<p>At the moment, it&#39;s a collection of links to videos, slides, and blog posts<br>(&quot;awesome-go-performance&quot;), but I would like this to evolve into a longer book<br>format where the content is here instead of external.  The links should be sorted into categories.</p>
-<p>All the content will be licensed under CC-BY-SA.</p>
+      <p>C可以调用Go，并且Go可以调用C， 如果更进一步呢， <code>C--&gt;Go--&gt;C</code> 或者 <code>Go--&gt;C--&gt;Go</code>的调用如何实现？</p>
+<p>本文通过两个简单的例子帮助你了解这两种复杂的调用关系。本文不涉及两者之间的复杂的数据转换，官方文章<a href="https://blog.golang.org/c-go-cgo" target="_blank" rel="external">C? Go? Cgo!</a>、<a href="https://github.com/golang/go/wiki/cgo" target="_blank" rel="external">wiki/cgo</a>和<a href="http://golang.org/cmd/cgo" target="_blank" rel="external">cmd/cgo</a>有一些介绍。</p>
 
       
       <p class="article-more-link">
-        <a href="/2017/12/29/best-practices-for-writing-high-performance-Go-code/#more">阅读全文</a>
-      </p>
-      
-      
-    </div>
-    <footer class="article-footer">
-      
-
-      
-
-    </footer>
-  </div>
-  
-</article>
-  
-    <article id="post-top-golang-articles-of-2017" class="article article-type-post" itemscope
-  itemprop="blogPost">
-  <div class="article-meta">
-    <a href="/2017/12/28/top-golang-articles-of-2017/" class="article-date">
-  <time datetime="2017-12-28T13:32:38.000Z" itemprop="datePublished">2017年12月28日</time>
-</a>
-    
-  <div class="article-category">
-    <a class="article-category-link" href="/categories/Go/">Go</a>
-  </div>
-
-    
-  <div class="article-author"> by smallnest</div>
-
-  </div>
-  <div class="article-inner">
-    
-    
-    <header class="article-header">
-      
-  
-    <h1 itemprop="name">
-      <a class="article-title" href="/2017/12/28/top-golang-articles-of-2017/">年终盘点！2017年超有价值的Golang文章</a>
-    </h1>
-  
-
-    </header>
-    
-    <div class="article-entry" itemprop="articleBody">
-      
-      
-      <img class="article-post-image" src="/images/logos/golang7.png">
-      
-      
-      <p>马上就要进入2018年了，作为年终的盘点，本文列出了一些2017年的关于Go编程的一些文章，并加上简短的介绍。</p>
-<p>文章排名不分先后， 文章也不一定完全按照日期来排列。我按照文章的大致内容分了类，便于查找。</p>
-<p>文章主要从golangweekly、gocn每日新闻、medium、reddit、twitter、、知名博主的文章搜集而来。如果你发现好的2017年的Go文章没有列出来，欢迎在评论中粘帖出来，我会加入到文章正文中。</p>
-<p>本文主要列出的是文章，2017年也涌现出来很多优秀的库和工具，但是不是本文要介绍的内容，所以没有列出来。</p>
-
-      
-      <p class="article-more-link">
-        <a href="/2017/12/28/top-golang-articles-of-2017/#more">阅读全文</a>
+        <a href="/2018/08/28/c-and-go-calling-interaction/#more">阅读全文</a>
       </p>
       
       
@@ -704,7 +676,7 @@
   
   
     <nav id="page-nav">
-      <a class="extend prev" rel="prev" href="/categories/Go/page/15/">&laquo; 上一页</a><a class="page-number" href="/categories/Go/">1</a><span class="space">&hellip;</span><a class="page-number" href="/categories/Go/page/14/">14</a><a class="page-number" href="/categories/Go/page/15/">15</a><span class="page-number current">16</span><a class="page-number" href="/categories/Go/page/17/">17</a><a class="page-number" href="/categories/Go/page/18/">18</a><span class="space">&hellip;</span><a class="page-number" href="/categories/Go/page/25/">25</a><a class="extend next" rel="next" href="/categories/Go/page/17/">下一页 &raquo;</a>
+      <a class="extend prev" rel="prev" href="/categories/Go/page/15/">&laquo; 上一页</a><a class="page-number" href="/categories/Go/">1</a><span class="space">&hellip;</span><a class="page-number" href="/categories/Go/page/14/">14</a><a class="page-number" href="/categories/Go/page/15/">15</a><span class="page-number current">16</span><a class="page-number" href="/categories/Go/page/17/">17</a><a class="page-number" href="/categories/Go/page/18/">18</a><span class="space">&hellip;</span><a class="page-number" href="/categories/Go/page/27/">27</a><a class="extend next" rel="next" href="/categories/Go/page/17/">下一页 &raquo;</a>
     </nav>
   
 </section>
@@ -752,7 +724,7 @@
   <div class="widget-wrap">
     <h3 class="widget-title">分类</h3>
     <div class="widget">
-      <ul class="category-list"><li class="category-list-item"><a class="category-list-link" href="/categories/Android/">Android</a><span class="category-list-count">12</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/C/">C++</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/DOTNET/">DOTNET</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Docker/">Docker</a><span class="category-list-count">5</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Go/">Go</a><span class="category-list-count">249</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Java/">Java</a><span class="category-list-count">64</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Linux/">Linux</a><span class="category-list-count">7</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Rust/">Rust</a><span class="category-list-count">15</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Scala/">Scala</a><span class="category-list-count">18</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/go/">go</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/k8s/">k8s</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/rust/">rust</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/分享/">分享</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/前端开发/">前端开发</a><span class="category-list-count">18</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/区块链/">区块链</a><span class="category-list-count">8</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/大数据/">大数据</a><span class="category-list-count">60</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/工具/">工具</a><span class="category-list-count">28</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/数据库/">数据库</a><span class="category-list-count">3</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/架构/">架构</a><span class="category-list-count">27</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/算法/">算法</a><span class="category-list-count">4</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/管理/">管理</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/网络编程/">网络编程</a><span class="category-list-count">13</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/设计模式/">设计模式</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/读书笔记/">读书笔记</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/运维/">运维</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/高并发编程/">高并发编程</a><span class="category-list-count">20</span></li></ul>
+      <ul class="category-list"><li class="category-list-item"><a class="category-list-link" href="/categories/Android/">Android</a><span class="category-list-count">12</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/C/">C++</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/DOTNET/">DOTNET</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Docker/">Docker</a><span class="category-list-count">5</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Go/">Go</a><span class="category-list-count">264</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Java/">Java</a><span class="category-list-count">64</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Linux/">Linux</a><span class="category-list-count">8</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Rust/">Rust</a><span class="category-list-count">15</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Scala/">Scala</a><span class="category-list-count">18</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/go/">go</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/k8s/">k8s</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/rust/">rust</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/分享/">分享</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/前端开发/">前端开发</a><span class="category-list-count">18</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/区块链/">区块链</a><span class="category-list-count">8</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/大数据/">大数据</a><span class="category-list-count">60</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/工具/">工具</a><span class="category-list-count">28</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/数据库/">数据库</a><span class="category-list-count">3</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/架构/">架构</a><span class="category-list-count">27</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/算法/">算法</a><span class="category-list-count">4</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/管理/">管理</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/网络编程/">网络编程</a><span class="category-list-count">13</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/设计模式/">设计模式</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/读书笔记/">读书笔记</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/运维/">运维</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/高并发编程/">高并发编程</a><span class="category-list-count">20</span></li></ul>
     </div>
   </div>
 
@@ -770,7 +742,7 @@
   <div class="widget-wrap">
     <h3 class="widget-title">归档</h3>
     <div class="widget">
-      <ul class="archive-list"><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/12/">December 2023</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/11/">November 2023</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/10/">October 2023</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/09/">September 2023</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/08/">August 2023</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/07/">July 2023</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/06/">June 2023</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/05/">May 2023</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/04/">April 2023</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/03/">March 2023</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/01/">January 2023</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/12/">December 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/11/">November 2022</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/10/">October 2022</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/09/">September 2022</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/08/">August 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/07/">July 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/06/">June 2022</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/05/">May 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/04/">April 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/03/">March 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/02/">February 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/01/">January 2022</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/12/">December 2021</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/11/">November 2021</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/10/">October 2021</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/08/">August 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/07/">July 2021</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/06/">June 2021</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/05/">May 2021</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/04/">April 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/03/">March 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/02/">February 2021</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/01/">January 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/12/">December 2020</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/11/">November 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/09/">September 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/08/">August 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/07/">July 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/06/">June 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/05/">May 2020</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/04/">April 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/03/">March 2020</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/02/">February 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/01/">January 2020</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/12/">December 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/11/">November 2019</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/10/">October 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/09/">September 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/08/">August 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/07/">July 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/06/">June 2019</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/05/">May 2019</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/04/">April 2019</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/03/">March 2019</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/02/">February 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/01/">January 2019</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/12/">December 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/11/">November 2018</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/10/">October 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/09/">September 2018</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/08/">August 2018</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/07/">July 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/06/">June 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/05/">May 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/04/">April 2018</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/03/">March 2018</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/02/">February 2018</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/01/">January 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/12/">December 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/11/">November 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/10/">October 2017</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/09/">September 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/08/">August 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/07/">July 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/06/">June 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/05/">May 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/04/">April 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/03/">March 2017</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/02/">February 2017</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/01/">January 2017</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/12/">December 2016</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/11/">November 2016</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/10/">October 2016</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/09/">September 2016</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/08/">August 2016</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/07/">July 2016</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/06/">June 2016</a><span class="archive-list-count">14</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/05/">May 2016</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/04/">April 2016</a><span class="archive-list-count">14</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/03/">March 2016</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/02/">February 2016</a><span class="archive-list-count">8</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/01/">January 2016</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/12/">December 2015</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/11/">November 2015</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/10/">October 2015</a><span class="archive-list-count">9</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/09/">September 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/08/">August 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/07/">July 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/06/">June 2015</a><span class="archive-list-count">8</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/05/">May 2015</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/04/">April 2015</a><span class="archive-list-count">15</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/03/">March 2015</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/02/">February 2015</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/01/">January 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/12/">December 2014</a><span class="archive-list-count">28</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/11/">November 2014</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/10/">October 2014</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/09/">September 2014</a><span class="archive-list-count">28</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/08/">August 2014</a><span class="archive-list-count">19</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/07/">July 2014</a><span class="archive-list-count">1</span></li></ul>
+      <ul class="archive-list"><li class="archive-list-item"><a class="archive-list-link" href="/archives/2024/02/">February 2024</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2024/01/">January 2024</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/12/">December 2023</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/11/">November 2023</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/10/">October 2023</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/09/">September 2023</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/08/">August 2023</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/07/">July 2023</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/06/">June 2023</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/05/">May 2023</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/04/">April 2023</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/03/">March 2023</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/01/">January 2023</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/12/">December 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/11/">November 2022</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/10/">October 2022</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/09/">September 2022</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/08/">August 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/07/">July 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/06/">June 2022</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/05/">May 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/04/">April 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/03/">March 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/02/">February 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/01/">January 2022</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/12/">December 2021</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/11/">November 2021</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/10/">October 2021</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/08/">August 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/07/">July 2021</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/06/">June 2021</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/05/">May 2021</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/04/">April 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/03/">March 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/02/">February 2021</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/01/">January 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/12/">December 2020</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/11/">November 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/09/">September 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/08/">August 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/07/">July 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/06/">June 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/05/">May 2020</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/04/">April 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/03/">March 2020</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/02/">February 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/01/">January 2020</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/12/">December 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/11/">November 2019</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/10/">October 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/09/">September 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/08/">August 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/07/">July 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/06/">June 2019</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/05/">May 2019</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/04/">April 2019</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/03/">March 2019</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/02/">February 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/01/">January 2019</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/12/">December 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/11/">November 2018</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/10/">October 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/09/">September 2018</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/08/">August 2018</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/07/">July 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/06/">June 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/05/">May 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/04/">April 2018</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/03/">March 2018</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/02/">February 2018</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/01/">January 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/12/">December 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/11/">November 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/10/">October 2017</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/09/">September 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/08/">August 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/07/">July 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/06/">June 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/05/">May 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/04/">April 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/03/">March 2017</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/02/">February 2017</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/01/">January 2017</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/12/">December 2016</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/11/">November 2016</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/10/">October 2016</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/09/">September 2016</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/08/">August 2016</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/07/">July 2016</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/06/">June 2016</a><span class="archive-list-count">14</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/05/">May 2016</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/04/">April 2016</a><span class="archive-list-count">14</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/03/">March 2016</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/02/">February 2016</a><span class="archive-list-count">8</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/01/">January 2016</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/12/">December 2015</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/11/">November 2015</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/10/">October 2015</a><span class="archive-list-count">9</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/09/">September 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/08/">August 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/07/">July 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/06/">June 2015</a><span class="archive-list-count">8</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/05/">May 2015</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/04/">April 2015</a><span class="archive-list-count">15</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/03/">March 2015</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/02/">February 2015</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/01/">January 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/12/">December 2014</a><span class="archive-list-count">28</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/11/">November 2014</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/10/">October 2014</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/09/">September 2014</a><span class="archive-list-count">28</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/08/">August 2014</a><span class="archive-list-count">19</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/07/">July 2014</a><span class="archive-list-count">1</span></li></ul>
     </div>
   </div>
 
@@ -782,23 +754,23 @@
       <ul>
         
           <li>
-            <a href="/2023/12/11/concurrency-issues-of-the-single-thread-in-Go/">Go单线程运行也会有并发问题</a>
+            <a href="/2024/02/02/Pinner-Pin/">Go语言中的Pinner.Pin</a>
           </li>
         
           <li>
-            <a href="/2023/12/05/two-bugs-of-uber-ratelimit/">这个限流库两个大bug存在了半年之久，没人发现？</a>
+            <a href="/2024/01/30/one-billion-row-challenge/">十亿行的挑战</a>
           </li>
         
           <li>
-            <a href="/2023/12/03/status-og-so-sync-in-2023/">2023年 Go 并发库的变化综述</a>
+            <a href="/2024/01/28/slow-to-simd/">从慢速到SIMD: 一个Go优化的故事</a>
           </li>
         
           <li>
-            <a href="/2023/11/17/golang-quick-reference-top-20-best-coding-practices/">TOP 20 Go最佳实践</a>
+            <a href="/2024/01/18/range-over-func/">遍历函数？Go 1.22中隐藏的功能</a>
           </li>
         
           <li>
-            <a href="/2023/11/05/inside-rust-mutex/">Rust并发编程番外篇: Mutex内部实现</a>
+            <a href="/2024/01/14/Linux-6-8-Networking/">Linux 6.8 网络优化, 大量并发连接的TCP性能提高40%左右</a>
           </li>
         
       </ul>
@@ -989,7 +961,7 @@
   
   <div class="outer">
     <div id="footer-info" class="inner">
-      &copy; 2023 smallnest<br>
+      &copy; 2024 smallnest<br>
 	  Powered by <a href="http://hexo.io/" target="_blank">Hexo</a>
     </div>
   </div>
