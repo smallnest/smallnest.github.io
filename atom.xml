@@ -4,7 +4,7 @@
   <subtitle><![CDATA[大道至简 Simplicity is the ultimate form of sophistication]]></subtitle>
   <link href="/atom.xml" rel="self"/>
   <link href="https://colobu.com/"/>
-  <updated>2024-02-02T08:06:56.412Z</updated>
+  <updated>2024-02-20T11:12:54.352Z</updated>
   <id>https://colobu.com/</id>
   
   <author>
@@ -13,6 +13,197 @@
   </author>
   
   <generator uri="http://zespia.tw/hexo/">Hexo</generator>
+  
+  <entry>
+    <title><![CDATA[聊聊 Go 的边界检查消除技术]]></title>
+    <link href="https://colobu.com/2024/02/19/bce/"/>
+    <id>https://colobu.com/2024/02/19/bce/</id>
+    <published>2024-02-19T14:47:39.000Z</published>
+    <updated>2024-02-20T11:12:22.416Z</updated>
+    <content type="html"><![CDATA[<p>在翻译的<a href="https://mp.weixin.qq.com/s/l6Tq_bVDmMpwZg_rPfi1DQ" target="_blank" rel="external">从慢速到SIMD</a>一文中， SourceGraph工程师其中的一个优化就是边界检查消除(BCE,bounds check elimination)技术，同时他也抛给了读者一个问题：</p>
+<blockquote>
+<p>为啥在使用 <code>a[i:i+4:i+4]</code> 而不是 <code>a[i:i+4]</code>?</p>
+</blockquote>
+<p>本文第一部分先回答这个问题。 第二部分介绍更好的边界检查消除方法。 第三部分再全面梳理Go的边界检查消除技术。</p>
+<a id="more"></a>
+<h2 id="为啥在使用_a[i:i+4:i+4]_而不是_a[i:i+4]?">为啥在使用 <code>a[i:i+4:i+4]</code> 而不是 <code>a[i:i+4]</code>?</h2>
+<p>这篇文章发布到几个平台之后，很多Gopher都在问这个问题的答案，包括《100个Go语言典型错误》的作者也在twitter上询问,再比如<a href="https://news.ycombinator.com/item?id=39106972" target="_blank" rel="external">Hacker News</a>上的讨论，<a href="https://www.reddit.com/r/golang/comments/199u7np/from_slow_to_simd_a_go_optimization_story/" target="_blank" rel="external">reddit</a>。</p>
+<p>当然，还每看过这篇文章的同学还不明白前因后果，这里我再简单介绍一下。SourceGraph工程师使用BCE做优化，他的代码如下，</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> DotBCE(a, b []<span class="typename">float32</span>) <span class="typename">float32</span> {</div><div class="line">	<span class="keyword">if</span> <span class="built_in">len</span>(a) != <span class="built_in">len</span>(b) {</div><div class="line">		<span class="built_in">panic</span>(<span class="string">"slices must have equal lengths"</span>)</div><div class="line">	}</div><div class="line"> </div><div class="line">    <span class="keyword">if</span> <span class="built_in">len</span>(a)<span class="number">%4</span> !=<span class="number"> 0</span> {</div><div class="line">		<span class="built_in">panic</span>(<span class="string">"slice length must be multiple of 4"</span>)</div><div class="line">	}</div><div class="line"> </div><div class="line">	sum := <span class="typename">float32</span><span class="number">(0</span>)</div><div class="line">	<span class="keyword">for</span> i :=<span class="number"> 0</span>; i &lt; <span class="built_in">len</span>(a); i +=<span class="number"> 4</span> {</div><div class="line">		aTmp := a[i : i<span class="number">+4</span> : i<span class="number">+4</span>] <span class="comment">// &lt;--- 这里会做边界检查</span></div><div class="line">		bTmp := b[i : i<span class="number">+4</span> : i<span class="number">+4</span>] <span class="comment">// &lt;--- 这里会做边界检查</span></div><div class="line">		s0 := aTmp<span class="number">[0</span>] * bTmp<span class="number">[0</span>] <span class="comment">// &lt;--- 这里不会做边界检查</span></div><div class="line">		s1 := aTmp<span class="number">[1</span>] * bTmp<span class="number">[1</span>] <span class="comment">// &lt;--- 这里不会做边界检查</span></div><div class="line">		s2 := aTmp<span class="number">[2</span>] * bTmp<span class="number">[2</span>] <span class="comment">// &lt;--- 这里不会做边界检查</span></div><div class="line">		s3 := aTmp<span class="number">[3</span>] * bTmp<span class="number">[3</span>] <span class="comment">// &lt;--- 这里不会做边界检查</span></div><div class="line">		sum += s0 + s1 + s2 + s3</div><div class="line">	}</div><div class="line">	<span class="keyword">return</span> sum</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>注意做边界检查的那两行，它们做了边界检查，新的slice的len和cap都是4,可以确保<code>aTemp[0]</code>、<code>aTemp[3]</code>、<code>bTemp[0]</code>、<code>bTemp[3]</code>不会越界,所以下面四行不用做边界检查了。不过边界检查少了很多的指令，可以提高性能。</p>
+<p>我们怎么知道哪一行做了边界检查呢？可以使用下面的命令编译，会把做边界检查的行数打印出来。</p>
+<p><img src="bce1.png" alt=""></p>
+<p>可以看到结果和我们注释中的一样，只在第14、15行做了边界检查。</p>
+<p>但是话锋一转，SourceGraph工程师突然问了一个问题：为啥这两行使用 <code>a[i:i+4:i+4]</code> 而不是 <code>a[i:i+4]</code>?</p>
+<p>难道<code>a[i:i+4]</code>会导致下面四行做边界检查吗？这个问题让很多人都很好奇，几个论坛上没有答案。我翻译的文章评论中也有小伙伴问这个问题。</p>
+<p>首先，我们修改为<code>a[i:i+4]</code>，然后编译，看看结果:<br><img src="bce1.png" alt=""></p>
+<p>没什么区别，还是在第14、15行做了边界检查，接下来四行做了边界检查消除，不一样么？</p>
+<p>这个问题 <a href="https://go101.org/" target="_blank" rel="external">Go101 老貘</a> 在Twitter上提了一下，没有展开讲，购买了他的书的同学可以看看那一章：<br><img src="bce2.png" alt=""></p>
+<p>接下来我从最开始的讨论讲起，那还得从2018年的秋天的一个提交讲起。</p>
+<p>不想看历史的同学可以直接跳过去，结论就是：这样写不是为了边界检查消除，而是为了性能。</p>
+<p>这是一次对<a href="https://go-review.googlesource.com/c/go/+/136935" target="_blank" rel="external">image/draw: optimize bounds checks in loops</a>做边界检查的优化:<br><img src="bce3.png" alt=""></p>
+<p>其中有一行<code>s := spix[i : i+4 : i+4]</code>，Sebastien Binet提出一个疑问，为啥这里要设置cap? Brad Fitzpatrick就说那我移除好了，作者Ian Davis说我做了测试，感觉设置cap会给编译器提示，性能更好。大家就对这个奇怪的点展开了有趣的讨论，Ian Davis说如果改成<code>s := spix[i : i+4]</code>虽然对边界检查没有影响，但是性能会下降。Giovanni Bajo给出了正解:</p>
+<blockquote>
+<p>If you don&#39;t specify the cap, the compiler needs to calculate it computing newcap = oldcap - offset. If you specify it with the same value of len, it does less work.</p>
+<p>翻译：如果你不指定cap，编译器需要计算新的<code>newcap = oldcap - offset</code>。如果你指定cap的值和len一样，编译器就可以少做点工作。</p>
+</blockquote>
+<p>Nigel Tao也指出，这行代码也可以使用<code>_ = spix[i+3]</code>代替。<br>最终这个讨论记录在<a href="https://github.com/golang/go/issues/27857" target="_blank" rel="external">#27857</a>。</p>
+<p>回答SourceGraph工程师的问题：<strong>为啥在使用 <code>a[i:i+4:i+4]</code> 而不是 <code>a[i:i+4]</code>?</strong></p>
+<p>答案是为了更好的性能，而不是为了边界检查消除。</p>
+<h2 id="更好的边界检查消除方法">更好的边界检查消除方法</h2>
+<p>SourceGraph工程师的代码使用BCE做了优化，但是你还是看到，有两行代码还是做了边界检查，这是因为Go的BCE并不完美，有时候还是会做边界检查。</p>
+<p>但是有没有办法全部消除代码的边界检查呢？老貘还是给出了一个解决方案。<br>我们先看看老貘的给出的例子(<code>f8z</code>我略有改动):<br><img src="bce4.png" alt=""></p>
+<p>可以看到，Go的BCE还不是那么智能，<code>f8x</code>例子中<code>s[i+3]</code>、<code>s[i+2]</code>、s[i+1]不会越界，但是这三行还是做了边界检查。</p>
+<p><code>f8y</code>例子中<code>s[3]</code>做了边界检查后，可以保证<code>s[2]</code>、<code>s[1]</code>、<code>s[0]</code>不会越界，所以这三行不用做边界检查。</p>
+<p><code>f8z</code>例子中，每次循环我们都会检查s的长度是否大于4，如果大于4，<code>s[3]</code>、<code>s[2]</code>、<code>s[1]</code>、<code>s[0]</code>肯定不会越界，所以这四行不做边界检查，而且<code>s = s[4:]</code>也不会越界。这样这个实现就整体都不需要做边界检查了</p>
+<p>所以SourceGraph工程师的代码可以改成下面这样:</p>
+<p><img src="bce5.png" alt=""></p>
+<h2 id="Go的边界检查消除技术">Go的边界检查消除技术</h2>
+<p>老貘在Go101中有一章专门讲了<a href="https://go101.org/article/bounds-check-elimination.html" target="_blank" rel="external">这个问题</a>，感兴趣的同学可以直接阅读，或者购买他的电子书。</p>
+<p>我想从Go实现边界检查消除的提议说起，这个提议是<a href="https://github.com/golang/go/issues/14808），由Alexandru Moșoi提出，他专门写了一篇文档[Bounds Checking Elimination](https://docs.google.com/document/d/1vdAEAjYdzjnPA9WDOQ1e4e05cYVMpqSxJYZT33Cqw2g/edit#heading=h.ywknbkyeha6d" target="_blank" rel="external">cmd/compile: unnecessary bounds checks are not removed #14808</a>。</p>
+<p>当然BCE在Go的编译器中也一直做优化，原始的文档整理也不能全面反映现状，但是还是很有意义的，整理的BCE技术进行分类便于学习。我就整理翻译一下。</p>
+<p>Go的边界检查有两个:索引<code>a[i]</code>和slice<code>a[i,j]</code>。Go编译器在访问这两种方式的时候会插入一些边界检查代码，但是大部分情况下是不需要的，冗余的，我们的目标就是在编译的时候去掉这些冗余的检查，这样能提供性能，检查二进制文件大小。通过<code>-gcflags=-B</code>可以禁止边界检查。</p>
+<p>你可以通过<code>go build -gcflags=&quot;-d=ssa/check_bce&quot; xxx.go</code>查看哪些行进行了边界检查。</p>
+<p>下面是一些进行边界检查消除的场景。</p>
+<h3 id="重复检查">重复检查</h3>
+<p>比如下面的代码中，重复的索引和切片访问就不做边界检查了。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">var</span> a []<span class="typename">int</span></div><div class="line">….</div><div class="line">_ = a[i] <span class="comment">// 边界检查</span></div><div class="line">_ = a[i] <span class="comment">// 重复访问，消除边界检查</span></div><div class="line">_ = a<span class="number">[2</span>*i<span class="number">+7</span>]  <span class="comment">// 边界检查</span></div><div class="line">_ = a<span class="number">[2</span>*i<span class="number">+7</span>]  <span class="comment">// 重复访问，消除边界检查</span></div><div class="line"></div><div class="line"></div><div class="line"><span class="keyword">var</span> a []<span class="typename">int</span></div><div class="line">….</div><div class="line">_ = a[:i]</div><div class="line">_ = a[:i] <span class="comment">// 重复访问，消除边界检查</span></div><div class="line"></div><div class="line"></div><div class="line"><span class="keyword">var</span> a []<span class="typename">int</span></div><div class="line">….</div><div class="line">_ = a[i:]</div><div class="line">_ = a[i:] <span class="comment">// 重复访问，消除边界检查</span></div></pre></td></tr></table></figure>
+
+<h3 id="带掩码索引的恒定切片大小">带掩码索引的恒定切片大小</h3>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">var</span> a<span class="number">[17</span>]<span class="typename">int</span></div><div class="line">....</div><div class="line">_ = a[i<span class="number">&5</span>]   <span class="comment">// 0 &lt;= i&5 and i&5 &lt;= 5 &lt; 17 == len(a), 移除边界检查</span></div><div class="line">_ = a[i<span class="number">%5</span>]  <span class="comment">// 不能移除， 因为i可能是负数， 负数就越界了</span></div></pre></td></tr></table></figure>
+
+<h3 id="常数索引">常数索引</h3>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">var</span> a[]<span class="typename">int</span></div><div class="line">....</div><div class="line"><span class="keyword">if</span><span class="number"> 5</span> &lt; <span class="built_in">len</span>(a) { _ = a<span class="number">[5</span>] }   <span class="comment">// 0 &lt;= 5 and 5 &lt; len(a), 移除边界检查</span></div></pre></td></tr></table></figure>
+
+<p>这也是上一节我们完全消除边界检查的方式。</p>
+<h3 id="常数索引和常数size">常数索引和常数size</h3>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">var</span> a<span class="number">[10</span>]<span class="typename">int</span></div><div class="line">....</div><div class="line">_ = a<span class="number">[5</span>]   <span class="comment">// 0 &lt;= 5 and 5 &lt; len(a) == 10,  移除边界检查</span></div></pre></td></tr></table></figure>
+
+<h3 id="琐碎的边界检查">琐碎的边界检查</h3>
+<p><code>a[i:j]</code> 会产生两个边界检查: <code>0 &lt;= i &lt;= j</code> 和 <code>0 &lt;= j &lt;= cap(a)</code>。有时候我们可以移除它们中的一个。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">var</span> a[]<span class="typename">int</span></div><div class="line">…</div><div class="line">a[i:<span class="built_in">len</span>(a)]  <span class="comment">// 第二个边界检查 0 &lt;= len(a) &lt;= cap(a) 移除了</span></div><div class="line"><span class="keyword">var</span> a[]<span class="typename">int</span></div><div class="line">…</div><div class="line">a[:<span class="built_in">len</span>(a)&gt;<span class="number">&gt;1</span>] <span class="comment">// 第一个边界检查移除了 0 &lt;= 0 &lt;= len(a)&gt;&gt;1， 因为 len(a)&gt;&gt;1 &gt;= 0</span></div><div class="line"><span class="keyword">var</span> a[]<span class="typename">int</span></div><div class="line">…</div><div class="line">a[:<span class="built_in">len</span>(b)] <span class="comment">// 第一个边界检查 0 &lt;= 0 &lt;= len(a) 移除了</span></div></pre></td></tr></table></figure>
+
+<h3 id="基于循环变量的边界检查">基于循环变量的边界检查</h3>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">var</span> a[]<span class="typename">int</span>   </div><div class="line">…</div><div class="line"><span class="keyword">for</span> i := <span class="keyword">range</span> a {   <span class="comment">// 不适用于string</span></div><div class="line">  use a[i]  <span class="comment">// 移除, i 循环变量</span></div><div class="line">  use a[i:]  <span class="comment">// 移除</span></div><div class="line">  use a[:i]  <span class="comment">// 移除</span></div><div class="line">}</div><div class="line"><span class="keyword">var</span> a []<span class="typename">int</span>   </div><div class="line">...</div><div class="line"><span class="keyword">for</span> i :=<span class="number"> 0</span>; i &lt; <span class="built_in">len</span>(a); i++ {   <span class="comment">// 也适用于string</span></div><div class="line">  use a[i]  <span class="comment">// 移除, i 循环变量</span></div><div class="line">  use a[i:]  <span class="comment">// 移除</span></div><div class="line">  use a[:i]  <span class="comment">// 移除</span></div><div class="line">}</div><div class="line"><span class="keyword">var</span> a[]<span class="typename">int</span>   </div><div class="line">…</div><div class="line"><span class="keyword">for</span> i := <span class="keyword">range</span> a {   <span class="comment">// 不适用于string</span></div><div class="line">  use a[:i<span class="number">+1</span>] <span class="comment">// 移除, i 循环变量</span></div><div class="line">  use a[i<span class="number">+1</span>:] <span class="comment">// 移除</span></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<h3 id="递减常量索引">递减常量索引</h3>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">var</span> a[]<span class="typename">int</span></div><div class="line">…</div><div class="line">_ = a<span class="number">[3</span>] <span class="comment">// 一次边界检查</span></div><div class="line">use a<span class="number">[1</span>], a<span class="number">[2</span>], a<span class="number">[3</span>] <span class="comment">// 不需要边界检查</span></div><div class="line"></div><div class="line"><span class="comment">// or</span></div><div class="line">a = a[<span class="number">:3</span>:<span class="built_in">len</span>(a)] <span class="comment">// 一次边界检查</span></div><div class="line">use a<span class="number">[0</span>], a<span class="number">[1</span>], a<span class="number">[2</span>] <span class="comment">// 不需要边界检查</span></div><div class="line"></div><div class="line"><span class="comment">// or</span></div><div class="line">use a<span class="number">[3</span>], a<span class="number">[2</span>], a<span class="number">[1</span>] <span class="comment">// 一次边界检查</span></div><div class="line"></div><div class="line"><span class="comment">// or</span></div><div class="line"><span class="keyword">if</span> <span class="built_in">len</span>(a) &gt;=<span class="number"> 3</span> {</div><div class="line">    use a<span class="number">[0</span>], a<span class="number">[1</span>], a<span class="number">[2</span>] <span class="comment">// 一次边界检查</span></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<h3 id="不能移除的边界检查">不能移除的边界检查</h3>
+<p>下面这个<code>k8x</code>中第一个<code>a[i]</code>中i可能为负数，所以不能移除，接下来的两个可以确保不越界，所以可以移除。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> k8x(a []<span class="typename">int</span>, i <span class="typename">int</span>, j <span class="typename">uint</span>) {</div><div class="line">	<span class="keyword">if</span> i &lt; <span class="built_in">len</span>(a) {</div><div class="line">		_ = a[i] <span class="comment">// 不能移除，因为i可能为负数</span></div><div class="line">	}</div><div class="line"></div><div class="line">	<span class="keyword">if</span> j &lt; <span class="typename">uint</span>(<span class="built_in">len</span>(a)) {</div><div class="line">		_ = a[j] <span class="comment">// 移除，因为 0 &lt;= j &lt; len(a)</span></div><div class="line">	}</div><div class="line"></div><div class="line">	<span class="keyword">if</span><span class="number"> 0</span> &lt;= i && i &lt; <span class="built_in">len</span>(a) {</div><div class="line">		_ = a[i] <span class="comment">// 移除，因为 0 &lt;= i &lt; len(a)</span></div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>下面这个<code>k8y</code>中<code>i+2</code>可能溢出，比如<code>i = math.MaxInt</code>, 所以不能移除。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> k8y(a []<span class="typename">int</span>, i <span class="typename">int</span>) {</div><div class="line">	<span class="keyword">if</span><span class="number"> 0</span> &lt;= i && i<span class="number">+2</span> &lt; <span class="built_in">len</span>(a) {</div><div class="line">		_ = a[i<span class="number">+2</span>] <span class="comment">// i+2 might overflow int</span></div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>`</p>
+<p>这个文档中有几处场景已经BCE已经完善了，我更正过来了，如上。</p>
+]]></content>
+    <summary type="html">
+    <![CDATA[<p>在翻译的<a href="https://mp.weixin.qq.com/s/l6Tq_bVDmMpwZg_rPfi1DQ" target="_blank" rel="external">从慢速到SIMD</a>一文中， SourceGraph工程师其中的一个优化就是边界检查消除(BCE,bounds check elimination)技术，同时他也抛给了读者一个问题：</p>
+<blockquote>
+<p>为啥在使用 <code>a[i:i+4:i+4]</code> 而不是 <code>a[i:i+4]</code>?</p>
+</blockquote>
+<p>本文第一部分先回答这个问题。 第二部分介绍更好的边界检查消除方法。 第三部分再全面梳理Go的边界检查消除技术。</p>
+]]>
+    
+    </summary>
+    
+  </entry>
+  
+  <entry>
+    <title><![CDATA[一些笔记工具工具以及memos介绍]]></title>
+    <link href="https://colobu.com/2024/02/10/some-note-taking-tools-and-memos/"/>
+    <id>https://colobu.com/2024/02/10/some-note-taking-tools-and-memos/</id>
+    <published>2024-02-09T16:52:07.000Z</published>
+    <updated>2024-02-20T11:11:43.123Z</updated>
+    <content type="html"><![CDATA[<p>祝大家龙年大吉！</p>
+<a id="more"></a>
+<p>大家可能好奇我写书的时候是用什么工具？正好最近我画架构图的时候使用Excelidraw,也试用了几款其他的工具。而且这两天搭建了一个备忘录的工具，所以正好总结一下。</p>
+<h2 id="写书工具">写书工具</h2>
+<p>我在写书稿的时候曾经一度想使用Latex，因为它强大的排版功能几乎可以排版任何东西，而且拥有丰富的插件，输出的pdf效果也很好，但是考虑到交稿给编辑，扁编辑在审稿和校对的时候不方便，而且书稿出版社会使用自己的版式重新排版，虽然我一度整了一个Latex模板并尝试写电子书，但是最终也放弃了。</p>
+<p>基本上，我写的书稿是使用Markdown的格式。Markdown的格式对于写作还是很方便的，而且不需要考虑太多的版面的问题，方便组织层次，插入图片和代码也都很方便，编译也容易导出到其他格式。</p>
+<p>使用vscode 就可以编写Markdown的文本，后来我听说<a href="https://typora.io/" target="_blank" rel="external">Typora</a>，这是一个很好的Markdown编辑器，支持实时预览，而且支持导出PDF，网上都说使用方便，我也尝试了一下，也确实不错。不过自1.0版本后它开始收费了。</p>
+<p>当然收费也无可厚非，毕竟开发者也需要生活，不能够纯用爱发电，对吧？ 但是我还是希望找到一个免费的工具，最终我找到了<a href="https://github.com/marktext/marktext" target="_blank" rel="external">MarkText</a>，这是一个开源的Markdown编辑器，支持实时预览，而且支持导出PDF，这是我最喜欢的一个Markdown编辑器。</p>
+<p>所以我就使用MarkText平替Typora来写书稿，完成了《深入理解Go并发编程》的写作。</p>
+<p>这个工具的作者还是中国的同学，非常的赞。不过目前代码活跃度不是那么高了，不过对我来说已经够用了，希望它后续能够支持插件，这样可以充分发挥网友的聪明才智，把功能丰富起来。</p>
+<p><img src="marktext.png" alt=""></p>
+<h2 id="笔记工具">笔记工具</h2>
+<p>首先做笔记的工具很多，比如<a href="https://www.notion.so/product" target="_blank" rel="external">Notion</a>、<a href="https://keep.google.com/" target="_blank" rel="external">Google Keep</a>、<a href="https://www.yinxiang.com/" target="_blank" rel="external">Evernote（印象笔记）</a>、<a href="https://www.onenote.com/" target="_blank" rel="external">OneNote</a>、<a href="https://simplenote.com/" target="_blank" rel="external">Simplenote</a>、<a href="https://bear.app/" target="_blank" rel="external">Bear</a>、<a href="https://www.goodnotes.com/" target="_blank" rel="external">GoodNotes</a>、<a href="https://notability.com/" target="_blank" rel="external">Notability</a>等等，很多，但是很多都是收费的，而且基本是web服务，意味着你的数据都在别人的服务器上，不安全， 而且服务可用性也不可控。</p>
+<p>所以我想找的是一个桌面工具，免费的，相应的笔记我通过git保存在github或者自建的git服务器上即可。</p>
+<p>有两个工具值得推荐。</p>
+<p>第一个是 <a href="https://obsidian.md/" target="_blank" rel="external">obsidian</a>, 这是一个免费的笔记工具，支持markdown格式，而且支持插件，可以自己写插件，而且支持本地存储，不需要联网，而且支持git，可以把笔记存储在github上.<br><img src="obsidian.png" alt=""></p>
+<p>它具有以下有点：</p>
+<ul>
+<li>支持Markdown格式编写笔记,可读性强,也方便导出和跨平台使用。</li>
+<li>采用文件系统来组织笔记,所有笔记以普通文本文件的形式存储在磁盘上,不依赖任何数据库。</li>
+<li>建立笔记之间的双向链接,支持网络化思维,可以将笔记关联起来。</li>
+<li>提供图形化界面,支持大纲预览、回链、未链接提醒等功能。</li>
+<li>支持嵌入超链接、图片、Latex数学公式等。</li>
+<li>插件丰富,支持中文分词、思维导图、时间管理等功能。</li>
+<li>支持多种操作系统如Windows、Mac、Linux等。</li>
+<li>提供移动版,可以在手机或平板上编辑和查看笔记。</li>
+<li>支持团队协作,可搭建或加入专用服务器,实现知识共享。</li>
+<li>个性化主题丰富,美观大方。</li>
+</ul>
+<p>第二个是 <a href="https://github.com/logseq/logseq" target="_blank" rel="external">logseq</a>,logseq是一个开源的网络化个人知识管理和协作工具,具有以下主要特点:<br><img src="logseq.webp" alt=""></p>
+<ul>
+<li>支持双向链接,所有块(页面和段落)之间可以相互引用,形成一个网络化的知识库。</li>
+<li>基于Graph数据结构,支持视图分析、回链和未链接提示等功能。</li>
+<li>页面和块支持无限嵌套,可以把知识点进行自由组合。</li>
+<li>支持代码块、TeX数学公式等语法高亮。</li>
+<li>可以创建Markdown和OrgMode多种格式的页面。</li>
+<li>支持同时编辑,实时预览编辑内容。</li>
+<li>支持跨平台编辑。</li>
+<li>插件系统强大,可以扩展更多功能。</li>
+<li>界面简洁优雅,支持日夜两种主题模式。</li>
+</ul>
+<p>我在Mac上安装Logseq后发现它的功能虽然强大，插件更丰富，但是弹出的对话框不能关闭，后台启动多个进程，占用资源比较大，反应迟钝，这可能是它基于Electron开发的原因，所以我最后卸载了。</p>
+<p>其实这两个工具在我的日常生活中都没有使用，我就使用苹果的备忘录，便捷，在多个苹果设备上可以互通。不好的地方在于它过于简单了。</p>
+<h2 id="画图工具">画图工具</h2>
+<p>其实我之所以考察obsidian和logseq，是因为我最近在画几个技术相关的架构图或者插图。先前较多使用<a href="https://app.diagrams.net/" target="_blank" rel="external">draw.io</a>，这是一个免费的在线画图工具，支持多种图形，而且支持导出多种格式，而且支持保存到本地。不过看看到网上其他同学的架构图图画的都挺好，使用<a href="https://excalidraw.com/" target="_blank" rel="external">excalidraw</a>画的，有手工画图的风格，非常的漂亮，所以我尝试使用excalidraw画图。</p>
+<p>excalidraw默认就配置了三种字体：手写、正常和代码字体。对于我们来说，我们希望对于中文，能够使用一款漂亮的字体做渲染，但是excalidraw官方的网站不支持，有些人通过浏览器插件等方式把其中的字体做替换来达到目的，过于麻烦。</p>
+<p>我搜了一下网上的教程，说obsidian很好的支持了excalidraw插件，可以配置自己的字体作为第四种可选择的字体，这就非常好了。</p>
+<p>你可以选择一款自己喜欢的字体，放在<code>Obsidian Vault/Excalidraw/font</code>中，我选择了“沐瑶随心手写体”，这是一款免费且好看的中文字体，然后在obsidian的设置中配置excalidraw插件，就可以选择这个字体了。<br><img src="excalidraw.png" alt=""></p>
+<p>然后我就可以使用excalidraw画图了，可以看到<code>Font family</code>中多了一个字体选项，这就是我配置的字体。<br><img src="excalidraw2.png" alt=""></p>
+<p>obsidian也支持了excalidraw的脚本，这极大的丰富了excalidraw的功能，可以画出更加复杂的图形。而且excalidraw插件也支持资源库，我上面图中的gopher就是使用的资源库中的资源。</p>
+<p>现在看起来 obsidian + excalidraw插件可以很好的满足我的需求了。</p>
+<h2 id="备忘录工具">备忘录工具</h2>
+<p>前面提到，我基本使用苹果的备忘录，但是它的功能太简单了，而且不支持markdown格式，所以我想找一个支持markdown格式的备忘录工具，最好是web方式的，这样我在电脑、平板和手机上都可以自如的编写备忘录了。</p>
+<p>经常我脑海中会蹦出一点火花，可能是一个新的项目想法，可能是一个新的技术点，可能是一个新的文章的思路，也可能是一本书的大纲，我书包中常备着一个小本子，当这些想法闪现的时候，我都会拿出本子记录下来。但是经常在一些时候，比如外出的时候，或者半夜有想法失眠的时候，本子不在身边，我生怕这些稍纵即逝的想法就这样消失了。所以如果有一个随时随地的备忘录工具就好了，不仅限于苹果系统。</p>
+<p>其实上面笔记工具提到的google keep就挺好，但是有时候访问Google并不是那么方便，而且基于Goole历来的表现，说不定哪一天就把这个产品关闭了。<br>不过这个工具确实好， 支持代办列表、图片，甚至可以绘图。<br><img src="keep.png" alt=""></p>
+<p>当然，类似的备忘录工具有很多，比如<a href="https://www.zhihu.com/question/21291418" target="_blank" rel="external">这篇知乎文章</a>介绍的。</p>
+<p>这两天，我看到了一款非常简洁但是功能有很丰富的备忘录工具，支持自己搭建，我就自己搭建了一个。</p>
+<p>这款备忘录工具就是<a href="https://github.com/usememos/memos" target="_blank" rel="external">memos</a>, 你可以访问它的示例网站进行试用，示例网站地址是: <a href="https://demo.usememos.com/" target="_blank" rel="external">https://demo.usememos.com/</a>。<br><img src="memos.png" alt=""></p>
+<p><code>usememos/memos</code>是一个开源的轻量级便签服务,可以让用户轻松捕获和分享想法。它的主要特点包括:</p>
+<ul>
+<li>开源 - usememos在GitHub上以MIT许可证开源,代码公开透明。</li>
+<li>轻量级 - 简单注册就可以使用,用户可以快速创建和组织便签。</li>
+<li>多租户 - 支持多用户注册,每个用户都有自己的私有空间。也可以创建公共空间,共享便签。</li>
+<li>Markdown支持 - 支持Markdown格式,可以格式化便签文本。</li>
+<li>快速搜索 - 可以快速搜索并过滤便签。</li>
+<li>分享和协作 - 可以分享便签链接到不同平台,也可以与其他人协作编辑。</li>
+<li>多种主题 - 提供多种主题选择,用户可以自定义外观。</li>
+<li>数据备份 - 数据可以导出为JSON文件,方便备份。</li>
+<li>响应式设计 - 可以在移动设备和桌面端流畅使用。</li>
+<li>简洁易用 - 界面简洁,使用非常容易上手。</li>
+</ul>
+<p>最重要的一点，你可以自己通过docker或者直接编译源码来搭建自己的备忘录服务，这样你的数据就不会存储在别人的服务器上，安全性更高。而且可以一键部署，安装简单。</p>
+<p>不但安装简单，而且使用也非常简单，你可以在网站上注册一个账号，然后就可以使用了。<br>初始第一个用户是管理员，你可以设置是否允许其他用户注册等，控制这个应用你自己使用还是当成平台共享。</p>
+<p>我在自己的服务器上部署了这个程序，并设置了相应的域名 <a href="https://memos.rpcx.io" target="_blank" rel="external">https://memos.rpcx.io</a> , 目前仅限于我自己使用。而且我手机上利用浏览器的功能，创建了一个桌面快捷键，直接点击桌面图标就可以进入，类似桌面APP的效果。</p>
+<p>因为memos是开源的，我也进行了相应的修改，比如图标换成我微信的图标， 备忘录的字体也换成了“沐瑶随心手写体”，更有趣一些。汉化了一些不彻底的地方。</p>
+<p><img src="memos2.png" alt=""></p>
+]]></content>
+    <summary type="html">
+    <![CDATA[<p>祝大家龙年大吉！</p>
+]]>
+    
+    </summary>
+    
+      <category term="Go" scheme="https://colobu.com/categories/Go/"/>
+    
+  </entry>
   
   <entry>
     <title><![CDATA[Go语言中的Pinner.Pin]]></title>
@@ -1579,163 +1770,6 @@
     <summary type="html">
     <![CDATA[<p>书接上回。昨天我写了一篇《这个限流库两个大bug存在了半年之久，没人发现？》，提到了Go语言中的<code>time.Sleep</code>函数的问题。有网友也私下和我探讨，提到这个可能属于系统的问题，因为现代的操作系统都是分时操作系统，每个线程可能会分配一个或者多个时间片，Windows默认线程时间精度在15毫秒，Linux在1毫秒，所以<code>time.Sleep</code>的精度不可能那么高。</p>
 <p><strong>本文原文有误导，结论部分正确，我在文章末尾作了更正</strong></p>
-]]>
-    
-    </summary>
-    
-      <category term="Go" scheme="https://colobu.com/categories/Go/"/>
-    
-  </entry>
-  
-  <entry>
-    <title><![CDATA[这个限流库两个大bug存在了半年之久，没人发现？]]></title>
-    <link href="https://colobu.com/2023/12/05/two-bugs-of-uber-ratelimit/"/>
-    <id>https://colobu.com/2023/12/05/two-bugs-of-uber-ratelimit/</id>
-    <published>2023-12-05T12:55:38.000Z</published>
-    <updated>2023-12-11T05:37:05.070Z</updated>
-    <content type="html"><![CDATA[<p>最近我的同事在使用<a href="https://github.com/uber-go/ratelimit" target="_blank" rel="external">uber-go/ratelimit</a>这个限流库的时候，遇到了两个大bug。这两个bug都是在这个库的最新版本(<code>v0.3.0</code>)中存在的,而这个版本从7月初发布都已经过半年了，都没人提bug，难道大家都没遇到过么？</p>
-<a id="more"></a>
-<p>我先前都是使用<a href="https://github.com/juju/ratelimit" target="_blank" rel="external">juju/ratelimit</a>这个限流库的，不过我不太喜欢这个库的复杂的“构造函数”，后来尝试了<a href="https://github.com/uber-go/ratelimit" target="_blank" rel="external">uber-go/ratelimit</a>这个库后，感觉SDK设计比较简单，而且使用起来也不错，就一直使用了。当时的版本是<code>v0.2.0</code>,而且我也不会设置它的<code>slack</code>参数，所以也相安无事。</p>
-<p>最近我同事在做项目的时候，把这个库更新到最新的<code>v0.3.0</code>,发现在发包一段时间后，突然限流不起作用了，发包频率狂飙导致程序panic。<br>很容易通过下面一个单元测试复现这个问题：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> TestLimiter(t *testing.T) {</div><div class="line">	limiter := ratelimit.New<span class="number">(1</span>, ratelimit.Per(time.Second), ratelimit.WithSlack<span class="number">(1</span>))</div><div class="line"></div><div class="line">	<span class="keyword">for</span> i :=<span class="number"> 0</span>; i &lt;<span class="number"> 25</span>; i++ {</div><div class="line">		<span class="keyword">if</span> i ==<span class="number"> 1</span> {</div><div class="line">			time.Sleep<span class="number">(2</span> * time.Second)</div><div class="line">		}</div><div class="line">		limiter.Take()</div><div class="line"></div><div class="line">		fmt.Println(time.Now().Unix(), i) <span class="comment">// burst</span></div><div class="line"></div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>这个单元测试尝试在第二个周期中不调用限流器，让它有机会进入slack判断的逻辑。这个库的slack设计的本意是在rate的基础上留一点余地，不那么严格按照rate进行限流，不过因为<code>v0.3.0</code>代码的问题，导致slack的判断逻辑出现了问题:</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div><div class="line">35</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> (t *atomicInt64Limiter) Take() time.Time {</div><div class="line">	<span class="keyword">var</span> (</div><div class="line">		newTimeOfNextPermissionIssue <span class="typename">int64</span></div><div class="line">		now                          <span class="typename">int64</span></div><div class="line">	)</div><div class="line">	<span class="keyword">for</span> {</div><div class="line">		now = t.clock.Now().UnixNano()</div><div class="line">		timeOfNextPermissionIssue := atomic.LoadInt64(&t.state)</div><div class="line"></div><div class="line">		<span class="keyword">switch</span> {</div><div class="line">		<span class="keyword">case</span> timeOfNextPermissionIssue ==<span class="number"> 0</span> || (t.maxSlack ==<span class="number"> 0</span> && now-timeOfNextPermissionIssue &gt; <span class="typename">int64</span>(t.perRequest)):</div><div class="line">			<span class="comment">// if this is our first call or t.maxSlack == 0 we need to shrink issue time to now</span></div><div class="line">			newTimeOfNextPermissionIssue = now</div><div class="line">		<span class="keyword">case</span> t.maxSlack &gt;<span class="number"> 0</span> && now-timeOfNextPermissionIssue &gt; <span class="typename">int64</span>(t.maxSlack):</div><div class="line">			<span class="comment">// a lot of nanoseconds passed since the last Take call</span></div><div class="line">			<span class="comment">// we will limit max accumulated time to maxSlack</span></div><div class="line">			newTimeOfNextPermissionIssue = now - <span class="typename">int64</span>(t.maxSlack)</div><div class="line">		<span class="keyword">default</span>:</div><div class="line">			<span class="comment">// calculate the time at which our permission was issued</span></div><div class="line">			newTimeOfNextPermissionIssue = timeOfNextPermissionIssue + <span class="typename">int64</span>(t.perRequest)</div><div class="line">		}</div><div class="line"></div><div class="line">		<span class="keyword">if</span> atomic.CompareAndSwapInt64(&t.state, timeOfNextPermissionIssue, newTimeOfNextPermissionIssue) {</div><div class="line">			<span class="keyword">break</span></div><div class="line">		}</div><div class="line">	}</div><div class="line"></div><div class="line">	sleepDuration := time.Duration(newTimeOfNextPermissionIssue - now)</div><div class="line">	<span class="keyword">if</span> sleepDuration &gt;<span class="number"> 0</span> {</div><div class="line">		t.clock.Sleep(sleepDuration)</div><div class="line">		<span class="keyword">return</span> time.Unix<span class="number">(0</span>, newTimeOfNextPermissionIssue)</div><div class="line">	}</div><div class="line">	<span class="comment">// return now if we don't sleep as atomicLimiter does</span></div><div class="line">	<span class="keyword">return</span> time.Unix<span class="number">(0</span>, now)</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>一旦进入<code>case t.maxSlack &gt; 0 &amp;&amp; now-timeOfNextPermissionIssue &gt; int64(t.maxSlack):</code>这个分支，你会发现后续调用<code>Take</code>基本都会进入这个分支，程序不会阻塞，只要调用<code>Take</code>都不会阻塞。可以看到当设置slack&gt;0的时候才会进入这个分支，正好默认slack=10。这个bug也可以推算出来。<br>假设当前进入这个分支，当前时间是now1，那么这次Take就会把<code>newTimeOfNextPermissionIssue</code>设置为 <code>now1-int64(t.maxSlack)</code>。<br>接下来再调用Take,当前时间是now2,now2总是会比now1大一点，至少大几纳秒吧。<br>这个时候我们计算分支的条件<code>now-timeOfNextPermissionIssue &gt; int64(t.maxSlack)</code>，这个条件肯定是成立的，因为<code>now2-(now1-int64(t.maxSlack))</code> = <code>(now2-now1) + int64(t.maxSlack)</code> &gt; <code>int64(t.maxSlack)</code>。<br>导致后续的每次Take都会进入这个分支，不会阻塞，导致程序疯狂发包，最终导致panic。</p>
-<p>周末的时候我给这个项目提了一个bug, 它的一个维护者进行了修复，不过这个项目主要开发者已经对这个<code>v0.3.0</code>的实现丧失了信心，因为这个实现已经出现过一次类似的bug,被他回滚后了，后来有被修复才合进来，现在有出现bug了。</p>
-<p>不管作者修不修复，你一定要注意，使用这个库的<code>v0.3.0</code>一定小心，有可能踩到这个雷。</p>
-<p>这个其中的一个大bug。</p>
-<p>其实我们对slack的有无不是那么关心的，那么我们使用<code>ratelimit.WithoutSlack</code>这个选项，把slack设置为0，是不是就没问题了呢？</p>
-<p>嗯，是的，不会再出现上面的bug,而且在我的mac笔记本上跑的单元测试也每问题，但是!但是!但是!又出现了另外一个bug。</p>
-<p>我们把限流的速率修改为<code>5000</code>,结果在Linux测试机器上跑只能跑到接近<code>2000</code>,远远小于预期，那这还咋限流，流根本打不上去。</p>
-<p>我的同事说把<code>ratelimit</code>版本降到<code>v0.2.0</code>,同时不要设置<code>slack=0</code>可以解决这个问题。</p>
-<p>这就很奇怪了，经过一番排查，发现问题可能出在Go标准库的<code>time.Sleep</code>上。</p>
-<p>我们使用<code>time.Sleep</code> 休眠50微秒的话，在Go 1.16之前，Linux机器上基本上实际会休眠80、90微秒，但是在Go 1.16之后，Linux机器上1毫秒，差距巨大，在Windows机器上，Go 1.16之前是1毫秒，之后是14毫秒，差距也是巨大的。我在苹果的MacPro M1的机器测试，就没有这个问题。</p>
-<p>这个bug记录在<a href="https://github.com/golang/go/issues/44343" target="_blank" rel="external">issues#44343</a>, 自2021年2月提出来来，已经快三年了，这个bug还一直没有关闭，问题还一直存在着，看样子这个bug也不是那么容易找到根因和彻底解决。</p>
-<p>所以如果你要使用<code>time.Sleep</code>,请记得在Linux环境下，它的精度也就在<strong>1ms</strong>左右。所以<code>ratelimit</code>库如果依赖它做5000的限流，如果不好好设计的话，达不到限流的效果。</p>
-<p>总结一下，如果你使用<a href="https://github.com/uber-go/ratelimit" target="_blank" rel="external">uber-go/ratelimit</a>,一定记得：</p>
-<ol>
-<li>使用较老的版本<code>v0.2.0</code></li>
-<li>不要设置<code>slack=0</code>, 默认或者设置一个非零的值</li>
-</ol>
-<p>其实我从<code>juju/ratelimit</code>切换到<code>uber-go/ratelimit</code>还有一个根本的原因。<code>juju/ratelimit</code>是基于令牌桶的限流，而<code>uber-go/ratelimit</code>基于漏桶的限流，或者说<code>uber-go/ratelimit</code>更像是整形(shaping)，更符合我们使用的场景，我们想匀速的发送数据包，不希望有Burst或者突然的速率变化，我们的场景更看中的是匀速。</p>
-<p>当然你也可以使用<a href="https://github.com/juju/ratelimit" target="_blank" rel="external">juju/ratelimit</a>，这是Canonical公司贡献的一个限流库，版权是LGPL 3.0 + 对Go更合适的条款，这也是Canonical公司统一对它们的Go项目的授权。它是一个基于令牌的限流库，其实用起来也可以，不过已经4年没有代码更新了。<br>有一点我觉得不太爽的地方是它初始化就把桶填满了，导致的结果就是可能一开始使用这个桶获取令牌的速度超出你的预期，有可能导致一开始就发包速度很快，然后慢慢的才匀速，这个不是我想要的效果，但是我又每办法修改，所以我fork了这个项目<a href="https://github.com/smallnest/ratelimit" target="_blank" rel="external">smallnest/ratelimit</a>，可以在初始化限流器的时候，可以设置初始的令牌，比如将初始的令牌设置为零。</p>
-<p>当前Go官方也提供了一个扩展库<a href="https://pkg.go.dev/golang.org/x/time/rate" target="_blank" rel="external">golang.org/x/time/rate</a>, 功能更强大，强大带来的负面效果就是使用起来比较复杂，复杂带来的效果就是可能带来一些的潜在的错误，不过在认真评估和测试后也是可以使用的。</p>
-<p>还有一些关注度不是那么高的第三库，还包括一些使用滑动窗口实现的限流库，还有分布式的限流库，如果你想了解更多，请参考《深入理解Go并发编程》这本书，专门有一章详细介绍限流库。</p>
-]]></content>
-    <summary type="html">
-    <![CDATA[<p>最近我的同事在使用<a href="https://github.com/uber-go/ratelimit" target="_blank" rel="external">uber-go/ratelimit</a>这个限流库的时候，遇到了两个大bug。这两个bug都是在这个库的最新版本(<code>v0.3.0</code>)中存在的,而这个版本从7月初发布都已经过半年了，都没人提bug，难道大家都没遇到过么？</p>
-]]>
-    
-    </summary>
-    
-      <category term="Go" scheme="https://colobu.com/categories/Go/"/>
-    
-  </entry>
-  
-  <entry>
-    <title><![CDATA[2023年 Go 并发库的变化综述]]></title>
-    <link href="https://colobu.com/2023/12/03/status-og-so-sync-in-2023/"/>
-    <id>https://colobu.com/2023/12/03/status-og-so-sync-in-2023/</id>
-    <published>2023-12-03T05:39:09.000Z</published>
-    <updated>2023-12-11T05:37:05.070Z</updated>
-    <content type="html"><![CDATA[<p>2023年来， Go的并发库又有了一些变化，这篇文章是对这些变换的综述。小细节的变化，比如typo、文档变化等无关大局的变化就不介绍了。</p>
-<a id="more"></a>
-<h2 id="sync-Map">sync.Map</h2>
-<p>Go 1.21.0 中增加了和Once相关的三个函数，便于Once的使用。</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> OnceFunc(f <span class="keyword">func</span>()) <span class="keyword">func</span>()</div><div class="line"><span class="keyword">func</span> OnceValue[T any](f <span class="keyword">func</span>() T) <span class="keyword">func</span>() T</div><div class="line"><span class="keyword">func</span> OnceValues[T1, T2 any](f <span class="keyword">func</span>() (T1, T2)) <span class="keyword">func</span>() (T1, T2)</div></pre></td></tr></table></figure>
-
-<p>这三个函数的功能分别是：</p>
-<ul>
-<li>OnceFunc：返回一个函数<code>g</code>，多次调用这个函数<code>g</code>，只会执行一次<code>f</code>。 如果<code>f</code>执行时panic, 则后续调用这个函数<code>g</code>不会再执行<code>f</code>,但是每次调用都会panic。</li>
-<li>OnceValue：返回一个函数<code>g</code>，多次调用这个函数<code>g</code>，只会执行一次<code>f</code>，函数<code>g</code>返回值类型是T。比上一个<code>g</code>多了一个返回值。panic原理同上。</li>
-<li>OnceValues：返回一个函数<code>g</code>，多次调用这个函数<code>g</code>，只会执行一次<code>f</code>，函数<code>g</code>返回值类型是(T1, T2)。比上一个<code>g</code>又多了一个返回值。panic原理同上。</li>
-</ul>
-<p>当然理论上你还可以增加更多的函数，返回更多的返回值，因为Go没有Tuple类型，所以这里还不能简化函数<code>g</code>的返回值为Tuple类型。反正Go 1.21.0就只增加了这三个函数。</p>
-<p>这个有什么好处呢？先前我们使用<code>sync.Once</code>的时候，比如初始化一个线程池，我们需要定义一个线程池的变量，每次访问线程池变量的时候，我需要调用一下<code>sync.Once.Do</code>:</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> TestOnce(t *testing.T) {</div><div class="line">	<span class="keyword">var</span> pool any</div><div class="line">	<span class="keyword">var</span> once sync.Once</div><div class="line">	<span class="keyword">var</span> initFn = <span class="keyword">func</span>() {</div><div class="line">		<span class="comment">// init pool</span></div><div class="line">		pool =<span class="number"> 1</span></div><div class="line">	}</div><div class="line"></div><div class="line">	<span class="keyword">for</span> i :=<span class="number"> 0</span>; i &lt;<span class="number"> 10</span>; i++ {</div><div class="line">		once.Do(initFn)</div><div class="line">		t.Log(pool)</div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>如果使用<code>OnceValue</code>,就可以简化代码：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> TestOnceValue(t *testing.T) {</div><div class="line">	<span class="keyword">var</span> initPool = <span class="keyword">func</span>() any {</div><div class="line">		<span class="keyword">return</span><span class="number"> 1</span></div><div class="line">	}</div><div class="line">	<span class="keyword">var</span> poolGenerator = sync.OnceValue(initPool)</div><div class="line"></div><div class="line">	<span class="keyword">for</span> i :=<span class="number"> 0</span>; i &lt;<span class="number"> 10</span>; i++ {</div><div class="line">		t.Log(poolGenerator())</div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>代码略微简化，获取单例的时候只需调用返回的函数<code>g</code>即可。</p>
-<p>所以基本上，这三个函数只是对sync.Once做了封装，更方便使用。</p>
-<h2 id="理解copyChecker">理解copyChecker</h2>
-<p>我们知道， <code>sync.Cond</code>有两个字段<code>noCopy</code>和<code>checker</code>, <code>noCopy</code>通过<code>go vet</code>工具能够静态编译时检查出来，但是<code>checker</code>是在运行时检查的：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> Cond <span class="keyword">struct</span> {</div><div class="line">	noCopy noCopy</div><div class="line"></div><div class="line">	<span class="comment">// L is held while observing or changing the condition</span></div><div class="line">	L Locker</div><div class="line"></div><div class="line">	notify  notifyList</div><div class="line">	checker copyChecker</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>先前<code>copyChecker</code>的判断条件如下，虽然简单的三行，但是不容易理解:</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> (c *copyChecker) check() {</div><div class="line">	<span class="keyword">if</span> <span class="typename">uintptr</span>(*c) != <span class="typename">uintptr</span>(unsafe.Pointer(c)) &&</div><div class="line">		!atomic.CompareAndSwapUintptr((*<span class="typename">uintptr</span>)(c),<span class="number"> 0</span>, <span class="typename">uintptr</span>(unsafe.Pointer(c))) &&</div><div class="line">		<span class="typename">uintptr</span>(*c) != <span class="typename">uintptr</span>(unsafe.Pointer(c)) {</div><div class="line">		<span class="built_in">panic</span>(<span class="string">"sync.Cond is copied"</span>)</div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>现在加上了注释，解释了这三行的意义：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> (c *copyChecker) check() {</div><div class="line">	<span class="comment">// Check if c has been copied in three steps:</span></div><div class="line">	<span class="comment">// 1. The first comparison is the fast-path. If c has been initialized and not copied, this will return immediately. Otherwise, c is either not initialized, or has been copied.</span></div><div class="line">	<span class="comment">// 2. Ensure c is initialized. If the CAS succeeds, we're done. If it fails, c was either initialized concurrently and we simply lost the race, or c has been copied.</span></div><div class="line">	<span class="comment">// 3. Do step 1 again. Now that c is definitely initialized, if this fails, c was copied.</span></div><div class="line">	<span class="keyword">if</span> <span class="typename">uintptr</span>(*c) != <span class="typename">uintptr</span>(unsafe.Pointer(c)) &&</div><div class="line">		!atomic.CompareAndSwapUintptr((*<span class="typename">uintptr</span>)(c),<span class="number"> 0</span>, <span class="typename">uintptr</span>(unsafe.Pointer(c))) &&</div><div class="line">		<span class="typename">uintptr</span>(*c) != <span class="typename">uintptr</span>(unsafe.Pointer(c)) {</div><div class="line">		<span class="built_in">panic</span>(<span class="string">"sync.Cond is copied"</span>)</div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>主要逻辑在以下3步:</p>
-<ul>
-<li>第一步是一个快速检查,直接比较 <code>c</code> 指针和 <code>c</code> 本身的指针,如果不相等则表示已被复制。这是最快的检查路径。</li>
-<li>第二步确保 <code>c</code> 已经被初始化。使用 CAS (CompareAndSwap)来初始化。如果CAS失败,说明<code>c</code> 已经在其他goroutine初始化,或者被复制了。</li>
-<li>第三步再次执行第一步的检查。因为这时我们清楚的知道 <code>c</code> 已经初始化了,所以如果检查失败,就可以确认 <code>c</code> 被复制了。</li>
-</ul>
-<p>整个逻辑就是使用 CAS 配合两次指针检查,来确保判断的正确性。</p>
-<p>总的来说，第一步快速检查是性能优化。第二步使用 CAS 确保初始化。第三步再次检查来确保判断。</p>
-<h2 id="sync-Map_的一处优化">sync.Map 的一处优化</h2>
-<p>先前， <code>sync.Map</code> 的 <code>Range</code> 函数的实现如下：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> (m *Map) Range(f <span class="keyword">func</span>(key, value any) <span class="typename">bool</span>) {</div><div class="line">    ...</div><div class="line">    <span class="keyword">if</span> read.amended {</div><div class="line">			read = readOnly{m: m.dirty}</div><div class="line">			m.read.Store(&read)</div><div class="line">			m.dirty = <span class="constant">nil</span></div><div class="line">			m.misses =<span class="number"> 0</span></div><div class="line">	}</div><div class="line">    ...</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>其中有一段代码：<code>m.read.Store(&amp;read)</code>,会导致<code>read</code>逃逸到堆上，通过下面的一个小技巧，避免了<code>read</code>的逃逸（通过一个新的变量）：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> (m *Map) Range(f <span class="keyword">func</span>(key, value any) <span class="typename">bool</span>) {</div><div class="line">    ...</div><div class="line">	<span class="keyword">if</span> read.amended {</div><div class="line">		read = readOnly{m: m.dirty}</div><div class="line">		copyRead := read</div><div class="line">		m.read.Store(&copyRead)</div><div class="line">		m.dirty = <span class="constant">nil</span></div><div class="line">		m.misses =<span class="number"> 0</span></div><div class="line">	}</div><div class="line">    ...</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p><a href="https://github.com/golang/go/issues/62404" target="_blank" rel="external">issue #62404</a>对这个问题进行了分析。</p>
-<h2 id="sync-Once的实现中done使用atomic-Uint32替换">sync.Once的实现中done使用atomic.Uint32替换</h2>
-<p>先前<code>sync.Once</code>的实现如下：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> Once <span class="keyword">struct</span> {</div><div class="line">	done <span class="typename">uint32</span></div><div class="line">	m    Mutex</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>其中字段<code>done</code>是一个<code>uint32</code>类型，用来表示<code>Once</code>是否已经执行过了。这个字段的类型是<code>uint32</code>，而不是<code>bool</code>，是因为<code>uint32</code>类型可以使用<code>atomic</code>包的原子操作，而<code>bool</code>类型不能。</p>
-<p>现在<code>sync.Once</code>的实现如下：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> Once <span class="keyword">struct</span> {</div><div class="line">	done atomic.Uint32</div><div class="line">	m    Mutex</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>自从go 1.19提供了对基本类型的原子封装，Go标准库大量代码都被<code>atomic.XXX</code>类型锁替换。</p>
-<p>我个人认为，目前这个修改相对于先前的实现，性能上在某些情况下可能会有性能的下降，我会专门写一篇文章进行探讨。</p>
-<p>除了<code>sync.Once</code>，还有一批类型使用了<code>atomic.XXX</code>类型替换原来的使用方法，有必要可以进行替换么？</p>
-<h2 id="sync-OnceFunc_初始实现的优化">sync.OnceFunc 初始实现的优化</h2>
-<p>初始的<code>sync.OnceFunc</code>的实现如下：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> OnceFunc(f <span class="keyword">func</span>()) <span class="keyword">func</span>() {</div><div class="line">	<span class="keyword">var</span> (</div><div class="line">		once  Once</div><div class="line">		valid <span class="typename">bool</span></div><div class="line">		p     any</div><div class="line">	)</div><div class="line">	g := <span class="keyword">func</span>() {</div><div class="line">		<span class="keyword">defer</span> <span class="keyword">func</span>() {</div><div class="line">			p = <span class="built_in">recover</span>()</div><div class="line">			<span class="keyword">if</span> !valid {</div><div class="line">				<span class="built_in">panic</span>(p)</div><div class="line">			}</div><div class="line">		}()</div><div class="line">		f()</div><div class="line">		valid = <span class="constant">true</span></div><div class="line">	}</div><div class="line">	<span class="keyword">return</span> <span class="keyword">func</span>() {</div><div class="line">		once.Do(g)</div><div class="line">		<span class="keyword">if</span> !valid {</div><div class="line">			<span class="built_in">panic</span>(p)</div><div class="line">		}</div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>仔细看这段代码，你会发现，传递给<code>OnceFunc/OnceValue/OnceValues</code>的函数<code>f</code>，即使执行完一次，只要返回的<code>g</code>函数好活着没有被垃圾回收，这个<code>f</code>就一直存活。<br>这是没必要的，因为<code>f</code>只需要执行一次，执行完就可以被垃圾回收了。所以，这里可以对<code>f</code>进行一次优化，让<code>f</code>执行完就设置为<code>nil</code>，这样就可以被垃圾回收了。</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> OnceFunc(f <span class="keyword">func</span>()) <span class="keyword">func</span>() {</div><div class="line">	<span class="keyword">var</span> (</div><div class="line">		once  Once</div><div class="line">		valid <span class="typename">bool</span></div><div class="line">		p     any</div><div class="line">	)</div><div class="line">	<span class="comment">// Construct the inner closure just once to reduce costs on the fast path.</span></div><div class="line">	g := <span class="keyword">func</span>() {</div><div class="line">		<span class="keyword">defer</span> <span class="keyword">func</span>() {</div><div class="line">			p = <span class="built_in">recover</span>()</div><div class="line">			<span class="keyword">if</span> !valid {</div><div class="line">				<span class="comment">// Re-panic immediately so on the first call the user gets a</span></div><div class="line">				<span class="comment">// complete stack trace into f.</span></div><div class="line">				<span class="built_in">panic</span>(p)</div><div class="line">			}</div><div class="line">		}()</div><div class="line">		f()</div><div class="line">		f = <span class="constant">nil</span>      <span class="comment">// Do not keep f alive after invoking it.</span></div><div class="line">		valid = <span class="constant">true</span> <span class="comment">// Set only if f does not panic.</span></div><div class="line">	}</div><div class="line">	<span class="keyword">return</span> <span class="keyword">func</span>() {</div><div class="line">		once.Do(g)</div><div class="line">		<span class="keyword">if</span> !valid {</div><div class="line">			<span class="built_in">panic</span>(p)</div><div class="line">		}</div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<h2 id="context">context</h2>
-<p>我们知道，在 Go 1.20中， 新增加了一个<code>WithCancelCause</code>方法(<code>func WithCancelCause(parent Context) (ctx Context, cancel CancelCauseFunc)</code>)，我们在<code>cancel</code>的时候可以把cancel的原因传递给<code>WithCancelCause</code>产生的Context，这样可以通过<code>context.Cause</code>方法获取到<code>cancel</code>的原因。</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line">ctx, cancel := context.WithCancelCause(parent)</div><div class="line">cancel(myError)</div><div class="line">ctx.Err() <span class="comment">// 返回 context.Canceled</span></div><div class="line">context.Cause(ctx) <span class="comment">// 返回 myError</span></div></pre></td></tr></table></figure>
-
-<p>当然这个实现只进行了一半，因为超时相关的Context也需要增加这个功能，所以在Go 1.21.0中又新增了两个相关的函数：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> WithDeadlineCause(parent Context, d time.Time, cause error) (Context, CancelFunc)</div><div class="line"><span class="keyword">func</span> WithTimeoutCause(parent Context, timeout time.Duration, cause error) (Context, CancelFunc)</div></pre></td></tr></table></figure>
-
-<p>这两个和<code>WithCancelCause</code>还不太一样，不是利用返回的cancel函数传递原因，而是直接在函数参数中传递原因。</p>
-<p>Go 1.21.0 还增加了一个<code>AfterFunc</code>函数，这个函数和<code>time.AfterFunc</code>类似，但是返回的是一个<code>Context</code>，这个<code>Context</code>在超时后会自动取消，这个函数的实现如下：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> AfterFunc(ctx Context, f <span class="keyword">func</span>()) (stop <span class="keyword">func</span>() <span class="typename">bool</span>)</div></pre></td></tr></table></figure>
-
-<p>指定的<code>Context</code>在在done(超时或者取消)，如果context已经done,那么<code>f</code>立即被调用。<br>返回的<code>stop</code>函数用来停止<code>f</code>的调用，如果<code>stop</code>被调用并且返回true，<code>f</code>不会被调用。</p>
-<p>这是一个辅助函数，但是难以理解，估计这个函数不会被广泛的使用。</p>
-<p>其他一些小性能的优化比如<code>type emptyCtx int</code>替换成<code>type emptyCtx struct{}</code>等等就不用提了。</p>
-<p>增加了一个<code>func WithoutCancel(parent Context) Context</code>, 当parent被取消时，不会波及到这个函数返回的Context。</p>
-<h2 id="Coroutines_for_Go">Coroutines for Go</h2>
-<p>在今年7月，Russ Coxx写了一篇巨论： <a href="https://research.swtch.com/coro" target="_blank" rel="external">Coroutines for Go</a>。</p>
-<p>个人不看好在Go标准库实现这个东西，我感觉Rob Pike也不会同意，但是这个东西社区如果去实现一个库，我觉得还是有可能的，返回如果大家不看好，社区的库自然会消亡。</p>
-<p>否则，渐渐的Go迷失了它的初心: 简单好用。</p>
-<p>社区的一些协程库：</p>
-<ul>
-<li><a href="https://github.com/stealthrocket/coroutine" target="_blank" rel="external">coroutine</a></li>
-<li><a href="https://github.com/solarlune/routine" target="_blank" rel="external">routine</a></li>
-<li><a href="https://github.com/SolarLune/gocoro" target="_blank" rel="external">gocoro</a></li>
-</ul>
-<p>你在go.dev还能搜到一些，这里就不赘述了。</p>
-<h2 id="golang-org/x/sync_没有明显改动">golang.org/x/sync 没有明显改动</h2>
-<p><code>errgroup</code>支持使用<code>withCancelCause</code>设置cause。<br><code>singleflight</code>的panicError增加Unwrap方法。</p>
-]]></content>
-    <summary type="html">
-    <![CDATA[<p>2023年来， Go的并发库又有了一些变化，这篇文章是对这些变换的综述。小细节的变化，比如typo、文档变化等无关大局的变化就不介绍了。</p>
 ]]>
     
     </summary>
