@@ -4,7 +4,7 @@
   <subtitle><![CDATA[大道至简 Simplicity is the ultimate form of sophistication]]></subtitle>
   <link href="/atom.xml" rel="self"/>
   <link href="https://colobu.com/"/>
-  <updated>2024-03-10T08:01:55.254Z</updated>
+  <updated>2024-03-12T15:18:31.227Z</updated>
   <id>https://colobu.com/</id>
   
   <author>
@@ -13,6 +13,110 @@
   </author>
   
   <generator uri="http://zespia.tw/hexo/">Hexo</generator>
+  
+  <entry>
+    <title><![CDATA[Go 中的高速数据包处理:从 net.Dial 到 AF_XDP]]></title>
+    <link href="https://colobu.com/2024/03/12/high-speed-packet-transmission-in-go-from-net-dial-to-af-xdp/"/>
+    <id>https://colobu.com/2024/03/12/high-speed-packet-transmission-in-go-from-net-dial-to-af-xdp/</id>
+    <published>2024-03-12T14:39:24.000Z</published>
+    <updated>2024-03-12T15:18:03.705Z</updated>
+    <content type="html"><![CDATA[<p>原文： <a href="https://atoonk.medium.com/high-speed-packet-transmission-in-go-from-net-dial-to-af-xdp-2699452efef9" target="_blank" rel="external">High-Speed Packet Processing in Go: From net.Dial to AF_XDP</a> by Andree Toonk.</p>
+<a id="more"></a>
+<blockquote>
+<p>推进Go的极限:从net.Dial到系统调用、AF_PACKET和极速AF_XDP。数据包发送性能的基准测试。</p>
+</blockquote>
+<p>最近,我编写了一个Go程序,向数百万个IP地址<a href="https://github.com/atoonk/ping-aws-ips" target="_blank" rel="external">发送ICMP ping消息</a>。显然,我希望这个过程能尽可能快速高效地完成。因此,这促使我研究各种与网络栈交互和快速发送数据包的各种方法。这是一个有趣的旅程,所以在本文中,我将分享一些学习成果,并记录下来供将来参考:)你将看到,仅使用8个内核就可以达到1880万数据包/秒。这里还有一个<a href="https://github.com/atoonk/go-pktgen" target="_blank" rel="external">GitHub仓库</a>,其中包含了示例代码,可以方便地跟随学习。</p>
+<h2 id="使用场景">使用场景</h2>
+<p>让我们先简单介绍一下问题背景。我希望能够从Linux机器上每秒发送尽可能多的数据包。有一些使用场景,例如我之前提到的Ping示例,但也可能是更通用的东西,如dpdk-pktgen或者类似iperf的工具。我想你可以将其总结为一种数据包生成器。</p>
+<p>我使用Go编程语言来探索各种选项。一般来说,所探索的方法可以应用于任何编程语言,因为这些大多是围绕Linux内核提供的功能而构建的Go特定接口。但是,您可能会受到您最喜欢的编程语言中存在的库或支持的限制。</p>
+<p>让我们开始冒险,探索Go中生成网络数据包的各种方式。我将介绍各种选项,最后我们将进行基准测试,显示哪种方法最适合我们的使用场景。我在一个Go包中包含了各种方法的示例;你可以在<a href="https://github.com/atoonk/go-pktgen/" target="_blank" rel="external">这里</a>找到代码。我们将使用相同的代码运行基准测试,看看各种方法相比如何。</p>
+<h2 id="net-Dial">net.Dial</h2>
+<p><code>net.Dial</code>方法是在Go中建立网络连接最先想到的选择。它是标准库net包提供的一种高级抽象方法,旨在以易于使用和直观的方式建立网络连接。您可以使用它进行双向通信,只需读写<code>net.Conn</code>(套接字)而无需担心细节。</p>
+<p>在我们的情况下,我们主要关注发送流量,使用的<code>net.Dial</code>方法如下所示:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div></pre></td><td class="code"><pre><div class="line">conn, err := net.Dial(<span class="string">"udp"</span>, fmt.Sprintf(<span class="string">"%s:%d"</span>, s.dstIP, s.dstPort))</div><div class="line"><span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">	<span class="keyword">return</span> fmt.Errorf(<span class="string">"failed to dial UDP: %w"</span>, err)</div><div class="line">}</div><div class="line"><span class="keyword">defer</span> conn.Close()</div></pre></td></tr></table></figure>
+
+<p>在此之后,您可以简单地像这样将字节写入conn:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">conn.Write(payload)</div></pre></td></tr></table></figure>
+
+<p>您可以在文件<a href="https://github.com/atoonk/go-pktgen/blob/main/pktgen/af_inet.go" target="_blank" rel="external">af_inet.go</a>中找到我们使用这种方法的代码。</p>
+<p>就是这样!非常简单,对吗?然而,正如我们将在基准测试中看到的,这是最慢的方法,不是快速发送数据包的最佳选择。使用这种方法,我们可以达到大约697,277个数据包每秒。</p>
+<h2 id="Raw_Socket">Raw Socket</h2>
+<p>深入到网络栈层面,我决定在Go中使用原始套接字来发送数据包。与更抽象的<code>net.Dial</code>方法不同,原始套接字为我们提供了与网络栈更低层次的接口,可以对数据包头部和内容进行细粒度控制。这种方法允许我们手动构建整个数据包,包括IP头部。</p>
+<p>要创建原始套接字,我们必须自己进行系统调用,给它正确的参数,并提供将要发送的流量类型。然后我们将获得一个文件描述符。接下来,我们可以对这个文件描述符进行读写操作。从高层次来看就是这样;完整代码请参见<a href="https://github.com/atoonk/go-pktgen/blob/main/pktgen/rawsocket.go" target="_blank" rel="external">rawsocket.go</a>：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div></pre></td><td class="code"><pre><div class="line">fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_RAW, syscall.IPPROTO_RAW)</div><div class="line"><span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">	log.Fatalf(<span class="string">"Failed to create raw socket: %v"</span>, err)</div><div class="line">}</div><div class="line"><span class="keyword">defer</span> syscall.Close(fd)</div><div class="line"></div><div class="line"><span class="comment">// Set options: here, we enable IP_HDRINCL to manually include the IP header</span></div><div class="line"><span class="keyword">if</span> err := syscall.SetsockoptInt(fd, syscall.IPPROTO_IP, syscall.IP_HDRINCL,<span class="number"> 1</span>); err != <span class="constant">nil</span> {</div><div class="line">	log.Fatalf(<span class="string">"Failed to set IP_HDRINCL: %v"</span>, err)</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>就是这样,现在我们可以像这样对文件描述符进行原始数据包的读写操作:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">err := syscall.Sendto(fd, packet,<span class="number"> 0</span>, dstAddr)</div></pre></td></tr></table></figure>
+
+<p>由于我使用了<code>IPPROTO_RAW</code>，我们绕过了内核网络栈的传输层,内核期望我们提供完整的IP数据包。我们使用<a href="https://github.com/atoonk/go-pktgen/blob/main/pktgen/rawsocket.go#L66C17-L66C28" target="_blank" rel="external">BuildPacket函数</a>来实现这一点。工作量略有增加,但原始套接字的好处在于你可以构造任何你想要的数据包。</p>
+<p>我们告诉内核只需接收我们的数据包,它需要做的工作就少了,因此这个过程更快。我们真正要求网络栈做的就是接收这个IP数据包,添加以太网头部,然后将其交给网卡进行发送。因此,很自然地,这个选项确实比Net.Dial选项更快。使用这种方法,我们可以达到约793,781个数据包每秒,比net.Dial方法高出约10万数据包每秒。</p>
+<h2 id="AF_INET_系统调用">AF_INET 系统调用</h2>
+<p>现在我们已经熟悉了直接使用系统调用,我们还有另一个选择。在这个例子中,我们直接创建一个UDP套接字,如下所示：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_DGRAM, syscall.IPPROTO_UDP)</div></pre></td></tr></table></figure>
+
+<p>在此之后,我们可以像之前一样使用<code>Sendto</code>方法简单地将有效负载写入套接字。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">err = syscall.Sendto(fd, payload,<span class="number"> 0</span>, dstAddr)</div></pre></td></tr></table></figure>
+
+<p>它看起来类似于原始套接字示例,但存在一些差异。关键区别在于,在这种情况下,我们创建了UDP类型的套接字,这意味着我们不需要像之前那样构造完整的数据包(IP和UDP头部)。使用这种方法时,内核根据我们指定的目标IP和端口来构造UDP头部,并处理将其封装到IP数据包的过程。</p>
+<p>在这种情况下,有效负载仅是UDP有效负载。实际上,这种方法类似于之前的Net.Dial方法,但抽象程度更低。</p>
+<p>与之前的原始套接字方法相比,我现在看到的是861,372个数据包每秒 - 提高了7万多。我们在每一步都变得更快。我猜我们获得了内核中一些UDP优化的好处。</p>
+<h2 id="Pcap_方法">Pcap 方法</h2>
+<p>在这里看到使用Pcap来发送数据包可能会感到惊讶。大多数人都知道pcap是从诸如tcpdump或Wireshark这样的工具中捕获数据包的。但它也是一种相当常见的发送数据包的方式。事实上,如果您查看许多Go-packet或Python Scappy示例,这通常是列出的发送自定义数据包的方法。因此,我认为我应该包括它并查看其性能。我持怀疑态度,但当看到每秒数据包数时,我很高兴地感到惊讶!</p>
+<p>首先,让我们来看看Go语言是怎么实现的;同样,完整的示例请查看我在<a href="https://github.com/atoonk/go-pktgen/blob/main/pktgen/pcap.go" target="_blank" rel="external">pcap.go</a>中的实现。</p>
+<p>我们首先创建一个Pcap句柄,如下所示:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div></pre></td><td class="code"><pre><div class="line">handle, err := pcap.OpenLive(s.iface,<span class="number"> 1500</span>, <span class="constant">false</span>, pcap.BlockForever)</div><div class="line"><span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">	<span class="keyword">return</span> fmt.Errorf(<span class="string">"could not open device: %w"</span>, err)</div><div class="line">}</div><div class="line"><span class="keyword">defer</span> handle.Close()</div></pre></td></tr></table></figure>
+
+<p>然后我们<a href="https://github.com/atoonk/go-pktgen/blob/main/pktgen/pcap.go#L51-L64" target="_blank" rel="external">手动创建数据包</a>,类似于前面的原始套接字方法,但在这种情况下,我们包含了以太网头部。之后,我们可以将数据包写入pcap句柄,就完成了!</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">err := handle.WritePacketData(packet)</div></pre></td></tr></table></figure>
+
+<p>令我惊讶的是,这种方法带来了相当大的性能提升。我们远远超过了每秒一百万个数据包的大关: 1,354,087个数据包每秒 - 几乎比之前高出50万个数据包每秒!</p>
+<p>注意,在本文的后面,我们将看到一个警告,但值得注意的是,当发送多个流(Go 例程)时,这种方法的工作效果会变差。</p>
+<h2 id="af_packet_方法">af_packet 方法</h2>
+<p>在我们探索 Go 中网络数据包制作和传输的各个层次时,接下来发现了 <code>AF_PACKET</code> 方法。这种方法在 Linux 上的入侵检测系统中很受欢迎,并且有充分的理由!</p>
+<p>它让我们直接访问网络设备层,允许在链路层传输数据包。这意味着我们可以构建数据包,包括以太网头部,并直接将它们发送到网络接口,绕过更高层的网络层。我们可以使用系统调用创建 <code>AF_PACKET</code> 类型的套接字。在 Go 中,它看起来像这样:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">fd, err := syscall.Socket(syscall.AF_PACKET, syscall.SOCK_RAW, <span class="typename">int</span>(htons(syscall.ETH_P_IP)))</div></pre></td></tr></table></figure>
+
+<p>这行代码创建一个原始套接字,可以在以太网层发送数据包。使用<code>AF_PACKET</code>时,我们指定<code>SOCK_RAW</code>表示我们对原始网络协议访问感兴趣。通过将协议设置为<code>ETH_P_IP</code>,我们告诉内核我们将处理IP数据包。</p>
+<p>获得套接字描述符后,我们必须将其绑定到网络接口。这一步可确保我们构建的数据包通过正确的网络设备发送出去:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line">addr := &syscall.SockaddrLinklayer{</div><div class="line">	Protocol: htons(syscall.ETH_P_IP),</div><div class="line">	Ifindex:  ifi.Index,</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>使用<code>AF_PACKET</code>构建数据包涉及手动创建以太网帧。这包括设置源和目标MAC地址以及EtherType,以指示该帧承载的有效负载类型(在我们的例子中是IP)。我们使用了与之前Pcap方法相同的<a href="https://github.com/atoonk/go-pktgen/blob/main/pktgen/af_packet.go#L56-L68" target="_blank" rel="external">BuildPacket函数</a>。</p>
+<p>然后,数据包就可以直接发送到这条链路上了:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">syscall.Sendto(fd, packet,<span class="number"> 0</span>, addr)</div></pre></td></tr></table></figure>
+
+<p>事实证明,AF_PACKET方法的性能几乎与之前使用pcap方法时的性能相同。简单的谷歌搜索显示,<code>libpcap</code>(tcpdump和Go pcap绑定等工具所使用的底层库)在Linux平台上使用<code>AF_PACKET</code>进行数据包捕获和注入。所以,这解释了它们的性能相似性。</p>
+<h2 id="使用_AF_XDP_套接字">使用 AF_XDP 套接字</h2>
+<p>我们还有一个选项可以尝试。<code>AF_XDP</code>是一个相对较新的方式!它旨在通过利用传统Linux网络堆栈的快速路径,大幅提高应用程序直接从网络接口卡(NIC)发送和接收数据包的速度。另请参阅我之前关于<a href="https://toonk.io/building-an-xdp-express-data-path-based-bgp-peering-router/index.html" target="_blank" rel="external">XDP的博客文章</a>。</p>
+<p><code>AF_XDP</code>利用了XDP(快速数据路径)框架。这种能力不仅通过避免内核开销提供了最小延迟,而且还通过在软件栈中尽可能早的点进行数据包处理,最大化了吞吐量。</p>
+<p>Go标准库并没有原生支持AF_XDP套接字,我只能找到一个库来帮助实现这一点。所以这一切都还很新。</p>
+<p>我使用了<a href="http://github.com/asavie/xdp" target="_blank" rel="external">asavie/xdp</a>这个库,你可以按如下方式初始化一个<code>AF_XDP</code>套接字。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">xsk, err := xdp.NewSocket(link.Attrs().Index, s.queueID, <span class="constant">nil</span>)****</div></pre></td></tr></table></figure>
+
+<p>注意,我们需要提供一个NIC队列;这清楚地表明我们正在比以前的方法工作在更低的级别上。完整的代码比其他选择要复杂一些,部分原因是我们需要使用用户空间内存缓冲区(UMEM)来存储数据包数据。这种方法减少了内核在数据包处理中的参与,从而缩短了数据包在系统层中传输的时间。通过直接在驱动程序级别构建和注入数据包。因此,请查看<a href="https://github.com/atoonk/go-pktgen/blob/main/pktgen/af_xdp.go#L40-L97" target="_blank" rel="external">我的代码</a>。</p>
+<p>结果看起来不错;使用这种方法,我现在可以生成2,647,936个数据包每秒。这是我们之前使用AF_PACKET时性能的两倍!太棒了!</p>
+<h2 id="总结和一些要点">总结和一些要点</h2>
+<p>首先，这次做的很有趣，也学到了很多！我们研究了从传统的net.Dial方法生成数据包的各种选项，包括原始套接字、pcap、AF_PACKET，最后是AF_XDP。下面的图表显示了每种方法的数字（都使用一个CPU和一个NIC队列）。AF_XDP是最大的赢家！<br><img src="af_xdp.webp" alt=""></p>
+<p>如果感兴趣，您可以在类似下面的Linux系统上自行运行基准测试：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div></pre></td><td class="code"><pre><div class="line">./<span class="keyword">go</span>-pktgen --dstip<span class="number"> 192.168</span><span class="number">.64.2</span> --method benchmark \</div><div class="line"> --duration<span class="number"> 5</span> --payloadsize<span class="number"> 64</span> --iface veth0</div><div class="line"></div><div class="line">+-------------+-----------+------+</div><div class="line">|   Method    | Packets/s | Mb/s |</div><div class="line">+-------------+-----------+------+</div><div class="line">| af_xdp      |  <span class="number"> 2647936</span> |<span class="number"> 1355</span> |</div><div class="line">| af_packet   |  <span class="number"> 1368070</span> | <span class="number"> 700</span> |</div><div class="line">| af_pcap     |  <span class="number"> 1354087</span> | <span class="number"> 693</span> |</div><div class="line">| udp_syscall |   <span class="number"> 861372</span> | <span class="number"> 441</span> |</div><div class="line">| raw_socket  |   <span class="number"> 793781</span> | <span class="number"> 406</span> |</div><div class="line">| net_conn    |   <span class="number"> 697277</span> | <span class="number"> 357</span> |</div><div class="line">+-------------+-----------+------+</div></pre></td></tr></table></figure>
+
+<p>重要的是关注每秒数据包数，因为这是软件网络堆栈的限制。<code>Mb/s</code> 数只是数据包大小乘以您可以生成的每秒数据包数。从传统的<code>net.Dial</code> 方法转换到使用 <code>AF_PACKET</code>，可以看到轻松实现了两倍的提升。然后，在使用 <code>AF_XDP</code> 时又实现了另外两倍的提升。如果您对快速发送数据包感兴趣，这确实是很重要的信息！</p>
+<p>上述基准测试工具默认使用一个 <code>CPU</code> 和一个 <code>NIC 队列</code>。但是，用户可以选择使用更多的 CPU，这将启动多个 Go 协程以并行执行相同的测试。下面的截图显示了使用 <code>AF_XDP</code> 运行具有 8 个流（和 8 个 CPU）的工具，生成了 <code>186Gb/s</code> 的速率，数据包大小为 <code>1200 字节</code>（<code>18.8Mpps</code>）！这对于一台 Linux 服务器来说确实非常令人印象深刻（而且没有使用 DPDK）。比如，比使用 iperf3 更快。</p>
+<p><img src="benchmark.webp" alt=""></p>
+<h2 id="一些需要注意的地方和我未来想要关注的事项">一些需要注意的地方和我未来想要关注的事项</h2>
+<p>使用 PCAP 方法运行多个流（go 协程）效果不佳。性能会显著下降。相比之下，可比较的 <code>AF_PACKET</code> 方法在多个流和 go 协程下表现良好。</p>
+<p>我使用的 <code>AF_XDP</code> 库在大多数硬件 NIC 上似乎表现不佳。我在 GitHub 上提了一个<a href="https://github.com/asavie/xdp/issues/31" target="_blank" rel="external">问题</a>，希望能得到解决。如果能更可靠些，那将是很好的，因为这在某种程度上限制了更多真实世界的 <code>AF_XDP</code> Go 应用。我大部分的测试都是使用 veth 接口进行的；我很想看看它在物理 NIC 和支持 XDP 的驱动程序上的表现。</p>
+<p>事实证明，对于 <code>AF_PACKET</code>，通过使用内存映射（<code>mma</code>p）环形缓冲区，可以实现零拷贝模式。这个特性允许用户空间应用直接访问内核空间中的数据包数据，无需在内核和用户空间之间复制数据，有效减少了 CPU 使用量并提高了数据包处理速度。这意味着理论上 <code>AF_PACKET</code> 和 <code>AF_XDP</code> 的性能可能非常相似。然而，似乎 Go 的 <code>AF_PACKET</code> 实现不支持零拷贝模式，或者<a href="https://twitter.com/jtollet/status/1762616103883227490" target="_blank" rel="external">只支持 RX</a> 而不支持 TX。所以我无法使用它。我找到了这个<a href="https://github.com/csulrong/gopacket/pull/1/files" target="_blank" rel="external">补丁</a>，但不幸的是在一个小时内无法让其工作，所以我放弃了。如果这个补丁有效，这可能是首选的方法，因为你不必依赖 <code>AF_XDP</code> 支持。</p>
+<p>最后，我很想在这个 <a href="https://github.com/atoonk/go-pktgen/tree/main" target="_blank" rel="external">pktgen 库</a>中包含 DPDK 支持。这是唯一缺失的。但这是一个独立的大项目，我需要值得信赖的 Go DPDK 库。也许将来会实现！</p>
+]]></content>
+    <summary type="html">
+    <![CDATA[<p>原文： <a href="https://atoonk.medium.com/high-speed-packet-transmission-in-go-from-net-dial-to-af-xdp-2699452efef9" target="_blank" rel="external">High-Speed Packet Processing in Go: From net.Dial to AF_XDP</a> by Andree Toonk.</p>
+]]>
+    
+    </summary>
+    
+      <category term="Go" scheme="https://colobu.com/categories/Go/"/>
+    
+  </entry>
   
   <entry>
     <title><![CDATA[slog 终极指南]]></title>
@@ -1959,106 +2063,6 @@
 ]]></content>
     <summary type="html">
     <![CDATA[<p>说起每个程序员必犯的错误，那还得是&quot;循环变量&quot;这个错误了，就连Go的开发者都犯过这个错误，这个错误在Go的FAQ中也有提到<a href="https://go.dev/doc/faq#closures_and_goroutines" target="_blank" rel="external">What happens with closures running as goroutines?</a>:</p>
-]]>
-    
-    </summary>
-    
-      <category term="Go" scheme="https://colobu.com/categories/Go/"/>
-    
-  </entry>
-  
-  <entry>
-    <title><![CDATA[2023年在地球上举行的Gopher大会]]></title>
-    <link href="https://colobu.com/2023/12/16/gopher-conferences-in-2023/"/>
-    <id>https://colobu.com/2023/12/16/gopher-conferences-in-2023/</id>
-    <published>2023-12-16T14:43:23.000Z</published>
-    <updated>2023-12-16T16:23:01.746Z</updated>
-    <content type="html"><![CDATA[<p>疫情结束后，很多的Gopher大会在全世界举行，本文整理了今年在地球上举行的Gopher大会，并列出了大会中一些有趣的议题和油管链接。</p>
-<a id="more"></a>
-<h2 id="GopherCon_Israel_2023,_时间：2023-02-07,_地点:_以色列_特拉维夫">GopherCon Israel 2023, 时间：2023-02-07, 地点: 以色列 特拉维夫</h2>
-<p><a href="https://www.gophercon.org.il/" target="_blank" rel="external">https://www.gophercon.org.il/</a><br>特拉维夫是以色列第二大城市，事实上的首都，也是以色列的经济、文化和科技中心。以色列的高科技产业在特拉维夫和其周边地区集中，被称为“以色列硅谷”。</p>
-<p>一个小规模的GopherCon，是以色列国内Gopher的盛会。但是分享的内容还是很不错的，比如下面的分享：</p>
-<ul>
-<li>Bottlenecks in Golang memory management</li>
-<li>Hot path optimizations for latency-critical applications in GO </li>
-</ul>
-<p>总体上来说分享的内容还是比较基础。</p>
-<p>分享视频: <a href="https://www.youtube.com/playlist?list=PLRM-8sTy13Xvr1ZaZarF5t_PBPxJdZHxt" target="_blank" rel="external">https://www.youtube.com/playlist?list=PLRM-8sTy13Xvr1ZaZarF5t_PBPxJdZHxt</a></p>
-<h2 id="GopherCon_Brasil_2023,_时间：2023-05-09_~_2023-05-10,_地点:_巴西_弗洛里亚诺波利斯">GopherCon Brasil 2023, 时间：2023-05-09 ~ 2023-05-10, 地点: 巴西 弗洛里亚诺波利斯</h2>
-<p><a href="https://gopherconbr.org/en/" target="_blank" rel="external">https://gopherconbr.org/en/</a></p>
-<p>葡萄牙语，看不懂。</p>
-<p>分析视频：<a href="https://www.youtube.com/playlist?list=PLOpPtg0fjj4hoS9S8Wm2Fj7VU1aRUe2q3" target="_blank" rel="external">https://www.youtube.com/playlist?list=PLOpPtg0fjj4hoS9S8Wm2Fj7VU1aRUe2q3</a></p>
-<h2 id="Go_Conference_2023_Japan,_时间：2023-06-02,_地点:_线上">Go Conference 2023 Japan, 时间：2023-06-02, 地点: 线上</h2>
-<p><a href="https://gocon.jp/2023" target="_blank" rel="external">https://gocon.jp/2023</a></p>
-<p>主要是日文分享，线上举行的，不说也罢。</p>
-<h2 id="GopherChina_2023,_时间：2023-06-09_~_2023-06-11,_地点:_中国_北京">GopherChina 2023, 时间：2023-06-09 ~ 2023-06-11, 地点: 中国 北京</h2>
-<p>谢大组织的国内最大的Gopher盛会。疫情过去终于可以在线下举行。</p>
-<p>2023的议题：<a href="https://www.bagevent.com/event/gopherchina2023" target="_blank" rel="external">https://www.bagevent.com/event/gopherchina2023</a></p>
-<p>历年演讲材料分享：<a href="https://github.com/gopherchina/conference" target="_blank" rel="external">https://github.com/gopherchina/conference</a></p>
-<p>11月又在上海举行了分会。<br>2024会在更多的城市举行大会和meetup，大家可以关注一下。</p>
-<h2 id="GopherCon_Europe_2023，时间：2023-06-26_~_2023-06-28,_地点:_德国_柏林">GopherCon Europe 2023，时间：2023-06-26 ~ 2023-06-28, 地点: 德国 柏林</h2>
-<p><a href="https://gophercon.eu/" target="_blank" rel="external">https://gophercon.eu/</a><br>欧洲Gopher盛会，在柏林举行，2024年分成两期，2月在希腊雅典举行，6月在柏林举行。</p>
-<p>一些好的议题如：</p>
-<ul>
-<li>The state of Go</li>
-<li>Go Right Ahead! Simple Hacks to Cut Memory Usage by 80%</li>
-<li>Writing a TSDB from Scratch: Performance Optimization</li>
-<li>Go Sync or Go Home</li>
-<li>Gentle Introduction to EBPF</li>
-<li>Race Conditions in Details</li>
-</ul>
-<p>视频分享：<a href="https://www.youtube.com/playlist?list=PLtoVuM73AmsJWvXYd_9rbYXcbv1UdzeLT" target="_blank" rel="external">https://www.youtube.com/playlist?list=PLtoVuM73AmsJWvXYd_9rbYXcbv1UdzeLT</a></p>
-<h2 id="GopherCon_UK_2023,_时间：2023-08-16_~_2023-08-18,_地点:_英国_伦敦">GopherCon UK 2023, 时间：2023-08-16 ~ 2023-08-18, 地点: 英国 伦敦</h2>
-<p><a href="https://www.gophercon.co.uk/" target="_blank" rel="external">https://www.gophercon.co.uk/</a><br>英国举行的GopherCon大会。</p>
-<p>分享视频：<a href="https://www.youtube.com/@GopherConUK" target="_blank" rel="external">https://www.youtube.com/@GopherConUK</a></p>
-<p>这个会议的分享质量还是非常高的，干货比较多，比如下面的分享，都是纯纯的干货：</p>
-<ul>
-<li>Fun with Algorithms and Data Structures</li>
-<li>Fun with Generics</li>
-<li>Level-Up Real-time Go Applications with Ringbuffers</li>
-<li>The context package internals</li>
-<li>Efficient Debugging and Logging with OpenTelemetry in Go</li>
-<li>Understanding Language Server Protocol - autocomplete, formatting</li>
-<li>The Adventurer’s Guide to Forking the Go Runtime</li>
-<li>Understanding the Go Compiler</li>
-</ul>
-<p>这些分享都加入到我的冬季学习列表中了，看看我能不能出一些学习笔记这个会议真的是非常的赞。</p>
-<h2 id="GopherCon_India_2023,_时间：2023-09-09_~_2023-09-09,_地点:_印度_浦那">GopherCon India 2023, 时间：2023-09-09 ~ 2023-09-09, 地点: 印度 浦那</h2>
-<p><a href="https://gopherconindia.org/" target="_blank" rel="external">https://gopherconindia.org/</a></p>
-<p>印度国内举行的Gopher会议，我每发现太多的亮点，我比较关注的并发的议题还有一些新鲜的主题，看到一个相关的主题：</p>
-<ul>
-<li>Locks, Lock Free and everything in between</li>
-</ul>
-<p>分享视频：<a href="https://www.youtube.com/playlist?list=PLbgP71NCXCqEIgXsrPhkIZvEa3p1OdkBD" target="_blank" rel="external">https://www.youtube.com/playlist?list=PLbgP71NCXCqEIgXsrPhkIZvEa3p1OdkBD</a></p>
-<h2 id="GopherCon_2023,_时间：2023-09-25_~_2023-09-28,_地点:_美国_圣地亚哥">GopherCon 2023, 时间：2023-09-25 ~ 2023-09-28, 地点: 美国 圣地亚哥</h2>
-<p><a href="https://www.gophercon.com/" target="_blank" rel="external">https://www.gophercon.com/</a><br>美国本地的举行的GopherCon，大咖云集，也很热闹。<br>以前在丹佛举行，最近几期在圣地亚哥举行。</p>
-<p>看最近广告商的<del>分享</del>(广告)多了起来，可以有选择的观看。</p>
-<p>我发现字节的同学Zhang Yifei有一个有意思的分享Balanced GC: A Copying Garbage Collector for Golang。</p>
-<p>相关的主题列表见 <a href="https://www.gophercon.com/agenda" target="_blank" rel="external">https://www.gophercon.com/agenda</a></p>
-<p>目前我还未发现相关的视频分享和ppt分享。</p>
-<h2 id="GopherCon_Singapore_2023,_时间：2023-11-02_~_2023-11-03,_地点:_新加坡">GopherCon Singapore 2023, 时间：2023-11-02 ~ 2023-11-03, 地点: 新加坡</h2>
-<p><a href="https://2023.gophercon.sg/" target="_blank" rel="external">https://2023.gophercon.sg/</a></p>
-<p>新加坡的Gopher盛会。</p>
-<p>一些有趣的议题：</p>
-<ul>
-<li>Go low latency patterns</li>
-<li>Go Concurrency Techniques for Self-Healing Applications</li>
-<li>Three techniques for building high performance parsers</li>
-</ul>
-<p>这次Dave Cheney重出江湖，最近几年他都销声匿迹了。</p>
-<p>他们的视频目前还没有在油管上分享，后续大家可以关注一下。</p>
-<h2 id="GopherCon_Australia_2023,_时间：2023-11-08_~_2023-11-10,_地点:_澳大利亚_悉尼">GopherCon Australia 2023, 时间：2023-11-08 ~ 2023-11-10, 地点: 澳大利亚 悉尼</h2>
-<p><a href="https://gophercon.com.au/" target="_blank" rel="external">https://gophercon.com.au/</a></p>
-<p>Rob Pike 和 Russ Cox都去了，这么重视?!</p>
-<p>专门有一个Go并发编程的workshop, 499美元， 我又想做我的书的广告了。</p>
-<p>议题大家看看，我还是比较关注Go的两位大咖的分享。<br>Russ Cox现场的分享因为录音问题效果不好，所以他单独又录了一篇<br><a href="https://www.youtube.com/watch?v=X4rxi9jStLo" target="_blank" rel="external">https://www.youtube.com/watch?v=X4rxi9jStLo</a></p>
-<p>其他的视频分享应该会在油管上分享，理论上两个星期后就上传了，不过实际上目前还没。</p>
-<h2 id="GolangConf_Russia_2023,_时间：2023-11-27_~_2023-11-28,_地点:_俄罗斯_莫斯科">GolangConf Russia 2023, 时间：2023-11-27 ~ 2023-11-28, 地点: 俄罗斯 莫斯科</h2>
-<p><a href="https://golangconf.ru/2023/" target="_blank" rel="external">https://golangconf.ru/2023/</a></p>
-<p>以前有个GopherCon Russia，貌似最近两年停办了。几年俄罗斯举办了这个，俄语，看不懂。</p>
-]]></content>
-    <summary type="html">
-    <![CDATA[<p>疫情结束后，很多的Gopher大会在全世界举行，本文整理了今年在地球上举行的Gopher大会，并列出了大会中一些有趣的议题和油管链接。</p>
 ]]>
     
     </summary>
