@@ -4,7 +4,7 @@
   <subtitle><![CDATA[大道至简 Simplicity is the ultimate form of sophistication]]></subtitle>
   <link href="/atom.xml" rel="self"/>
   <link href="https://colobu.com/"/>
-  <updated>2024-03-12T15:18:31.227Z</updated>
+  <updated>2024-03-18T14:01:49.617Z</updated>
   <id>https://colobu.com/</id>
   
   <author>
@@ -13,6 +13,68 @@
   </author>
   
   <generator uri="http://zespia.tw/hexo/">Hexo</generator>
+  
+  <entry>
+    <title><![CDATA[更强大的Go执行跟踪能力]]></title>
+    <link href="https://colobu.com/2024/03/18/execution-traces-2024/"/>
+    <id>https://colobu.com/2024/03/18/execution-traces-2024/</id>
+    <published>2024-03-18T13:32:11.000Z</published>
+    <updated>2024-03-18T13:59:24.304Z</updated>
+    <content type="html"><![CDATA[<p>Go官方博客:<a href="https://go.dev/blog/execution-traces-2024" target="_blank" rel="external">More powerful Go execution traces</a> by Michael Knyszek.</p>
+<a id="more"></a>
+<p><a href="https://go.dev/pkg/runtime/trace" target="_blank" rel="external">runtime/trace包</a>包含了一个强大的工具,可用于理解和调试Go程序。该功能允许我们在一段时间内对每个goroutine的执行进行跟踪。使用<a href="https://go.dev/pkg/cmd/trace" target="_blank" rel="external">go tool trace命令</a>(或优秀的开源工具<a href="https://gotraceui.dev/" target="_blank" rel="external">gotraceui</a>),我们就可以可视化和探索这些跟踪数据。</p>
+<p>跟踪的魔力在于,它可以轻松揭示程序中一些通过其他方式很难发现的问题。例如,大量goroutine在同一个channel上阻塞导致的并发瓶颈,在CPU分析中可能很难发现,因为没有执行(<code>execution</code>)需要采样。但在执行跟踪中,执行的缺失将被清晰地呈现,而阻塞goroutine的堆栈跟踪会快速指出问题所在。</p>
+<p><img src="gotooltrace.png" alt=""></p>
+<p>Go开发者甚至可以在自己的程序中使用<a href="https://go.dev/pkg/runtime/trace#Task" target="_blank" rel="external">Task</a>、<a href="https://go.dev/pkg/runtime/trace#WithRegion" target="_blank" rel="external">Region</a>和<a href="https://go.dev/pkg/runtime/trace#Log" target="_blank" rel="external">Log</a>进行检测,从而将他们关注的高级问题与低级执行细节联系起来。</p>
+<h2 id="问题">问题</h2>
+<p>不幸的是,执行跟踪中丰富的信息往往难以获取。历史上,以下四个主要问题一直阻碍着跟踪的使用:</p>
+<ul>
+<li>跟踪开销很高。</li>
+<li>跟踪的扩展性差,分析时可能会变得太大。</li>
+<li>通常难以确定何时开始跟踪以捕获特定的错误行为。</li>
+<li>由于缺乏解析和解释执行跟踪的公共包,只有最勇敢的gopher才能以编程方式分析跟踪。</li>
+</ul>
+<p>如果你在过去几年使用过跟踪,可能会因上述一个或多个问题而感到沮丧。但我们很高兴地分享,在最近两个Go版本中,我们在这四个领域都取得了重大进展。</p>
+<h2 id="低开销跟踪">低开销跟踪</h2>
+<p>在Go 1.21之前,对许多应用程序而言,跟踪的运行时开销约在<strong>10-20%</strong>的CPU范围内,这限制了跟踪只能被选择性使用,而不能像<code>CPU profiling</code>那样持续使用。事实证明,跟踪的大部分成本归结于traceback(跟踪回溯，在计算机编程中，它通常指的是程序运行时发生错误或异常时，系统生成的调用栈信息，用于帮助开发者定位问题的源头。)。运行时产生的许多事件都附带了堆栈跟踪,这对于实际识别关键执行时刻goroutine的行为是非常有价值的。</p>
+<p>感谢<strong>Felix Geisendörfer</strong>和<strong>Nick Ripley</strong>在优化traceback效率方面所做的工作,执行跟踪的运行时CPU开销已经显著降低,对许多应用程序而言,降至1-2%。你可以在Felix关于这个主题的<a href="https://blog.felixge.de/reducing-gos-execution-tracer-overhead-with-frame-pointer-unwinding/" target="_blank" rel="external">精彩博文</a>中阅读更多相关工作的细节。</p>
+<h2 id="可扩展的跟踪">可扩展的跟踪</h2>
+<p>跟踪格式及其事件的设计侧重于相对高效的发送,但需要工具来解析并维护整个跟踪的状态。分析数百MB的跟踪可能需要几GB的内存!</p>
+<p>这个问题从根本上说是由于跟踪生成的方式造成的。为了保持运行时开销低,所有事件都被写入类似线程本地缓冲区。但这意味着事件出现的顺序与真实发生的顺序不一致,跟踪工具需要负担重任来弄清楚真正发生的情况。</p>
+<p>在保持低开销的同时使跟踪可扩展的关键在于,偶尔分割正在生成的跟踪。每个分割点的行为有点像同时禁用和重新启用跟踪。到目前为止的所有跟踪数据代表一个完整且独立的跟踪,而新的跟踪数据将无缝地从中断处继续。</p>
+<p>你可能已经想到,解决这个问题需要<a href="https://go.dev/issue/60773" target="_blank" rel="external">反思和重写运行时中跟踪实现的大量基础部分</a>。我们很高兴地说,这项工作在Go 1.22中完成并现已正式推出。<a href="https://go.dev/doc/go1.22#runtime/trace" target="_blank" rel="external">重写带来了许多良好的改进</a>,包括对go tool trace命令的一些改进。如果你有兴趣,所有详细内容都在<a href="https://github.com/golang/proposal/blob/master/design/60773-execution-tracer-overhaul.md" target="_blank" rel="external">设计文档</a>中。</p>
+<p>(注:go tool trace仍会将整个跟踪加载到内存中,但对于由Go 1.22+程序生成的跟踪,<a href="https://go.dev/issue/65315" target="_blank" rel="external">移除此限制</a>现已变为可行。)</p>
+<h2 id="飞行记录">飞行记录</h2>
+<p>假设你在开发一个web服务,一个RPC花费了非常长的时间。当你意识到RPC已经运行很久时,你无法在那时开始跟踪,因为导致请求变慢的根本原因已经发生并且没有被记录下来。</p>
+<p>有一种称为飞行记录(<code>flight recording</code>)的技术可以帮助解决这个问题,你可能已经在其他编程环境中接触过了。飞行记录的思路是持续开启跟踪,并一直保留最新的跟踪数据,以防万一。然后,一旦发生有趣的事情,程序就可以直接写出它所拥有的数据!</p>
+<p>在可以分割跟踪之前,这基本上是行不通的。但由于低开销使得连续跟踪变得可行,而且现在运行时可以随时分割跟踪,因此实现飞行记录变得很直接。</p>
+<p>因此,我们很高兴地宣布在<a href="https://go.dev/pkg/golang.org/x/exp/trace#FlightRecorder" target="_blank" rel="external">golang.org/x/exp/trace</a>包中提供了一个飞行记录器实验。</p>
+<p>请尝试使用它!下面是一个设置飞行记录器来捕获长时间HTTP请求的示例,可以帮助你入门。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div></pre></td><td class="code"><pre><div class="line"><span class="comment">// 设置飞行记录器</span></div><div class="line">fr := trace.NewFlightRecorder()</div><div class="line">fr.Start()</div><div class="line"></div><div class="line"><span class="comment">// 设置和运行HTTP服务器</span></div><div class="line"><span class="keyword">var</span> once sync.Once</div><div class="line">http.HandleFunc(<span class="string">"/my-endpoint"</span>, <span class="keyword">func</span>(w http.ResponseWriter, r *http.Request) {</div><div class="line">    start := time.Now()</div><div class="line"></div><div class="line">    <span class="comment">// 干些事情</span></div><div class="line">    doWork(w, r)</div><div class="line"></div><div class="line">    <span class="comment">// 盼到了长耗时请求，来个快照</span></div><div class="line">    <span class="keyword">if</span> time.Since(start) &gt;<span class="number"> 300</span>*time.Millisecond {</div><div class="line">        <span class="comment">// 这里我们为了简化只做一次，实际上你可以做多次</span></div><div class="line">        once.Do(<span class="keyword">func</span>() {</div><div class="line">            <span class="comment">// 抓取快照</span></div><div class="line">            <span class="keyword">var</span> b bytes.Buffer</div><div class="line">            _, err = fr.WriteTo(&b)</div><div class="line">            <span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">                log.Print(err)</div><div class="line">                <span class="keyword">return</span></div><div class="line">            }</div><div class="line">            <span class="comment">// 把快照写入文件</span></div><div class="line">            <span class="keyword">if</span> err := os.WriteFile(<span class="string">"trace.out"</span>, b.Bytes(),<span class="number"> 0</span>o755); err != <span class="constant">nil</span> {</div><div class="line">                log.Print(err)</div><div class="line">                <span class="keyword">return</span></div><div class="line">            }</div><div class="line">        })</div><div class="line">    }</div><div class="line">})</div><div class="line">log.Fatal(http.ListenAndServe(<span class="string">":8080"</span>, <span class="constant">nil</span>))</div></pre></td></tr></table></figure>
+
+<p>果您有任何反馈，无论是正面的还是负面的，请分享到<a href="https://go.dev/issue/63185" target="_blank" rel="external">提案问题</a>中！</p>
+<h2 id="跟踪读取器API">跟踪读取器API</h2>
+<p>随着对跟踪实现的重写,我们也努力清理了其他的跟踪内部组件,比如go tool trace。这催生了一次尝试,目标是创建一个足够好的可共享跟踪读取器API,使跟踪更易于访问。</p>
+<p>就像飞行记录器一样,我们很高兴地宣布,我们也有一个实验性的跟踪读取器API,希望能与大家分享。它与飞行记录器位于同一个包中,即<a href="https://go.dev/pkg/golang.org/x/exp/trace#Reader" target="_blank" rel="external">golang.org/x/exp/trace</a>。</p>
+<p>我们认为它已经足够好,可以在此基础上构建东西了,所以请务必试用!下面是一个示例,它测量了由于等待网络而阻塞的goroutine阻塞事件的比例。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div><div class="line">35</div><div class="line">36</div><div class="line">37</div></pre></td><td class="code"><pre><div class="line"><span class="comment">// 开始从标准输入读取跟踪数据。</span></div><div class="line">r, err := trace.NewReader(os.Stdin)</div><div class="line"><span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">    log.Fatal(err)</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">var</span> blocked <span class="typename">int</span></div><div class="line"><span class="keyword">var</span> blockedOnNetwork <span class="typename">int</span></div><div class="line"><span class="keyword">for</span> {</div><div class="line">    <span class="comment">// 读取事件</span></div><div class="line">    ev, err := r.ReadEvent()</div><div class="line">    <span class="keyword">if</span> err == io.EOF {</div><div class="line">        <span class="keyword">break</span></div><div class="line">    } <span class="keyword">else</span> <span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">        log.Fatal(err)</div><div class="line">    }</div><div class="line"></div><div class="line">    <span class="comment">// 处理它</span></div><div class="line">    <span class="keyword">if</span> ev.Kind() == trace.EventStateTransition {</div><div class="line">        st := ev.StateTransition()</div><div class="line">        <span class="keyword">if</span> st.Resource.Kind == trace.ResourceGoroutine {</div><div class="line">            id := st.Resource.Goroutine()</div><div class="line">            from, to := st.GoroutineTransition()</div><div class="line"></div><div class="line">            <span class="comment">// 查找阻塞的goroutine, 统计计数</span></div><div class="line">            <span class="keyword">if</span> from.Executing() && to == trace.GoWaiting {</div><div class="line">                blocked++</div><div class="line">                <span class="keyword">if</span> strings.Contains(st.Reason, <span class="string">"network"</span>) {</div><div class="line">                    blockedOnNetwork++</div><div class="line">                }</div><div class="line">            }</div><div class="line">        }</div><div class="line">    }</div><div class="line">}</div><div class="line"><span class="comment">// 打印我们所需</span></div><div class="line">p :=<span class="number"> 100</span> * <span class="typename">float64</span>(blockedOnNetwork) / <span class="typename">float64</span>(blocked)</div><div class="line">fmt.Printf(<span class="string">"%2.3f%% instances of goroutines blocking were to block on the network\n"</span>, p)</div></pre></td></tr></table></figure>
+
+<p>就像飞行记录器一样,有一个<a href="https://go.dev/issue/62627" target="_blank" rel="external">提案问题</a>可以作为留下反馈的好地方!</p>
+<p>我们想特别提及Dominik Honnef,他很早就试用了这个API,提供了宝贵的反馈,并为API贡献了对旧版本跟踪的支持。</p>
+<h2 id="感谢!">感谢!</h2>
+<p>这项工作能够完成,在很大程度上要感谢一年多前成立的<a href="https://go.dev/issue/57175" target="_blank" rel="external">诊断工作组</a>的帮助,该小组由来自Go社区各界的利益相关者组成,并向公众开放。</p>
+<p>我们要借此机会感谢在过去一年中定期参加诊断会议的社区成员:Felix Geisendörfer、Nick Ripley、Rhys Hiltner、Dominik Honnef、Bryan Boreham和thepudds。</p>
+<p>你们所做的讨论、反馈和工作是我们走到今天这一步的关键推动力。再次感谢!</p>
+]]></content>
+    <summary type="html">
+    <![CDATA[<p>Go官方博客:<a href="https://go.dev/blog/execution-traces-2024" target="_blank" rel="external">More powerful Go execution traces</a> by Michael Knyszek.</p>
+]]>
+    
+    </summary>
+    
+      <category term="Go" scheme="https://colobu.com/categories/Go/"/>
+    
+  </entry>
   
   <entry>
     <title><![CDATA[Go 中的高速数据包处理:从 net.Dial 到 AF_XDP]]></title>
@@ -2014,55 +2076,6 @@
 ]]></content>
     <summary type="html">
     <![CDATA[<p>Java中的Phaser是一个同步原语，它可以让多个线程在某个时刻同步执行。它和Barrier有点类似，但是它比Barrier更加灵活。</p>
-]]>
-    
-    </summary>
-    
-      <category term="Go" scheme="https://colobu.com/categories/Go/"/>
-    
-  </entry>
-  
-  <entry>
-    <title><![CDATA[每个Go程序员必犯之错]]></title>
-    <link href="https://colobu.com/2023/12/17/Less-Error-Prone-Loop-Variable-Scopin/"/>
-    <id>https://colobu.com/2023/12/17/Less-Error-Prone-Loop-Variable-Scopin/</id>
-    <published>2023-12-17T09:37:12.000Z</published>
-    <updated>2023-12-20T00:31:53.764Z</updated>
-    <content type="html"><![CDATA[<p>说起每个程序员必犯的错误，那还得是&quot;循环变量&quot;这个错误了，就连Go的开发者都犯过这个错误，这个错误在Go的FAQ中也有提到<a href="https://go.dev/doc/faq#closures_and_goroutines" target="_blank" rel="external">What happens with closures running as goroutines?</a>:</p>
-<a id="more"></a>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> main() {</div><div class="line">    <span class="keyword">var</span> wg sync.WaitGroup</div><div class="line"></div><div class="line">    values := []<span class="typename">string</span>{<span class="string">"a"</span>, <span class="string">"b"</span>, <span class="string">"c"</span>}</div><div class="line">    <span class="keyword">for</span> _, v := <span class="keyword">range</span> values {</div><div class="line">        wg.Add<span class="number">(1</span>)</div><div class="line">        <span class="keyword">go</span> <span class="keyword">func</span>() {</div><div class="line">            fmt.Println(v)</div><div class="line">            wg.Done()</div><div class="line">        }()</div><div class="line">    }</div><div class="line"></div><div class="line">    wg.Wait()</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>你可能期望能输出<code>a</code>、<code>b</code>、<code>c</code>这三个字符(可能顺序不同)，但是实际可能输出的是<code>c</code>、<code>c</code>、<code>c</code>。<br>这是因为循环变量的作用域是整个循环，而不是单次迭代，所以在循环体中使用的变量是同一个变量，而不是每次迭代都是一个新的变量。</p>
-<p>这个错误有时候隐藏很深，即使没有goroutine，也有可能，比如下面的代码，并没有使用额外的goroutine和闭包，也是有问题的:</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div></pre></td><td class="code"><pre><div class="line"></div><div class="line"><span class="keyword">package</span> main</div><div class="line"></div><div class="line"><span class="keyword">import</span> (</div><div class="line">	<span class="string">"fmt"</span></div><div class="line">)</div><div class="line"></div><div class="line"><span class="keyword">type</span> Char <span class="keyword">struct</span> {</div><div class="line">	Char *<span class="typename">string</span></div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	<span class="keyword">var</span> chars []Char</div><div class="line"></div><div class="line">	values := []<span class="typename">string</span>{<span class="string">"a"</span>, <span class="string">"b"</span>, <span class="string">"c"</span>}</div><div class="line">	<span class="keyword">for</span> _, v := <span class="keyword">range</span> values {</div><div class="line">		chars = <span class="built_in">append</span>(chars, Char{Char: &v})</div><div class="line">	}</div><div class="line"></div><div class="line">	<span class="keyword">for</span> _, v := <span class="keyword">range</span> chars {</div><div class="line">		fmt.Println(*v.Char)</div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>输出也大概率是<code>c</code>、<code>c</code>、<code>c</code>,因为给每个<code>Char</code>的字段赋值的是v的指针，v在整个循环中都是一个变量，所以最后的结果都是<code>c</code>。</p>
-<p>Go团队很早也意识到这个问题了，但是考虑到兼容的问题，大家的容忍程度，那就这样了。每个Go程序员都在这里摔一跤，也就长记性了，所以一直没有改变这个设计。我在这里摔了好多跤，以至于我写for循环的时候都战战兢兢的，和Russ Cox统计的网上的处理一样，不管有无必要，很多时候我都是先把循环变量赋值给一个局部变量，然后再使用，比如下面的代码：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">for</span> _, v := <span class="keyword">range</span> values {</div><div class="line">    v := v</div><div class="line">    wg.Add<span class="number">(1</span>)</div><div class="line">    <span class="keyword">go</span> <span class="keyword">func</span>() {</div><div class="line">        fmt.Println(v)</div><div class="line">        wg.Done()</div><div class="line">    }()</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>今年5月份的时候，Russ Cox忍不住了，提了一个提案<a href="https://github.com/golang/go/issues/60078" target="_blank" rel="external">#60078</a>,提案的内容是在for循环中，如果变量只在循环体中使用，那么就会在每次迭代中创建一个新的变量，而不是使用同一个变量。这个提案引起了很多人的关注，很多人都在讨论这个提案，这个提案被接收了，具体提案内容在文档中<a href="https://go.googlesource.com/proposal/+/master/design/60078-loopvar.md" target="_blank" rel="external">Proposal: Less Error-Prone Loop Variable Scoping</a>。</p>
-<p>如果你使用Go 1.21， 你可以开始这个功能，使用<code>GOEXPERIMENT=loopvar go run main.go</code>运行上面的程序，会输出<code>c</code>、<code>b</code>、<code>a</code>这样的输出，不再是<code>c</code>、<code>c</code>、<code>c</code>了。<br>这个特性在Go 1.22中会默认开启，不需要设置<code>GOEXPERIMENT</code>了。还有一两个月才能正式发布go 1.22,大家可以使用gotip测试：</p>
-<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line">$ gotip run main.go</div><div class="line">a</div><div class="line">b</div><div class="line">c</div></pre></td></tr></table></figure>
-
-<p>不只是<code>for-range</code>,下面的<code>3-clause</code>也是同样的问题：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	<span class="keyword">var</span> ids []*<span class="typename">int</span></div><div class="line">	<span class="keyword">for</span> i :=<span class="number"> 0</span>; i &lt;<span class="number"> 3</span>; i++ {</div><div class="line">		i =<span class="number"> 10</span></div><div class="line">	}</div><div class="line"></div><div class="line">	<span class="keyword">for</span> _, id := <span class="keyword">range</span> ids {</div><div class="line">		fmt.Println(*id)</div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>Go 1.22中也会修复这个问题。C#语言就只修改了<code>for-range</code>语句，<code>3-clause</code>语句就没有修改, Go两种都做了修改。</p>
-<p><strong>但是</strong>， 问题就来了哈，像下面的代码，Go 1.22和以前的代码会一样么？</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	<span class="keyword">var</span> ids []*<span class="typename">int</span></div><div class="line">	<span class="keyword">for</span> i :=<span class="number"> 0</span>; i &lt;<span class="number"> 3</span>; i++ {</div><div class="line">        i =<span class="number"> 10</span></div><div class="line">		ids = <span class="built_in">append</span>(ids, &i)</div><div class="line">	}</div><div class="line"></div><div class="line">	<span class="keyword">for</span> _, id := <span class="keyword">range</span> ids {</div><div class="line">		fmt.Println(*id)</div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>如果用Go 1.21,它会输出<code>11</code>。<br>如果用Go 1.22,它会输出<code>10</code>。<br>原因还是在于这个提案实现后，每次迭代的时候，都会创建一个新的变量，所以<code>ids</code>中的元素都是指向不同的变量，而不是同一个变量。</p>
-<p>看起来打破了向下兼容的承诺，你如果先前就想利用这个corner case的话，Go1.22已经不兼容了。</p>
-<p>更进一步，你会发现再执行<code>3-clause</code>的第三条clause的时候，变量已经被重新创建，比如下面的代码：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	<span class="keyword">for</span> i, p :=<span class="number"> 0</span>, (*<span class="typename">int</span>)(<span class="constant">nil</span>); i &lt;<span class="number"> 3</span>; <span class="built_in">println</span>(<span class="string">"3rd-clause:"</span>, &i, p) {</div><div class="line">		p = &i</div><div class="line">		fmt.Println(<span class="string">"loop body:"</span>, &i, p)</div><div class="line">		i++</div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>输出:</p>
-<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div></pre></td><td class="code"><pre><div class="line"><span class="variable">$gotip</span> run main.go</div><div class="line">loop body: <span class="number">0</span>x14000120018 <span class="number">0</span>x14000120018</div><div class="line"><span class="number">3</span>rd-clause: <span class="number">0</span>x14000120030 <span class="number">0</span>x14000120018 // &i已经变为<span class="number">0</span>x14000120030</div><div class="line">loop body: <span class="number">0</span>x14000120030 <span class="number">0</span>x14000120030</div><div class="line"><span class="number">3</span>rd-clause: <span class="number">0</span>x14000120038 <span class="number">0</span>x14000120030 // &i已经变为<span class="number">0</span>x14000120038</div><div class="line">loop body: <span class="number">0</span>x14000120038 <span class="number">0</span>x14000120038</div><div class="line"><span class="number">3</span>rd-clause: <span class="number">0</span>x14000120040 <span class="number">0</span>x14000120038 // &i已经变为<span class="number">0</span>x14000120040</div></pre></td></tr></table></figure>
-
-<p>这次修改还带来了一个福利，就是range的变量，除了数组、slice、字符串、map、channel外，还可以是一个整数，比如<code>for i := range 10</code>,它相当于<code>for i := 0; i &lt; 10; i++</code>。<br><code>range n</code>相当于一个语法糖，如果n &gt; 0，那么它会迭代`0到n-1的值， 如果n &lt;= 0, 那么它不会迭代任何值。</p>
-]]></content>
-    <summary type="html">
-    <![CDATA[<p>说起每个程序员必犯的错误，那还得是&quot;循环变量&quot;这个错误了，就连Go的开发者都犯过这个错误，这个错误在Go的FAQ中也有提到<a href="https://go.dev/doc/faq#closures_and_goroutines" target="_blank" rel="external">What happens with closures running as goroutines?</a>:</p>
 ]]>
     
     </summary>
