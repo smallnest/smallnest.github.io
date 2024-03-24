@@ -4,7 +4,7 @@
   <subtitle><![CDATA[大道至简 Simplicity is the ultimate form of sophistication]]></subtitle>
   <link href="/atom.xml" rel="self"/>
   <link href="https://colobu.com/"/>
-  <updated>2024-03-19T23:39:15.871Z</updated>
+  <updated>2024-03-24T10:33:32.117Z</updated>
   <id>https://colobu.com/</id>
   
   <author>
@@ -15,11 +15,104 @@
   <generator uri="http://zespia.tw/hexo/">Hexo</generator>
   
   <entry>
+    <title><![CDATA[goroutine调度器揭秘 2]]></title>
+    <link href="https://colobu.com/2024/03/24/goroutine-scheduler-2/"/>
+    <id>https://colobu.com/2024/03/24/goroutine-scheduler-2/</id>
+    <published>2024-03-24T09:10:48.000Z</published>
+    <updated>2024-03-24T10:33:06.677Z</updated>
+    <content type="html"><![CDATA[<p>我翻译了<a href="https://blog.devtrovert.com/p/goroutine-scheduler-revealed-youll" target="_blank" rel="external">Goroutine Scheduler Revealed: Never See Goroutines the Same Way Again</a>, 这篇文章发表于1月2号，作者在文章最后说：</p>
+<blockquote>
+<p>在接下来的部分,我们将更深入地探讨抢占式调度,并分析调度程序在运行期间所采取的每一步骤。</p>
+</blockquote>
+<a id="more"></a>
+<p>接下来快三个月了，也没有下文了，貌似鸽了。<br>为了不让读者等待，我接下来把相关的内容补上。</p>
+<p>当然，Go的调度器也在演化之中，你看几年前的代码，或者几年后的代码，可能就没有办法一一对应了，我们以1.21.1版本讲解。</p>
+<h2 id="schedule_函数">schedule 函数</h2>
+<p>函数<code>schedule</code>执行一次调度器循环，找到一个可运行的goroutine并执行它。这个函数永不返回。当一个 <code>goroutine</code> 执行完毕，它会再次调用 <code>schedule</code> 函数来选择下一个要执行的 <code>goroutine</code>。这就是为什么 <code>schedule</code> 函数看起来像是永不返回：它总是在选择和执行 <code>goroutine</code>，除非没有更多的 <code>goroutine</code> 可以执行。</p>
+<p><code>schedule</code> 函数并不是通过常规的函数调用栈来调度 <code>goroutine</code> 的。当一个 <code>goroutine</code> 结束执行，它并不是通过返回到 <code>schedule</code> 函数来调度下一个 <code>goroutine</code>，而是通过一种称为 &quot;栈切换&quot; 的技术。</p>
+<p>在具体实现上，每个 <code>goroutine</code> 都有自己的栈，当它开始执行时，运行时系统会将当前的栈指针切换到这个 <code>goroutine</code> 的栈，当它结束执行时，运行时系统会将栈指针切换回原来的栈（通常是所谓的 &quot;系统栈&quot; 或 &quot;调度器栈&quot;）。这样，每个 <code>goroutine</code> 的函数调用栈都是独立的，它们不会互相影响，也不会导致栈溢出。</p>
+<p>因此，尽管从代码上看 <code>schedule</code> 函数像是在递归调用，但实际上它并不会导致栈溢出，因为每次调用 <code>schedule</code> 都是在一个新的 <code>goroutine</code> 的栈上，而不是在同一个函数调用栈上。</p>
+<p><a href="https://github.com/golang/go/blob/c2c4a32f9e57ac9f7102deeba8273bcd2b205d3c/src/runtime/proc.go#L3857" target="_blank" rel="external">proc.go#schedule</a></p>
+<p>以下是一些可能会调用 schedule 函数的函数和它们的使用场景：</p>
+<ol>
+<li><code>goexit</code>(goexit1-&gt;goexit0)：当一个 <code>goroutine</code> 结束执行时，它会调用 <code>goexit</code> 函数来清理资源并退出。在 <code>goexit</code> 函数中，会调用 <code>schedule</code> 函数来选择下一个要执行的 <code>goroutine</code>。</li>
+<li><code>preemptPark</code>：<code>preemptPark</code> 函数被用于实现抢占式调度。当运行时系统决定当前正在执行的 <code>goroutine</code> 需要被抢占时，它会设置 goroutine 的状态为 <code>_Gpreempted</code>，并调用 <code>preemptPark</code> 函数将 <code>goroutine</code> 挂起。</li>
+<li><code>park_m</code>: <code>park_m</code> 函数被用于将当前的操作系统线程（M）挂起，直到有新的 <code>goroutine</code> 可以运行。比如没有<code>goroutine</code>可运行时，或者因为每个条件阻塞时。</li>
+<li><code>goschedImpl</code>：调用<code>runtime.Gosched</code> 函数时，它被用于让当前的 <code>goroutine</code> 主动让出 CPU，让其他 <code>goroutine</code> 有机会执行。</li>
+<li><code>goyield_m</code>: 类似<code>runtime.Gosched</code> 函数, <code>goyield_m</code> 函数也被用于让当前的 <code>goroutine</code> 主动让出 CPU，让其他 <code>goroutine</code> 有机会执行。但是它会把当前的goroutine放到local run queue,而不像<code>Gosched</code>放到global run queue。</li>
+<li><code>mstart1</code>：创建的操作系统线程（M）开始执行时被调用的。b比如新创建M时，或者M不够用的时候。它的主要任务是初始化线程的环境，并开始执行调度循环。</li>
+<li><code>exitsyscall0</code>: <code>exitsyscall0</code> 函数在一个 <code>goroutine</code> 完成<strong>系统调用</strong>并准备返回到 Go 空间时被调用。系统调用的goroutine返回后，会尝试找一个空闲的P去执行当前的G(和M), 否则会把当前的G放到global run queue中。</li>
+</ol>
+<p>这些函数都是 Go 语言运行时系统中的内部函数，它们的具体实现可能会因 Go 语言的版本和运行时系统的配置而不同。</p>
+<p>在<code>schedule</code>函数中，重要的是调用了<code>findRunnable</code>, 找到一个可以执行的<code>goroutine</code>。必须要找到一个，否则会阻塞直到找到一个<code>goroutine</code>:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">gp, inheritTime, tryWakeP := findRunnable() <span class="comment">// blocks until work is available</span></div></pre></td></tr></table></figure>
+
+<p>那么，接下来我们跟踪<code>findRunnable</code>函数,了解它的每一个步骤，这是调度器工作的重点。</p>
+<h2 id="findRunnable_函数">findRunnable 函数</h2>
+<p><img src="findRunnable.svg" alt=""></p>
+<p><code>findRunnable</code> 函数是调度器的核心函数之一，它的主要任务是找到一个可以执行的 <code>goroutine</code>。</p>
+<p><code>findRunnable</code> 函数的实现非常复杂，因为它需要考虑很多因素，比如当前的 <code>goroutine</code> 是否需要被抢占，当前的 <code>goroutine</code> 是否需要让出 CPU，当前的 <code>goroutine</code> 是否需要被挂起，当前的 <code>goroutine</code> 是否需要被唤醒，当前的 <code>goroutine</code> 是否需要被移动到其他的 <code>P</code>，等等。我们暂时不考虑这些复杂的情况，只关注最简单的情况：怎么找到一个可以执行的 <code>goroutine</code>。</p>
+<h3 id="可以寻找的goroutine">可以寻找的goroutine</h3>
+<p>重点它寻找一个可以执行的<code>goroutine</code>，这些goroutine都是存在什么地方内？</p>
+<ul>
+<li><code>local run queue</code>: 每个P都有一个local run queue，用于存放当前P上的goroutine。</li>
+<li><code>global run queue</code>: 所有的P共享一个global run queue，用于存放所有的goroutine。</li>
+<li><code>netpoll</code>: 用于处理网络事件的goroutine。</li>
+<li><code>timer</code>: 用于处理定时器事件的goroutine。</li>
+<li><code>syscall</code>: 用于处理系统调用的goroutine。</li>
+</ul>
+<p>处于性能优化的目的，每个处理器（P）确实包含一个<strong>四叉堆</strong>（heap），用于保存定时器（timer）。。<br>每个定时器都有一个到期时间，当到达这个时间时，定时器关联的函数就会被调用。四叉堆的结构使得运行时系统可以快速地找到最早到期的定时器，这对于定时器的处理非常重要。<br>当你在 Go 代码中使用 time.After，time.Sleep 或 time.AfterFunc 等函数时，就会创建一个定时器，并将其添加到当前 P 的 timers 四叉堆中。</p>
+<p>全局还有一个网络轮询器（netpoller），它用于处理网络事件。每个findRunnable调用的时候也可能去访问它。</p>
+<h3 id="findRunnable_寻找goroutine的步骤">findRunnable 寻找goroutine的步骤</h3>
+<p><img src="findRunnable-flowchart.svg" alt=""></p>
+<p><code>findRunnable</code>函数寻找goroutine过程既复杂又简单。<br>说它复杂，是因为它需要考虑很多因素，做各种检查，执行不同的策略去寻找goroutine。<br>说它简单，是因为它的逻辑很清晰，只是一步一步地检查，直到找到一个可以执行的goroutine。一旦找到goroutine，就直接返回。</p>
+<p>根据这个函数的实现，我把大致的逻辑画了一个流程图，如上图所示，下面我们一步一步地解释这个流程图，忽略其中的一些条件检查，我们主要关注它的大的逻辑。</p>
+<ol>
+<li>首先定义了一个<code>top</code>标签，因为在后面的代码中，需要从头开始重新检查，类似一个for循环，但是这里使用<code>goto</code>语句更清晰。</li>
+<li>检查Timer,如果有到期的timer,则执行timer相关的goroutine。如果程序中有大量的Timer也不太好，如果Timer大量的增删或者日期变化，会导致性能问题。</li>
+<li>检查tracer, 跟踪调用的goroutine，如果符合条件，执行。</li>
+<li>检查是否有gc worker要执行，如果有，执行。</li>
+<li>如果tick(嘀嗒)计数器到了61次，并且global run queue中有goroutine，那么执行global run queue中的goroutine。</li>
+<li>如有必要，唤醒finalizer</li>
+<li>如有必要，执行cgo_yield，让执行cgo系统调用的goroutine让出CPU。</li>
+<li>检查local run queue, 如果有goroutine，执行。</li>
+<li>再次检查global run queue, 如果有goroutine，执行。</li>
+<li>检查netpoll, 如果网络事件需要处理，唤醒相关的goroutine。</li>
+<li>从其他P的local run queue中偷取goroutine，如果有goroutine，执行。</li>
+<li>如有必要，执行idle-time marking, 执行GC的标记阶段。</li>
+<li>wasm相关的逻辑处理</li>
+<li>再次检查global run queue, 如果有goroutine，执行。</li>
+<li>如有需要，再次从头检查</li>
+<li>再次检查netpoll</li>
+<li>如果没有找到可以执行的goroutine，阻塞等待</li>
+</ol>
+<p>总体上看， findRunnable 函数实现了一个通用的goroutine调度逻辑。</p>
+<p>也许，针对不同的场景，你可以在这个调度器上微调，尝试获取更高性能调度：</p>
+<ol>
+<li>调整寻找goroutine的顺序、频次等</li>
+<li>进行goroutine的优先级调度、进行NUMA等CPU架构的优化</li>
+</ol>
+<p>这样，我们把原作者的许诺的分享中的调度步骤的内容补上了，接下来补上最后一部分的内容：抢占式调度。请关注公众号 “鸟窝聊技术” 获取最新文章。</p>
+]]></content>
+    <summary type="html">
+    <![CDATA[<p>我翻译了<a href="https://blog.devtrovert.com/p/goroutine-scheduler-revealed-youll" target="_blank" rel="external">Goroutine Scheduler Revealed: Never See Goroutines the Same Way Again</a>, 这篇文章发表于1月2号，作者在文章最后说：</p>
+<blockquote>
+<p>在接下来的部分,我们将更深入地探讨抢占式调度,并分析调度程序在运行期间所采取的每一步骤。</p>
+</blockquote>
+]]>
+    
+    </summary>
+    
+      <category term="Go" scheme="https://colobu.com/categories/Go/"/>
+    
+  </entry>
+  
+  <entry>
     <title><![CDATA[goroutine调度器揭秘]]></title>
     <link href="https://colobu.com/2024/03/19/goroutine-scheduler-revealed/"/>
     <id>https://colobu.com/2024/03/19/goroutine-scheduler-revealed/</id>
     <published>2024-03-19T15:45:25.000Z</published>
-    <updated>2024-03-19T23:38:42.835Z</updated>
+    <updated>2024-03-20T00:21:19.351Z</updated>
     <content type="html"><![CDATA[<p>你以前可能听说过 Goroutine 调度器，但你对它的工作原理了解多少？它如何将 goroutine 与线程配对？</p>
 <p>原文:<a href="https://blog.devtrovert.com/p/goroutine-scheduler-revealed-youll" target="_blank" rel="external">Goroutine Scheduler Revealed: Never See Goroutines the Same Way Again</a><br><a id="more"></a></p>
 <p><img src="behind-goroutines.webp" alt=""></p>
@@ -2068,75 +2161,6 @@
 ]]></content>
     <summary type="html">
     <![CDATA[<p>Go 1.22 就要在龙年春节期间发布了。Go 1.22的新特性包括了新的 <code>math/rand</code> 包。这个包的目标是提供一个更好的伪随机数生成器，它的 API 也更加简单易用。本文将介绍这个新的包的特性。<br>]]>
-    
-    </summary>
-    
-      <category term="Go" scheme="https://colobu.com/categories/Go/"/>
-    
-  </entry>
-  
-  <entry>
-    <title><![CDATA[从Go channel中批量读取数据]]></title>
-    <link href="https://colobu.com/2023/12/23/batch-read-from-channels/"/>
-    <id>https://colobu.com/2023/12/23/batch-read-from-channels/</id>
-    <published>2023-12-23T13:49:51.000Z</published>
-    <updated>2023-12-26T01:03:05.705Z</updated>
-    <content type="html"><![CDATA[<p>有时候批量积攒一批数据集中处理，是一个高效的提高程序性能的方法，比如我们可以批量写入数据库，批量发送消息到kafka，批量写入网络数据等等。<br>批量把数据收集出来，我们常用channel类型，此时channel的功能就是一个buffer,多个生产者把数据写入到channel中，消费者从channel中读取数据，但是Go的channel并没有提供批量读取的方法，我们需要自己实现一个。<br><a id="more"></a></p>
-<p><img src="batch-read.png" alt=""></p>
-<h3 id="ithub-com/smallnest/exp/chanx_库">ithub.com/smallnest/exp/chanx 库</h3>
-<p>当然我已经实现了一个batch库，你可以直接拿来用，本文主要介绍它的功能、使用方法以及设计原理和考量：<a href="https://github.com/smallnest/exp/blob/master/chanx/batcher.go" target="_blank" rel="external">github.com/smallnest/exp/chanx</a>。</p>
-<p>我们可以使用这个库的<code>Batch</code>方法来批量读取数据，它的定义如下：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> Batch[T any](ctx context.Context, ch &lt;-<span class="keyword">chan</span> T, batchSize <span class="typename">int</span>, fn <span class="keyword">func</span>([]T))</div></pre></td></tr></table></figure>
-
-<ul>
-<li>第一个参数是<code>Context</code>,可以让调用者主动取消或者超时控制</li>
-<li>第二个参数是channel，我们从这个channel中读取数据。channel可以在外部被关闭</li>
-<li>第三个参数是批处理的大小，也就是我们从channel中读取一批数据的最大量</li>
-<li>第四个参数是一个函数，我们把从channel中读取的一批数据传递给这个函数，由这个函数来处理这批数据</li>
-</ul>
-<p>举一个例子：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> TestBatch(t *testing.T) {</div><div class="line">	ch := <span class="built_in">make</span>(<span class="keyword">chan</span> <span class="typename">int</span>,<span class="number"> 10</span>)</div><div class="line">	<span class="keyword">for</span> i :=<span class="number"> 0</span>; i &lt;<span class="number"> 10</span>; i++ {</div><div class="line">		ch &lt;- i</div><div class="line">	}</div><div class="line"></div><div class="line">	count :=<span class="number"> 0</span></div><div class="line">	<span class="keyword">go</span> Batch[<span class="typename">int</span>](context.Background(), ch,<span class="number"> 5</span>, <span class="keyword">func</span>(batch []<span class="typename">int</span>) {</div><div class="line">		<span class="keyword">if</span> <span class="built_in">len</span>(batch) !=<span class="number"> 5</span> {</div><div class="line">			assert.Fail(t, <span class="string">"expected batch size 5, got %d"</span>, <span class="built_in">len</span>(batch))</div><div class="line">		}</div><div class="line">		count += <span class="built_in">len</span>(batch)</div><div class="line">	})</div><div class="line">	time.Sleep(time.Second)</div><div class="line">	<span class="built_in">close</span>(ch)</div><div class="line">	assert.Equal(t,<span class="number"> 10</span>, count)</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>这个例子一开始我们把10个数据写入到一个channel中，然后我们从channel中批量读取，每次读取5个，然后把这5个数据传递给一个函数来处理，我们可以看到，我们读取了两次，每次读取5个，总共读取了10个数据。</p>
-<p>我们还可以使用<code>FlatBatch</code>方法来批量读取批量数据，它的定义如下：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> FlatBatch[T any](ctx context.Context, ch &lt;-<span class="keyword">chan</span> []T, batchSize <span class="typename">int</span>, fn <span class="keyword">func</span>([]T))</div></pre></td></tr></table></figure>
-
-<p>这个函数和<code>Batch</code>类似，只不过它的channel中的数据是一个切片，每次从channel中读取到一个切片后，把这个切片中的数据展开放入到一批数据中，最后再传递给处理函数。所以它有<code>Flat</code>和<code>Batch</code>两个功能。</p>
-<p>举一个例子：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> TestFlatBatch(t *testing.T) {</div><div class="line">	ch := <span class="built_in">make</span>(<span class="keyword">chan</span> []<span class="typename">int</span>,<span class="number"> 10</span>)</div><div class="line">	<span class="keyword">for</span> i :=<span class="number"> 0</span>; i &lt;<span class="number"> 10</span>; i++ {</div><div class="line">		ch &lt;- []<span class="typename">int</span>{i, i}</div><div class="line">	}</div><div class="line"></div><div class="line">	count :=<span class="number"> 0</span></div><div class="line">	<span class="keyword">go</span> FlatBatch[<span class="typename">int</span>](context.Background(), ch,<span class="number"> 5</span>, <span class="keyword">func</span>(batch []<span class="typename">int</span>) {</div><div class="line">		assert.NotEmpty(t, batch)</div><div class="line">		count += <span class="built_in">len</span>(batch)</div><div class="line">	})</div><div class="line">	time.Sleep(time.Second)</div><div class="line">	<span class="built_in">close</span>(ch)</div><div class="line">	assert.Equal(t,<span class="number"> 20</span>, count)</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>在这个例子中，我们把10个切片写入到channel中，每个切片中有两个元素，然后我们从channel中批量读取并展开，放入到一个batch中，如果batch中的数据大于或等于5个，就把这5个数据传递给一个函数来处理，我们可以看到，我们读取了两次，每次读取5个，总共读取了10个数据。</p>
-<h3 id="实现原理和考量">实现原理和考量</h3>
-<p>想要从channel中批量读取数据，我们需要考虑以下几个问题：</p>
-<ol>
-<li>我们需要设定一个批处理的大小，不能无限制的读取而不处理，否则会把消费者饿死，内存也会爆表</li>
-<li>从channel中读取数据的时候，如果channel中没有数据，我们需要等待，直到channel中有数据，或者channel被关闭。</li>
-<li>不能无限制的等待，或者长时间的等待，否则消费者会饥饿，而且时延太长业务不允许</li>
-</ol>
-<p>我先举一个简单但是不太好的实现方式，我们在它的基础上做优化：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> Batch[T any](ctx context.Context, ch &lt;-<span class="keyword">chan</span> T, batchSize <span class="typename">int</span>, fn <span class="keyword">func</span>([]T)) {</div><div class="line">	<span class="keyword">var</span> batch = <span class="built_in">make</span>([]T,<span class="number"> 0</span>, batchSize)</div><div class="line">	<span class="keyword">for</span> {</div><div class="line">		<span class="keyword">select</span> {</div><div class="line">		<span class="keyword">case</span> &lt;-ctx.Done():</div><div class="line">			<span class="keyword">if</span> <span class="built_in">len</span>(batch) &gt;<span class="number"> 0</span> {</div><div class="line">				fn(batch)</div><div class="line">			}</div><div class="line">			<span class="keyword">return</span></div><div class="line">		<span class="keyword">case</span> v, ok := &lt;-ch:</div><div class="line">			<span class="keyword">if</span> !ok { <span class="comment">// closed</span></div><div class="line">				fn(batch)</div><div class="line">				<span class="keyword">return</span></div><div class="line">			}</div><div class="line"></div><div class="line">			batch = <span class="built_in">append</span>(batch, v)</div><div class="line">			<span class="keyword">if</span> <span class="built_in">len</span>(batch) == batchSize { <span class="comment">// full</span></div><div class="line">				fn(batch)</div><div class="line">				batch = <span class="built_in">make</span>([]T,<span class="number"> 0</span>, batchSize) <span class="comment">// reset</span></div><div class="line">			}</div><div class="line">		}</div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>这个实现中我们使用了一个<code>batch</code>变量来保存从channel中读取的数据，当<code>batch</code>中的数据量达到<code>batchSize</code>时，我们就把这个<code>batch</code>传递给处理函数，然后清空<code>batch</code>，继续读取数据。</p>
-<p>这个实现的一个最大的问题就是，如果channel中没有数据，并且当前batch的数量还未达到预期， 我们就会一直等待，直到channel中有数据，或者channel被关闭，这样会导致消费者饥饿。</p>
-<p>我们可以使用<code>select</code>语句来解决这个问题，我们可以在<code>select</code>语句中加入一个<code>default</code>分支，当channel中没有数据的时候，就会执行<code>default</code>分支以便在channel中没有数据的时候，我们能够把已读取到的数据也能交给函数fn去处理。</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> Batch[T any](ctx context.Context, ch &lt;-<span class="keyword">chan</span> T, batchSize <span class="typename">int</span>, fn <span class="keyword">func</span>([]T)) {</div><div class="line">    <span class="keyword">var</span> batch = <span class="built_in">make</span>([]T,<span class="number"> 0</span>, batchSize)</div><div class="line">    <span class="keyword">for</span> {</div><div class="line">        <span class="keyword">select</span> {</div><div class="line">        <span class="keyword">case</span> &lt;-ctx.Done():</div><div class="line">            <span class="keyword">if</span> <span class="built_in">len</span>(batch) &gt;<span class="number"> 0</span> {</div><div class="line">                fn(batch)</div><div class="line">            }</div><div class="line">            <span class="keyword">return</span></div><div class="line">        <span class="keyword">case</span> v, ok := &lt;-ch:</div><div class="line">            <span class="keyword">if</span> !ok { <span class="comment">// closed</span></div><div class="line">                fn(batch)</div><div class="line">                <span class="keyword">return</span></div><div class="line">            }</div><div class="line"></div><div class="line">            batch = <span class="built_in">append</span>(batch, v)</div><div class="line">            <span class="keyword">if</span> <span class="built_in">len</span>(batch) == batchSize { <span class="comment">// full</span></div><div class="line">                fn(batch)</div><div class="line">                batch = <span class="built_in">make</span>([]T,<span class="number"> 0</span>, batchSize) <span class="comment">// reset</span></div><div class="line">            }</div><div class="line">        <span class="keyword">default</span>:</div><div class="line">            <span class="keyword">if</span> <span class="built_in">len</span>(batch) &gt;<span class="number"> 0</span> {</div><div class="line">                fn(batch)</div><div class="line">                batch = <span class="built_in">make</span>([]T,<span class="number"> 0</span>, batchSize) <span class="comment">// reset</span></div><div class="line">            }</div><div class="line">        }</div><div class="line">    }</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>这个实现貌似解决了消费者饥饿的问题，但是也会带来一个新的问题，如果channel中总是没有数据，那么我们总是落入<code>default</code>分支中，导致CPU空转，这个goroutine可能导致CPU占用100%, 这样也不行。</p>
-<p>有些人会使用<code>time.After</code>来解决这个问题，我们可以在<code>select</code>语句中加入一个<code>time.After</code>分支，当channel中没有数据的时候，就会执行<code>time.After</code>分支，这样我们就可以在channel中没有数据的时候，等待一段时间，如果还是没有数据，就把已读取到的数据也能交给函数fn去处理。</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> Batch[T any](ctx context.Context, ch &lt;-<span class="keyword">chan</span> T, batchSize <span class="typename">int</span>, fn <span class="keyword">func</span>([]T)) {</div><div class="line">    <span class="keyword">var</span> batch = <span class="built_in">make</span>([]T,<span class="number"> 0</span>, batchSize)</div><div class="line">    <span class="keyword">for</span> {</div><div class="line">        <span class="keyword">select</span> {</div><div class="line">        <span class="keyword">case</span> &lt;-ctx.Done():</div><div class="line">            <span class="keyword">if</span> <span class="built_in">len</span>(batch) &gt;<span class="number"> 0</span> {</div><div class="line">                fn(batch)</div><div class="line">            }</div><div class="line">            <span class="keyword">return</span></div><div class="line">        <span class="keyword">case</span> v, ok := &lt;-ch:</div><div class="line">            <span class="keyword">if</span> !ok { <span class="comment">// closed</span></div><div class="line">                fn(batch)</div><div class="line">                <span class="keyword">return</span></div><div class="line">            }</div><div class="line"></div><div class="line">            batch = <span class="built_in">append</span>(batch, v)</div><div class="line">            <span class="keyword">if</span> <span class="built_in">len</span>(batch) == batchSize { <span class="comment">// full</span></div><div class="line">                fn(batch)</div><div class="line">                batch = <span class="built_in">make</span>([]T,<span class="number"> 0</span>, batchSize) <span class="comment">// reset</span></div><div class="line">            }</div><div class="line">        <span class="keyword">case</span> &lt;-time.After<span class="number">(100</span> * time.Millisecond):</div><div class="line">            <span class="keyword">if</span> <span class="built_in">len</span>(batch) &gt;<span class="number"> 0</span> {</div><div class="line">                fn(batch)</div><div class="line">                batch = <span class="built_in">make</span>([]T,<span class="number"> 0</span>, batchSize) <span class="comment">// reset</span></div><div class="line">            }</div><div class="line">        }</div><div class="line">    }</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>这样貌似解决了CPU空转的问题，如果你测试这个实现，生产者在生产数据很慢的时候，程序的CPU的确不会占用100%。<br>但是正如有经验的Gopher意识到的那样，这个实现还是有问题的，如果生产者生产数据的速度很快，而消费者处理数据的速度很慢，那么我们就会产生大量的<code>Timer</code>,这些Timer不能及时的被回收，可能导致大量的内存占用，而且如果有大量的Timer,也会导致Go运行时处理Timer的性能。</p>
-<p>这里我提出一个新的解决办法，在这个库中实现了，我们不应该使用<code>time.After</code>，因为<code>time.After</code>既带来了性能的问题，还可能导致它在休眠的时候不能及时读取channel中的数据，导致业务时延增加。</p>
-<p>最终的实现如下：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div><div class="line">35</div><div class="line">36</div><div class="line">37</div><div class="line">38</div><div class="line">39</div><div class="line">40</div><div class="line">41</div><div class="line">42</div><div class="line">43</div><div class="line">44</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> Batch[T any](ctx context.Context, ch &lt;-<span class="keyword">chan</span> T, batchSize <span class="typename">int</span>, fn <span class="keyword">func</span>([]T)) {</div><div class="line">	<span class="keyword">var</span> batch = <span class="built_in">make</span>([]T,<span class="number"> 0</span>, batchSize)</div><div class="line">	<span class="keyword">for</span> {</div><div class="line">		<span class="keyword">select</span> {</div><div class="line">		<span class="keyword">case</span> &lt;-ctx.Done():</div><div class="line">			<span class="keyword">if</span> <span class="built_in">len</span>(batch) &gt;<span class="number"> 0</span> {</div><div class="line">				fn(batch)</div><div class="line">			}</div><div class="line">			<span class="keyword">return</span></div><div class="line">		<span class="keyword">case</span> v, ok := &lt;-ch:</div><div class="line">			<span class="keyword">if</span> !ok { <span class="comment">// closed</span></div><div class="line">				fn(batch)</div><div class="line">				<span class="keyword">return</span></div><div class="line">			}</div><div class="line"></div><div class="line">			batch = <span class="built_in">append</span>(batch, v)</div><div class="line">			<span class="keyword">if</span> <span class="built_in">len</span>(batch) == batchSize { <span class="comment">// full</span></div><div class="line">				fn(batch)</div><div class="line">				batch = <span class="built_in">make</span>([]T,<span class="number"> 0</span>, batchSize) <span class="comment">// reset</span></div><div class="line">			}</div><div class="line">		<span class="keyword">default</span>:</div><div class="line">			<span class="keyword">if</span> <span class="built_in">len</span>(batch) &gt;<span class="number"> 0</span> { <span class="comment">// partial</span></div><div class="line">				fn(batch)</div><div class="line">				batch = <span class="built_in">make</span>([]T,<span class="number"> 0</span>, batchSize) <span class="comment">// reset</span></div><div class="line">			} <span class="keyword">else</span> { <span class="comment">// empty</span></div><div class="line">				<span class="comment">// wait for more</span></div><div class="line">				<span class="keyword">select</span> {</div><div class="line">				<span class="keyword">case</span> &lt;-ctx.Done():</div><div class="line">					<span class="keyword">if</span> <span class="built_in">len</span>(batch) &gt;<span class="number"> 0</span> {</div><div class="line">						fn(batch)</div><div class="line">					}</div><div class="line">					<span class="keyword">return</span></div><div class="line">				<span class="keyword">case</span> v, ok := &lt;-ch:</div><div class="line">					<span class="keyword">if</span> !ok {</div><div class="line">						<span class="keyword">return</span></div><div class="line">					}</div><div class="line"></div><div class="line">					batch = <span class="built_in">append</span>(batch, v)</div><div class="line">				}</div><div class="line"></div><div class="line">			}</div><div class="line">		}</div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>这个实现的巧妙之处在于<code>default</code>出来。</p>
-<p>如果代码运行落入到<code>default</code>分支，说明当前channel中没有数据可读。那么它会检查当前的<code>batch</code>中是否有数据，如果有，就把这个<code>batch</code>传递给处理函数，然后清空<code>batch</code>，继续读取数据。这样已读取的数据能够及时得到处理。</p>
-<p>如果当前的<code>batch</code>中没有数据，那么它会再次进入<code>select</code>语句，等待channel中有数据，或者channel被关闭，或者<code>ctx</code>被取消。如果channel中没有数据，那么它会被阻塞，直到channel中有数据，或者channel被关闭，或者<code>ctx</code>被取消。这样就能够及时的读取channel中的数据，而不会导致CPU空转。</p>
-<p>通过在<code>default</code>分支中的特殊处理，我们就可以低时延高效的从channel中批量读取数据了。</p>
-]]></content>
-    <summary type="html">
-    <![CDATA[<p>有时候批量积攒一批数据集中处理，是一个高效的提高程序性能的方法，比如我们可以批量写入数据库，批量发送消息到kafka，批量写入网络数据等等。<br>批量把数据收集出来，我们常用channel类型，此时channel的功能就是一个buffer,多个生产者把数据写入到channel中，消费者从channel中读取数据，但是Go的channel并没有提供批量读取的方法，我们需要自己实现一个。<br>]]>
     
     </summary>
     
