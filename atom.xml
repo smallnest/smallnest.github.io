@@ -4,7 +4,7 @@
   <subtitle><![CDATA[大道至简 Simplicity is the ultimate form of sophistication]]></subtitle>
   <link href="/atom.xml" rel="self"/>
   <link href="https://colobu.com/"/>
-  <updated>2024-04-28T00:56:26.820Z</updated>
+  <updated>2024-04-30T01:10:48.762Z</updated>
   <id>https://colobu.com/</id>
   
   <author>
@@ -13,6 +13,110 @@
   </author>
   
   <generator uri="http://zespia.tw/hexo/">Hexo</generator>
+  
+  <entry>
+    <title><![CDATA[Go heap profile 怎么了]]></title>
+    <link href="https://colobu.com/2024/04/30/what-s-wrong-with-go-heap-profile/"/>
+    <id>https://colobu.com/2024/04/30/what-s-wrong-with-go-heap-profile/</id>
+    <published>2024-04-30T01:01:36.000Z</published>
+    <updated>2024-04-30T01:09:03.861Z</updated>
+    <content type="html"><![CDATA[<p>Go heap profile 是尝尝用来检查内存泄露和内存占用大问题的问题的手段，而且非常惯用。</p>
+<p>而且，我们也经常创建两个间隔较长的 heap profile, 获取它们的差值来方便查看内存泄露: <a href="https://colobu.com/2019/08/20/use-pprof-to-compare-go-memory-usage/" target="_blank" rel="external">Hi, 使用多年的go pprof检查内存泄漏的方法居然是错的?! </a></p>
+<p>今天，度厂的一位同学提出了一个很有意思的案例，让我们对 heap profile 有了更深的理解。</p>
+<a id="more"></a>
+<h2 id="问题:_heap_profile_不能正确反应当前分配的内存?">问题: heap profile 不能正确反应当前分配的内存?</h2>
+<p>这个同学举了一个简单的 Go 程序的例子:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div><div class="line">35</div><div class="line">36</div><div class="line">37</div><div class="line">38</div><div class="line">39</div><div class="line">40</div><div class="line">41</div><div class="line">42</div><div class="line">43</div><div class="line">44</div><div class="line">45</div><div class="line">46</div><div class="line">47</div><div class="line">48</div><div class="line">49</div><div class="line">50</div><div class="line">51</div><div class="line">52</div><div class="line">53</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> main</div><div class="line"></div><div class="line"><span class="keyword">import</span> (</div><div class="line">	<span class="string">"fmt"</span></div><div class="line">	<span class="string">"net/http"</span></div><div class="line">	_ <span class="string">"net/http/pprof"</span></div><div class="line">	<span class="string">"runtime"</span></div><div class="line">	<span class="string">"time"</span></div><div class="line">)</div><div class="line"></div><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	<span class="keyword">go</span> <span class="keyword">func</span>() {</div><div class="line">		http.ListenAndServe(<span class="string">"localhost:8080"</span>, <span class="constant">nil</span>)</div><div class="line">	}()</div><div class="line"></div><div class="line">	<span class="keyword">go</span> <span class="keyword">func</span>() {</div><div class="line">		<span class="comment">// 每秒打印内存分配情况</span></div><div class="line">		<span class="keyword">for</span> {</div><div class="line">			<span class="keyword">var</span> m runtime.MemStats</div><div class="line">			runtime.ReadMemStats(&m)</div><div class="line">			fmt.Printf(<span class="string">"Alloc = %v MiB"</span>, bToMb(m.Alloc))</div><div class="line">			fmt.Printf(<span class="string">"\tTotalAlloc = %v MiB"</span>, bToMb(m.TotalAlloc))</div><div class="line">			fmt.Printf(<span class="string">"\tSys = %v MiB"</span>, bToMb(m.Sys))</div><div class="line">			fmt.Printf(<span class="string">"\tNumGC = %v\n"</span>, m.NumGC)</div><div class="line">			time.Sleep<span class="number">(1</span> * time.Second)</div><div class="line">		}</div><div class="line"></div><div class="line">	}()</div><div class="line">	time.Sleep<span class="number">(5</span> * time.Second)</div><div class="line"></div><div class="line">	fmt.Println(<span class="string">"start test"</span>)</div><div class="line"></div><div class="line">	<span class="comment">// 创建一个 200 MiB 的切片</span></div><div class="line">	<span class="keyword">var</span> memoryLeaks [][]<span class="typename">int32</span></div><div class="line">	<span class="keyword">for</span> i :=<span class="number"> 0</span>; i &lt;<span class="number"> 10</span>; i++ {</div><div class="line">		leak := <span class="built_in">make</span>([]<span class="typename">int32</span>,<span class="number"> 5</span><span class="number">*1024</span><span class="number">*1024</span>) <span class="comment">// 分配 5*1M*4bytes = 20 MiB</span></div><div class="line">		memoryLeaks = <span class="built_in">append</span>(memoryLeaks, leak)</div><div class="line">		time.Sleep<span class="number">(1</span> * time.Second) <span class="comment">// 延迟一秒观察内存分配情况</span></div><div class="line">	}</div><div class="line">	<span class="comment">// 期望至少分配了 200 MiB 内存</span></div><div class="line">	fmt.Println(<span class="string">"end test"</span>)</div><div class="line">	<span class="comment">// 看到上面的文字后，打开go pprof 工具，查看工具的分析</span></div><div class="line">	<span class="comment">// go tool pprof -http :8972 http://127.0.0.1:8080/debug/pprof/heap</span></div><div class="line"></div><div class="line"></div><div class="line">	time.Sleep<span class="number">(1</span> * time.Hour)</div><div class="line">	fmt.Println(<span class="string">"test"</span>, memoryLeaks<span class="number">[9</span>]<span class="number">[5</span><span class="number">*1024</span><span class="number">*1024</span><span class="number">-1</span>]) <span class="comment">// 避免垃圾回收和优化</span></div><div class="line"></div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> bToMb(b <span class="typename">uint64</span>) <span class="typename">uint64</span> {</div><div class="line">	<span class="keyword">return</span> b /<span class="number"> 1024</span> /<span class="number"> 1024</span></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>这个程序首先创建一个监听 8080 端口的web 服务，主要利用它访问 http heap profile，所以你看导入了 <code>_ &quot;net/http/pprof&quot;</code> 包。</p>
+<p>然后创建了了一个切片，切片包含 10 个元素，每个元素又是一个 <code>[]int32</code> 的切片。每个元素占用 20 MiB 的大小 (<code>int32</code> 是 4 个字节，5*1024*1024 是 5 M, 所以是 4*5 MiB=20 Mib)。</p>
+<p>所以我们期望 10 个循环创建完毕后，至少此程序会占用 200 MiB 内存，另外在加一些栈、网络、运行时等一些额外的内存的话，略微会比 200MiB 大一些。</p>
+<p>运行这个程序，我们看程序每秒的内存占用统计：<br><img src="1.png" alt=""></p>
+<p>可以看到使用 <code>runtime.MemStats</code> 统计的内存分配情况还是比较准的， 200MiB，符合预期。</p>
+<p>当你看到 <code>end test</code> 时，表明 200MiB 已经分配，你可以运行下面的命令打开 heap profile:</p>
+<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">go tool pprof -http :<span class="number">8972</span> http://<span class="number">127.0</span>.<span class="number">0.1</span>:<span class="number">8080</span>/debug/pprof/heap</div></pre></td></tr></table></figure>
+
+<blockquote>
+<p>如果你使用 Mac 电脑, 可能你还需要手工安装 graphviz:<br> <code>brew install graphviz</code></p>
+</blockquote>
+<p>等等，<strong>不对呀</strong>！怎么 heap profile 才显示 160 MB 的内存？<strong>少了 40 MB</strong>。和期望的不符。</p>
+<p><img src="2.png" alt=""></p>
+<p>这 160 MB 内存的确是在创建元素的时候分配的：<br><img src="3.png" alt=""></p>
+<p>可那 40 MB 呢？如果 Heap Profile 数据不准，可就动摇了我们一直以来分析内存泄露的技术基础？</p>
+<p>那肯定不会是 Go 实现的问题，否则这个问题早就被暴露和修复了。</p>
+<p>接下来我们就介绍根因，讲两个知识点。</p>
+<h2 id="把40_MiB_的分配的内存找回来">把40 MiB 的分配的内存找回来</h2>
+<p>如果你再等一会，大约在命令行中看到 <code>end test</code> 两分钟后吧，当然再等长一点的时间更佳，你在重新执行命令，查看 heap profile:</p>
+<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">go tool pprof -http :<span class="number">8972</span> http://<span class="number">127.0</span>.<span class="number">0.1</span>:<span class="number">8080</span>/debug/pprof/heap</div></pre></td></tr></table></figure>
+
+<p>这个时候浏览器中显示出了 <strong>200 MB</strong> 的内存分配，符合预期了：<br><img src="4.png" alt=""></p>
+<p>神奇啊，等待一段时间之后，heap profile 就显示正常了。难道过了一会才分配的内存？那不可能。因为命令行中 <code>runtime.MemStats</code> 已经显示结束测试前内存已经分配好了。</p>
+<p>看到 <code>end test</code> 之后，程序也没做啥呀，就是休眠了 1 小时。<br>2 分钟很像是垃圾回收搞的鬼，2 分钟强制回收一次。</p>
+<p>怀疑归怀疑，我们验证一下，在 <code>end test</code> 之后强制垃圾回收一下，再立即打开 heap profile 是不是显示 200 MiB。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div></pre></td><td class="code"><pre><div class="line">fmt.Println(<span class="string">"end test"</span>)</div><div class="line">runtime.GC()</div></pre></td></tr></table></figure>
+
+<p><img src="5.png" alt=""></p>
+<p>既然知道是垃圾回收搞得鬼，那么我们就强制垃圾回收，就可以立即显示当前已分配的内存了，不用再等待。<br>但是线上运行的程序中也不可能随心所欲的让我们在任意的地方动态加 <code>runtime.GC()</code> 呀。</p>
+<p>没关系，访问 heap profile 我们加上 <code>gc=1</code> 的参数即可 (大于 0 的数都可以)：</p>
+<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">go tool pprof -http :<span class="number">8972</span> <span class="string">"http://127.0.0.1:8080/debug/pprof/heap?gc=1"</span></div></pre></td></tr></table></figure>
+
+<p>你可以在程序中把 <code>runtime.GC()</code> 那一行去掉，使用上面的方式访问 heap profile 验证，我就不重复贴图了。</p>
+<blockquote>
+<p>顺便说一下，你还可以加上 debug=1 (非 0 的参数)，可以已文字的方式查看内存分配以及 runtime.MemStats 数据。<br>如 <a href="http://127.0.0.1:8080/debug/pprof/heap?gc=1&amp;debug=1" target="_blank" rel="external">http://127.0.0.1:8080/debug/pprof/heap?gc=1&amp;debug=1</a></p>
+</blockquote>
+<p><strong>为啥?</strong></p>
+<p>Heap profile 其实调用的 `runtime.MemProfile 进行统计:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> writeHeapInternal(w io.Writer, debug <span class="typename">int</span>, defaultSampleType <span class="typename">string</span>) error {</div><div class="line">	......</div><div class="line">	<span class="keyword">var</span> p []runtime.MemProfileRecord</div><div class="line">	n, ok := runtime.MemProfile(<span class="constant">nil</span>, <span class="constant">true</span>)</div><div class="line">	<span class="keyword">for</span> {</div><div class="line">		p = <span class="built_in">make</span>([]runtime.MemProfileRecord, n<span class="number">+50</span>)</div><div class="line">		n, ok = runtime.MemProfile(p, <span class="constant">true</span>)</div><div class="line">		<span class="keyword">if</span> ok {</div><div class="line">			p = p<span class="number">[0</span>:n]</div><div class="line">			<span class="keyword">break</span></div><div class="line">		}</div><div class="line">	}</div><div class="line">    ....</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p><code>MemProfile</code> 的方法签名如下，它负责统计内存的分配情况：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> MemProfile(p []MemProfileRecord, inuseZero <span class="typename">bool</span>) (n <span class="typename">int</span>, ok <span class="typename">bool</span>)</div></pre></td></tr></table></figure>
+
+<p>注意它的文档有一条：</p>
+<blockquote>
+<p>The returned profile may be up to two garbage collection cycles old. This is to avoid skewing the profile toward allocations; because allocations happen in real time but frees are delayed until the garbage collector performs sweeping, the profile only accounts for allocations that have had a chance to be freed by the garbage collector.</p>
+</blockquote>
+<p>翻译过来：</p>
+<blockquote>
+<p>返回的性能分析数据可能<strong>最多延迟两个垃圾回收周期</strong>。这样做是为了避免对内存分配产生偏差;因为内存分配是实时发生的,但释放操作直到垃圾回收器进行清理时才会延迟进行,所以性能分析只会统计那些已经有机会被垃圾回收器回收的内存分配。</p>
+</blockquote>
+<p>所以才会重现一开始的问题。我们看到 <code>end test</code> 立即查看 heap profile, 还没有进行垃圾回收，相关的内存统计数据还没有计算出来，所以才看到 160 MB 的内存，而不是 200MB 的内存。</p>
+<p><code>system.GC</code>会强制进行垃圾回收，并且会发布新的heap profile，所以可以看到 200MB 的内存。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> GC() {</div><div class="line">	......</div><div class="line">	<span class="comment">// Now we're really done with sweeping, so we can publish the</span></div><div class="line">	<span class="comment">// stable heap profile. Only do this if we haven't already hit</span></div><div class="line">	<span class="comment">// another mark termination.</span></div><div class="line">	mp := acquirem()</div><div class="line">	cycle := work.cycles.Load()</div><div class="line">	<span class="keyword">if</span> cycle == n<span class="number">+1</span> || (gcphase == _GCmark && cycle == n<span class="number">+2</span>) {</div><div class="line">		mProf_PostSweep()</div><div class="line">	}</div><div class="line">	releasem(mp)</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>第一个知识点已经介绍完了，也解答了最初的问题。</p>
+<p>现在让我们来看第二个知识点。</p>
+<h2 id="Heap_Profile_是采样的？采啥样？">Heap Profile 是采样的？采啥样？</h2>
+<p>heap profile 实际上在内存分配时做采样统计的，默认情况下并不会记录所有的内存分配。</p>
+<p>这里我们需要关注 <code>runtime.MemProfileRate</code> 这个变量。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div></pre></td><td class="code"><pre><div class="line"><span class="comment">// MemProfileRate controls the fraction of memory allocations</span></div><div class="line"><span class="comment">// that are recorded and reported in the memory profile.</span></div><div class="line"><span class="comment">// The profiler aims to sample an average of</span></div><div class="line"><span class="comment">// one allocation per MemProfileRate bytes allocated.</span></div><div class="line"><span class="comment">//</span></div><div class="line"><span class="comment">// To include every allocated block in the profile, set MemProfileRate to 1.</span></div><div class="line"><span class="comment">// To turn off profiling entirely, set MemProfileRate to 0.</span></div><div class="line"><span class="comment">//</span></div><div class="line"><span class="comment">// The tools that process the memory profiles assume that the</span></div><div class="line"><span class="comment">// profile rate is constant across the lifetime of the program</span></div><div class="line"><span class="comment">// and equal to the current value. Programs that change the</span></div><div class="line"><span class="comment">// memory profiling rate should do so just once, as early as</span></div><div class="line"><span class="comment">// possible in the execution of the program (for example,</span></div><div class="line"><span class="comment">// at the beginning of main).</span></div><div class="line"><span class="keyword">var</span> MemProfileRate <span class="typename">int</span> =<span class="number"> 512</span> *<span class="number"> 1024</span></div></pre></td></tr></table></figure>
+
+<p>翻译过来：</p>
+<blockquote>
+<p>MemProfileRate控制了在内存分析中记录和报告的内存分配的比例。分析器的目标是每分配MemProfileRate字节时,采样记录一次分配。</p>
+<p>如果要在分析中包含每一个分配的内存块,可以将MemProfileRate设置为1。如果要完全关闭内存分析,可以将MemProfileRate设置为0。</p>
+<p>处理内存分析数据的工具假设分析的采样率在程序的整个生命周期中保持不变,并等于当前设置的值。如果程序需要改变内存分析的采样率,应该只改变一次,并且尽可能早地在程序执行的开始阶段(例如在main函数的开始部分)进行设置。</p>
+</blockquote>
+<p>如果我们把每次分配的大小改小一点，如下：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div></pre></td><td class="code"><pre><div class="line">   ......</div><div class="line"><span class="keyword">var</span> memoryLeaks [][]<span class="typename">int32</span></div><div class="line"><span class="keyword">for</span> i :=<span class="number"> 0</span>; i &lt;<span class="number"> 1000</span>; i++ {</div><div class="line">	leak := <span class="built_in">make</span>([]<span class="typename">int32</span>,<span class="number"> 60</span><span class="number">*1024</span>) <span class="comment">// allocat 60*1K*4bytes = 240 KiB</span></div><div class="line">	memoryLeaks = <span class="built_in">append</span>(memoryLeaks, leak)</div><div class="line">}</div><div class="line"></div><div class="line">   runtime.GC()</div><div class="line">   ......</div></pre></td></tr></table></figure>
+
+<p>这个时候查看 heap profile，你会发现heap profile和<code>runtime.MemStats</code>统计的内存分配情况不一样，因为 <code>runtime.MemStats</code> 是实时统计的，而 heap profile 是采样统计的。<br><img src="6.png" alt=""></p>
+<p><img src="7.png" alt=""></p>
+<p>可以看到 <code>234 MiB</code> 和 <code>230.36</code> 是不一致的。</p>
+<p>如果在程序一开始加上 <code>runtime.MemProfileRate = 1</code>,  heap profle 数据变成了 <code>234MB</code>, 有一致了。<br><img src="8.png" alt=""></p>
+<p>但是也需要注意，将 <code>runtime.MemProfileRate</code> 设置为 1，对每一次内存都进行采样统计，对性能的影响也相应的增大了，非必要不用更改这个值。</p>
+<p>所以，我们默认看到 heap profile, 都是在默认值 <code>512 * 1024</code> 这个阈值下采样统计的，和实际的 heap 上的内存分配可能会有些出入，但是对于我们分析内存泄露，影响不大。</p>
+]]></content>
+    <summary type="html">
+    <![CDATA[<p>Go heap profile 是尝尝用来检查内存泄露和内存占用大问题的问题的手段，而且非常惯用。</p>
+<p>而且，我们也经常创建两个间隔较长的 heap profile, 获取它们的差值来方便查看内存泄露: <a href="https://colobu.com/2019/08/20/use-pprof-to-compare-go-memory-usage/" target="_blank" rel="external">Hi, 使用多年的go pprof检查内存泄漏的方法居然是错的?! </a></p>
+<p>今天，度厂的一位同学提出了一个很有意思的案例，让我们对 heap profile 有了更深的理解。</p>
+]]>
+    
+    </summary>
+    
+      <category term="Go" scheme="https://colobu.com/categories/Go/"/>
+    
+  </entry>
   
   <entry>
     <title><![CDATA[Go语言编程技巧 1.0 发布了]]></title>
@@ -1757,75 +1861,6 @@
     </summary>
     
       <category term="Linux" scheme="https://colobu.com/categories/Linux/"/>
-    
-  </entry>
-  
-  <entry>
-    <title><![CDATA[高效I/O并发处理：双缓冲和Exchanger]]></title>
-    <link href="https://colobu.com/2024/01/14/double-buffering-and-Exchanger/"/>
-    <id>https://colobu.com/2024/01/14/double-buffering-and-Exchanger/</id>
-    <published>2024-01-14T03:45:47.000Z</published>
-    <updated>2024-01-14T08:58:00.212Z</updated>
-    <content type="html"><![CDATA[<p>双缓冲(double buffering)是高效处理I/O操作的一种并发技术，它使用两个buffer,一个goroutine使用其中一个buffer进行写，而另一个goroutine使用另一个buffer进行读，然后进行交换。这样两个goroutine可能并发的执行，减少它们之间的等待和阻塞。</p>
-<p>本文还提供了一个类似Java的<a href="https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/Exchanger.html" target="_blank" rel="external">java.util.concurrent.Exchanger</a>的Go并发原语，它可以用来在两个goroutine之间交换数据，快速实现双缓冲的模式。 这个并发原语可以在<a href="https://pkg.go.dev/github.com/smallnest/exp@v0.2.2/sync#Exchanger" target="_blank" rel="external">github.com/smallnest/exp/sync/Exchanger</a>找到。</p>
-<a id="more"></a>
-<h2 id="double_buffering_并发模式">double buffering 并发模式</h2>
-<p>双缓冲(double buffering)设计方式虽然在一些领域中被广泛的应用，但是我还没有看到它在并发模式中专门列出了，或者专门列为一种模式。这里我们不妨把它称之为<strong>双缓存模式</strong>。</p>
-<p>这是一种在I/O处理领域广泛使用的用来提速的编程技术，它使用两个缓冲区来加速计算机，该计算机可以重叠 <strong>I/O</strong> 和<strong>处理</strong>。一个缓冲区中的数据正在处理，而下一组数据被读入另一个缓冲区。<br>在流媒体应用程序中，一个缓冲区中的数据被发送到声音或图形卡，而另一个缓冲区则被来自源（Internet、本地服务器等）的更多数据填充。<br>当视频显示在屏幕上时，一个缓冲区中的数据被填充，而另一个缓冲区中的数据正在显示。当在缓冲区之间移动数据的功能是在硬件电路中实现的，而不是由软件执行时，全动态视频的速度会加快，不但速度被加快，而且可以减少黑屏闪烁的可能。</p>
-<p>！<a href="double-buffering.png"></a></p>
-<p>在这个模式中，两个goroutine并发的执行，一个goroutine使用一个buffer进行写(不妨称为buffer1)，而另一个goroutine使用另一个buffer进行读(不妨称为buffer2)。如图所示。<br>当左边的writer写满它当前使用的buffer1后，它申请和右边的goroutine的buffer2进行交换，这会出现两种情况：</p>
-<ul>
-<li>右边的reader已经读完了它当前使用的buffer2，那么它会立即交换，这样左边的writer可以继续写buffer2，而右边的reader可以继续读buffer1。</li>
-<li>右边的reader还没有读完buffer2，那么左边的writer就会阻塞，直到右边的reader读完buffer2，然后交换。<br>周而复始。</li>
-</ul>
-<p>同样右边的goroutine也是同样的处理，当它读完buffer2后，它会申请和左边的goroutine的buffer1进行交换，这会出现两种情况：</p>
-<ul>
-<li>左边的writer已经写完了它当前使用的buffer1，那么它会立即交换，这样右边的reader可以继续读buffer1，而左边的writer可以继续写buffer2。</li>
-<li>左边的writer还没有写完buffer1，那么右边的reader就会阻塞，直到左边的writer写完buffer1，然后交换。<br>周而复始。</li>
-</ul>
-<p>这样两个goroutine就可以并发的执行，而不用等待对方的读写操作。这样可以提高并发处理的效率。</p>
-<p>不仅仅如此， double buffering其实可以应用于更多的场景， 不仅仅是buffer的场景，如Java的垃圾回收机制中，HotSpot JVM把年轻代分为了三部分：1个Eden区和2个Survivor区（分别叫from和to,或者s0和s1），在GC开始的时候，对象只会存在于Eden区和名为“From”的Survivor区，Survivor区“To”是空的。紧接着进行GC，Eden区中所有存活的对象都会被复制到“To”，而在“From”区中，仍存活的对象会根据他们的年龄值来决定去向。年龄达到一定值的对象会被移动到年老代中，没有达到阈值的对象会被复制到“To”区域。经过这次GC后，Eden区和From区已经被<strong>清空</strong>。这个时候，“From”和“To”会交换(<strong>exchange</strong>)他们的角色，也就是新的“To”就是上次GC前的“From”，新的“From”就是上次GC前的“To”。不管怎样，都会保证名为To的Survivor区域是空的。Minor GC会一直重复这样的过程，直到“To”区被填满，“To”区被填满之后，会将所有对象移动到年老代中。<br><img src="java-gc.png" alt=""></p>
-<h2 id="Exchanger的实现">Exchanger的实现</h2>
-<p>既然有这样的场景，有这样的需求，所以我们需要针对这样场景的一个同步原语。Java给我们做了一个很好的师范，接下来我们使用实现相应的Go,但是我们的实现和Java的实现完全不同，我们要基于Go既有的同步原语来实现。</p>
-<p>基于Java实现的Exchanger的功能，我们也实现一个<code>Exchanger</code>, 我们期望它的功能如下：</p>
-<ul>
-<li>只用作两个goroutine之间的数据交换，不支持多个goroutine之间的数据交换。</li>
-<li>可以重用。交换完之后还可以继续交换</li>
-<li>支持泛型，可以交换任意类型的数据</li>
-<li>如果对端还没有准备交换，就阻塞等待</li>
-<li>在交换完之前，阻塞的goroutine不可能调用<code>Exchange</code>方法两次</li>
-<li>Go内存模型补充： 同一次交换， 一个goroutine在调用<code>Exchange</code>方法的完成，一定<strong>happens after</strong>另一个goroutine调用<code>Exchange</code>方法的开始。</li>
-</ul>
-<p>如果你非常熟悉Go的各种同步原语，你可以很快的组合出这样一个同步原语。如果你还不是那么熟悉，建议你阅读《深入理解Go并发编程》这本书，京东有售。<br>下面是一个简单的实现，代码在<a href="https://pkg.go.dev/github.com/smallnest/exp@v0.2.2/sync#Exchanger" target="_blank" rel="external">Exchanger</a>。<br>我们只用<code>left</code>、<code>right</code>指代这两个goroutine, goroutine是Go语言中的并发单元，我们期望的就是这两个goroutine发生关系。</p>
-<p>为了跟踪这两个goroutine，我们需要使用goroutine id来标记这两个goroutine，这样避免了第三者插入。</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> Exchanger[T any] <span class="keyword">struct</span> {</div><div class="line">	leftGoID, rightGoID <span class="typename">int64</span></div><div class="line">	left, right         <span class="keyword">chan</span> T</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>你必须使用 <code>NewExchanger</code> 创建一个<code>Exchanger</code>，它会返回一个<code>Exchanger</code>的指针。<br>初始化的时候我们把left和right的id都设置为-1，表示还没有goroutine使用它们，并且不会和所有的goroutine的id冲突。<br>同时我们创建两个channel，一个用来左边的goroutine写，右边的goroutine读，另一个用来右边的goroutine写，左边的goroutine读。channel的buffer设置为1，这样可以避免死锁。</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> NewExchanger[T any]() *Exchanger[T] {</div><div class="line">	<span class="keyword">return</span> &Exchanger[T]{</div><div class="line">		leftGoID: <span class="number"> -1</span>,</div><div class="line">		rightGoID:<span class="number"> -1</span>,</div><div class="line">		left:      <span class="built_in">make</span>(<span class="keyword">chan</span> T,<span class="number"> 1</span>),</div><div class="line">		right:     <span class="built_in">make</span>(<span class="keyword">chan</span> T,<span class="number"> 1</span>),</div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p><code>Exchange</code>方法是核心方法，它用来交换数据，它的实现如下：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> (e *Exchanger[T]) Exchange(value T) T {</div><div class="line">	goid := goroutine.ID()</div><div class="line"></div><div class="line">	<span class="comment">// left goroutine</span></div><div class="line">	isLeft := atomic.CompareAndSwapInt64(&e.leftGoID,<span class="number"> -1</span>, goid)</div><div class="line">	<span class="keyword">if</span> !isLeft {</div><div class="line">		isLeft = atomic.LoadInt64(&e.leftGoID) == goid</div><div class="line">	}</div><div class="line">	<span class="keyword">if</span> isLeft {</div><div class="line">		e.right &lt;- value <span class="comment">// send value to right</span></div><div class="line">		<span class="keyword">return</span> &lt;-e.left  <span class="comment">// wait for value from right</span></div><div class="line">	}</div><div class="line"></div><div class="line">	<span class="comment">// right goroutine</span></div><div class="line">	isRight := atomic.CompareAndSwapInt64(&e.rightGoID,<span class="number"> -1</span>, goid)</div><div class="line">	<span class="keyword">if</span> !isRight {</div><div class="line">		isRight = atomic.LoadInt64(&e.rightGoID) == goid</div><div class="line">	}</div><div class="line">	<span class="keyword">if</span> isRight {</div><div class="line">		e.left &lt;- value  <span class="comment">// send value to left</span></div><div class="line">		<span class="keyword">return</span> &lt;-e.right <span class="comment">// wait for value from left</span></div><div class="line">	}</div><div class="line"></div><div class="line">	<span class="comment">// other goroutine</span></div><div class="line">	<span class="built_in">panic</span>(<span class="string">"sync: exchange called from neither left nor right goroutine"</span>)</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>当一个goroutine调用的时候，首先我们尝试把它设置为<code>left</code>,如果成功，那么它就是<code>left</code>。<br>如果不成功，我们就判断它是不是先前已经是<code>left</code>，如果是，那么它就是<code>left</code>。<br>如果先前，或者此时<code>left</code>已经被另一个goroutine占用了，它还有机会成为<code>right</code>，同样的逻辑检查和设置<code>right</code>。</p>
-<p>如果既不是<code>left</code>也不是<code>right</code>，那么就是第三者插入了，我们需要panic，因为我们不希望第三者插足。</p>
-<p>如果它是<code>left</code>，那么它就会把数据发送到<code>right</code>，然后等待<code>right</code>发送数据过来。<br>如果它是<code>right</code>，那么它就会把数据发送到<code>left</code>，然后等待<code>left</code>发送数据过来。</p>
-<p>这样就实现了数据的交换。</p>
-<h2 id="Exchanger的使用">Exchanger的使用</h2>
-<p>我们使用一个简单的双缓冲例子来说明如何使用<code>Exchanger</code>，我们创建两个goroutine，一个goroutine负责写，另一个goroutine负责读，它们之间通过<code>Exchanger</code>来交换数据。</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div><div class="line">35</div><div class="line">36</div><div class="line">37</div><div class="line">38</div><div class="line">39</div><div class="line">40</div><div class="line">41</div></pre></td><td class="code"><pre><div class="line">buf1 := bytes.NewBuffer(<span class="built_in">make</span>([]<span class="typename">byte</span>,<span class="number"> 1024</span>))</div><div class="line">buf2 := bytes.NewBuffer(<span class="built_in">make</span>([]<span class="typename">byte</span>,<span class="number"> 1024</span>))</div><div class="line"></div><div class="line">exchanger := syncx.NewExchanger[*bytes.Buffer]()</div><div class="line"></div><div class="line"><span class="keyword">var</span> wg sync.WaitGroup</div><div class="line">wg.Add<span class="number">(2</span>)</div><div class="line"></div><div class="line">expect :=<span class="number"> 0</span></div><div class="line"><span class="keyword">go</span> <span class="keyword">func</span>() { <span class="comment">// g1</span></div><div class="line">	<span class="keyword">defer</span> wg.Done()</div><div class="line"></div><div class="line">	buf := buf1</div><div class="line">	<span class="keyword">for</span> i :=<span class="number"> 0</span>; i &lt;<span class="number"> 10</span>; i++ {</div><div class="line">		<span class="keyword">for</span> j :=<span class="number"> 0</span>; j &lt;<span class="number"> 1024</span>; j++ {</div><div class="line">			buf.WriteByte(<span class="typename">byte</span>(j /<span class="number"> 256</span>))</div><div class="line">			expect += j /<span class="number"> 256</span></div><div class="line">		}</div><div class="line"></div><div class="line">		buf = exchanger.Exchange(buf)</div><div class="line">	}</div><div class="line">}()</div><div class="line"></div><div class="line"><span class="keyword">var</span> got <span class="typename">int</span></div><div class="line"><span class="keyword">go</span> <span class="keyword">func</span>() { <span class="comment">// g2</span></div><div class="line">	<span class="keyword">defer</span> wg.Done()</div><div class="line"></div><div class="line">	buf := buf2</div><div class="line">	<span class="keyword">for</span> i :=<span class="number"> 0</span>; i &lt;<span class="number"> 10</span>; i++ {</div><div class="line">		buf = exchanger.Exchange(buf)</div><div class="line">		<span class="keyword">for</span> _, b := <span class="keyword">range</span> buf.Bytes() {</div><div class="line">			got += <span class="typename">int</span>(b)</div><div class="line">		}</div><div class="line">		buf.Reset()</div><div class="line">	}</div><div class="line">}()</div><div class="line"></div><div class="line">wg.Wait()</div><div class="line"></div><div class="line">fmt.Println(got)</div><div class="line">fmt.Println(expect == got)</div></pre></td></tr></table></figure>
-
-<p>在这个例子中 <code>g1</code>负责写，每个buffer的容量是1024，写满就交给另外一个读g2,并从读g2中交换过来一个空的buffer继续写。<br>交换10次之后，两个goroutine都退出了，我们检查写入的数据和读取的数据是否一致，如果一致，那么就说明我们的<code>Exchanger</code>实现是正确的。</p>
-<h2 id="总结">总结</h2>
-<p>文本介绍了一种类似Java的<code>Exchanger</code>的同步原语的实现，这个同步原语可以在双缓冲的场景中使用，提高并发处理的性能。</p>
-]]></content>
-    <summary type="html">
-    <![CDATA[<p>双缓冲(double buffering)是高效处理I/O操作的一种并发技术，它使用两个buffer,一个goroutine使用其中一个buffer进行写，而另一个goroutine使用另一个buffer进行读，然后进行交换。这样两个goroutine可能并发的执行，减少它们之间的等待和阻塞。</p>
-<p>本文还提供了一个类似Java的<a href="https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/Exchanger.html" target="_blank" rel="external">java.util.concurrent.Exchanger</a>的Go并发原语，它可以用来在两个goroutine之间交换数据，快速实现双缓冲的模式。 这个并发原语可以在<a href="https://pkg.go.dev/github.com/smallnest/exp@v0.2.2/sync#Exchanger" target="_blank" rel="external">github.com/smallnest/exp/sync/Exchanger</a>找到。</p>
-]]>
-    
-    </summary>
-    
-      <category term="Go" scheme="https://colobu.com/categories/Go/"/>
     
   </entry>
   
