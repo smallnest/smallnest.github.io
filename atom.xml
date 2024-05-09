@@ -4,7 +4,7 @@
   <subtitle><![CDATA[大道至简 Simplicity is the ultimate form of sophistication]]></subtitle>
   <link href="/atom.xml" rel="self"/>
   <link href="https://colobu.com/"/>
-  <updated>2024-05-08T15:53:40.198Z</updated>
+  <updated>2024-05-09T23:42:43.834Z</updated>
   <id>https://colobu.com/</id>
   
   <author>
@@ -13,6 +13,151 @@
   </author>
   
   <generator uri="http://zespia.tw/hexo/">Hexo</generator>
+  
+  <entry>
+    <title><![CDATA[“测试 Rust 的 I/O 性能”]]></title>
+    <link href="https://colobu.com/2024/05/10/Linux-File-IO-using-Rust/"/>
+    <id>https://colobu.com/2024/05/10/Linux-File-IO-using-Rust/</id>
+    <published>2024-05-09T23:38:13.000Z</published>
+    <updated>2024-05-09T23:42:13.996Z</updated>
+    <content type="html"><![CDATA[<p>我们将尝试使用 Rust 来比较读取文件的各种不同方法。除了 <code>wc -l</code> 之外，我们将使用 <code>criterion</code> 对每个函数运行 10 次，然后取平均值。</p>
+<p>以下基准测试的代码存放在 <a href="https://github.com/deepankarsharma/shatranj/blob/main/benches/bench.rs" target="_blank" rel="external">Benchmark code for Linux IO using Rust</a>。<br>在以下代码中，BUFFER_SIZE 为 8192，NUM_BUFFERS 为 32。</p>
+<p>原文: <a href="[Linux File IO using Rust (opdroid.org"># Linux File IO using Rust</a>](<a href="https://opdroid.org/rust-io.html)" target="_blank" rel="external">https://opdroid.org/rust-io.html)</a>) by opdroid</p>
+<a id="more"></a>
+<h2 id="测试机器细节">测试机器细节</h2>
+<ol>
+<li>Framework 16 笔记本，带有锐龙 7840 HS 处理器和 64 G 内存的电脑。电源已接通并启用了性能模式。（这个笔记本是一个模块化的笔记本）</li>
+<li>SSD: WD_BLACK SN850X 4000GB。使用Gnome Disks进行测试显示读取速度为3.6 GB/s(样本大小为1000MB,共100个样本)。</li>
+<li>文件系统：btrfs</li>
+<li>操作系统版本 (uname 结果)：Linux fedora 6.8.8-300. Fc 40. X 86_64 #1 SMP PREEMPT_DYNAMIC Sat Apr 27 17:53:31 UTC 2024 x 86_64 GNU/Linux</li>
+</ol>
+<h2 id="文件细节">文件细节</h2>
+<ul>
+<li>未压缩大小：22G</li>
+<li>行数：200,000,000 </li>
+<li>使用 btrfs 压缩（zstd）后的压缩大小：5.3G</li>
+</ul>
+<h2 id="对于不耐烦的读者：结果概述">对于不耐烦的读者：结果概述</h2>
+<table>
+<thead>
+<tr>
+<th>读取方法</th>
+<th>时间 (单位：秒)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Mmap with AVX512</td>
+<td>2.61</td>
+</tr>
+<tr>
+<td>Mmap with AVX2</td>
+<td>2.64</td>
+</tr>
+<tr>
+<td>io_uring with Vectored IO</td>
+<td>2.86</td>
+</tr>
+<tr>
+<td>Vectored IO</td>
+<td>2.89</td>
+</tr>
+<tr>
+<td>Mmap</td>
+<td>3.43</td>
+</tr>
+<tr>
+<td>io_uring</td>
+<td>5.26</td>
+</tr>
+<tr>
+<td>wc -l (baseline)</td>
+<td>8.01</td>
+</tr>
+<tr>
+<td>Direct IO</td>
+<td>10.56</td>
+</tr>
+<tr>
+<td>BufReader without appends</td>
+<td>15.94</td>
+</tr>
+<tr>
+<td>BufReader with lines().count()</td>
+<td>33.50</td>
+</tr>
+</tbody>
+</table>
+<p>一个有趣的观察是，AVX512 需要 2.61 秒，文件大小约为 22G，而 SSD 基准测试显示读取速度为 3.6 GB/s。这意味着文件应该在大约 6 秒内被读取完毕。但 AVX512 的实现实际上是以约 8.4 GB/s 的速度读取文件。</p>
+<p><strong>这是怎么回事呢？比磁盘的读取速度都快不少？不科学啊？</strong></p>
+<p>原来 Fedora 使用了 btrfs 文件系统，它默认启用了 zstd 压缩。实际的磁盘上大小可以使用 <code>compsize</code> 命令来查看。</p>
+<figure class="highlight shell"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div></pre></td><td class="code"><pre><div class="line">opdroid<span class="variable">@box</span><span class="symbol">:~/tmp</span><span class="variable">$ </span>sudo compsize data </div><div class="line"><span class="constant">Processed</span> <span class="number">1</span> file, <span class="number">177437</span> regular extents (<span class="number">177437</span> refs), <span class="number">0</span> inline.</div><div class="line"><span class="constant">Type</span>       <span class="constant">Perc</span>     <span class="constant">Disk</span> <span class="constant">Usage</span>   <span class="constant">Uncompressed</span> <span class="constant">Referenced</span>  </div><div class="line"><span class="constant">TOTAL</span>       <span class="number">24</span>%      <span class="number">5.3</span>G          <span class="number">21</span>G          <span class="number">21</span>G       </div><div class="line">none       <span class="number">100</span>%       <span class="number">32</span>K          <span class="number">32</span>K          <span class="number">32</span>K       </div><div class="line">zstd        <span class="number">24</span>%      <span class="number">5.3</span>G          <span class="number">21</span>G          <span class="number">21</span>G</div></pre></td></tr></table></figure>
+
+<p><strong>感谢这些优秀的人</strong>  </p>
+<ul>
+<li>@alextjensen - 感谢他指导我使用 <code>BufReader</code> 的合理默认值，并编译为本机架构。  </li>
+<li>@aepau2 - 感谢他发现了 <code>wc</code> 数字中的一个明显错误。我在使用 <code>wc</code> 测量之前忘记了清空缓存。  </li>
+<li>@rflaherty71 - 感谢他建议我使用更多且更大的缓冲区（64 x 64k）。  </li>
+<li>@daniel_c0deb0t - 感谢他建议我使用更大的缓冲区。 </li>
+<li></li>
+</ul>
+<p>不使用我们编写的代码作为基线总是一个好主意，这样比较客观。</p>
+<h2 id="使用_wc_-l_作为基线">使用 <code>wc -l</code> 作为基线</h2>
+<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div></pre></td><td class="code"><pre><div class="line">opdroid<span class="variable">@box</span><span class="symbol">:~/tmp</span><span class="variable">$ </span>time wc -l data</div><div class="line"><span class="number">200000000</span> data</div><div class="line"></div><div class="line">real    0m8.<span class="number">010</span>s</div><div class="line">user    0m<span class="number">0</span>.<span class="number">193</span>s</div><div class="line">sys 0m7.<span class="number">591</span>s</div></pre></td></tr></table></figure>
+
+<p>在每个函数的末尾，我们使用以下命令重置文件缓存。我还没有弄清楚如何在 criterion 中使用 teardown 函数，以便这个时间不被计入总耗时。</p>
+<figure class="highlight shell"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div></pre></td><td class="code"><pre><div class="line">// TODO: move to a teardown function in criterion</div><div class="line">fn reset_file_caches() {</div><div class="line">    // <span class="operator"><span class="keyword">Execute</span> the command <span class="keyword">to</span> <span class="keyword">reset</span> file caches</span></div><div class="line">    let <span class="keyword">output</span> = Command::new(<span class="string">"sudo"</span>)</div><div class="line">        .arg(<span class="string">"sh"</span>)</div><div class="line">        .arg(<span class="string">"-c"</span>)</div><div class="line">        .arg(<span class="string">"echo 3 &gt; /proc/sys/vm/drop_caches"</span>)</div><div class="line">        .<span class="keyword">output</span>()</div><div class="line">        .expect(<span class="string">"Failed to reset file caches"</span>);</div><div class="line"></div><div class="line">    // <span class="operator"><span class="keyword">Check</span> <span class="keyword">if</span> the command executed successfully</span></div><div class="line">    <span class="keyword">if</span> !<span class="keyword">output</span>.<span class="keyword">status</span>.success() {</div><div class="line">        panic!(<span class="string">"Failed to reset file caches: {:?}"</span>, <span class="keyword">output</span>);</div><div class="line">    }</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<h2 id="方法1：使用_BufReader_读取文件，并使用_reader-lines()-count()_计算行数">方法1：使用 <code>BufReader</code> 读取文件，并使用 <code>reader.lines().count()</code> 计算行数</h2>
+<figure class="highlight rust"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div></pre></td><td class="code"><pre><div class="line"><span class="function"><span class="keyword">fn</span> <span class="title">count_newlines_standard</span></span>(filename: &<span class="keyword">str</span>) -&gt; Result&lt;usize, std::io::Error&gt; {</div><div class="line">    <span class="keyword">let</span> file = File::open(filename)?;</div><div class="line">    <span class="keyword">let</span> reader = BufReader::with_capacity(<span class="number">16</span> * <span class="number">1024</span>, file);</div><div class="line"></div><div class="line">    <span class="keyword">let</span> newline_count = reader.lines().count();</div><div class="line"></div><div class="line">    reset_file_caches();</div><div class="line">    Ok(newline_count)</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>在我的机器上，这需要大约 36.5 秒的时间。</p>
+<p><img src="1.png" alt=""><br>在 <code>count_newlines_standard</code> 函数中，字符串拼接（String appends）可能是导致性能问题的原因。</p>
+<h2 id="方法_2：使用_BufReader_读取文件并避免字符串拼接">方法 2：使用 <code>BufReader</code> 读取文件并避免字符串拼接</h2>
+<figure class="highlight rust"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">pub</span> <span class="function"><span class="keyword">fn</span> <span class="title">count_newlines_standard_non_appending</span></span>(filename: &<span class="keyword">str</span>) -&gt; Result&lt;usize, std::io::Error&gt; {</div><div class="line">    <span class="keyword">let</span> file = File::open(filename)?;</div><div class="line">    <span class="keyword">let</span> <span class="keyword">mut</span> reader = BufReader::with_capacity(<span class="number">64</span> * <span class="number">1024</span>, file);</div><div class="line">    <span class="keyword">let</span> <span class="keyword">mut</span> newline_count = <span class="number">0</span>;</div><div class="line"></div><div class="line">    <span class="keyword">loop</span> {</div><div class="line">        <span class="keyword">let</span> len = {</div><div class="line">            <span class="keyword">let</span> buffer = reader.fill_buf()?;</div><div class="line">            <span class="keyword">if</span> buffer.is_empty() {</div><div class="line">                <span class="keyword">break</span>;</div><div class="line">            }</div><div class="line">            newline_count += buffer.iter().filter(|&&b| b == b<span class="string">'\n'</span>).count();</div><div class="line">            buffer.len()</div><div class="line">        };</div><div class="line"></div><div class="line">        reader.consume(len);</div><div class="line">    }</div><div class="line"></div><div class="line">    reset_file_caches();</div><div class="line">    Ok(newline_count)</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>在我的机器上，这大约需要 15.94 秒。这比使用字符串拼接的版本快了一半以上。</p>
+<p>当我们查看火焰图时，我们可以确认字符串拼接的操作已经不存在了。<br><img src="2.png" alt=""></p>
+<h2 id="方法_3：使用_Direct_I/O_读取文件">方法 3：使用 Direct I/O 读取文件</h2>
+<figure class="highlight rust"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div></pre></td><td class="code"><pre><div class="line"><span class="function"><span class="keyword">fn</span> <span class="title">count_newlines_direct_io</span></span>(filename: &<span class="keyword">str</span>) -&gt; Result&lt;usize, Error&gt; {</div><div class="line">    <span class="keyword">let</span> <span class="keyword">mut</span> open_options = File::options();</div><div class="line">    open_options.read(<span class="keyword">true</span>).custom_flags(libc::O_DIRECT);</div><div class="line"></div><div class="line">    <span class="keyword">let</span> <span class="keyword">mut</span> file = open_options.open(filename)?;</div><div class="line">    <span class="keyword">let</span> <span class="keyword">mut</span> buffer = vec![<span class="number">0</span>; BUFFER_SIZE];</div><div class="line">    <span class="keyword">let</span> <span class="keyword">mut</span> newline_count = <span class="number">0</span>;</div><div class="line"></div><div class="line">    <span class="keyword">loop</span> {</div><div class="line">        <span class="keyword">let</span> bytes_read = file.read(&<span class="keyword">mut</span> buffer)?;</div><div class="line">        <span class="keyword">if</span> bytes_read == <span class="number">0</span> {</div><div class="line">            <span class="keyword">break</span>;</div><div class="line">        }</div><div class="line"></div><div class="line">        <span class="keyword">let</span> chunk_newline_count = buffer[..bytes_read].iter().filter(|&&b| b == b<span class="string">'\n'</span>).count();</div><div class="line">        newline_count += chunk_newline_count;</div><div class="line">    }</div><div class="line">    reset_file_caches();</div><div class="line">    Ok(newline_count)</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>在我的机器上，这大约需要 35.7 秒。</p>
+<h2 id="方法_4：使用内存映射（Mmap）读取文件">方法 4：使用内存映射（Mmap）读取文件</h2>
+<figure class="highlight rust"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div></pre></td><td class="code"><pre><div class="line"><span class="function"><span class="keyword">fn</span> <span class="title">count_newlines_memmap</span></span>(filename: &<span class="keyword">str</span>) -&gt; Result&lt;usize, Error&gt; {</div><div class="line">    <span class="keyword">let</span> file = File::open(filename)?;</div><div class="line">    <span class="keyword">let</span> mmap = <span class="keyword">unsafe</span> { Mmap::map(&file)? };</div><div class="line"></div><div class="line">    <span class="keyword">let</span> newline_count = mmap.iter().filter(|&&b| b == b<span class="string">'\n'</span>).count();</div><div class="line">    reset_file_caches();</div><div class="line">    Ok(newline_count)</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>在我的机器上，这大约需要 8.3 秒。</p>
+<h2 id="方法_5：使用内存映射（Mmap）和_AVX2_指令集读取文件">方法 5：使用内存映射（Mmap）和 AVX2 指令集读取文件</h2>
+<figure class="highlight rust"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">unsafe</span> <span class="function"><span class="keyword">fn</span> <span class="title">count_newlines_memmap_avx2</span></span>(filename: &<span class="keyword">str</span>) -&gt; Result&lt;usize, Error&gt; {</div><div class="line">    <span class="keyword">let</span> file = File::open(filename)?;</div><div class="line">    <span class="keyword">let</span> mmap = <span class="keyword">unsafe</span> { Mmap::map(&file)? };</div><div class="line"></div><div class="line">    <span class="keyword">let</span> newline_byte = b<span class="string">'\n'</span>;</div><div class="line">    <span class="keyword">let</span> newline_vector = <span class="number">_</span>mm256_set1_epi8(newline_byte <span class="keyword">as</span> <span class="keyword">i8</span>);</div><div class="line">    <span class="keyword">let</span> <span class="keyword">mut</span> newline_count = <span class="number">0</span>;</div><div class="line"></div><div class="line">    <span class="keyword">let</span> <span class="keyword">mut</span> ptr = mmap.as_ptr();</div><div class="line">    <span class="keyword">let</span> end_ptr = <span class="keyword">unsafe</span> { ptr.add(mmap.len()) };</div><div class="line"></div><div class="line">    <span class="keyword">while</span> ptr &lt;= end_ptr.sub(<span class="number">32</span>) {</div><div class="line">        <span class="keyword">let</span> data = <span class="keyword">unsafe</span> { <span class="number">_</span>mm256_loadu_si256(ptr <span class="keyword">as</span> *<span class="keyword">const</span> <span class="number">__</span>m256i) };</div><div class="line">        <span class="keyword">let</span> cmp_result = <span class="number">_</span>mm256_cmpeq_epi8(data, newline_vector);</div><div class="line">        <span class="keyword">let</span> mask = <span class="number">_</span>mm256_movemask_epi8(cmp_result);</div><div class="line">        newline_count += mask.count_ones() <span class="keyword">as</span> usize;</div><div class="line">        ptr = <span class="keyword">unsafe</span> { ptr.add(<span class="number">32</span>) };</div><div class="line">    }</div><div class="line"></div><div class="line">    <span class="comment">// Count remaining bytes</span></div><div class="line">    <span class="keyword">let</span> remaining_bytes = end_ptr <span class="keyword">as</span> usize - ptr <span class="keyword">as</span> usize;</div><div class="line">    newline_count += mmap[mmap.len() - remaining_bytes..].iter().filter(|&&b| b == newline_byte).count();</div><div class="line"></div><div class="line">    reset_file_caches();</div><div class="line">    Ok(newline_count)</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>这个方法在我的机器上大约耗时 2.64 秒。</p>
+<h2 id="方法_6：使用内存映射（Mmap）和_AVX-512_指令集读取文件">方法 6：使用内存映射（Mmap）和 AVX-512 指令集读取文件</h2>
+<figure class="highlight rust"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">unsafe</span> <span class="function"><span class="keyword">fn</span> <span class="title">count_newlines_memmap_avx512</span></span>(filename: &<span class="keyword">str</span>) -&gt; Result&lt;usize, Error&gt; {</div><div class="line">    <span class="keyword">let</span> file = File::open(filename)?;</div><div class="line">    <span class="keyword">let</span> mmap = <span class="keyword">unsafe</span> { Mmap::map(&file)? };</div><div class="line"></div><div class="line">    <span class="keyword">let</span> newline_byte = b<span class="string">'\n'</span>;</div><div class="line">    <span class="keyword">let</span> newline_vector = <span class="number">_</span>mm512_set1_epi8(newline_byte <span class="keyword">as</span> <span class="keyword">i8</span>);</div><div class="line">    <span class="keyword">let</span> <span class="keyword">mut</span> newline_count = <span class="number">0</span>;</div><div class="line"></div><div class="line">    <span class="keyword">let</span> <span class="keyword">mut</span> ptr = mmap.as_ptr();</div><div class="line">    <span class="keyword">let</span> end_ptr = <span class="keyword">unsafe</span> { ptr.add(mmap.len()) };</div><div class="line"></div><div class="line">    <span class="keyword">while</span> ptr &lt;= end_ptr.sub(<span class="number">64</span>) {</div><div class="line">        <span class="keyword">let</span> data = <span class="keyword">unsafe</span> { <span class="number">_</span>mm512_loadu_si512(ptr <span class="keyword">as</span> *<span class="keyword">const</span> <span class="keyword">i32</span>) };</div><div class="line">        <span class="keyword">let</span> cmp_result = <span class="number">_</span>mm512_cmpeq_epi8_mask(data, newline_vector);</div><div class="line">        newline_count += cmp_result.count_ones() <span class="keyword">as</span> usize;</div><div class="line">        ptr = <span class="keyword">unsafe</span> { ptr.add(<span class="number">64</span>) };</div><div class="line">    }</div><div class="line"></div><div class="line">    <span class="comment">// Count remaining bytes</span></div><div class="line">    <span class="keyword">let</span> remaining_bytes = end_ptr <span class="keyword">as</span> usize - ptr <span class="keyword">as</span> usize;</div><div class="line">    newline_count += mmap[mmap.len() - remaining_bytes..].iter().filter(|&&b| b == newline_byte).count();</div><div class="line"></div><div class="line">    reset_file_caches();</div><div class="line">    Ok(newline_count)</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>这个方法在我的机器上大约需要 2.61 秒。</p>
+<h2 id="方法_7：使用向量_I/O_读取文件">方法 7：使用向量 I/O 读取文件</h2>
+<figure class="highlight rust"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div></pre></td><td class="code"><pre><div class="line"><span class="function"><span class="keyword">fn</span> <span class="title">count_newlines_vectored_io</span></span>(path: &<span class="keyword">str</span>) -&gt; Result&lt;usize, Error&gt;  {</div><div class="line">    <span class="keyword">let</span> <span class="keyword">mut</span> file = File::open(path)?;</div><div class="line"></div><div class="line">    <span class="keyword">let</span> <span class="keyword">mut</span> buffers_: Vec&lt;<span class="number">_</span>&gt; = (<span class="number">0</span>..<span class="number">16</span>).map(|<span class="number">_</span>| vec![<span class="number">0</span>; BUFFER_SIZE]).collect();</div><div class="line">    <span class="keyword">let</span> <span class="keyword">mut</span> buffers: Vec&lt;<span class="number">_</span>&gt; = buffers_.iter_mut().map(|buf| io::IoSliceMut::new(buf)).collect();</div><div class="line"></div><div class="line">    <span class="keyword">let</span> <span class="keyword">mut</span> newline_count = <span class="number">0</span>;</div><div class="line"></div><div class="line">    <span class="keyword">loop</span> {</div><div class="line">        <span class="keyword">let</span> bytes_read = file.read_vectored(&<span class="keyword">mut</span> buffers)?;</div><div class="line">        <span class="keyword">if</span> bytes_read == <span class="number">0</span> {</div><div class="line">            <span class="keyword">break</span>;</div><div class="line">        }</div><div class="line"></div><div class="line">        <span class="comment">// Calculate how many buffers were filled</span></div><div class="line">        <span class="keyword">let</span> filled_buffers = bytes_read / BUFFER_SIZE;</div><div class="line"></div><div class="line">        <span class="comment">// Process the fully filled buffers</span></div><div class="line">        <span class="keyword">for</span> buf <span class="keyword">in</span> &buffers[..filled_buffers] {</div><div class="line">            newline_count += buf.iter().filter(|&&b| b == b<span class="string">'\n'</span>).count();</div><div class="line">        }</div><div class="line"></div><div class="line">        <span class="comment">// Handle the potentially partially filled last buffer</span></div><div class="line">        <span class="keyword">if</span> filled_buffers &lt; buffers.len() {</div><div class="line">            <span class="keyword">let</span> last_buffer = &buffers[filled_buffers];</div><div class="line">            <span class="keyword">let</span> end = bytes_read % BUFFER_SIZE;</div><div class="line">            newline_count += last_buffer[..end].iter().filter(|&&b| b == b<span class="string">'\n'</span>).count();</div><div class="line">        }</div><div class="line">    }</div><div class="line">    Ok(newline_count)</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>在我的机器上，这大约需要 7.7 秒。</p>
+<h2 id="方法_8：使用_io_uring_读取文件">方法 8：使用 <code>io_uring</code> 读取文件</h2>
+<figure class="highlight rust"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div><div class="line">35</div><div class="line">36</div><div class="line">37</div><div class="line">38</div><div class="line">39</div><div class="line">40</div><div class="line">41</div><div class="line">42</div></pre></td><td class="code"><pre><div class="line"><span class="function"><span class="keyword">fn</span> <span class="title">count_lines_io_uring</span></span>(path: &<span class="keyword">str</span>) -&gt; io::Result&lt;usize&gt; {</div><div class="line">    <span class="keyword">let</span> file = File::open(path)?;</div><div class="line">    <span class="keyword">let</span> fd = file.as_raw_fd();</div><div class="line"></div><div class="line">    <span class="keyword">let</span> <span class="keyword">mut</span> ring = IoUring::new(<span class="number">8</span>)?;</div><div class="line">    <span class="keyword">let</span> <span class="keyword">mut</span> line_count = <span class="number">0</span>;</div><div class="line">    <span class="keyword">let</span> <span class="keyword">mut</span> offset = <span class="number">0</span>;</div><div class="line"></div><div class="line">    <span class="keyword">let</span> <span class="keyword">mut</span> buf = vec![<span class="number">0</span>; <span class="number">4096</span>];</div><div class="line">    <span class="keyword">let</span> <span class="keyword">mut</span> read_size = buf.len();</div><div class="line"></div><div class="line">    <span class="keyword">loop</span> {</div><div class="line">        <span class="keyword">let</span> <span class="keyword">mut</span> sqe = opcode::Read::new(types::Fd(fd), buf.as_mut_ptr(), read_size <span class="keyword">as</span> <span class="number">_</span>)</div><div class="line">            .offset(offset <span class="keyword">as</span> <span class="number">_</span>)</div><div class="line">            .build()</div><div class="line">            .user_data(line_count <span class="keyword">as</span> <span class="number">_</span>);</div><div class="line"></div><div class="line">        <span class="keyword">unsafe</span> {</div><div class="line">            ring.submission()</div><div class="line">                .push(&<span class="keyword">mut</span> sqe)</div><div class="line">                .expect(<span class="string">"submission queue is full"</span>);</div><div class="line">        }</div><div class="line"></div><div class="line">        ring.submit_and_wait(<span class="number">1</span>)?;</div><div class="line"></div><div class="line">        <span class="keyword">let</span> cqe = ring.completion().next().expect(<span class="string">"completion queue is empty"</span>);</div><div class="line"></div><div class="line">        <span class="keyword">let</span> bytes_read = cqe.result() <span class="keyword">as</span> usize;</div><div class="line">        line_count = cqe.user_data() <span class="keyword">as</span> usize;</div><div class="line"></div><div class="line">        <span class="keyword">if</span> bytes_read == <span class="number">0</span> {</div><div class="line">            <span class="keyword">break</span>;</div><div class="line">        }</div><div class="line"></div><div class="line">        <span class="keyword">let</span> data = &buf[..bytes_read];</div><div class="line">        line_count += data.iter().filter(|&&b| b == b<span class="string">'\n'</span>).count();</div><div class="line"></div><div class="line">        offset += bytes_read <span class="keyword">as</span> <span class="keyword">u64</span>;</div><div class="line">        read_size = (buf.len() - (offset <span class="keyword">as</span> usize % buf.len())) <span class="keyword">as</span> usize;</div><div class="line">    }</div><div class="line">    Ok(line_count)</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>在我的机器上，这大约需要 10.5 秒。</p>
+<h2 id="方法_9：使用带有向量_I/O_的_io_uring_读取文件">方法 9：使用带有向量 I/O 的 <code>io_uring</code> 读取文件</h2>
+<figure class="highlight rust"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div><div class="line">35</div><div class="line">36</div><div class="line">37</div><div class="line">38</div><div class="line">39</div><div class="line">40</div><div class="line">41</div><div class="line">42</div><div class="line">43</div><div class="line">44</div><div class="line">45</div><div class="line">46</div><div class="line">47</div><div class="line">48</div><div class="line">49</div><div class="line">50</div><div class="line">51</div><div class="line">52</div><div class="line">53</div><div class="line">54</div><div class="line">55</div><div class="line">56</div><div class="line">57</div></pre></td><td class="code"><pre><div class="line"><span class="function"><span class="keyword">fn</span> <span class="title">count_lines_io_uring_vectored</span></span>(path: &<span class="keyword">str</span>) -&gt; io::Result&lt;usize&gt; {</div><div class="line">    <span class="keyword">let</span> file = File::open(path)?;</div><div class="line">    <span class="keyword">let</span> fd = file.as_raw_fd();</div><div class="line"></div><div class="line">    <span class="keyword">let</span> <span class="keyword">mut</span> ring = IoUring::new(NUM_BUFFERS <span class="keyword">as</span> <span class="keyword">u32</span>)?;</div><div class="line">    <span class="keyword">let</span> <span class="keyword">mut</span> line_count = <span class="number">0</span>;</div><div class="line">    <span class="keyword">let</span> <span class="keyword">mut</span> offset = <span class="number">0</span>;</div><div class="line"></div><div class="line">    <span class="keyword">let</span> <span class="keyword">mut</span> buffers = vec![vec![<span class="number">0</span>; <span class="number">8192</span>]; NUM_BUFFERS];</div><div class="line">    <span class="keyword">let</span> <span class="keyword">mut</span> iovecs: Vec&lt;iovec&gt; = buffers</div><div class="line">        .iter_mut()</div><div class="line">        .map(|buf| iovec {</div><div class="line">            iov_base: buf.as_mut_ptr() <span class="keyword">as</span> *<span class="keyword">mut</span> <span class="number">_</span>,</div><div class="line">            iov_len: buf.len(),</div><div class="line">        })</div><div class="line">        .collect();</div><div class="line"></div><div class="line">    <span class="keyword">loop</span> {</div><div class="line">        <span class="keyword">let</span> <span class="keyword">mut</span> sqe = opcode::Readv::new(types::Fd(fd), iovecs.as_mut_ptr(), iovecs.len() <span class="keyword">as</span> <span class="number">_</span>)</div><div class="line">            .offset(offset <span class="keyword">as</span> <span class="number">_</span>)</div><div class="line">            .build()</div><div class="line">            .user_data(<span class="number">0</span>);</div><div class="line"></div><div class="line">        <span class="keyword">unsafe</span> {</div><div class="line">            ring.submission()</div><div class="line">                .push(&<span class="keyword">mut</span> sqe)</div><div class="line">                .expect(<span class="string">"submission queue is full"</span>);</div><div class="line">        }</div><div class="line"></div><div class="line">        ring.submit_and_wait(<span class="number">1</span>)?;</div><div class="line"></div><div class="line">        <span class="keyword">let</span> cqe = ring.completion().next().expect(<span class="string">"completion queue is empty"</span>);</div><div class="line">        <span class="keyword">let</span> bytes_read = cqe.result() <span class="keyword">as</span> usize;</div><div class="line"></div><div class="line">        <span class="keyword">if</span> bytes_read == <span class="number">0</span> {</div><div class="line">            <span class="keyword">break</span>;</div><div class="line">        }</div><div class="line"></div><div class="line">        <span class="keyword">let</span> <span class="keyword">mut</span> buffer_line_count = <span class="number">0</span>;</div><div class="line">        <span class="keyword">let</span> <span class="keyword">mut</span> remaining_bytes = bytes_read;</div><div class="line">        <span class="keyword">for</span> buf <span class="keyword">in</span> &buffers[..iovecs.len()] {</div><div class="line">            <span class="keyword">let</span> buf_size = buf.len();</div><div class="line">            <span class="keyword">let</span> data_size = remaining_bytes.min(buf_size);</div><div class="line">            <span class="keyword">let</span> data = &buf[..data_size];</div><div class="line">            buffer_line_count += data.iter().filter(|&&b| b == b<span class="string">'\n'</span>).count();</div><div class="line">            remaining_bytes -= data_size;</div><div class="line">            <span class="keyword">if</span> remaining_bytes == <span class="number">0</span> {</div><div class="line">                <span class="keyword">break</span>;</div><div class="line">            }</div><div class="line">        }</div><div class="line">        line_count += buffer_line_count;</div><div class="line"></div><div class="line">        offset += bytes_read <span class="keyword">as</span> <span class="keyword">u64</span>;</div><div class="line">    }</div><div class="line"></div><div class="line">    Ok(line_count)</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>在我的机器上，这大约需要 7.6 秒。</p>
+]]></content>
+    <summary type="html">
+    <![CDATA[<p>我们将尝试使用 Rust 来比较读取文件的各种不同方法。除了 <code>wc -l</code> 之外，我们将使用 <code>criterion</code> 对每个函数运行 10 次，然后取平均值。</p>
+<p>以下基准测试的代码存放在 <a href="https://github.com/deepankarsharma/shatranj/blob/main/benches/bench.rs" target="_blank" rel="external">Benchmark code for Linux IO using Rust</a>。<br>在以下代码中，BUFFER_SIZE 为 8192，NUM_BUFFERS 为 32。</p>
+<p>原文: <a href="[Linux File IO using Rust (opdroid.org"># Linux File IO using Rust</a>](<a href="https://opdroid.org/rust-io.html)" target="_blank" rel="external">https://opdroid.org/rust-io.html)</a>) by opdroid</p>
+]]>
+    
+    </summary>
+    
+      <category term="rust" scheme="https://colobu.com/categories/rust/"/>
+    
+  </entry>
   
   <entry>
     <title><![CDATA[重复了很多次，我终于不再忍了]]></title>
@@ -1716,156 +1861,6 @@
     <summary type="html">
     <![CDATA[<p><a href="https://pkg.go.dev/runtime#Pinner" target="_blank" rel="external">runtime.Pinner</a> 是 Go 1.21.0 中引入的一个类型。</p>
 <p><code>Pinner</code>是一组固定的 Go 对象。可以使用 <code>Pin</code> 方法来固定一个对象。<code>Pinner</code>固定的所有对象都可以使用 <code>Unpin</code> 方法解开固定。</p>
-]]>
-    
-    </summary>
-    
-      <category term="Go" scheme="https://colobu.com/categories/Go/"/>
-    
-  </entry>
-  
-  <entry>
-    <title><![CDATA[十亿行的挑战]]></title>
-    <link href="https://colobu.com/2024/01/30/one-billion-row-challenge/"/>
-    <id>https://colobu.com/2024/01/30/one-billion-row-challenge/</id>
-    <published>2024-01-30T14:40:26.000Z</published>
-    <updated>2024-01-30T16:05:37.575Z</updated>
-    <content type="html"><![CDATA[<p>国外的程序员休完他们的假期之后在玩什么？他们在玩十亿行的代码挑战。</p>
-<a id="more"></a>
-<p>工程师贡纳尔·莫林在元旦发起一个<a href="https://www.morling.dev/blog/one-billion-row-challenge/" target="_blank" rel="external">挑战</a>(1BRC),挑战从 1 月 1 日持续到 1 月 31 日。</p>
-<p>如果你决定接受它，你的任务看似简单： <strong>编写一个 Java 程序，用于从文本文件中检索温度测量值并计算每个气象站的最小、平均值和最高温度。</strong><br>只有一点需要注意：文件有 <strong>1,000,000,000 行</strong>！（1 billion， 10亿行)。</p>
-<p>这个文本文件结构简单，每行一个测量值, 气象站和它的测量温度：</p>
-<figure class="highlight txt"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div></pre></td><td class="code"><pre><div class="line"><span class="variable">Hamburg</span>;<span class="number">12.0</span></div><div class="line"><span class="variable">Bulawayo</span>;<span class="number">8.9</span></div><div class="line"><span class="variable">Palembang</span>;<span class="number">38.8</span></div><div class="line"><span class="variable">St</span>. <span class="variable">John</span>'s;<span class="number">15.2</span></div><div class="line"><span class="variable">Cracow</span>;<span class="number">12.6</span></div><div class="line">...</div></pre></td></tr></table></figure>
-
-<p>程序应打印出每个站的最小值、平均值和最大值，按字母顺序排列，如下所示：</p>
-<figure class="highlight txt"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">{Abha=<span class="number">5.0</span>/<span class="number">18.0</span>/<span class="number">27.4</span>, Abidjan=<span class="number">15.7</span>/<span class="number">26.0</span>/<span class="number">34.1</span>, Abéché=<span class="number">12.1</span>/<span class="number">29.4</span>/<span class="number">35.6</span>, Accra=<span class="number">14.7</span>/<span class="number">26.4</span>/<span class="number">33.1</span>, Addis Ababa=<span class="number">2.1</span>/<span class="number">16.0</span>/<span class="number">24.3</span>, Adelaide=<span class="number">4.1</span>/<span class="number">17.3</span>/<span class="number">29.7</span>, <span class="keyword">...</span>}</div></pre></td></tr></table></figure>
-
-<p>1BRC挑战的目标是为这项任务创建最快的实现， 在这样做的同时，探索现代 Java 的好处，并找出你可以将这个平台推向多远。 因此，使用所有的（虚拟）线程，利用 Vector API 和 SIMD，优化你的 GC，利用 AOT 编译，或者使用你能想到的任何其他技巧。</p>
-<p>没想到莫林提出这个挑战后，一下子火了，在多个平台上都进行了热烈的讨论：<a href="https://news.ycombinator.com/item?id=38851337" target="_blank" rel="external">Hacker News</a>、<a href="https://lobste.rs/s/u2qcnf/one_billion_row_challenge" target="_blank" rel="external">lobste.rs</a>、<a href="https://old.reddit.com/r/programming/comments/18x0x0u/the_one_billion_row_challenge/" target="_blank" rel="external">Reddit</a>。</p>
-<p>而且，实现也不再仅限于Java,其他编程语言甚至数据库都有<a href="https://github.com/gunnarmorling/1brc/discussions" target="_blank" rel="external">实现</a>。</p>
-<p>在32 core AMD EPYC™ 7502P (Zen2), 128 GB RAM的服务器上，使用8个核，优化的Java程序在使用GraalVM native binary情况下已经跑到了1秒多。在我的Mac M2 mini上可以跑到16.42秒。</p>
-<p>我们关注一下Go语言的实现。</p>
-<p>一个简单的中规中矩的Go语言实现是<a href="https://github.com/mr-karan/1brc-go" target="_blank" rel="external">mr-karan/1brc-go</a>, 在我的Mac M2 mini机器可以跑到26.66秒。<br>作者专门写了一篇文章介绍优化的<a href="https://mrkaran.dev/posts/1brc/" target="_blank" rel="external">步骤</a>:</p>
-<ul>
-<li>使用生产者和消费者模式</li>
-<li>批处理文本行</li>
-<li>减少内存分配</li>
-<li>成块读取文本</li>
-</ul>
-<p>另一个Go语言的实现是<a href="https://github.com/shraddhaag/1brc" target="_blank" rel="external">shraddhaag/1brc</a>, 他把他的优化步骤都在README中列出来了，在我的Mac M2 mini机器可以跑到23.73秒。</p>
-<table>
-<thead>
-<tr>
-<th>Attempt Number</th>
-<th>Approach</th>
-<th>Execution Time</th>
-<th>Diff</th>
-<th>Commit</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>0</td>
-<td>Naive Implementation: Read temperatures into a map of cities. Iterate serially over each key (city) in map to find min, max and average temperatures.</td>
-<td>6:13.15</td>
-<td></td>
-<td></td>
-</tr>
-<tr>
-<td>1</td>
-<td>Evaluate each city in map concurrently using goroutines.</td>
-<td>4:32.80</td>
-<td>-100.35</td>
-<td><a href="https://github.com/shraddhaag/1brc/commit/8bd5f437e8cc231e3ee18348b83f4dc694137546" target="_blank" rel="external">8bd5f43</a></td>
-</tr>
-<tr>
-<td>2</td>
-<td>Remove sorting float64 slices. Calculate min, max and average by iterating.</td>
-<td>4:25.59</td>
-<td>-7.21</td>
-<td><a href="https://github.com/shraddhaag/1brc/commit/830e5dfacff9fb7a41d12027e21399736bc34701" target="_blank" rel="external">830e5df</a></td>
-</tr>
-<tr>
-<td>3</td>
-<td>Decouple reading and processing of file content. A buffered goroutine is used to communicate between the two processes.</td>
-<td>5:22.83</td>
-<td>+57.24</td>
-<td><a href="https://github.com/shraddhaag/1brc/commit/2babf7dda72d92c72722b220b8b663e747075bd7" target="_blank" rel="external">2babf7d</a></td>
-</tr>
-<tr>
-<td>4</td>
-<td>Instead of sending each line to the channel, now sending 100 lines chunked together. Also, to minimise garbage collection, not freeing up memory when resetting a slice.</td>
-<td>3:41.76</td>
-<td>-161.07</td>
-<td><a href="https://github.com/shraddhaag/1brc/commit/b7b1781f58fd258a06940bd6c05eb404c8a14af6" target="_blank" rel="external">b7b1781</a></td>
-</tr>
-<tr>
-<td>5</td>
-<td>Read file in chunks of 100 MB instead of reading line by line.</td>
-<td>3:32.62</td>
-<td>-9.14</td>
-<td><a href="https://github.com/shraddhaag/1brc/commit/c26fea40019552a7e4fc1c864236f433b1b686f0" target="_blank" rel="external">c26fea4</a></td>
-</tr>
-<tr>
-<td>6</td>
-<td>Convert temperature from <code>string</code> to <code>int64</code>, process in <code>int64</code> and convert to <code>float64</code> at the end.</td>
-<td>2:51.50</td>
-<td>-41.14</td>
-<td><a href="https://github.com/shraddhaag/1brc/commit/7812da4d0be07dd4686d5f9b9df1e93b08cd0dd1" target="_blank" rel="external">7812da4</a></td>
-</tr>
-<tr>
-<td>7</td>
-<td>In the city &lt;&gt; temperatures map, replaced the value for each key (city) to preprocessed min, max, count and sum of all temperatures instead of storing all recorded temperatures for the city.</td>
-<td>1:39.81</td>
-<td>-71.79</td>
-<td><a href="https://github.com/shraddhaag/1brc/commit/e5213a836b17bec0a858474a11f07c902e724bba" target="_blank" rel="external">e5213a8</a></td>
-</tr>
-<tr>
-<td>8</td>
-<td>Use producer consumer pattern to read file in chunks and process the chunks in parallel.</td>
-<td>1:43.82</td>
-<td>+14.01</td>
-<td><a href="https://github.com/shraddhaag/1brc/commit/067f2a44c0d6b3bb7cc073639364f733bce09e3e" target="_blank" rel="external">067f2a4</a></td>
-</tr>
-<tr>
-<td>9</td>
-<td>Reduce memory allocation by processing each read chunk into a map. Result channel now can collate the smaller processed chunk maps.</td>
-<td>0:28.544</td>
-<td>-75.286</td>
-<td><a href="https://github.com/shraddhaag/1brc/commit/d4153ac7a841170a5ceee47d930e97738b5a19f6" target="_blank" rel="external">d4153ac</a></td>
-</tr>
-<tr>
-<td>10</td>
-<td>Avoid string concatenation overhead by not reading the decimal point when processing city temperature.</td>
-<td>0:24.571</td>
-<td>-3.973</td>
-<td><a href="https://github.com/shraddhaag/1brc/commit/90f2fe121f454f3f1b5cdaeaaebe639bb86d4578" target="_blank" rel="external">90f2fe1</a></td>
-</tr>
-<tr>
-<td>11</td>
-<td>Convert byte slice to string directly instead of using a <code>strings.Builder</code>.</td>
-<td>0:18.910</td>
-<td>-5.761</td>
-</tr>
-</tbody>
-</table>
-<p>然后我们再看一个已经merge到官方库的Go语言实现，在我的Mac M2 mini机器可以跑到17.79秒，相当不错了。<br>他的代码在<a href="https://github.com/gunnarmorling/1brc/tree/main/src/main/go/AlexanderYastrebov" target="_blank" rel="external">这里</a>,他也做了很多的优化，比如使用mmap。</p>
-<p>这几个代码都是值得学习和研究的，我们不能说他们做了最好的优化，但是确实都是花了不少功夫的。</p>
-<p>几个rust的实现也是值得学习的。在我的Mac M2 mini机器的跑分：</p>
-<ul>
-<li><a href="https://github.com/tumdum/1brc" target="_blank" rel="external">tumdum/1brc</a>: 18.72秒</li>
-<li><a href="https://github.com/mtb0x1/1brc" target="_blank" rel="external">mtb0x1/1brc</a>: 18.93秒</li>
-<li><a href="https://github.com/coriolinus/1brc" target="_blank" rel="external">coriolinus/1brc</a>：18.87秒</li>
-<li><a href="https://github.com/thebracket/one_billion_rows" target="_blank" rel="external">thebracket/one_billion_rows</a>: 16.04秒， 使用了mmap</li>
-<li><a href="https://github.com/arthurlm/one-brc-rs" target="_blank" rel="external">arthurlm/one-brc-rs</a>: 17.33秒</li>
-</ul>
-<p>一个C语言的实现：</p>
-<ul>
-<li><a href="https://github.com/dannyvankooten/1brc" target="_blank" rel="external">dannyvankooten/1brc</a>: 17.72秒</li>
-</ul>
-]]></content>
-    <summary type="html">
-    <![CDATA[<p>国外的程序员休完他们的假期之后在玩什么？他们在玩十亿行的代码挑战。</p>
 ]]>
     
     </summary>
