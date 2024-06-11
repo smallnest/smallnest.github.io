@@ -4,7 +4,7 @@
   <subtitle><![CDATA[大道至简 Simplicity is the ultimate form of sophistication]]></subtitle>
   <link href="/atom.xml" rel="self"/>
   <link href="https://colobu.com/"/>
-  <updated>2024-06-10T09:20:37.573Z</updated>
+  <updated>2024-06-11T14:39:32.342Z</updated>
   <id>https://colobu.com/</id>
   
   <author>
@@ -13,6 +13,87 @@
   </author>
   
   <generator uri="http://zespia.tw/hexo/">Hexo</generator>
+  
+  <entry>
+    <title><![CDATA[朝着错误的方向发展]]></title>
+    <link href="https://colobu.com/2024/06/11/go-evolves-in-the-wrong-direction/"/>
+    <id>https://colobu.com/2024/06/11/go-evolves-in-the-wrong-direction/</id>
+    <published>2024-06-11T14:02:06.000Z</published>
+    <updated>2024-06-11T14:39:06.202Z</updated>
+    <content type="html"><![CDATA[<p>这是 Aliaksandr Valialkin 昨天刚写的一篇文章, 心有戚戚焉，所以特意翻译成中文，个人感觉，自从Rob Pike退休后，Go在大方向迷失了，正如老貘(Go101)所说，目前Go的开发就像完成KPI一样，也许, 大师不会再回来了。</p>
+<p>Aliaksandr Valialkin是fasthttp的作者，也是VictoriaMetrics开发者，一位资深的Go程序员。</p>
+<p>以下是译文。<br><a id="more"></a></p>
+<p>以下是对原文的地道中文翻译:</p>
+<p>Go编程语言以易于使用而闻名。得益于经过深思熟虑的语法、特性和工具,Go允许编写任意复杂度的易读易维护的程序(参见GitHub上的这个<a href="https://github.com/search?q=language%3Ago+stars%3A%3E%3D10000&amp;type=repositories" target="_blank" rel="external">列表</a>)。</p>
+<p>有些软件工程师称Go为&quot;无聊&quot;和&quot;过时&quot;,因为它缺乏其他编程语言的高级特性,如单子、Option类型、LINQ、借用检查器、零开销抽象、面向方面编程、继承、函数和运算符重载等。虽然这些特性在特定领域可能可以简化编码,但它们除了好处之外还有非零的成本。这些特性通常对锻炼大脑有好处。但是在处理生产代码时,我们不需要额外的精神负担,因为我们已经很忙于解决业务任务了。所有这些特性的主要成本是<strong>增加了结果代码的复杂性</strong>:</p>
+<ul>
+<li>仅仅通过阅读代码就变得更难理解正在发生的事情;</li>
+<li>调试此类代码变得更加困难,因为您需要跳过数十个非平凡的抽象才能到达业务逻辑;</li>
+<li>由于这些特性施加的限制,为此类代码添加新功能变得更加困难。</li>
+</ul>
+<p>这可能会显著减慢甚至阻碍代码开发的进度。这就是Go一开始就没有这些特性的主要原因。</p>
+<p>不幸的是,一些这样的特性开始出现在最新的Go版本中:</p>
+<ul>
+<li>泛型已在Go1.18中添加。许多软件工程师希望Go有泛型,因为他们认为这将大大提高Go的生产力。Go1.18发布已经两年了,但没有迹象表明生产力有所提高。Go中泛型的整体采用率仍然很低。为什么?因为<strong>大多数实际的Go代码根本不需要泛型</strong>。另一方面,泛型显著增加了Go语言本身的复杂性。例如,尝试理解泛型添加后Go类型推断的所有细节。它的复杂性看起来已经非常接近于C++的类型推断了:)另一个问题是Go中的泛型缺乏C++模板中存在的基本特性。例如,Go泛型不支持泛型类型的泛型方法。它们也不支持模板特化和模板模板参数,以及许多其他需要充分利用泛型编程的特性。让我们将这些缺失的特性添加到Go中吧!等等,那我们就得到另一个过于复杂的C++克隆了。那么,为什么要一开始就将半生不熟的泛型添加到Go中呢?🤦</li>
+<li>根据这个提交,Range over functions 又名迭代器、生成器或协程将在 Go 1.23 中添加。让我们仔细看看这个&quot;特性&quot;。</li>
+</ul>
+<h2 id="Go1-23_中的迭代器">Go1.23 中的迭代器</h2>
+<p>如果你不太熟悉Go中的迭代器,请阅读这篇出色的介绍文章。本质上,这是一种语法糖,允许在具有特殊签名的函数上使用<code>for...range</code>循环。这使得可以编写遍历自定义集合和类型的自定义迭代器。听起来像是一个很棒的功能,不是吗?让我们试着弄清楚这一功能解决了哪些实际问题。这在<a href="https://github.com/golang/go/discussions/56413" target="_blank" rel="external">这里</a>有概述:</p>
+<blockquote>
+<p>Go语言没有标准的方式来遍历一系列值。由于缺乏约定,我们最终使用了各种各样的方法。每种实现都是根据当时的上下文做出最合理的决定,但是孤立地做出的决策导致了用户的困惑。</p>
+<p>仅在标准库中,我们就有archive/tar.Reader.Next、bufio.Reader.ReadByte、bufio.Scanner.Scan、container/ring.Ring.Do、database/sql.Rows、expvar.Do、flag.Visit、go/token.FileSet.Iterate、path/filepath.Walk、go/token.FileSet.Iterate、runtime.Frames.Next和sync.Map.Range,几乎没有任何一个在迭代的确切细节上达成一致。即使函数签名相同,语义也不总是一致。例如,大多数返回(T, bool)的迭代函数都遵循Go的惯例,即bool表示T是否有效。相反,runtime.Frames.Next返回的bool则表示下一次调用是否会返回有效的内容。</p>
+<p>当你想要遍历某些内容时,你首先必须了解你调用的特定代码是如何处理迭代的。这种不统一阻碍了Go追求的在大型代码库中方便移动的目标。人们常常将Go代码看起来都大致相同作为一个优势,但对于包含自定义迭代的代码而言,这显然是不真实的。</p>
+</blockquote>
+<p>再说一次,拥有在Go中遍历各种类型的统一方式听起来是合理的。但是对于作为Go主要优势之一的向后兼容性又如何呢?根据Go的兼容性规则,上面提到的标准库中所有现有的自定义迭代器<strong>将永远保留在标准库中</strong>。因此,<strong>所有新的Go版本在标准库中都将至少提供两种不同的方式来遍历各种类型 —— 旧的方式和新的方式</strong>。这增加了Go编程的复杂性,因为:</p>
+<ul>
+<li>您需要了解遍历各种类型的两种方式,而不是单一方式。</li>
+<li>您需要能够阅读和维护使用旧迭代器的旧代码,以及可能使用旧迭代器、新迭代器或同时使用两种迭代器类型的新代码。</li>
+<li>在编写新代码时,您需要选择适当的迭代器类型。</li>
+</ul>
+<h2 id="Go1-23_中迭代器的其他问题">Go1.23 中迭代器的其他问题</h2>
+<p>以下是对原文的地道中文翻译:</p>
+<p>在Go 1.23之前,<code>for...range</code>循环只能应用于内置类型:整数(从Go1.22开始)、字符串、切片、映射和通道。这些循环的语义很清晰,易于理解(遍历通道的循环语义更加复杂,但如果你处理并发编程,那你应该很容易理解)。</p>
+<p>从Go 1.23开始,<code>for...range</code>循环可以应用于具有特殊签名的函数(又称拉取和推送函数)。这使得单凭阅读代码就无法理解给定的看似无辜的<code>for...range</code>循环到底会在底层做什么。它可以做任何事情,就像任何函数调用一样。不同之处在于,Go中的函数调用一直都是<strong>显式的</strong>,比如<code>f(args)</code>，而<code>for...range</code>循环<strong>隐藏了实际的函数调用</strong>。另外,它还对循环体<strong>应用了一些不太明显的转换</strong>:</p>
+<ul>
+<li>它<strong>隐式地</strong>将循环体包裹在一个匿名函数中,并<strong>隐式地</strong>将这个函数传递给<strong>推送</strong>迭代器函数。</li>
+<li>它<strong>隐式地</strong>调用匿名的<strong>拉取</strong>函数,并将返回的结果传递给循环体。</li>
+<li>它<strong>隐式地</strong>将<strong>return</strong>、<strong>continue</strong>、<strong>break</strong>、<strong>goto</strong>和<strong>defer</strong>语句转换为另一个不太明显的语句,存在于传递给<strong>推送</strong>迭代器函数的匿名函数中。</li>
+</ul>
+<p>另外,<strong>在一般情况下,在循环迭代之后使用迭代器函数返回的参数是不安全的</strong>,因为迭代器函数可能会在下一次循环迭代时重用它们。</p>
+<p>Go 曾因易于阅读和理解的<strong>显式代码执行路径</strong>而闻名。这一特性在 Go1.23 中<strong>不可逆转地</strong>被破坏了:(我们用什么来交换?<strong>另一种</strong>遍历类型的方式,它具有一些<strong>隐式</strong>的语义,而且在某些情况下行为与广告描述的不同。当遍历可能在迭代过程中返回错误的类型时(例如database/sql.Rows、path/filepath.Walk 或任何其他在迭代过程中进行 IO 操作的类型),这种新方式就无法按预期工作,因为你需要<strong>手动检查迭代错误</strong>,无论是在循环内部还是在循环之后,这与使用旧方法的做法是一样的。</p>
+<p>即使你使用不会返回错误的迭代器,生成的 <code>for ... range</code> 循环也看起来比使用显式回调的旧方法更加不清晰。哪种代码更容易理解和调试?</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line">tree.walk(<span class="keyword">func</span>(k, v <span class="typename">string</span>) {</div><div class="line">  <span class="built_in">println</span>(k, v)</div><div class="line">})</div></pre></td></tr></table></figure>
+
+
+
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">for</span> k, v := <span class="keyword">range</span> tree.walk {</div><div class="line">  <span class="built_in">println</span>(k, v)</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>请记住,后一个循环会被隐式地转换为前一个带有显式回调调用的代码。现在让我们从循环中返回一些东西:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">for</span> k, v := <span class="keyword">range</span> tree.walk {</div><div class="line">  <span class="keyword">if</span> k == <span class="string">"foo"</span> {</div><div class="line">    <span class="keyword">return</span> v</div><div class="line">  }</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>它被隐式转换为难以跟踪的代码，类似于以下代码：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">var</span> vOuter <span class="typename">string</span></div><div class="line">needOuterReturn := <span class="constant">false</span></div><div class="line">tree.walk(<span class="keyword">func</span>(k, v <span class="typename">string</span>) <span class="typename">bool</span> {</div><div class="line">  <span class="keyword">if</span> k == <span class="string">"foo"</span> {</div><div class="line">    needOuterReturn = <span class="constant">true</span></div><div class="line">    vOuter = v</div><div class="line">    <span class="keyword">return</span> <span class="constant">false</span></div><div class="line">  }</div><div class="line">})</div><div class="line"><span class="keyword">if</span> needOuterReturn {</div><div class="line">  <span class="keyword">return</span> vOuter</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>看起来很容易调试:)</p>
+<p>如果<code>tree.walk</code>通过从字节切片进行不安全转换将<code>v</code>传递给回调函数,那么这段代码可能会崩溃,因为<code>v</code>的内容在下一次循环迭代时可能会发生变化。因此,<strong>隐式</strong>生成的防弹代码必须使用<code>strings.Clone()</code>函数,这可能导致不必要的内存分配和复制:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">var</span> vOuter <span class="typename">string</span></div><div class="line">needOuterReturn := <span class="constant">false</span></div><div class="line">tree.walk(<span class="keyword">func</span>(k, v <span class="typename">string</span>) <span class="typename">bool</span> {</div><div class="line">  <span class="keyword">if</span> k == <span class="string">"foo"</span> {</div><div class="line">    needOuterReturn = <span class="constant">true</span></div><div class="line">    vOuter = strings.Clone(v)</div><div class="line">    <span class="keyword">return</span> <span class="constant">false</span></div><div class="line">  }</div><div class="line">})</div><div class="line"><span class="keyword">if</span> needOuterReturn {</div><div class="line">  <span class="keyword">return</span> vOuter</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p><code>range over func</code>这一特性对函数签名施加了限制。这些限制不适用于所有需要遍历集合元素的场景。这迫使软件工程师在使用<code>for...range</code>循环时进行丑陋的hack,以及编写理想情况下适合给定任务的显式代码之间做出艰难选择。</p>
+<h2 id="结论">结论</h2>
+<p>令人遗憾的是,Go开始朝着增加复杂性和隐式代码执行的方向发展。也许我们需要停止添加增加Go复杂性的新功能,而是专注于Go的核心特性 - 简单性、高效性和性能。例如,最近Rust开始在对性能要求苛刻的领域取代Go的份额。我相信如果Go核心团队专注于优化热循环,比如循环展开和SIMD使用,这种趋势是可以扭转的。这不应该太过影响编译和链接速度,因为只有少量编译后的Go代码需要优化。没有必要试图优化所有简单代码的变体 - 这些代码即使优化了热循环也仍然会很慢。只需针对那些由注重代码性能的软件工程师故意编写的特定模式进行优化就足够了。<br>Go比Rust容易使用得多。为什么要在性能竞赛中输给Rust呢?<br>Go可以获得的另一个有用特性的例子是,在不增加语言本身和使用这些特性的Go代码复杂性的情况下,进行类似于小的改善代码质量的改进。</p>
+<h2 id="我是谁?">我是谁?</h2>
+<p>我是一名专门编写简单、面向性能的Go代码的软件工程师,如VictoriaMetrics、quicktemplate、fastjson、fasthttp、fastcache、easyproto等。多亏了Go,我一直试图遵循KISS(Keep It Simple,Stupid)设计原则。</p>
+]]></content>
+    <summary type="html">
+    <![CDATA[<p>这是 Aliaksandr Valialkin 昨天刚写的一篇文章, 心有戚戚焉，所以特意翻译成中文，个人感觉，自从Rob Pike退休后，Go在大方向迷失了，正如老貘(Go101)所说，目前Go的开发就像完成KPI一样，也许, 大师不会再回来了。</p>
+<p>Aliaksandr Valialkin是fasthttp的作者，也是VictoriaMetrics开发者，一位资深的Go程序员。</p>
+<p>以下是译文。<br>]]>
+    
+    </summary>
+    
+      <category term="Go" scheme="https://colobu.com/categories/Go/"/>
+    
+  </entry>
   
   <entry>
     <title><![CDATA[Rob Pike 语录]]></title>
@@ -2405,37 +2486,6 @@
     <![CDATA[<p>Go heap profile 是尝尝用来检查内存泄露和内存占用大问题的问题的手段，而且非常惯用。</p>
 <p>而且，我们也经常创建两个间隔较长的 heap profile, 获取它们的差值来方便查看内存泄露: <a href="https://colobu.com/2019/08/20/use-pprof-to-compare-go-memory-usage/" target="_blank" rel="external">Hi, 使用多年的go pprof检查内存泄漏的方法居然是错的?! </a></p>
 <p>今天，度厂的一位同学提出了一个很有意思的案例，让我们对 heap profile 有了更深的理解。</p>
-]]>
-    
-    </summary>
-    
-      <category term="Go" scheme="https://colobu.com/categories/Go/"/>
-    
-  </entry>
-  
-  <entry>
-    <title><![CDATA[Go语言编程技巧 1.0 发布了]]></title>
-    <link href="https://colobu.com/2024/04/28/gotips-1-0-is-released/"/>
-    <id>https://colobu.com/2024/04/28/gotips-1-0-is-released/</id>
-    <published>2024-04-28T00:47:56.000Z</published>
-    <updated>2024-04-28T00:54:41.888Z</updated>
-    <content type="html"><![CDATA[<p>经过和众多Gopher的努力，Go语言编程技巧 1.0 版本终于发布了。这是一个Go语言编程技巧的集合，涵盖了Go语言的各个方面，包括语法、并发、性能、工具、库等等。这个项目的目的是帮助Go语言开发者更好地理解Go语言，提高Go语言编程技巧。</p>
-<a id="more"></a>
-<p>在线阅读: <a href="https://github.com/smallnest/gotips" target="_blank" rel="external">gotips</a>。<br>下载pdf: <a href="https://github.com/smallnest/ebooks/blob/master/gotips.pdf" target="_blank" rel="external">gotips.pdf</a></p>
-<p><img src="gotips-cover.png" alt=""></p>
-<p>这是 <a href="https://twitter.com/func25" target="_blank" rel="external">Phuong Le</a> 在X上发布的一系列的技巧。<br>Phuong Le也将推文整理成到了一个github仓库中<a href="https://github.com/func25/go-practical-tips" target="_blank" rel="external">go-practical-tips</a></p>
-<p>征得作者同意，翻译成了中文。 </p>
-<p>本书是基于Phuong Le的推文进行翻译的，同时也会新建一个说明页，按照作者github项目上的划分整理各个tip。</p>
-<p>感谢以下网友共同进行了翻译，翻译进展迅速。</p>
-<p>正如作者所说，有些tip可能有一些错误：</p>
-<blockquote>
-<p> Some of the tips were awkward, with typos and naive explanations.</p>
-</blockquote>
-<p>我们翻译的时候也发现了作者的一些手误，或者错误，及时做了注解和纠正。难免还有一些问题，欢迎大家到github提issue或者提Pull request.</p>
-<p><img src="contributors.png" alt=""></p>
-]]></content>
-    <summary type="html">
-    <![CDATA[<p>经过和众多Gopher的努力，Go语言编程技巧 1.0 版本终于发布了。这是一个Go语言编程技巧的集合，涵盖了Go语言的各个方面，包括语法、并发、性能、工具、库等等。这个项目的目的是帮助Go语言开发者更好地理解Go语言，提高Go语言编程技巧。</p>
 ]]>
     
     </summary>
