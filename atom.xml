@@ -4,7 +4,7 @@
   <subtitle><![CDATA[大道至简 Simplicity is the ultimate form of sophistication]]></subtitle>
   <link href="/atom.xml" rel="self"/>
   <link href="https://colobu.com/"/>
-  <updated>2024-06-11T14:39:32.342Z</updated>
+  <updated>2024-06-16T03:45:54.210Z</updated>
   <id>https://colobu.com/</id>
   
   <author>
@@ -15,11 +15,78 @@
   <generator uri="http://zespia.tw/hexo/">Hexo</generator>
   
   <entry>
-    <title><![CDATA[朝着错误的方向发展]]></title>
+    <title><![CDATA[128位整数的原子操作]]></title>
+    <link href="https://colobu.com/2024/06/16/atomic128/"/>
+    <id>https://colobu.com/2024/06/16/atomic128/</id>
+    <published>2024-06-16T03:42:29.000Z</published>
+    <updated>2024-06-16T03:45:28.407Z</updated>
+    <content type="html"><![CDATA[<p>我们已经知道，标准库中的 atomic 针对 int32/uint32、int64/uint64 提供了原子操作的方法和函数，但是如果针对 128 bit 的整数呢？<br><a id="more"></a></p>
+<p>当然使用128 bit 整数的原子操作的场景可能比较少，也不会有太多人有这个需求，但是如果我们需要对几个 32 bit、64 bit 变量进行原子操作吗， atomic128 可能就很有用。</p>
+<p><a href="https://github.com/tmthrgd/atomic128" target="_blank" rel="external">tmthrgd/atomic128</a> 在几年前提供了 atomic 128 的实验性功能，最后放弃了，但是他提供了一个思路，可以使用 <a href="http://www.felixcloutier.com/x86/CMPXCHG8B:CMPXCHG16B.html" target="_blank" rel="external">CMPXCHG16B</a> 指令为 AMD 64 架构的CPU 提供 atomic 128 功能。</p>
+<p><a href="https://github.com/CAFxX/atomic128" target="_blank" rel="external">CAFxX/atomic128</a> fork 了上面的项目，继续维护，还是使用 <code>CMPXCHG16B</code> 指令，只为 AMD 64 架构提供原子操作。</p>
+<p>首先我们看看它的功能然后再看一看它的实现，最后我们思路发散一下，看看使用 AVX 为 128 bit 甚至更多 bit 的整数提供原子操作是否可行。</p>
+<h2 id="atomic128_的方法">atomic128 的方法</h2>
+<p><code>Package atomic128</code> 实现了对 128 bit值的原子操作。在可能的情况下（例如，在支持 <code>CMPXCHG16B</code> 的 amd64 处理器上），它会自动使用 CPU 的原生特性来实现这些操作；否则，它会回退到基于互斥锁（mutexes）的方法。</p>
+<p>Go 的基本整数中不包含 int128/uint128，所以这个库先定义了一个 Int128 的类型：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> Uint128 <span class="keyword">struct</span> {</div><div class="line">	d <span class="number">[3</span>]<span class="typename">uint64</span></div><div class="line">	m sync.Mutex</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>然后类似标准库 atomic 中对各种整数的操作，它也提供了类似的方法：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> AddUint128(ptr *Uint128, incr <span class="number">[2</span>]<span class="typename">uint64</span>) <span class="number">[2</span>]<span class="typename">uint64</span></div><div class="line"><span class="keyword">func</span> CompareAndSwapUint128(ptr *Uint128, old, <span class="built_in">new</span> <span class="number">[2</span>]<span class="typename">uint64</span>) <span class="typename">bool</span></div><div class="line"><span class="keyword">func</span> LoadUint128(ptr *Uint128) <span class="number">[2</span>]<span class="typename">uint64</span></div><div class="line"><span class="keyword">func</span> StoreUint128(ptr *Uint128, <span class="built_in">new</span> <span class="number">[2</span>]<span class="typename">uint64</span>)</div><div class="line"><span class="keyword">func</span> SwapUint128(ptr *Uint128, <span class="built_in">new</span> <span class="number">[2</span>]<span class="typename">uint64</span>) <span class="number">[2</span>]<span class="typename">uint64</span></div><div class="line"></div><div class="line"><span class="keyword">func</span> OrUint128(ptr *Uint128, op <span class="number">[2</span>]<span class="typename">uint64</span>) <span class="number">[2</span>]<span class="typename">uint64</span></div><div class="line"><span class="keyword">func</span> AndUint128(ptr *Uint128, op <span class="number">[2</span>]<span class="typename">uint64</span>) <span class="number">[2</span>]<span class="typename">uint64</span></div><div class="line"><span class="keyword">func</span> XorUint128(ptr *Uint128, op <span class="number">[2</span>]<span class="typename">uint64</span>) <span class="number">[2</span>]<span class="typename">uint64</span></div></pre></td></tr></table></figure>
+
+<p>可以看到，除了正常的 Add、CAS、Load、Store、Swap 函数，还贴心的提供了 <code>Or</code>、<code>And</code>、<code>Xor</code> 三个位操作的函数。</p>
+<p>下面是一个简单的例子:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div></pre></td><td class="code"><pre><div class="line">n := &atomic128.Uint128{}</div><div class="line">v := atomic128.LoadUint128(n) <span class="comment">// [2]uint64{0, 0}</span></div><div class="line">		</div><div class="line"></div><div class="line">atomic128.StoreUint128(n, <span class="number">[2</span>]<span class="typename">uint64</span><span class="number">{1</span>, ^<span class="typename">uint64</span><span class="number">(0</span>)})</div><div class="line">v = atomic128.LoadUint128(n) <span class="comment">// [2]uint64{1, ^uint64(0)}</span></div><div class="line"></div><div class="line">v = AddUint128(n, <span class="number">[2</span>]<span class="typename">uint64</span><span class="number">{2</span>,<span class="number"> 40</span>})</div><div class="line">v = atomic128.LoadUint128(n) <span class="comment">// [2]uint64{3, 40}</span></div><div class="line"></div><div class="line">v = atomic128.SwapUint128(n, <span class="number">[2</span>]<span class="typename">uint64</span><span class="number">{4</span>,<span class="number"> 50</span>})</div><div class="line">v = atomic128.LoadUint128(n) <span class="comment">// [2]uint64{4, 50}</span></div><div class="line"></div><div class="line">v = atomic128.CompareAndSwapUint128(n, <span class="number">[2</span>]<span class="typename">uint64</span><span class="number">{4</span>,<span class="number"> 50</span>}, <span class="number">[2</span>]<span class="typename">uint64</span><span class="number">{5</span>,<span class="number"> 60</span>})</div><div class="line">v = atomic128.LoadUint128(n) <span class="comment">// [2]uint64{5, 60}</span></div><div class="line"></div><div class="line">v = atomic128.OrUint128(n, <span class="number">[2</span>]<span class="typename">uint64</span><span class="number">{0</span>,<span class="number"> 0</span>})</div><div class="line">v = atomic128.LoadUint128(n) <span class="comment">// [2]uint64{5, 60}</span></div></pre></td></tr></table></figure>
+
+<h2 id="atomic128_的实现">atomic128 的实现</h2>
+<p>聪明的你也许看到<code>Uint128</code>的定义的时候就会感觉有一点不对劲，为啥128bit的整数要用3个64bit的整数来表示呢？ 2个Uint64不就够了吗？</p>
+<p>这是为了保证128位对齐，类似的技术在Go 1.20之前的WaitGroup中也有使用。进一步了解可以查看：</p>
+<ul>
+<li><a href="https://go101.org/article/memory-layout.html" target="_blank" rel="external">https://go101.org/article/memory-layout.html</a></li>
+<li><a href="https://pkg.go.dev/sync/atomic#pkg-note-BUG" target="_blank" rel="external">https://pkg.go.dev/sync/atomic#pkg-note-BUG</a></li>
+</ul>
+<p>通过包含三个Uint64元素的数组，我们总能通过下面的方法得到128位对齐的地址：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> addr(ptr *Uint128) *<span class="number">[2</span>]<span class="typename">uint64</span> {</div><div class="line">	<span class="keyword">if</span> (<span class="typename">uintptr</span>)((unsafe.Pointer)(&ptr.d<span class="number">[0</span>]))<span class="number">%16</span> ==<span class="number"> 0</span> { <span class="comment">// 指针已经128位对齐</span></div><div class="line">		<span class="keyword">return</span> (*<span class="number">[2</span>]<span class="typename">uint64</span>)((unsafe.Pointer)(&ptr.d<span class="number">[0</span>]))</div><div class="line">	}</div><div class="line">	<span class="keyword">return</span> (*<span class="number">[2</span>]<span class="typename">uint64</span>)((unsafe.Pointer)(&ptr.d<span class="number">[1</span>])) <span class="comment">// 必然ptr.d[1]是128位对齐的 (AMD64架构)</span></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>通过变量<code>useNativeAmd64</code>判断CPU是否支持<code>CMPXCHG16B</code>指令：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> init() {</div><div class="line">	useNativeAmd64 = cpuid.CPU.Supports(cpuid.CX16)</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>如果不支持，回退到使用Mutex实现一个低效的atomic 128bit原子操作:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> CompareAndSwapUint128(ptr *Uint128, old, <span class="built_in">new</span> <span class="number">[2</span>]<span class="typename">uint64</span>) <span class="typename">bool</span> {</div><div class="line">	<span class="keyword">if</span> runtime.GOARCH == <span class="string">"amd64"</span> && useNativeAmd64 {</div><div class="line">		<span class="keyword">return</span> compareAndSwapUint128amd64(addr(ptr), old, <span class="built_in">new</span>)</div><div class="line">	}</div><div class="line"></div><div class="line">    <span class="comment">// 不支持CMPXCHG16B指令，使用Mutex</span></div><div class="line">	ptr.m.Lock()</div><div class="line">	v := load(ptr)</div><div class="line">	<span class="keyword">if</span> v != old {</div><div class="line">		ptr.m.Unlock()</div><div class="line">		<span class="keyword">return</span> <span class="constant">false</span></div><div class="line">	}</div><div class="line">	store(ptr, <span class="built_in">new</span>)</div><div class="line">	ptr.m.Unlock()</div><div class="line">	<span class="keyword">return</span> <span class="constant">true</span></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>如果支持<code>CMPXCHG16B</code>指令，直接调用<code>compareAndSwapUint128amd64</code>函数：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div></pre></td><td class="code"><pre><div class="line">TEXT ·compareAndSwapUint128amd64(SB),NOSPLIT,<span class="number">$0</span></div><div class="line">	MOVQ addr<span class="number">+0</span>(FP), BP</div><div class="line">	MOVQ old<span class="number">+8</span>(FP), AX</div><div class="line">	MOVQ old<span class="number">+16</span>(FP), DX</div><div class="line">	MOVQ <span class="built_in">new</span><span class="number">+24</span>(FP), BX</div><div class="line">	MOVQ <span class="built_in">new</span><span class="number">+32</span>(FP), CX</div><div class="line">	LOCK</div><div class="line">	CMPXCHG16B (BP)</div><div class="line">	SETEQ swapped<span class="number">+40</span>(FP)</div><div class="line">	RET</div></pre></td></tr></table></figure>
+
+<p>主要依赖<code>CMPXCHG16B</code>实现。</p>
+<p><code>CMPXCHG16B</code>是一条X86体系结构中的指令,全称为&quot;Compare and Exchange 16 Bytes&quot;。它用于原子地比较和交换16个字节(128位)的内存区域。<br>这条指令的作用是:</p>
+<ul>
+<li>将要比较的16个字节的内存值加载到一个寄存器中。</li>
+<li>将要写入的16个字节的值加载到另一个寄存器中。</li>
+<li>比较内存中的值和第一个寄存器中的值是否相等。</li>
+<li>如果相等,则用第二个寄存器中的值覆盖内存中的值。</li>
+<li>根据比较结果,设置相应的标志位。</li>
+</ul>
+<h2 id="思路发散">思路发散</h2>
+<p>当前很多号称性能优化的库，可能会使用SIMD指令集来提高性能，比如AVX、SSE等。那么，我们是否可以使用AVX指令集来实现对128位整数甚至256、512位整数的原子操作呢？</p>
+<p>有一篇很好的文章介绍了这方面的探索:<a href="https://rigtorp.se/isatomic/" target="_blank" rel="external">Aligned AVX loads and stores are atomic</a>。</p>
+<p>各家处理器手册中并没有为AVX指令集提供原子性的担保。<a href="https://www.amd.com/system/files/TechDocs/40332.pdf" target="_blank" rel="external">The AMD64 Architecture Programmer’s Manual</a>只是保证了内存操作最大8个字节，<code>CMPXCHG16B</code>是原子的。<a href="https://software.intel.com/content/www/us/en/develop/articles/intel-sdm.html" target="_blank" rel="external">The Intel® 64 and IA-32 Architectures Software Developer’s Manual</a>也做了类似的保证。此外，Intel手册明确指出AVX指令没有任何原子性保证。</p>
+<p>这篇文章的作者做了实验，得出下面的结论:<br><img src="avx.png" alt=""></p>
+<p>尽管看起来对齐的 128 位操作室原子的，但是 CPU 提供商没有提供担保，我们还是使用 <code>CMPXCHG16B</code> 指令保险。</p>
+]]></content>
+    <summary type="html">
+    <![CDATA[<p>我们已经知道，标准库中的 atomic 针对 int32/uint32、int64/uint64 提供了原子操作的方法和函数，但是如果针对 128 bit 的整数呢？<br>]]>
+    
+    </summary>
+    
+      <category term="Go" scheme="https://colobu.com/categories/Go/"/>
+    
+  </entry>
+  
+  <entry>
+    <title><![CDATA[Go 朝着错误的方向发展]]></title>
     <link href="https://colobu.com/2024/06/11/go-evolves-in-the-wrong-direction/"/>
     <id>https://colobu.com/2024/06/11/go-evolves-in-the-wrong-direction/</id>
     <published>2024-06-11T14:02:06.000Z</published>
-    <updated>2024-06-11T14:39:06.202Z</updated>
+    <updated>2024-06-11T14:40:15.021Z</updated>
     <content type="html"><![CDATA[<p>这是 Aliaksandr Valialkin 昨天刚写的一篇文章, 心有戚戚焉，所以特意翻译成中文，个人感觉，自从Rob Pike退休后，Go在大方向迷失了，正如老貘(Go101)所说，目前Go的开发就像完成KPI一样，也许, 大师不会再回来了。</p>
 <p>Aliaksandr Valialkin是fasthttp的作者，也是VictoriaMetrics开发者，一位资深的Go程序员。</p>
 <p>以下是译文。<br><a id="more"></a></p>
@@ -2387,110 +2454,6 @@
       <category term="rust" scheme="https://colobu.com/tags/rust/"/>
     
       <category term="rust" scheme="https://colobu.com/categories/rust/"/>
-    
-  </entry>
-  
-  <entry>
-    <title><![CDATA[Go heap profile 怎么了]]></title>
-    <link href="https://colobu.com/2024/04/30/what-s-wrong-with-go-heap-profile/"/>
-    <id>https://colobu.com/2024/04/30/what-s-wrong-with-go-heap-profile/</id>
-    <published>2024-04-30T01:01:36.000Z</published>
-    <updated>2024-04-30T01:09:03.861Z</updated>
-    <content type="html"><![CDATA[<p>Go heap profile 是尝尝用来检查内存泄露和内存占用大问题的问题的手段，而且非常惯用。</p>
-<p>而且，我们也经常创建两个间隔较长的 heap profile, 获取它们的差值来方便查看内存泄露: <a href="https://colobu.com/2019/08/20/use-pprof-to-compare-go-memory-usage/" target="_blank" rel="external">Hi, 使用多年的go pprof检查内存泄漏的方法居然是错的?! </a></p>
-<p>今天，度厂的一位同学提出了一个很有意思的案例，让我们对 heap profile 有了更深的理解。</p>
-<a id="more"></a>
-<h2 id="问题:_heap_profile_不能正确反应当前分配的内存?">问题: heap profile 不能正确反应当前分配的内存?</h2>
-<p>这个同学举了一个简单的 Go 程序的例子:</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div><div class="line">35</div><div class="line">36</div><div class="line">37</div><div class="line">38</div><div class="line">39</div><div class="line">40</div><div class="line">41</div><div class="line">42</div><div class="line">43</div><div class="line">44</div><div class="line">45</div><div class="line">46</div><div class="line">47</div><div class="line">48</div><div class="line">49</div><div class="line">50</div><div class="line">51</div><div class="line">52</div><div class="line">53</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> main</div><div class="line"></div><div class="line"><span class="keyword">import</span> (</div><div class="line">	<span class="string">"fmt"</span></div><div class="line">	<span class="string">"net/http"</span></div><div class="line">	_ <span class="string">"net/http/pprof"</span></div><div class="line">	<span class="string">"runtime"</span></div><div class="line">	<span class="string">"time"</span></div><div class="line">)</div><div class="line"></div><div class="line"><span class="keyword">func</span> main() {</div><div class="line">	<span class="keyword">go</span> <span class="keyword">func</span>() {</div><div class="line">		http.ListenAndServe(<span class="string">"localhost:8080"</span>, <span class="constant">nil</span>)</div><div class="line">	}()</div><div class="line"></div><div class="line">	<span class="keyword">go</span> <span class="keyword">func</span>() {</div><div class="line">		<span class="comment">// 每秒打印内存分配情况</span></div><div class="line">		<span class="keyword">for</span> {</div><div class="line">			<span class="keyword">var</span> m runtime.MemStats</div><div class="line">			runtime.ReadMemStats(&m)</div><div class="line">			fmt.Printf(<span class="string">"Alloc = %v MiB"</span>, bToMb(m.Alloc))</div><div class="line">			fmt.Printf(<span class="string">"\tTotalAlloc = %v MiB"</span>, bToMb(m.TotalAlloc))</div><div class="line">			fmt.Printf(<span class="string">"\tSys = %v MiB"</span>, bToMb(m.Sys))</div><div class="line">			fmt.Printf(<span class="string">"\tNumGC = %v\n"</span>, m.NumGC)</div><div class="line">			time.Sleep<span class="number">(1</span> * time.Second)</div><div class="line">		}</div><div class="line"></div><div class="line">	}()</div><div class="line">	time.Sleep<span class="number">(5</span> * time.Second)</div><div class="line"></div><div class="line">	fmt.Println(<span class="string">"start test"</span>)</div><div class="line"></div><div class="line">	<span class="comment">// 创建一个 200 MiB 的切片</span></div><div class="line">	<span class="keyword">var</span> memoryLeaks [][]<span class="typename">int32</span></div><div class="line">	<span class="keyword">for</span> i :=<span class="number"> 0</span>; i &lt;<span class="number"> 10</span>; i++ {</div><div class="line">		leak := <span class="built_in">make</span>([]<span class="typename">int32</span>,<span class="number"> 5</span><span class="number">*1024</span><span class="number">*1024</span>) <span class="comment">// 分配 5*1M*4bytes = 20 MiB</span></div><div class="line">		memoryLeaks = <span class="built_in">append</span>(memoryLeaks, leak)</div><div class="line">		time.Sleep<span class="number">(1</span> * time.Second) <span class="comment">// 延迟一秒观察内存分配情况</span></div><div class="line">	}</div><div class="line">	<span class="comment">// 期望至少分配了 200 MiB 内存</span></div><div class="line">	fmt.Println(<span class="string">"end test"</span>)</div><div class="line">	<span class="comment">// 看到上面的文字后，打开go pprof 工具，查看工具的分析</span></div><div class="line">	<span class="comment">// go tool pprof -http :8972 http://127.0.0.1:8080/debug/pprof/heap</span></div><div class="line"></div><div class="line"></div><div class="line">	time.Sleep<span class="number">(1</span> * time.Hour)</div><div class="line">	fmt.Println(<span class="string">"test"</span>, memoryLeaks<span class="number">[9</span>]<span class="number">[5</span><span class="number">*1024</span><span class="number">*1024</span><span class="number">-1</span>]) <span class="comment">// 避免垃圾回收和优化</span></div><div class="line"></div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> bToMb(b <span class="typename">uint64</span>) <span class="typename">uint64</span> {</div><div class="line">	<span class="keyword">return</span> b /<span class="number"> 1024</span> /<span class="number"> 1024</span></div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>这个程序首先创建一个监听 8080 端口的web 服务，主要利用它访问 http heap profile，所以你看导入了 <code>_ &quot;net/http/pprof&quot;</code> 包。</p>
-<p>然后创建了了一个切片，切片包含 10 个元素，每个元素又是一个 <code>[]int32</code> 的切片。每个元素占用 20 MiB 的大小 (<code>int32</code> 是 4 个字节，5*1024*1024 是 5 M, 所以是 4*5 MiB=20 Mib)。</p>
-<p>所以我们期望 10 个循环创建完毕后，至少此程序会占用 200 MiB 内存，另外在加一些栈、网络、运行时等一些额外的内存的话，略微会比 200MiB 大一些。</p>
-<p>运行这个程序，我们看程序每秒的内存占用统计：<br><img src="1.png" alt=""></p>
-<p>可以看到使用 <code>runtime.MemStats</code> 统计的内存分配情况还是比较准的， 200MiB，符合预期。</p>
-<p>当你看到 <code>end test</code> 时，表明 200MiB 已经分配，你可以运行下面的命令打开 heap profile:</p>
-<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">go tool pprof -http :<span class="number">8972</span> http://<span class="number">127.0</span>.<span class="number">0.1</span>:<span class="number">8080</span>/debug/pprof/heap</div></pre></td></tr></table></figure>
-
-<blockquote>
-<p>如果你使用 Mac 电脑, 可能你还需要手工安装 graphviz:<br> <code>brew install graphviz</code></p>
-</blockquote>
-<p>等等，<strong>不对呀</strong>！怎么 heap profile 才显示 160 MB 的内存？<strong>少了 40 MB</strong>。和期望的不符。</p>
-<p><img src="2.png" alt=""></p>
-<p>这 160 MB 内存的确是在创建元素的时候分配的：<br><img src="3.png" alt=""></p>
-<p>可那 40 MB 呢？如果 Heap Profile 数据不准，可就动摇了我们一直以来分析内存泄露的技术基础？</p>
-<p>那肯定不会是 Go 实现的问题，否则这个问题早就被暴露和修复了。</p>
-<p>接下来我们就介绍根因，讲两个知识点。</p>
-<h2 id="把40_MiB_的分配的内存找回来">把40 MiB 的分配的内存找回来</h2>
-<p>如果你再等一会，大约在命令行中看到 <code>end test</code> 两分钟后吧，当然再等长一点的时间更佳，你在重新执行命令，查看 heap profile:</p>
-<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">go tool pprof -http :<span class="number">8972</span> http://<span class="number">127.0</span>.<span class="number">0.1</span>:<span class="number">8080</span>/debug/pprof/heap</div></pre></td></tr></table></figure>
-
-<p>这个时候浏览器中显示出了 <strong>200 MB</strong> 的内存分配，符合预期了：<br><img src="4.png" alt=""></p>
-<p>神奇啊，等待一段时间之后，heap profile 就显示正常了。难道过了一会才分配的内存？那不可能。因为命令行中 <code>runtime.MemStats</code> 已经显示结束测试前内存已经分配好了。</p>
-<p>看到 <code>end test</code> 之后，程序也没做啥呀，就是休眠了 1 小时。<br>2 分钟很像是垃圾回收搞的鬼，2 分钟强制回收一次。</p>
-<p>怀疑归怀疑，我们验证一下，在 <code>end test</code> 之后强制垃圾回收一下，再立即打开 heap profile 是不是显示 200 MiB。</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div></pre></td><td class="code"><pre><div class="line">fmt.Println(<span class="string">"end test"</span>)</div><div class="line">runtime.GC()</div></pre></td></tr></table></figure>
-
-<p><img src="5.png" alt=""></p>
-<p>既然知道是垃圾回收搞得鬼，那么我们就强制垃圾回收，就可以立即显示当前已分配的内存了，不用再等待。<br>但是线上运行的程序中也不可能随心所欲的让我们在任意的地方动态加 <code>runtime.GC()</code> 呀。</p>
-<p>没关系，访问 heap profile 我们加上 <code>gc=1</code> 的参数即可 (大于 0 的数都可以)：</p>
-<figure class="highlight sh"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">go tool pprof -http :<span class="number">8972</span> <span class="string">"http://127.0.0.1:8080/debug/pprof/heap?gc=1"</span></div></pre></td></tr></table></figure>
-
-<p>你可以在程序中把 <code>runtime.GC()</code> 那一行去掉，使用上面的方式访问 heap profile 验证，我就不重复贴图了。</p>
-<blockquote>
-<p>顺便说一下，你还可以加上 debug=1 (非 0 的参数)，可以已文字的方式查看内存分配以及 runtime.MemStats 数据。<br>如 <a href="http://127.0.0.1:8080/debug/pprof/heap?gc=1&amp;debug=1" target="_blank" rel="external">http://127.0.0.1:8080/debug/pprof/heap?gc=1&amp;debug=1</a></p>
-</blockquote>
-<p><strong>为啥?</strong></p>
-<p>Heap profile 其实调用的 `runtime.MemProfile 进行统计:</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> writeHeapInternal(w io.Writer, debug <span class="typename">int</span>, defaultSampleType <span class="typename">string</span>) error {</div><div class="line">	......</div><div class="line">	<span class="keyword">var</span> p []runtime.MemProfileRecord</div><div class="line">	n, ok := runtime.MemProfile(<span class="constant">nil</span>, <span class="constant">true</span>)</div><div class="line">	<span class="keyword">for</span> {</div><div class="line">		p = <span class="built_in">make</span>([]runtime.MemProfileRecord, n<span class="number">+50</span>)</div><div class="line">		n, ok = runtime.MemProfile(p, <span class="constant">true</span>)</div><div class="line">		<span class="keyword">if</span> ok {</div><div class="line">			p = p<span class="number">[0</span>:n]</div><div class="line">			<span class="keyword">break</span></div><div class="line">		}</div><div class="line">	}</div><div class="line">    ....</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p><code>MemProfile</code> 的方法签名如下，它负责统计内存的分配情况：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> MemProfile(p []MemProfileRecord, inuseZero <span class="typename">bool</span>) (n <span class="typename">int</span>, ok <span class="typename">bool</span>)</div></pre></td></tr></table></figure>
-
-<p>注意它的文档有一条：</p>
-<blockquote>
-<p>The returned profile may be up to two garbage collection cycles old. This is to avoid skewing the profile toward allocations; because allocations happen in real time but frees are delayed until the garbage collector performs sweeping, the profile only accounts for allocations that have had a chance to be freed by the garbage collector.</p>
-</blockquote>
-<p>翻译过来：</p>
-<blockquote>
-<p>返回的性能分析数据可能<strong>最多延迟两个垃圾回收周期</strong>。这样做是为了避免对内存分配产生偏差;因为内存分配是实时发生的,但释放操作直到垃圾回收器进行清理时才会延迟进行,所以性能分析只会统计那些已经有机会被垃圾回收器回收的内存分配。</p>
-</blockquote>
-<p>所以才会重现一开始的问题。我们看到 <code>end test</code> 立即查看 heap profile, 还没有进行垃圾回收，相关的内存统计数据还没有计算出来，所以才看到 160 MB 的内存，而不是 200MB 的内存。</p>
-<p><code>system.GC</code>会强制进行垃圾回收，并且会发布新的heap profile，所以可以看到 200MB 的内存。</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> GC() {</div><div class="line">	......</div><div class="line">	<span class="comment">// Now we're really done with sweeping, so we can publish the</span></div><div class="line">	<span class="comment">// stable heap profile. Only do this if we haven't already hit</span></div><div class="line">	<span class="comment">// another mark termination.</span></div><div class="line">	mp := acquirem()</div><div class="line">	cycle := work.cycles.Load()</div><div class="line">	<span class="keyword">if</span> cycle == n<span class="number">+1</span> || (gcphase == _GCmark && cycle == n<span class="number">+2</span>) {</div><div class="line">		mProf_PostSweep()</div><div class="line">	}</div><div class="line">	releasem(mp)</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>第一个知识点已经介绍完了，也解答了最初的问题。</p>
-<p>现在让我们来看第二个知识点。</p>
-<h2 id="Heap_Profile_是采样的？采啥样？">Heap Profile 是采样的？采啥样？</h2>
-<p>heap profile 实际上在内存分配时做采样统计的，默认情况下并不会记录所有的内存分配。</p>
-<p>这里我们需要关注 <code>runtime.MemProfileRate</code> 这个变量。</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div></pre></td><td class="code"><pre><div class="line"><span class="comment">// MemProfileRate controls the fraction of memory allocations</span></div><div class="line"><span class="comment">// that are recorded and reported in the memory profile.</span></div><div class="line"><span class="comment">// The profiler aims to sample an average of</span></div><div class="line"><span class="comment">// one allocation per MemProfileRate bytes allocated.</span></div><div class="line"><span class="comment">//</span></div><div class="line"><span class="comment">// To include every allocated block in the profile, set MemProfileRate to 1.</span></div><div class="line"><span class="comment">// To turn off profiling entirely, set MemProfileRate to 0.</span></div><div class="line"><span class="comment">//</span></div><div class="line"><span class="comment">// The tools that process the memory profiles assume that the</span></div><div class="line"><span class="comment">// profile rate is constant across the lifetime of the program</span></div><div class="line"><span class="comment">// and equal to the current value. Programs that change the</span></div><div class="line"><span class="comment">// memory profiling rate should do so just once, as early as</span></div><div class="line"><span class="comment">// possible in the execution of the program (for example,</span></div><div class="line"><span class="comment">// at the beginning of main).</span></div><div class="line"><span class="keyword">var</span> MemProfileRate <span class="typename">int</span> =<span class="number"> 512</span> *<span class="number"> 1024</span></div></pre></td></tr></table></figure>
-
-<p>翻译过来：</p>
-<blockquote>
-<p>MemProfileRate控制了在内存分析中记录和报告的内存分配的比例。分析器的目标是每分配MemProfileRate字节时,采样记录一次分配。</p>
-<p>如果要在分析中包含每一个分配的内存块,可以将MemProfileRate设置为1。如果要完全关闭内存分析,可以将MemProfileRate设置为0。</p>
-<p>处理内存分析数据的工具假设分析的采样率在程序的整个生命周期中保持不变,并等于当前设置的值。如果程序需要改变内存分析的采样率,应该只改变一次,并且尽可能早地在程序执行的开始阶段(例如在main函数的开始部分)进行设置。</p>
-</blockquote>
-<p>如果我们把每次分配的大小改小一点，如下：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div></pre></td><td class="code"><pre><div class="line">   ......</div><div class="line"><span class="keyword">var</span> memoryLeaks [][]<span class="typename">int32</span></div><div class="line"><span class="keyword">for</span> i :=<span class="number"> 0</span>; i &lt;<span class="number"> 1000</span>; i++ {</div><div class="line">	leak := <span class="built_in">make</span>([]<span class="typename">int32</span>,<span class="number"> 60</span><span class="number">*1024</span>) <span class="comment">// allocat 60*1K*4bytes = 240 KiB</span></div><div class="line">	memoryLeaks = <span class="built_in">append</span>(memoryLeaks, leak)</div><div class="line">}</div><div class="line"></div><div class="line">   runtime.GC()</div><div class="line">   ......</div></pre></td></tr></table></figure>
-
-<p>这个时候查看 heap profile，你会发现heap profile和<code>runtime.MemStats</code>统计的内存分配情况不一样，因为 <code>runtime.MemStats</code> 是实时统计的，而 heap profile 是采样统计的。<br><img src="6.png" alt=""></p>
-<p><img src="7.png" alt=""></p>
-<p>可以看到 <code>234 MiB</code> 和 <code>230.36</code> 是不一致的。</p>
-<p>如果在程序一开始加上 <code>runtime.MemProfileRate = 1</code>,  heap profle 数据变成了 <code>234MB</code>, 有一致了。<br><img src="8.png" alt=""></p>
-<p>但是也需要注意，将 <code>runtime.MemProfileRate</code> 设置为 1，对每一次内存都进行采样统计，对性能的影响也相应的增大了，非必要不用更改这个值。</p>
-<p>所以，我们默认看到 heap profile, 都是在默认值 <code>512 * 1024</code> 这个阈值下采样统计的，和实际的 heap 上的内存分配可能会有些出入，但是对于我们分析内存泄露，影响不大。</p>
-]]></content>
-    <summary type="html">
-    <![CDATA[<p>Go heap profile 是尝尝用来检查内存泄露和内存占用大问题的问题的手段，而且非常惯用。</p>
-<p>而且，我们也经常创建两个间隔较长的 heap profile, 获取它们的差值来方便查看内存泄露: <a href="https://colobu.com/2019/08/20/use-pprof-to-compare-go-memory-usage/" target="_blank" rel="external">Hi, 使用多年的go pprof检查内存泄漏的方法居然是错的?! </a></p>
-<p>今天，度厂的一位同学提出了一个很有意思的案例，让我们对 heap profile 有了更深的理解。</p>
-]]>
-    
-    </summary>
-    
-      <category term="Go" scheme="https://colobu.com/categories/Go/"/>
     
   </entry>
   
