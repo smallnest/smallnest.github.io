@@ -1,0 +1,769 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset="utf-8">
+  
+  <title>Rust Tokio 任务取消模式</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+  <meta name="description" content="原文: Rust tokio task cancellation patterns
+我最近一直在尝试重新学习 Rust。开始时进展有些缓慢，但我觉得我终于开始感受到累积效应在起作用了。也许这只是我的大脑在跟我开玩笑，但现在写 Rust 时我感觉比几周前轻松多了。">
+<meta property="og:type" content="article">
+<meta property="og:title" content="Rust Tokio 任务取消模式">
+<meta property="og:url" content="https://colobu.com/2024/05/04/Rust-tokio-task-cancellation-patterns/">
+<meta property="og:site_name" content="鸟窝">
+<meta property="og:description" content="原文: Rust tokio task cancellation patterns
+我最近一直在尝试重新学习 Rust。开始时进展有些缓慢，但我觉得我终于开始感受到累积效应在起作用了。也许这只是我的大脑在跟我开玩笑，但现在写 Rust 时我感觉比几周前轻松多了。">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="Rust Tokio 任务取消模式">
+<meta name="twitter:description" content="原文: Rust tokio task cancellation patterns
+我最近一直在尝试重新学习 Rust。开始时进展有些缓慢，但我觉得我终于开始感受到累积效应在起作用了。也许这只是我的大脑在跟我开玩笑，但现在写 Rust 时我感觉比几周前轻松多了。">
+
+  
+  <link rel="alternative" href="/atom.xml" title="鸟窝" type="application/atom+xml">
+  
+  
+  <link rel="icon" href="/favicon.png">
+  
+  <link rel="stylesheet" href="/css/style.css" type="text/css">
+
+  <link href="//cdn.staticfile.org/font-awesome/4.2.0/css/font-awesome.css" rel="stylesheet">
+  
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/fancybox/2.1.7/css/jquery.fancybox.min.css"
+    media="screen" type="text/css">
+  
+  <link rel="stylesheet" href="//cdnjs.cloudflare.com/ajax/libs/animate.css/3.1.1/animate.min.css" media="screen"
+    type="text/css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/tonsky/FiraCode@1.207/distr/fira_code.css">
+</head>
+<body>
+  <div id="container">
+    <div id="wrap">
+      <header id="header">
+  <div id="banner"></div>
+  <div id="header-outer" class="outer">
+    <div id="header-title" class="inner">
+      <h1 id="logo-wrap" class="animated bounceInLeft">
+        <a href="/" id="logo">鸟窝</a>
+      </h1>
+      
+        <!-- <h2 id="subtitle-wrap" class="animated bounceInLeft"> -->
+        <h2 id="subtitle-wrap">
+          <!-- <a href="/" id="subtitle">大道至简 Simplicity is the ultimate form of sophistication</a> -->
+          <a href="https://item.jd.com/14283252.html" target="_blank" style="color: #e32d40;text-decoration: none;"><b>《深入理解Go并发编程》新书发售中。一书在手，并发无忧</b></a>
+        </h2>
+      
+    </div>
+    <div id="header-inner" class="inner">
+      <nav id="main-nav">
+        <a id="main-nav-toggle" class="nav-icon"></a>
+        
+          
+            <a class="main-nav-link" href="/"><i class="fa fa-home">&nbsp;</i>首页</a>
+          
+          
+          
+            <a class="main-nav-link" href="/archives"><i class="fa fa-folder-o">&nbsp;</i>归档</a>
+          
+          
+          
+            <a class="main-nav-link" href="https://github.com/smallnest"><i class="fa fa-github">&nbsp;</i>github</a>
+          
+          
+          
+            <div class="dropdown main-nav-link"><a class="main-nav-link" href="#"><i class="fa fa-bars">&nbsp;</i>网站群</a>
+              <div class="dropdown-content">
+          
+            
+              <a href="/goasm"><i class="fa fa-language"></i>&nbsp;Go汇编示例</a>
+            
+                
+          
+            
+              <a href="https://gowebexamples.com"><i class="fa fa-external-link"></i>&nbsp;Go Web开发示例</a>
+            
+                
+          
+            
+              <a href="http://go-database-sql.org"><i class="fa fa-external-link"></i>&nbsp;Go 数据库开发教程</a>
+            
+                
+          
+            
+              <a href="https://colobu.com/gotips/"><i class="fa fa-external-link"></i>&nbsp;Go 语言编程技巧</a>
+            
+                
+          
+            
+              <hr>
+            
+                
+          
+            
+              <a href="/perf-book"><i class="fa fa-rust"></i>&nbsp;Rust高性能编程指南</a>
+            
+                
+          
+            
+              <a href="/rust100"><i class="fa fa-rust"></i>&nbsp;100个练习题学习Rust</a>
+            
+                
+          
+            
+              <hr>
+            
+                
+          
+            
+              <a href="http://rpcx.io"><i class="fa undefined"></i>&nbsp;RPCX官网</a>
+            
+                
+          
+            
+              <a href="http://cn.doc.rpcx.io"><i class="fa undefined"></i>&nbsp;RPC开发指南</a>
+            
+                
+          
+          </div>
+        </div>
+          
+          
+          
+            <a class="main-nav-link" href="/ScalaCollectionsCookbook"><i class="fa fa-book">&nbsp;</i>Scala集合技术手册</a>
+          
+          
+          
+            <a class="main-nav-link" href="/about"><i class="fa fa-lemon-o">&nbsp;</i>关于</a>
+          
+          
+
+
+      </nav>
+      <nav id="sub-nav">
+        
+          <a id="nav-rss-link" class="nav-icon" href="/atom.xml" title="RSS Feed"></a>
+        
+        <a id="nav-search-btn" class="nav-icon" title="Search"></a>
+      </nav>
+      <div id="search-form-wrap">
+        <form action="https://www.google.com/search" method="get" accept-charset="utf-8" class="search-form">
+          <input type="search" id="search-word" name="q" maxlength="20" class="search-form-input" placeholder="Search">
+          <input type=hidden name=ie value="utf-8">
+          <input type=hidden name=oe value="utf-8">
+          <input type=hidden name=hl value="zh-CN">
+          <input type="submit" id="search-submit" value="" class="search-form-submit">
+        </form>
+      </div>
+    </div>
+  </div>
+</header>
+      <div class="outer">
+        <section id="main"><article id="post-Rust-tokio-task-cancellation-patterns" class="article article-type-post" itemscope
+  itemprop="blogPost">
+  <div class="article-meta">
+    <a href="/2024/05/04/Rust-tokio-task-cancellation-patterns/" class="article-date">
+  <time datetime="2024-05-04T03:00:15.000Z" itemprop="datePublished">2024年05月04日</time>
+</a>
+    
+  <div class="article-category">
+    <a class="article-category-link" href="/categories/rust/">rust</a>
+  </div>
+
+    
+  <div class="article-author"> by smallnest</div>
+
+  </div>
+  <div class="article-inner">
+    
+    
+    <header class="article-header">
+      
+  
+    <h1 class="article-title" itemprop="name">
+      Rust Tokio 任务取消模式
+	  
+    </h1>
+  
+
+    </header>
+    
+    <div class="article-entry" itemprop="articleBody">
+      
+      
+      
+      <script>function show_answer(btn, x) { if (btn.value === "显示答案") { btn.value = "隐藏答案" } else { btn.value = "显示答案" } var as = document.getElementById(x); if (as.style.display === "none") { as.style.display = "block" } else { as.style.display = "none" } }</script>
+      <p>原文: <a href="https://cybernetist.com/2024/04/19/rust-tokio-task-cancellation-patterns/?continueFlag=018a29c7cbd9dd57a67b0fff6b1f07f4" target="_blank" rel="external">Rust tokio task cancellation patterns</a></p>
+<p>我最近一直在尝试重新学习 Rust。开始时进展有些缓慢，但我觉得我终于开始感受到累积效应在起作用了。也许这只是我的大脑在跟我开玩笑，但现在写 Rust 时我感觉比几周前轻松多了。</p>
+<a id="more"></a>
+<p>我过去曾对 Rust 有所了解，但从未构建过任何“实质性”的东西，而往往最大的学习成果都来源于这些大型项目，因为你会遇到在小规模项目中不会出现的问题。但这并不是说构建小型项目没有用！相反！它们是让你熟悉任何新语言的绝佳方式！只是小型项目通常不会突出显示你在构建它们时不需要的某些语言领域的知识不足。</p>
+<p>对我来说，其中一个领域是并发性。Rust 支持<a href="https://rust-lang.github.io/async-book/" target="_blank" rel="external">异步编程</a>，允许你启动异步任务，然后通过运行时执行器在 OS 线程之间调度执行。和 Rust 中的其他所有内容一样，异步编程也必须是内存安全的，所以你需要确保借用检查器（<code>borrow checker</code>）满意。这有时是一个真正的挑战。</p>
+<p>在 Rust 领域，更奇怪的是，虽然异步编程是一等公民，但标准库（即 <code>async_std</code>）相当有限，或者至少对于一个像我这样的未经训练的初学者来说是这样。</p>
+<p>结果人们倾向于使用 <a href="https://tokio.rs/" target="_blank" rel="external">tokio</a> crate，它提供了丰富的功能，并有一个非常棒的教程。我对 Rust 异步编程的大部分了解都是通过遵循 <a href="https://tokio.rs/tokio/tutorial" target="_blank" rel="external">tokio 教程</a>学到的。</p>
+<p>教程中没有详细介绍的一点是任务取消，这是我在一个项目中需要的功能。具体来说，我需要启动一堆工作任务，并需要一种方法来取消其中的任何一个或全部。我做了一些研究和破解，并想出了一些模式，我想把它们放在我可以轻松访问的地方。</p>
+<p>我写这篇博客文章和配套的 <a href="https://github.com/milosgajdos/cancellation-patterns" target="_blank" rel="external">GitHub 仓库</a>的目的是记录这些模式，并希望这篇文章能像一份活的文档一样，基于我未来希望学习的新的 tokio 技巧不断得到更新。正如我所说，我目前是一个 Rust 菜鸟，所以这些“模式”可能完全不靠谱——如果你发现它们是这样的，请在文章末尾留下评论，我会很乐意更新它。</p>
+<h2 id="Select_和_Channel">Select 和 Channel</h2>
+<p>这些模式的核心是 tokio 的两个特性（假设你已经熟悉任务的创建）：</p>
+<ul>
+<li><code>channel</code>：用于任务间通信</li>
+<li><code>select</code>：用于等待多个异步计算（不一定是任务！）</li>
+<li>乍一看，它们与 Go 的 <code>channel</code> 和 <code>select</code> 惊人地相似，但魔鬼藏在细节中。虽然 Go 提供了一个单一的 channel 构造，但其语义（<strong>发送</strong>/<strong>接收</strong>）是通过可选的 <code>&lt;-</code>/<code>-&gt;</code> 运算符“调整”的（仅当明确写出时，编译器才会检查——不幸的是，这很容易忘记，而且往往会被许多 Go 程序员省略）；tokio 的 <code>channel</code> 看似更复杂一些，但在内存安全和程序韧性方面更为强大。</li>
+</ul>
+<p>Tokio 的 <code>channel</code> 创建了两个不同的对象用于任务间通信。你不能使用单个 channel 同时进行接收和发送。这防止了我在 Go 编程中多次遇到的一类问题，比如当你意外地省略了可选的 channel 语义，并向一个只应接收数据的 channel 发送数据时——Go 编译器看不出有什么问题，但你却要花上几个小时调试为什么事情不起作用。</p>
+<p>从 Go 程序员的角度来看，另一个有趣的特性是，你可以创建多生产者单消费者channel（通过 <code>mpsc</code> 缩写表示），这可以防止我在 Go 程序中遇到的另一类问题：多个接收者修改同一个对象，从而导致难以发现的数据竞争。在 Go 中，你可以轻松地将一个指针通过channel发送给多个消费者，并承诺它是只读的，或者你永远不会尝试修改它；问题在于，Go 编译器不会强制执行这些规则——这实际上只是一种你希望使用你代码的人遵循的约定/未成文规则。拥有一个可以帮助你强制执行这些规则的编译器非常实用，并且与 Rust 的内存安全原则相契合。实际上，并发类型安全的故事更加有趣，涉及讨论 <code>Send</code> 和 <code>Sync</code> 特性，但本文是关于任务取消模式的，因此我会让你自己去深入研究这些特性。</p>
+<p>如果你确实需要将多个值发送给多个消费者，Tokio 已经为你准备好了，不用担心：Tokio 提供了 broadcast channel。</p>
+<p>一般来说，Tokio 实际上提供了四种类型的channel：</p>
+<ul>
+<li><code>mpsc</code>：多生产者单消费者，如上所述</li>
+<li><code>oneshot</code>：用于发送和接收单个值；一旦发送，channel就会关闭</li>
+<li><code>broadcast</code>：如上所述——多个发送者，多个消费者</li>
+<li><code>watch</code>：单生产者，多消费者</li>
+</ul>
+<p>正如我所说，这些在 Tokio 教程中都有很好的文档和讨论。我花了些时间来消化这些概念，因为我自然倾向于将它们与它们在 Go 语言中的等价物进行比较，但它们之间有一些微妙的差异。但无论如何，让我们继续探讨利用 <code>select</code> 和 <code>channel</code>的实际取消模式。</p>
+<p>以下是我提出的一些模式的不完整列表。对于经验丰富的 Rust 程序员来说，其中一些可能看起来有些牵强，但对我来说它们相当有效，正如我所说，我还是 Rust 的新手，所以我可能做错了什么。接下来是这些模式！</p>
+<h2 id="drop_JoinHandle_不会取消任务">drop <code>JoinHandle</code> 不会取消任务</h2>
+<p><strong>注意</strong>：<a href="https://www.reddit.com/user/colorfulchew/" target="_blank" rel="external">colorfulchew</a> 在 Reddit 上<a href="https://www.reddit.com/r/rust/comments/1c7xv7l/comment/l0awrtz/" target="_blank" rel="external">正确地指出</a>，使用 <code>drop</code> 实际上并不会取消任务，但当句柄超出作用域时丢弃它确实会——请参见本示例下方的示例。<a href="https://www.reddit.com/user/abcSilverline/" target="_blank" rel="external">abcSilverline</a> 提到我误解了<a href="https://docs.rs/tokio/latest/tokio/task/struct.JoinHandle.html#" target="_blank" rel="external">官方文档</a>，该文档明确指出：</p>
+<blockquote>
+<p>当 JoinHandle 被丢弃时，它会分离与其关联的任务，这意味着不再有任何指向该任务的句柄，也无法再等待它完成。</p>
+</blockquote>
+<p>每次你在 tokio 中启动(<code>spawn</code>)一个任务时，你都会得到一个 <code>JoinHandle</code>。你可以使用 <code>join</code> 句柄来等待任务完成，但我原以为你可以仅仅通过丢弃它来强制终止任务。下面是一个愚蠢的例子：</p>
+<figure class="highlight rust"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">use</span> tokio::time::{<span class="keyword">self</span>, Duration};</div><div class="line"></div><div class="line"><span class="preprocessor">#[tokio::main]</span></div><div class="line">async <span class="function"><span class="keyword">fn</span> <span class="title">main</span></span>() {</div><div class="line">    <span class="keyword">let</span> handle = tokio::spawn(async {</div><div class="line">        <span class="comment">// do some work</span></div><div class="line">        tokio::time::sleep(Duration::from_secs(<span class="number">10</span>)).await;</div><div class="line">        println!(<span class="string">"Task completed"</span>);</div><div class="line">    });</div><div class="line"></div><div class="line">    <span class="comment">// Cancel the task after 1 second</span></div><div class="line">    time::sleep(Duration::from_millis(<span class="number">100</span>)).await;</div><div class="line">    drop(handle);</div><div class="line"></div><div class="line">    println!(<span class="string">"Task was cancelled"</span>);</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>我也错误地以为我可以这样做：</p>
+<figure class="highlight rust"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">use</span> tokio::time::{<span class="keyword">self</span>, Duration};</div><div class="line"></div><div class="line"><span class="preprocessor">#[tokio::main]</span></div><div class="line">async <span class="function"><span class="keyword">fn</span> <span class="title">main</span></span>() {</div><div class="line">    {</div><div class="line">        <span class="keyword">let</span> handle = tokio::spawn(async {</div><div class="line">            <span class="comment">// do some work</span></div><div class="line">            tokio::time::sleep(Duration::from_secs(<span class="number">10</span>)).await;</div><div class="line">            println!(<span class="string">"Task completed"</span>);</div><div class="line">        });</div><div class="line"></div><div class="line">        <span class="comment">// Cancel the task after 100ms</span></div><div class="line">        time::sleep(Duration::from_millis(<span class="number">100</span>)).await;</div><div class="line">    }</div><div class="line"></div><div class="line">    println!(<span class="string">"Task was cancelled"</span>);</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>唉，不是的，<strong>丢弃句柄并不会取消正在运行的任务</strong>！</p>
+<h2 id="终止任务">终止任务</h2>
+<p>这是取消任务的最极端方式，不给清理工作留下任何空间：</p>
+<figure class="highlight rust"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">use</span> tokio::time::{<span class="keyword">self</span>, Duration};</div><div class="line"></div><div class="line"><span class="preprocessor">#[tokio::main]</span></div><div class="line">async <span class="function"><span class="keyword">fn</span> <span class="title">main</span></span>() {</div><div class="line">    <span class="keyword">let</span> handle = tokio::spawn(async {</div><div class="line">        <span class="comment">// do some work</span></div><div class="line">        tokio::time::sleep(Duration::from_secs(<span class="number">1</span>)).await;</div><div class="line">        println!(<span class="string">"Task completed"</span>);</div><div class="line">    });</div><div class="line"></div><div class="line">    <span class="comment">// Cancel the task after 100 milliseconds</span></div><div class="line">    time::sleep(Duration::from_millis(<span class="number">100</span>)).await;</div><div class="line">    handle.abort();</div><div class="line">    time::sleep(Duration::from_secs(<span class="number">2</span>)).await;</div><div class="line"></div><div class="line">    println!(<span class="string">"Task was cancelled"</span>);</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<h2 id="使用_oneshot">使用 <code>oneshot</code></h2>
+<p>如果你只需要一次性地将取消信号广播给多个任务，那么 <code>oneshot</code> channel 就能很好地满足你的需求。</p>
+<p><code>oneshot</code> channel允许在channel上进行一次发送，多个接收者可以监听这次发送。与直接丢弃句柄不同，这种模式允许你的channel进行一些清理工作。以下是一个示例：</p>
+<figure class="highlight rust"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">use</span> tokio::time::Duration;</div><div class="line"><span class="keyword">use</span> tokio::sync::oneshot;</div><div class="line"></div><div class="line"><span class="preprocessor">#[tokio::main]</span></div><div class="line">async <span class="function"><span class="keyword">fn</span> <span class="title">main</span></span>() {</div><div class="line">    <span class="keyword">let</span> (tx, rx) = oneshot::channel();</div><div class="line"></div><div class="line">    <span class="keyword">let</span> task = tokio::spawn(async move {</div><div class="line">        tokio::select! {</div><div class="line">            <span class="number">_</span> = rx =&gt; {</div><div class="line">                println!(<span class="string">"Task is cancelling..."</span>);</div><div class="line">            }</div><div class="line">            <span class="number">_</span> = tokio::time::sleep(Duration::from_secs(<span class="number">10</span>)) =&gt; {</div><div class="line">                println!(<span class="string">"Task completed normally"</span>);</div><div class="line">            }</div><div class="line">        }</div><div class="line">        println!(<span class="string">"Task is cleaning up"</span>);</div><div class="line">    });</div><div class="line"></div><div class="line">    tokio::time::sleep(Duration::from_millis(<span class="number">100</span>)).await;</div><div class="line"></div><div class="line">    <span class="comment">// Send a cancellation signal</span></div><div class="line">    <span class="keyword">let</span> <span class="number">_</span> = tx.send(());</div><div class="line"></div><div class="line">    <span class="comment">// Wait for the tasks to finish</span></div><div class="line">    <span class="comment">// NOTE: we could do this instead:</span></div><div class="line">    <span class="comment">// let _ = tokio::join!(task);</span></div><div class="line">    <span class="keyword">let</span> <span class="number">_</span> = task.await;</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>现在，如果你运行这个程序，你会得到类似这样的结果：</p>
+<figure class="highlight shell"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div></pre></td><td class="code"><pre><div class="line">Task <span class="keyword">is</span> cancelling...</div><div class="line">Task <span class="keyword">is</span> cleaning <span class="keyword">up</span></div></pre></td></tr></table></figure>
+
+<p><code>oneshot</code> channel 的局限性在于，你不能使用它来取消多个任务。它实际上是为一次性通知而设计和优化的。所以请注意这一点！</p>
+<h2 id="使用_broadcast_取消多个任务">使用 <code>broadcast</code> 取消多个任务</h2>
+<p>如果你想要取消多个任务，你可以使用 broadcast channel。你可以有多个生产者向channel发送数据，同时也有多个消费者从channel接收数据。每个消费者都能看到channel上发送的每个值。非常方便！</p>
+<p>以下是一个简单的示例，展示了如何使用 broadcast channel来取消多个任务并让它们进行清理：</p>
+<figure class="highlight rust"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div><div class="line">35</div><div class="line">36</div><div class="line">37</div><div class="line">38</div><div class="line">39</div><div class="line">40</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">use</span> tokio::sync::broadcast;</div><div class="line"><span class="keyword">use</span> tokio::time::Duration;</div><div class="line"></div><div class="line"><span class="preprocessor">#[tokio::main]</span></div><div class="line">async <span class="function"><span class="keyword">fn</span> <span class="title">main</span></span>() {</div><div class="line">    <span class="keyword">let</span> (tx, <span class="keyword">mut</span> rx1) = broadcast::channel(<span class="number">1</span>);</div><div class="line">    <span class="keyword">let</span> <span class="keyword">mut</span> rx2 = tx.subscribe();</div><div class="line"></div><div class="line">    <span class="keyword">let</span> task1 = tokio::spawn(async move {</div><div class="line">        tokio::select! {</div><div class="line">            <span class="number">_</span> = rx1.recv() =&gt; {</div><div class="line">                println!(<span class="string">"Task 1 is cancelling..."</span>);</div><div class="line">            }</div><div class="line">            <span class="number">_</span> = tokio::time::sleep(Duration::from_secs(<span class="number">10</span>)) =&gt; {</div><div class="line">                println!(<span class="string">"Task 1 completed normally"</span>);</div><div class="line">            }</div><div class="line">        }</div><div class="line">        println!(<span class="string">"Task 1 is cleaning up"</span>);</div><div class="line">    });</div><div class="line"></div><div class="line">    <span class="keyword">let</span> task2 = tokio::spawn(async move {</div><div class="line">        tokio::select! {</div><div class="line">            <span class="number">_</span> = rx2.recv() =&gt; {</div><div class="line">                println!(<span class="string">"Task 2 is cancelling..."</span>);</div><div class="line">            }</div><div class="line">            <span class="number">_</span> = tokio::time::sleep(Duration::from_secs(<span class="number">10</span>)) =&gt; {</div><div class="line">                println!(<span class="string">"Task 2 completed normally"</span>);</div><div class="line">            }</div><div class="line">        }</div><div class="line">        println!(<span class="string">"Task 2 is cleaning up"</span>);</div><div class="line">    });</div><div class="line"></div><div class="line">    tokio::time::sleep(Duration::from_millis(<span class="number">100</span>)).await;</div><div class="line"></div><div class="line">    <span class="comment">// Send a cancellation signal</span></div><div class="line">    <span class="keyword">let</span> <span class="number">_</span> = tx.send(());</div><div class="line"></div><div class="line">    <span class="comment">// Wait for the tasks to finish</span></div><div class="line">    <span class="keyword">let</span> <span class="number">_</span> = tokio::join!(task1, task2);</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>如果你运行这个程序，你会得到类似这样的结果：</p>
+<figure class="highlight shell"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line">Task <span class="number">2</span> <span class="keyword">is</span> cancelling...</div><div class="line">Task <span class="number">2</span> <span class="keyword">is</span> cleaning <span class="keyword">up</span></div><div class="line">Task <span class="number">1</span> <span class="keyword">is</span> cancelling...</div><div class="line">Task <span class="number">1</span> <span class="keyword">is</span> cleaning <span class="keyword">up</span></div></pre></td></tr></table></figure>
+
+<p>请注意，在你运行时，取消的顺序可能会有所不同，因为任务可能会以不同的顺序被取消！</p>
+<p>请注意，取消的顺序可能会因你的情况而异，因为任务可能会以不同的顺序被取消！</p>
+<p>如果你只是想从单个任务向多个任务发送取消信号，那么使用 broadcast channel可能会有点过度，因为它提供了在多个任务之间传递消息的所有机制。</p>
+<p>如果你既需要消息传递又需要取消功能，那么 broadcast channel会很有用。但如果你只需要取消功能，那么有更好的方式（或者说可能不一定是更好的，但开销更少），那就是 watch channel。</p>
+<h2 id="使用_watch_取消多个任务">使用 <code>watch</code> 取消多个任务</h2>
+<p>watch channel是一个单生产者多消费者channel。同样，watch channel给了任务在取消后自行清理的机会。但缺点是，消费者只能看到channel上发送的最新值——这意味着，如果你的任务在channel上发送值之后才启动，它可能会错过这个值，因此不会被取消，所以请注意这一点。以下是一个简单的示例：</p>
+<figure class="highlight rust"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div><div class="line">35</div><div class="line">36</div><div class="line">37</div><div class="line">38</div><div class="line">39</div><div class="line">40</div><div class="line">41</div><div class="line">42</div><div class="line">43</div><div class="line">44</div><div class="line">45</div><div class="line">46</div><div class="line">47</div><div class="line">48</div><div class="line">49</div><div class="line">50</div><div class="line">51</div><div class="line">52</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">use</span> tokio::sync::watch;</div><div class="line"><span class="keyword">use</span> tokio::time::Duration;</div><div class="line"></div><div class="line"><span class="preprocessor">#[tokio::main]</span></div><div class="line">async <span class="function"><span class="keyword">fn</span> <span class="title">main</span></span>() {</div><div class="line">    <span class="keyword">let</span> (tx, <span class="keyword">mut</span> rx1) = watch::channel(<span class="keyword">false</span>);</div><div class="line">    <span class="keyword">let</span> <span class="keyword">mut</span> rx2 = tx.subscribe();</div><div class="line"></div><div class="line">    <span class="keyword">let</span> task1 = tokio::spawn(async move {</div><div class="line">        <span class="keyword">loop</span> {</div><div class="line">            tokio::select! {</div><div class="line">                <span class="number">_</span> = rx1.changed() =&gt; {</div><div class="line">                    <span class="keyword">if</span> *rx1.borrow() {</div><div class="line">                        println!(<span class="string">"Task 1 is cancelling..."</span>);</div><div class="line">                        <span class="keyword">break</span>;</div><div class="line">                    }</div><div class="line">                }</div><div class="line">                <span class="number">_</span> = tokio::time::sleep(Duration::from_secs(<span class="number">10</span>)) =&gt; {</div><div class="line">                    println!(<span class="string">"Task 1 completed normally"</span>);</div><div class="line">                    <span class="keyword">break</span>;</div><div class="line">                }</div><div class="line">            }</div><div class="line">        }</div><div class="line">        println!(<span class="string">"Task 1 is cleaning up"</span>);</div><div class="line">    });</div><div class="line"></div><div class="line">    <span class="keyword">let</span> task2 = tokio::spawn(async move {</div><div class="line">        <span class="keyword">loop</span> {</div><div class="line">            tokio::select! {</div><div class="line">                <span class="number">_</span> = rx2.changed() =&gt; {</div><div class="line">                    <span class="keyword">if</span> *rx2.borrow() {</div><div class="line">                        println!(<span class="string">"Task 2 is cancelling..."</span>);</div><div class="line">                        <span class="keyword">break</span>;</div><div class="line">                    }</div><div class="line">                }</div><div class="line">                <span class="number">_</span> = tokio::time::sleep(Duration::from_secs(<span class="number">10</span>)) =&gt; {</div><div class="line">                    println!(<span class="string">"Task 2 completed normally"</span>);</div><div class="line">                    <span class="keyword">break</span>;</div><div class="line">                }</div><div class="line">            }</div><div class="line">        }</div><div class="line">        println!(<span class="string">"Task 2 is cleaning up"</span>);</div><div class="line">    });</div><div class="line"></div><div class="line">    tokio::time::sleep(Duration::from_millis(<span class="number">100</span>)).await;</div><div class="line"></div><div class="line">    <span class="comment">// Send a cancellation signal</span></div><div class="line">    <span class="keyword">let</span> <span class="number">_</span> = tx.send(<span class="keyword">true</span>);</div><div class="line"></div><div class="line">    <span class="comment">// Wait for the tasks to finish</span></div><div class="line">    <span class="keyword">let</span> <span class="number">_</span> = tokio::join!(task1, task2);</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>这个channel被设计用来监视程序中的变化。有点像特定数据的发布/订阅模式：文档提到将配置更改作为标准示例进行监视，但你也可以将其用于取消操作。</p>
+<p>请注意，我们在初始化channel时发送了 false，并且我们使用 true 来发送取消信号。每个任务都需要检查是否收到了 true，因为它们也可能会收到 false。我们也可以发送一些枚举或字符串，如 <code>Foo::cancel</code> 或 <code>&quot;cancel&quot;</code>，但同样，每个任务都需要检查是否是取消信号，如果是，则进行一些清理然后退出。</p>
+<h2 id="取消令牌">取消令牌</h2>
+<p>官方文档在关于<a href="https://tokio.rs/tokio/topics/shutdown" target="_blank" rel="external">优雅关闭</a>的文章中列出了一个名为 <code>CancellationToken</code> 的东西。这在 <code>tokio crate</code> 本身中不可用，而是在相关的 <a href="https://docs.rs/tokio-util/latest/tokio_util/index.html" target="_blank" rel="external">toko_util</a> crate 中。</p>
+<p>我没有在任何项目中用过它，因为我试图避免引入比我已经使用的更多的依赖关系，但这是另一个有趣的选择，实际上是针对取消的。</p>
+<figure class="highlight rust"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div><div class="line">35</div><div class="line">36</div><div class="line">37</div><div class="line">38</div><div class="line">39</div><div class="line">40</div><div class="line">41</div><div class="line">42</div><div class="line">43</div><div class="line">44</div><div class="line">45</div><div class="line">46</div><div class="line">47</div><div class="line">48</div><div class="line">49</div><div class="line">50</div><div class="line">51</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">use</span> tokio::time::{sleep, Duration};</div><div class="line"><span class="keyword">use</span> tokio_util::sync::CancellationToken;</div><div class="line"></div><div class="line"><span class="preprocessor">#[tokio::main]</span></div><div class="line">async <span class="function"><span class="keyword">fn</span> <span class="title">main</span></span>() {</div><div class="line">    <span class="comment">// Create a CancellationToken</span></div><div class="line">    <span class="keyword">let</span> token = CancellationToken::new();</div><div class="line"></div><div class="line">    <span class="keyword">let</span> token1 = token.clone();</div><div class="line">    <span class="keyword">let</span> token2 = token.clone();</div><div class="line"></div><div class="line">    <span class="keyword">let</span> task1 = tokio::spawn(async move {</div><div class="line">        <span class="keyword">loop</span> {</div><div class="line">            tokio::select! {</div><div class="line">                <span class="number">_</span> = token1.cancelled() =&gt; {</div><div class="line">                        println!(<span class="string">"Task 1 is cancelling..."</span>);</div><div class="line">                        <span class="keyword">break</span>;</div><div class="line">                }</div><div class="line">                <span class="number">_</span> = tokio::time::sleep(Duration::from_secs(<span class="number">10</span>)) =&gt; {</div><div class="line">                    println!(<span class="string">"Task 1 completed normally"</span>);</div><div class="line">                    <span class="keyword">break</span>;</div><div class="line">                }</div><div class="line">            }</div><div class="line">        }</div><div class="line">        println!(<span class="string">"Task 1 is cleaning up"</span>);</div><div class="line">    });</div><div class="line"></div><div class="line">    <span class="keyword">let</span> task2 = tokio::spawn(async move {</div><div class="line">        <span class="keyword">loop</span> {</div><div class="line">            tokio::select! {</div><div class="line">                <span class="number">_</span> = token2.cancelled() =&gt; {</div><div class="line">                        println!(<span class="string">"Task 2 is cancelling..."</span>);</div><div class="line">                        <span class="keyword">break</span>;</div><div class="line">                }</div><div class="line">                <span class="number">_</span> = tokio::time::sleep(Duration::from_secs(<span class="number">10</span>)) =&gt; {</div><div class="line">                    println!(<span class="string">"Task 2 completed normally"</span>);</div><div class="line">                    <span class="keyword">break</span>;</div><div class="line">                }</div><div class="line">            }</div><div class="line">        }</div><div class="line">        println!(<span class="string">"Task 2 is cleaning up"</span>);</div><div class="line">    });</div><div class="line"></div><div class="line">    sleep(Duration::from_millis(<span class="number">100</span>)).await;</div><div class="line"></div><div class="line">    <span class="comment">// Send a cancellation signal</span></div><div class="line">    token.cancel();</div><div class="line"></div><div class="line">    <span class="comment">// Wait for the tasks to finish</span></div><div class="line">    <span class="keyword">let</span> <span class="number">_</span> = tokio::join!(task1, task2);</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>请注意我们是如何克隆令牌的，以便将其移动到单独的异步任务中。值得一提的是，还有一个叫做 <a href="https://docs.rs/tokio-util/latest/tokio_util/sync/struct.CancellationToken.html#method.child_token" target="_blank" rel="external">child_token</a> 的东西，用官方文档的话来说：</p>
+<blockquote>
+<p>与克隆的 <code>CancellationToken</code> 不同，取消子令牌不会取消父令牌。</p>
+</blockquote>
+<h2 id="结论">结论</h2>
+<p>这是我过去几周在学习 <code>tokio</code> 的过程中整理的取消选项列表。正如我所说，这绝不是一份完整的列表，而且很可能还有更多可供选择的选项，我迫切希望了解它们，所以请不要害羞，在评论中告诉我。你可以在 <a href="https://github.com/milosgajdos/cancellation-patterns" target="_blank" rel="external">GitHub</a> 上找到这篇博客文章中列出的所有代码示例作为参考。不要害羞，用新的模式或修复现有模式打开一个 PR（Pull Request）吧！</p>
+<p>更新：<br><strong>2024/04/19</strong></p>
+<ul>
+<li>colorfulchew 在 <a href="https://www.reddit.com/r/rust/comments/1c7xv7l/" target="_blank" rel="external">Reddit</a> 上正确地指出，使用 <code>drop</code> 来丢弃任务句柄实际上并不会取消任务——你必须使用 <code>abort()</code> 来取消任务。</li>
+<li>abcSilverline 提到我误解了<a href="https://docs.rs/tokio/latest/tokio/task/struct.JoinHandle.html#" target="_blank" rel="external">官方文档</a>，文档明确说明：“当它被丢弃时，意味着不再有任何指向该任务的句柄，也无法对其进行 join 操作。”</li>
+</ul>
+
+      
+    </div>
+    <footer class="article-footer">
+      
+  <ul class="article-tag-list"><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/rust/">rust</a></li></ul>
+
+
+      
+      <!-- <link rel="stylesheet" href="https://unpkg.com/gitalk/dist/gitalk.css">
+      <script src="https://unpkg.com/gitalk/dist/gitalk.min.js"></script> -->
+      <section id="comments">
+        <script src="https://utteranc.es/client.js"
+                repo="smallnest/gitalk"
+                issue-term="title"
+                theme="github-light"
+                crossorigin="anonymous"
+                async>
+        </script>
+        <!-- <div id="gitalk-container"></div>
+        <script type="text/javascript">
+          var gitalkOpts = {
+            id: '2024/05/04/Rust-tokio-task-cancellation-patterns',
+            owner: 'smallnest',
+            repo: 'gitalk',
+            title: 'Rust Tokio 任务取消模式',
+            body: 'https://colobu.com/2024/05/04/Rust-tokio-task-cancellation-patterns/',
+            clientID: 'bc02724130ed5b7ee275',
+            clientSecret: '68cb0bae2f93a8b88b09e0eb9b08c844b06a9047',
+            admin: ['smallnest'],
+            distractionFreeMode: false
+          };
+
+          const gitalk = new Gitalk(gitalkOpts)
+          gitalk.render('gitalk-container')
+        </script> -->
+        <noscript> 为正常使用评论功能请激活JavaScript</noscript>
+      </section>
+
+      
+
+    </footer>
+  </div>
+  
+  
+<nav id="article-nav">
+  
+    <a href="/2024/05/05/Sqids-short-unique-identifiers-generators/" id="article-nav-newer" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">Newer</strong>
+      <div class="article-nav-title">
+        
+          Sqids: 简短唯一ID生成器
+        
+      </div>
+    </a>
+  
+  
+    <a href="/2024/04/30/what-s-wrong-with-go-heap-profile/" id="article-nav-older" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">Older</strong>
+      <div class="article-nav-title">Go heap profile 怎么了</div>
+    </a>
+  
+</nav>
+
+  
+</article></section>
+        
+          <aside id="sidebar">
+  
+    <div class="widget-wrap">
+  <h3 class="widget-title">访问者地域</h3>
+  <div class="widget">
+    <img width="100%" src="/images/widgets/gopatterns.jpg">
+  </div>
+</div>
+
+<div class="widget-wrap">
+  <h3 class="widget-title">微信公众号</h3>
+  <div class="widget">
+    <script type="text/javascript" id="clstr_globe" src="//clustrmaps.com/globe.js?d=Hf4EJSi2XvL6TMcuFSH51Qn6nf5nZ8qnjVBnWCQ4FGc"></script>
+  </div>
+</div>
+
+<div class="widget-wrap">
+  <h3 class="widget-title">极客时间专栏</h3>
+  <div class="widget">
+    <a href="https://time.geekbang.org/column/intro/100061801">
+      <img width="100%" src="/images/widgets/geekbang.png">
+    </a>
+  </div>
+</div>
+
+<div class="widget-wrap">
+    <h3 class="widget-title">出版图书</h3>
+    <div class="widget">
+      <a href="https://cpgo.colobu.com/">
+        <img width="100%" src="/cpgolang/cpgo.png">
+      </a>
+    </div>
+    <div class="widget">
+      <a href="https://item.jd.com/14347716.html">
+        <img width="100%" src="/100gomistakes/cover.png">
+      </a>
+    </div>
+    <div class="widget">
+      <a href="/ScalaCollectionsCookbook/">
+        <img width="100%" src="/ScalaCollectionsCookbook/scala_collections_cookbook.jpg">
+        <img width="100%" src="/ScalaCollectionsCookbook/scala_collections_cookbook_tw.png">
+      </a>
+    </div>
+</div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">分类</h3>
+    <div class="widget">
+      <ul class="category-list"><li class="category-list-item"><a class="category-list-link" href="/categories/Android/">Android</a><span class="category-list-count">12</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/C/">C++</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/DOTNET/">DOTNET</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Docker/">Docker</a><span class="category-list-count">5</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Go/">Go</a><span class="category-list-count">283</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Java/">Java</a><span class="category-list-count">64</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Linux/">Linux</a><span class="category-list-count">8</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Rust/">Rust</a><span class="category-list-count">16</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Scala/">Scala</a><span class="category-list-count">18</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/go/">go</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/k8s/">k8s</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/rust/">rust</a><span class="category-list-count">5</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/分享/">分享</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/前端开发/">前端开发</a><span class="category-list-count">18</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/区块链/">区块链</a><span class="category-list-count">8</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/大数据/">大数据</a><span class="category-list-count">60</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/工具/">工具</a><span class="category-list-count">28</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/数据库/">数据库</a><span class="category-list-count">3</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/架构/">架构</a><span class="category-list-count">27</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/算法/">算法</a><span class="category-list-count">4</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/管理/">管理</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/网络编程/">网络编程</a><span class="category-list-count">13</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/设计模式/">设计模式</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/读书笔记/">读书笔记</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/运维/">运维</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/高并发编程/">高并发编程</a><span class="category-list-count">20</span></li></ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">标签云</h3>
+    <div class="widget tagcloud">
+      <a href="/tags/Android/" style="font-size: 15.71px;">Android</a><a href="/tags/ApacheBench/" style="font-size: 11.43px;">ApacheBench</a><a href="/tags/Bower/" style="font-size: 10.00px;">Bower</a><a href="/tags/C/" style="font-size: 10.00px;">C#</a><a href="/tags/CDN/" style="font-size: 10.00px;">CDN</a><a href="/tags/CQRS/" style="font-size: 10.00px;">CQRS</a><a href="/tags/CRC/" style="font-size: 10.00px;">CRC</a><a href="/tags/CSS/" style="font-size: 11.43px;">CSS</a><a href="/tags/CompletableFuture/" style="font-size: 10.00px;">CompletableFuture</a><a href="/tags/Comsat/" style="font-size: 10.00px;">Comsat</a><a href="/tags/Curator/" style="font-size: 18.57px;">Curator</a><a href="/tags/DSL/" style="font-size: 10.00px;">DSL</a><a href="/tags/Disruptor/" style="font-size: 10.00px;">Disruptor</a><a href="/tags/Docker/" style="font-size: 11.43px;">Docker</a><a href="/tags/Ember/" style="font-size: 11.43px;">Ember</a><a href="/tags/FastJson/" style="font-size: 10.00px;">FastJson</a><a href="/tags/Fiber/" style="font-size: 10.00px;">Fiber</a><a href="/tags/GAE/" style="font-size: 10.00px;">GAE</a><a href="/tags/GC/" style="font-size: 12.86px;">GC</a><a href="/tags/Gnuplot/" style="font-size: 10.00px;">Gnuplot</a><a href="/tags/Go/" style="font-size: 14.29px;">Go</a><a href="/tags/Gradle/" style="font-size: 10.00px;">Gradle</a><a href="/tags/Grunt/" style="font-size: 10.00px;">Grunt</a><a href="/tags/Gulp/" style="font-size: 10.00px;">Gulp</a><a href="/tags/Hadoop/" style="font-size: 10.00px;">Hadoop</a><a href="/tags/Hazelcast/" style="font-size: 10.00px;">Hazelcast</a><a href="/tags/IPFS/" style="font-size: 10.00px;">IPFS</a><a href="/tags/Ignite/" style="font-size: 10.00px;">Ignite</a><a href="/tags/JVM/" style="font-size: 10.00px;">JVM</a><a href="/tags/Java/" style="font-size: 17.14px;">Java</a><a href="/tags/Kafka/" style="font-size: 20.00px;">Kafka</a><a href="/tags/Lambda/" style="font-size: 14.29px;">Lambda</a><a href="/tags/Linux/" style="font-size: 12.86px;">Linux</a><a href="/tags/LongAdder/" style="font-size: 10.00px;">LongAdder</a><a href="/tags/MathJax/" style="font-size: 10.00px;">MathJax</a><a href="/tags/Maven/" style="font-size: 11.43px;">Maven</a><a href="/tags/Memcached/" style="font-size: 10.00px;">Memcached</a><a href="/tags/Metrics/" style="font-size: 10.00px;">Metrics</a><a href="/tags/Mongo/" style="font-size: 12.86px;">Mongo</a><a href="/tags/Netty/" style="font-size: 15.71px;">Netty</a>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">归档</h3>
+    <div class="widget">
+      <ul class="archive-list"><li class="archive-list-item"><a class="archive-list-link" href="/archives/2024/06/">June 2024</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2024/05/">May 2024</a><span class="archive-list-count">9</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2024/04/">April 2024</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2024/03/">March 2024</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2024/02/">February 2024</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2024/01/">January 2024</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/12/">December 2023</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/11/">November 2023</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/10/">October 2023</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/09/">September 2023</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/08/">August 2023</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/07/">July 2023</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/06/">June 2023</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/05/">May 2023</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/04/">April 2023</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/03/">March 2023</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/01/">January 2023</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/12/">December 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/11/">November 2022</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/10/">October 2022</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/09/">September 2022</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/08/">August 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/07/">July 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/06/">June 2022</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/05/">May 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/04/">April 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/03/">March 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/02/">February 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/01/">January 2022</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/12/">December 2021</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/11/">November 2021</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/10/">October 2021</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/08/">August 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/07/">July 2021</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/06/">June 2021</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/05/">May 2021</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/04/">April 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/03/">March 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/02/">February 2021</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/01/">January 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/12/">December 2020</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/11/">November 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/09/">September 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/08/">August 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/07/">July 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/06/">June 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/05/">May 2020</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/04/">April 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/03/">March 2020</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/02/">February 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/01/">January 2020</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/12/">December 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/11/">November 2019</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/10/">October 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/09/">September 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/08/">August 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/07/">July 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/06/">June 2019</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/05/">May 2019</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/04/">April 2019</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/03/">March 2019</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/02/">February 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/01/">January 2019</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/12/">December 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/11/">November 2018</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/10/">October 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/09/">September 2018</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/08/">August 2018</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/07/">July 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/06/">June 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/05/">May 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/04/">April 2018</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/03/">March 2018</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/02/">February 2018</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/01/">January 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/12/">December 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/11/">November 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/10/">October 2017</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/09/">September 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/08/">August 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/07/">July 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/06/">June 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/05/">May 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/04/">April 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/03/">March 2017</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/02/">February 2017</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/01/">January 2017</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/12/">December 2016</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/11/">November 2016</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/10/">October 2016</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/09/">September 2016</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/08/">August 2016</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/07/">July 2016</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/06/">June 2016</a><span class="archive-list-count">14</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/05/">May 2016</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/04/">April 2016</a><span class="archive-list-count">14</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/03/">March 2016</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/02/">February 2016</a><span class="archive-list-count">8</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/01/">January 2016</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/12/">December 2015</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/11/">November 2015</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/10/">October 2015</a><span class="archive-list-count">9</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/09/">September 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/08/">August 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/07/">July 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/06/">June 2015</a><span class="archive-list-count">8</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/05/">May 2015</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/04/">April 2015</a><span class="archive-list-count">15</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/03/">March 2015</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/02/">February 2015</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/01/">January 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/12/">December 2014</a><span class="archive-list-count">28</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/11/">November 2014</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/10/">October 2014</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/09/">September 2014</a><span class="archive-list-count">28</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/08/">August 2014</a><span class="archive-list-count">19</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/07/">July 2014</a><span class="archive-list-count">1</span></li></ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">近期文章</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+            <a href="/2024/06/04/redka-redis-with-sqlite/">Redka - 父亲是Redis，母亲是SQLite</a>
+          </li>
+        
+          <li>
+            <a href="/2024/06/03/command-dispacher-pattern/">命令分发模式</a>
+          </li>
+        
+          <li>
+            <a href="/2024/05/22/parse-tcp-timestamp-in-Rust/">使用Rust捕获和解析网络包</a>
+          </li>
+        
+          <li>
+            <a href="/2024/05/20/implemenmt-pping-in-go/">使用Go语言实现 pping</a>
+          </li>
+        
+          <li>
+            <a href="/2024/05/19/let-Rob-Pike-write-a-Red-Black-tree/">让 Rob Pike 或者字节跳动的同学实现一个红黑树</a>
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">友情链接</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+			 
+            <a href="http://stackshare.io" target="_blank">技术栈</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://toutiao.io/" target="_blank">开发者头条</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://weekly.manong.io/issues/" target="_blank">码农周刊</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.tuicool.com/mags" target="_blank">编程狂人周刊</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.importnew.com/" target="_blank">importnew</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://ifeve.com/" target="_blank">并发编程网</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://github.com" target="_blank">github</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://stackoverflow.com/" target="_blank">stackoverflow</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.javacodegeeks.com/" target="_blank">javacodegeeks</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.infoq.com/" target="_blank">infoq</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.dzone.com/links/index.html" target="_blank">dzone</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://oj.leetcode.com/problems/" target="_blank">leetcode</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://tutorials.jenkov.com" target="_blank">jenkov</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://howtodoinjava.com" target="_blank">HowToDoInJava</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://java-design-patterns.com/patterns/" target="_blank">java design patterns</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://medium.com/netflix-techblog" target="_blank">Netflix技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://www.techiedelight.com" target="_blank">Techie Delight</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://engineering.linkedin.com/blog" target="_blank">Linkedin技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://blogs.dropbox.com/tech/" target="_blank">Dropbox技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://code.fb.com" target="_blank">Facebook技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://jm.taobao.org" target="_blank">淘宝中间件团队</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://tech.meituan.com" target="_blank">美团技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://blogs.360.cn" target="_blank">360技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://xiaomi-info.github.io" target="_blank">小米信息部技术团队</a>
+			
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+      
+
+  
+</aside>
+        
+      </div>
+      <footer id="footer">
+  
+  <div class="outer">
+    <div id="footer-info" class="inner">
+      &copy; 2024 smallnest<br>
+	  Powered by <a href="http://hexo.io/" target="_blank">Hexo</a>
+    </div>
+  </div>
+</footer>
+    </div>
+    <nav id="mobile-nav">
+  
+    
+      <a href="/" class="mobile-nav-link"><i class="fa fa-home">&nbsp;</i>首页</a>
+    
+  
+    
+      <a href="/archives" class="mobile-nav-link"><i class="fa fa-folder-o">&nbsp;</i>归档</a>
+    
+  
+    
+      <a href="https://github.com/smallnest" class="mobile-nav-link"><i class="fa fa-github">&nbsp;</i>github</a>
+    
+  
+    
+      <a class="mobile-nav-link" href="#"><i class="fa fa-bars">&nbsp;</i>网站群</a>
+    
+      
+            <a class="mobile-nav-link" href="/goasm">&nbsp;&nbsp;<i class="fa fa-language">&nbsp;</i>Go汇编示例</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="https://gowebexamples.com">&nbsp;&nbsp;<i class="fa fa-external-link">&nbsp;</i>Go Web开发示例</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://go-database-sql.org">&nbsp;&nbsp;<i class="fa fa-external-link">&nbsp;</i>Go 数据库开发教程</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="https://colobu.com/gotips/">&nbsp;&nbsp;<i class="fa fa-external-link">&nbsp;</i>Go 语言编程技巧</a>
+          
+          
+    
+      
+            
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/perf-book">&nbsp;&nbsp;<i class="fa fa-rust">&nbsp;</i>Rust高性能编程指南</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/rust100">&nbsp;&nbsp;<i class="fa fa-rust">&nbsp;</i>100个练习题学习Rust</a>
+          
+          
+    
+      
+            
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://rpcx.io">&nbsp;&nbsp;<i class="fa undefined">&nbsp;</i>RPCX官网</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://cn.doc.rpcx.io">&nbsp;&nbsp;<i class="fa undefined">&nbsp;</i>RPC开发指南</a>
+          
+          
+    
+    
+  
+    
+      <a href="/ScalaCollectionsCookbook" class="mobile-nav-link"><i class="fa fa-book">&nbsp;</i>Scala集合技术手册</a>
+    
+  
+    
+      <a href="/about" class="mobile-nav-link"><i class="fa fa-lemon-o">&nbsp;</i>关于</a>
+    
+  
+</nav>
+    
+<script src="//cdn.staticfile.org/jquery/1.11.1/jquery.min.js"></script>
+<script src="//cdn.bootcss.com/jquery.lazyload/1.9.1/jquery.lazyload.min.js"></script>
+
+<script src="//cdnjs.cloudflare.com/ajax/libs/fancybox/3.2.5/jquery.fancybox.min.js"></script>
+
+
+<script src="/js/script.js" type="text/javascript"></script>
+
+<!-- mathjax config similar to math.stackexchange -->
+<script type="text/x-mathjax-config">
+  MathJax.Hub.Config({
+    tex2jax: {
+      inlineMath: [ ['$','$'], ["\\(","\\)"] ],
+      processEscapes: true,
+      skipTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code']
+    }
+  });
+  MathJax.Hub.Queue(function() {
+      var all = MathJax.Hub.getAllJax(), i;
+      for(i=0; i < all.length; i += 1) {
+        all[i].SourceElement().parentNode.className += ' has-jax';
+      }
+  });
+</script>
+<script type="text/javascript" src="//cdn.bootcss.com/mathjax/2.6.0-beta.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML">
+</script>
+
+<div id="totop" style="position:fixed;bottom:150px;right:10px;cursor: pointer;z-index: 2000;">
+	<a title="返回顶部"><img src="/images/scrollup.png"/></a>
+</div>
+<script src="/js/totop.js" type="text/javascript"></script>
+
+
+
+
+<script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "//hm.baidu.com/hm.js?e085d87993250aab11f3e0c15f1c2785";
+  var s = document.getElementsByTagName("script")[0]; 
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+
+
+  </div>
+</body>
+</html>
