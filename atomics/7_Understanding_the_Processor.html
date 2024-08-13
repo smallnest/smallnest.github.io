@@ -1,0 +1,1384 @@
+<!doctype html>
+<html>
+   <head>
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+      <meta name="generator" content="pandoc">
+      
+      
+      
+      <!-- Bootstrap -->
+      <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.5.0/css/bootstrap.min.css" integrity="sha384-9aIt2nRpC12Uk9gS9baDl411NQApFmC26EwAOH8WgZl5MYYxFfc+NcPb1dKGj7Sk" crossorigin="anonymous">
+      <!-- Font-awesome -->
+      <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css">
+      <!-- Styles -->
+      <link rel="stylesheet" href="https://ashki23.github.io/styles.css">
+         </head>
+   <body>
+            <div class="container">
+         
+         <h1 id="第七章理解处理器">第七章：理解处理器</h1>
+<p>（<a href="https://marabos.nl/atomics/hardware.html" target="_blank">英文版本</a>）</p>
+<p>虽然第 <a href="./2_Atomics.md">2</a> 章和第 <a
+href="./3_Memory_Ordering.md">3</a>
+章的全部理论，已经可以让我们去编写正确的并发代码，但是更进一步，大概了解一下在处理器层面，一切都是怎么运行的，这对我们也会非常有帮助。在这一章节，我们将会探索原子操作最终编译后的机器码是什么样、不同架构的处理器之间的差异、为什么会有一个弱版本的
+<code>compare_exchange</code>
+存在、内存排序在单个指令的最低级含义，并且缓存是如何和这一切联系的。</p>
+<p>这一章的目标不是为了理解每种处理器架构的相关细节。如果这样的话，就需要我们去查阅大量大量的书籍，其中有些内容或许还没被著成书，或者根本没被公开。相反，本章节的目标是让大家对于原子操作在处理器层面是如何工作的这一点，有一个大概的认知，并且在实现或者优化涉及到关于原子的代码的时候，可以做出更多有依据的决策。当然，也仅是满足我们对处理器幕后如何工作的好奇心——暂时从抽象的理论中休息一下吧。</p>
+<p>为了尽可能的具体化，我们只关注两种特定的处理器架构：</p>
+<ul>
+<li><p><em>X86-64</em>：
+<a class="indexterm" id="index-AMDprocessors"></a> Intel 和 AMD 实现的
+64 位 x86
+架构处理器主要用于笔记本、台式机、服务器和一些游戏机主机。最初的 x86
+架构的 16 位版本和之后非常流行的 32 位版本是 Intel 开发的，而 64
+位的版本，也就是我们今天称作 x86-64 版本，最初是 AMD
+开发的一种扩展版本，因此也常叫作 AMD64。Intel 也开发了自己的 64
+位架构：IA-64，但最终采用了更为流行的 AMD 的 x86 扩展版本（名称为
+IA-32E、EM64T 以及稍后的 64）。</p></li>
+<li><p><em>ARM64</em>：</p>
+<p><a class="indexterm" id="index-ARM64processorarchitecture"></a> ARM
+架构的 64
+位版本用于几乎所有的现代移动设备、高性能的嵌入式系统、现代化的笔记本电脑和台式机中。它也被称为
+AArch64，并被被引入作为 ARMv8 的一部分。ARM 的早期版本（32
+位）在很多方面也是类似地，广泛地使用在各种应用中。可以想象在各种嵌入式系统中，从汽车到电子
+COVID 测试，这些流行的微控制器都是基于 ARMv6 和 ARMv7。</p></li>
+</ul>
+<p>这两种架构在许多方面都是不同的。最重要的是，他们以不同的方式去实现原子化。理解这两种架构中原子化如何工作的，将会给我们一些更加普遍的理解，并且这些也可以适用于许多其他的处理器架构。</p>
+<h2 id="处理器指令">处理器指令</h2>
+<p>（<a href="https://marabos.nl/atomics/hardware.html#instructions" target="_blank">英文版本</a>）</p>
+<p>我们可以通过仔细观察编译器的输出，以及处理器将执行的确切指令，来大致了解处理器级别的工作方式。</p>
+<div class="box">
+<h2 style="text-align: center;">
+汇编语言简介
+</h2>
+<p>
+当编译任何以编译语言（比如 rust 或者
+C）编写的软件的时候，你的代码将会翻译成可以被处理器执行的<i>机器指令</i>，最终处理器将会以此执行你的程序。这些指令高度特定于你编译程序的处理器架构。
+</p>
+<p>
+这些机器指令也被称作<i>机器码</i>，是以二进制格式编码的，对于人类来说，完全可读。<i>汇编</i>是人类可阅读的代表。每一个指令用一行文本表示，通常以一个单词或者缩写表示指令，后面再跟上它的参数或者操作数。汇编器（<code>assembler</code>）将一段汇编文本转换成二进制表示，反汇编器（<code>disassembler</code>）则相反。
+</p>
+<p>
+像 Rust
+语言，编译之后，源代码的大部分结构将会丢失。依据组织结构的层级，函数与函数调用或许仍然能被识别出来。但是，像结构体或者枚举这些类型会被简化为字节和地址，循环和条件处理会被转变为基本跳转或者分支指令的扁平结构。
+</p>
+<p>
+这里有一个示例，展示汇编长什么模样的一小段代码片段，用于某个假设的架构里面的：
+</p>
+<pre>
+ ldr x, 1234 // 从内存地址 1234 加载数据到寄存器 x
+li y, 0     // 将寄存器 y 设置为零
+inc x       // 将寄存器 x 增加一
+add y, x    // 将寄存器 x 的值加到寄存器 y
+mul x, 3    // 将寄存器 x 的值乘以 3
+cmp y, 10   // 比较寄存器 y 和 10
+jne -5      // 如果不相等，向前跳转五条指令
+str 1234, x // 将寄存器 x 的值存储到内存地址 1234</pre>
+<p>
+这个示例中，x 和 y
+是寄存器（<code>register</code>）。寄存器是处理器的一部分，不属于主内存，通常保存单个数值或者内存地址。在
+64 位的架构中，它们一般是 64
+位的大小。在不同的架构中，寄存器的个数可能是不一样的，但通常个数也是非常有限的。寄存器基本用于计算过程中的临时存储，是将数据写回内存前存放中间结果的地方。
+</p>
+<p>
+对于特定内存地址的常量，例如上面示例中的 -5 和
+1234，经常是以人类更容易阅读的<i>标签</i>来代替。在将汇编转换成机器码的时候，汇编器会自动将他们替换为实际的地址。
+</p>
+<p>
+使用标签的话，上面的示例可能是这样的：
+</p>
+<pre>
+           ldr x, SOME_VAR
+           li y, 0
+  my_loop: inc x
+           add y, x
+           mul x, 3
+           cmp y, 10
+           jne my_loop
+           str SOME_VAR, x</pre>
+<p>
+由于标签名只是汇编的一部分，并不是二进制机器码的，所以反汇编器不知道原始的标签名是什么，将机器码转换到汇编的时候，极大可能地只是生成一个无意义的标签名，比如
+<code>label1</code> 和 <code>var2</code>。
+</p>
+<p>
+对于所有不同架构下的完整汇编学习课程，并不在本书的范围内，也不是阅读本章的必备条件。常规的理解已经足够去弄懂这些示例代码了，我们只阅读汇编，不去写它。每个示例中相关的指令已经解释的足够详细，对于先前没有汇编经验的人来说，也可以跟得上。
+</p>
+</div>
+<p>为了去看 Rust
+编译器产生的确切机器码，我们有几个选项。我们可以像平常一样编译我们的代码，然后使用反汇编器（比如
+objdump），将生成的二进制文件转成汇编。利用编译阶段编译器产生的调试信息，反汇编器可以生成与
+Rust
+程序源码中原始函数名字对应的标签。这种方式有一个缺点，就是需要一个支持不同处理器架构的反汇编器。虽然
+Rust
+的编译器支持许多处理器架构，但是很多反汇编器只支持它所被编译的某一种处理器架构。</p>
+<p>一种更为直接的方式是使用 <code>rustc</code> 的
+<code>--emit=asm</code>
+命令行参数，让编译器直接生成汇编代码，而不是生成二进制代码。这种方式的缺点是会产生很多不相关的输出信息，包含一些我们不需要的反汇编器和调试工具的信息。</p>
+<p>也有一些很棒的工具，比如 <a
+href="https://crates.io/crates/cargo-show-asm">cargo-show-asm</a>，它可以与
+<code>cargo</code>
+互操，并且在使用了对应的命令行参数后，会自动编译你的代码，找出你感兴趣的函数对应的汇编，并且将包含的具体指令行进行高亮处理。</p>
+<p>对于一些相对比较小的代码片段，最简单最推荐的方式是使用 web
+服务，比如特别棒的 <a href="https://godbolt.org/">Compiler Explorer by
+Matt Godbolt</a>。这个网站上可以使用包含 Rust
+在内的多种语言编写代码，并且很直观地可以看到使用选择的编译器版本所产生的汇编代码。该网站甚至使用颜色展示出哪一行
+Rust
+代码对应哪一行汇编代码，即使是代码被优化过，这种对应关系仍然存在。</p>
+<p>由于我们想要观察在不同处理器架构下的汇编代码，因此需要指定 Rust
+编译器想要编译的目标架构。我们将使用 x86-64 的
+<code>x86_64-unknown-linux-musl</code> 和 ARM64 的
+<code>aarch64-unknown-linux-musl</code>。这两个在网站 Compiler Explorer
+上是直接被支持的。<a class="indexterm" id="index-ARM64processorarchitecture-aarch64-unknown-linux-musltarget"></a>如果你想要在本地编译，比如使用上面提到的
+<code>cargo-show-asm</code>
+或者其他的方式，你必须确保在目标机器上，已经安装了 Rust
+标准库，这些标准库通常使用 <code>rustup</code> 的 target 进行添加。</p>
+<p>在任何情况下，使用编译器标识 <code>--target</code>
+来选择编译的目标机器架构，比如
+<code>--target=aarch64-unknown-linux-musl</code>。如果你不指定任何目标架构，编译器将会基于你当前的平台进行自动选择。（在网站
+Compiler Explorer 的例子中，机器平台是这个网站所在的服务器，当前是
+<code>x86_64-unknown-linux-gnu</code>）。</p>
+<p>此外，建议使用 <code>-O</code> 标识以开启优化（或者当使用
+<code>Cargo</code> 时使用
+<code>--release</code>），因为这样启用优化并禁止溢出检查，这可以显著地减少我们将查看较小函数产生的汇编代码。</p>
+<p>让我门尝试一下，看看以下函数在 x86-64 和 ARM64
+上的汇编代码是什么样的：</p>
+<div class="sourceCode" id="cb1"><pre
+class="sourceCode rust"><code class="sourceCode rust"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="kw">pub</span> <span class="kw">fn</span> add_ten(num<span class="op">:</span> <span class="op">&amp;</span><span class="kw">mut</span> <span class="dt">i32</span>) <span class="op">{</span></span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a>    <span class="op">*</span>num <span class="op">+=</span> <span class="dv">10</span><span class="op">;</span></span>
+<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p>使用 <code>-O --target=aarch64-unknown-linux-musl</code>
+作为上述任何方式的编译参数，我们将得到 ARM64 架构下的汇编代码：</p>
+<div class="sourceCode" id="cb2"><pre class="sourceCode s"><code class="sourceCode gnuassembler"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="fu">add_ten:</span></span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a>    ldr w8<span class="op">,</span> <span class="op">[</span>x0<span class="op">]</span></span>
+<span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a>    add w8<span class="op">,</span> w8<span class="op">,</span> <span class="co">#10</span></span>
+<span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a>    <span class="kw">str</span> w8<span class="op">,</span> <span class="op">[</span>x0<span class="op">]</span></span>
+<span id="cb2-5"><a href="#cb2-5" aria-hidden="true" tabindex="-1"></a>    <span class="kw">ret</span></span></code></pre></div>
+<p><code>x0</code> 寄存器包含我们函数的参数，即增加 10 的 i32
+内存地址。首先，<code>ldr</code> 指令从内存地址加载 32 位值到 w8
+寄存器。<a class="indexterm" id="index-addinstructionARM"></a>然后，add
+指令增加 10 到 w8 并且将结果存回至 w8。随后，str 指令将 w8
+指令存回到相同的内存地址。最后，ret
+指令标记函数结束，并导致处理器跳回并继续执行调用 add_ten 的函数。</p>
+<p>如果我们为 <code>x86_64-unknown-linux-musl</code>
+编译完全相同的代码，我们将得到这样的东西：</p>
+<div class="sourceCode" id="cb3"><pre class="sourceCode s"><code class="sourceCode gnuassembler"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="fu">add_ten:</span></span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a>    add dword ptr <span class="op">[</span><span class="kw">rdi</span><span class="op">],</span> <span class="dv">10</span></span>
+<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a>    <span class="kw">ret</span></span></code></pre></div>
+<p><a class="indexterm" id="index-addinstructionx86"></a>这次，叫做 rdi
+的寄存器用于 num 参数。更有趣地是，在 <code>x86_64</code>，一个单独的
+add 指令可以完成 ARM64 上需要 3
+个指令才能完成的操作：加载、加和存储值。</p>
+<p>在<em>复杂指令集计算机</em>（CISC）架构上的情况，例如
+x86。这种架构上的指令通常有很多变体，例如操作寄存器或直接操作特定大小的内存。（汇编指令中的
+dword 指定 32 位操作。）</p>
+<p>相对地，<em>精简指令集计算机</em>（RISC）架构上通常有非常少变体的精简指令集，例如
+ARM。大多数指令仅能操作寄存器，并且加载和存储到内存需要单独的指令。这允许更简单的处理器，这可以降低成本，有时甚至提高性能。</p>
+<p>这种差异在原子性的取值和修改指令中尤为突出，我们很快就会看到。</p>
+<blockquote>
+<p>虽然编译器通常非常聪明，但它们并不总是生成最优的汇编，尤其当涉及原子操作时。如果你正在尝试并发现你对汇编中看似不必要的复杂性感到困惑的情况，这通常只是意味着编译器的未来版本有更多的优化空间。</p>
+</blockquote>
+<h3 id="加载和存储操作">加载和存储操作</h3>
+<p>（<a href="https://marabos.nl/atomics/hardware.html#load-store-ops" target="_blank">英文版本</a>）</p>
+<p>在我们深入研究更高级的内容之前，让我们首先看看最基本的原子操作：加载和存储指令。</p>
+<p>通过 <code>&amp;mut i32</code> 进行的采用的常规非原子指令，在
+<code>x86-64</code> 和 <code>ARM64</code>
+上只需要一个指令，如下所示：</p>
+<div
+style="columns: 3;column-gap: 20px;column-rule-color: green;column-rule-style: solid;">
+<div style="break-inside: avoid">
+<pre><code>Rust 源码
+&lt;pre&gt;pub fn a(x: &amp;mut i32) {
+*x = 0;</code></pre>
+}
+</pre>
+</div>
+<div style="break-inside: avoid">
+<pre><code>编译的 x86-64
+&lt;pre&gt;a:
+mov dword ptr [rdi], 0
+ret&lt;/pre&gt;</code></pre>
+</div>
+<div style="break-inside: avoid">
+<pre><code>编译的 ARM64
+&lt;pre&gt;a:
+str wzr, [x0]
+ret&lt;/pre&gt;</code></pre>
+</div>
+</div>
+<p>在 x86-64 上，非常通用的 mov
+指令用于将数据从一个地方复制（“移动”）到另一个地方；在这个示例下，是从 0
+常数复制到内存。在 ARM64 上，<code>str</code>（存储寄存器）指令将一个 32
+位寄存器存储到内存中。在这个示例下，使用的是特殊的 wzr
+寄存器，它总是包含 0。</p>
+<p>如果我们更改代码，而是使用 relaxed
+排序的原子操作，我们将得到以下结果：</p>
+<div
+style="columns: 3;column-gap: 20px;column-rule-color: green;column-rule-style: solid;">
+<div style="break-inside: avoid">
+<pre><code>Rust 源码
+&lt;pre&gt;pub fn a(x: &amp;AtomicI32) {
+x.store(0, Relaxed);</code></pre>
+}
+</pre>
+</div>
+<div style="break-inside: avoid">
+<pre><code>编译的 x86-64
+&lt;pre&gt;a:
+mov dword ptr [rdi], 0
+ret&lt;/pre&gt;</code></pre>
+</div>
+<div style="break-inside: avoid">
+<pre><code>编译的 ARM64
+&lt;pre&gt;a:
+str wzr, [x0]
+ret&lt;/pre&gt;</code></pre>
+</div>
+</div>
+<p>或许令人惊讶的是，它的汇编与非原子版本完全相同。事实证明，mov 和 str
+指令已经是原子的。它们要么发生，要么它们完全不会发生。显然，在
+<code>&amp;mut i32</code> 和 <code>&amp;AtomicI32</code>
+之间的任何差异仅对编译器检查和优化有关，但对于处理器是没有意外的——至少对于这两种架构上的
+relaxed store 操作。</p>
+<p>当我们查看 relaxed load 操作时，也是相同的：</p>
+<div
+style="columns: 3;column-gap: 20px;column-rule-color: green;column-rule-style: solid;">
+<div style="break-inside: avoid">
+<pre><code>Rust 源码
+&lt;pre&gt;pub fn a(x: &amp;i32) -&gt; i32 {
+*x</code></pre>
+}
+</pre>
+<pre>pub fn a(x: &AtomicI32) -> i32 {
+    x.load(Relaxed)
+}</pre>
+</div>
+<div style="break-inside: avoid">
+<pre><code>编译的 x86-64
+&lt;pre&gt;a:
+mov eax, dword ptr [rdi]
+ret&lt;/pre&gt;
+&lt;pre&gt;a:
+mov eax, dword ptr [rdi]
+ret&lt;/pre&gt;</code></pre>
+</div>
+<div style="break-inside: avoid">
+<pre><code>编译的 ARM64
+&lt;pre&gt;a:
+ldr w0, [x0]
+ret&lt;/pre&gt;
+&lt;pre&gt;a:
+ldr w0, [x0]
+ret&lt;/pre&gt;</code></pre>
+</div>
+</div>
+<p>在 x86-64 上，mov 指令被再次使用，这次用于从内存中的值复制到 32 位
+eax 寄存器。在 ARM64 上，使用 ldr（加载寄存器）指令将内存中的值加载到 w0
+寄存器。</p>
+<blockquote>
+<p>32 位的 eax 和 w0 寄存器用于返回函数的 32 位返回值。（对于 64
+位值，使用 64 位的 rax 和 x0 寄存器。）</p>
+</blockquote>
+<p>尽管处理器没有明显地区别原子和非原子的 store 和 load
+操作之间的不同，但是在我们的 Rust
+代码中不能安全地忽视这些区别。如果我们使用一个
+<code>&amp;mut i32</code>，Rust
+编译器可能假设没有其他线程可以并发地访问相同的 i32
+类型，并且可能决定以某种方式去转换或者优化代码，使得 store
+操作不再导致单个相应的 store 指令。例如，通过使用两个单独的 16
+位指令进行非原子的 32 位 load 或 store
+操作时非常正确的，尽管有些不寻常。</p>
+<h3 id="读并修改并写操作">读并修改并写操作</h3>
+<p>（<a href="https://marabos.nl/atomics/hardware.html#rmw-ops" target="_blank">英文版本</a></p>
+<p>对于<em>读并修改并写操作</em>来说，事情将变得更加有趣。正如本章早期讨论的那样，在类似
+ARM64 的 RISC
+架构中，非原子的读并修改并写操作通常编译为三个分开的指令（读、修改以及写），但在类似
+x86-64 的 CISC
+架构中，通常编译为一个单独的指令。这个简短的示例如下：</p>
+<div
+style="columns: 3;column-gap: 20px;column-rule-color: green;column-rule-style: solid;">
+<div style="break-inside: avoid">
+<pre><code>Rust 源码
+&lt;pre&gt;pub fn a(x: &amp;mut i32) {
+*x += 10;</code></pre>
+}
+</pre>
+</div>
+<div style="break-inside: avoid">
+<pre><code>编译的 x86-64
+&lt;pre&gt;a:
+add dword ptr [rdi], 10
+ret&lt;/pre&gt;</code></pre>
+</div>
+<div style="break-inside: avoid">
+<pre><code>编译的 ARM64
+&lt;pre&gt;a:
+ldr w8, [x0]
+add w8, w8, #10
+str w8, [x0]
+ret&lt;/pre&gt;</code></pre>
+</div>
+</div>
+<p>我们甚至可以在查看相应的原子操作之前，合理的假设这次会看到一个非原子和原子版本之间的区别。ARM64
+版本显然不是原子的，因为它的 load 和 store 操作发生在不同的步骤中。</p>
+<p>尽管不能从汇编本身直接明显地看出，但 x86-64
+版本并不是原子的。<code>add</code>
+指令将由处理器在幕后分割成几个指令，分别的步骤为加载值和存储结果。在单核计算机中，这是无关紧要的，因为在指令之间切换处理器核心仅在线程之间发生。然而，当多个核心并行执行指令，我们在不考虑执行单个指令设计的多个步骤的情况下，就不能假设所有指令都以原子地方式发生。</p>
+<h4 id="x86-lock-前缀">x86 lock 前缀</h4>
+<p>（<a href="https://marabos.nl/atomics/hardware.html#lock-prefix" target="_blank">英文版本</a>）</p>
+<p>为了支持多核系统，英特尔引入了一个称为 <code>lock</code>
+的处理器前缀。它被用于像 <code>add</code>
+这样的指令修饰符，以使它们的操作变得原子化。</p>
+<p>lock
+前缀最初是会导致处理器在指令执行期间，临时阻止所有其他核心访问内存。尽管这是一个简单和有效的方式，可以使在其他的核心看来像原子操作，但每次原子操作都停止其他活动（stop
+the world）是非常低效的。新的处理器对 lock 前缀的处理方式有更先进的 lock
+前缀实现，它们并不会停止其他核心处理不相关的内存，并且允许核心在等待某块内存变得可获得期间，继续做有用的事情。</p>
+<p>lock 前缀只能应用于非常有限数量的指令，包括 add、sub、and、or 以及
+xor，这些都是非常有用的、能够以原子方式完成的操作。<code>xchg</code>（exchange）指令对应于原子交换操作，有一个隐式的
+lock 前缀：无论 lock 前缀如何，它的行为都像 lock xchg。</p>
+<p>让我们通过改变我们的最后一个示例来操作 AtomicI32，看看 lock add
+的操作：</p>
+<div
+style="columns: 2;column-gap: 20px;column-rule-color: green;column-rule-style: solid;">
+<div style="break-inside: avoid">
+<pre><code>Rust 源码
+&lt;pre&gt;pub fn a(x: &amp;AtomicI32) {
+x.fetch_add(10, Relaxed);</code></pre>
+}
+</pre>
+</div>
+<div style="break-inside: avoid">
+<pre><code>编译的 x86-64
+&lt;pre&gt;a:
+lock add dword ptr [rdi], 10
+ret&lt;/pre&gt;</code></pre>
+</div>
+</div>
+<p>正如预期的那样，与非原子版本唯一的区别就是 lock 前缀。</p>
+<p>在上面的示例中，我们忽略了 fetch_add 返回的值，也就是操作之前 x
+的值。然而，如果我们使用了这个值，add 指令就不够用了。add
+指令可以向之后的指令提供一点有用的信息，比如更新后的值是否为零或负数，但它并未提供完整的（原始或更新的）值。相反，可以使用另一个指令：<code>xadd</code>（“交换并添加”），它将原来加载的值放入一个寄存器。</p>
+<p>我们可以通过对我们的代码做一个小修改，使其返回 fetch_add
+返回的值，来看到它的实际效果：</p>
+<div
+style="columns: 2;column-gap: 20px;column-rule-color: green;column-rule-style: solid;">
+<div style="break-inside: avoid">
+<pre><code>Rust 源码
+&lt;pre&gt;pub fn a(x: &amp;AtomicI32) -&gt; i32 {
+x.fetch_add(10, Relaxed)</code></pre>
+}
+</pre>
+</div>
+<div style="break-inside: avoid">
+<pre><code>编译的 x86-64
+&lt;pre&gt;a:
+mov eax, 10
+lock xadd dword ptr [rdi], eax
+ret&lt;/pre&gt;</code></pre>
+</div>
+</div>
+<p>现在使用一个包含 10 的寄存器，而不是常量 10。xadd
+指令将重用该寄存器以存储旧值。</p>
+<p>不幸的是，除了 xadd 和 xchg，其他可以加 lock 前缀的指令（例如
+sub、and 以及 or）都没有这样的变体。例如，没有 xsub
+指令。对于减法，这不是问题，因为 xadd 可以使用负数值。然而，对于 and 和
+or 没有这样的替代方案。</p>
+<p><a class="indexterm" id="index-x86-64instructions-and"></a>对于
+and、or 以及 xor 操作，只影响单个比特位，如 <code>fetch_or(1)</code>
+或者 <code>fetch_and(1)</code>，可以使用
+bts（比特测试和设置）、btr（比特测试和复位）以及
+btc（比特测试和补码）指令。这些指令也允许一个 lock
+前缀，只改变一个比特位，并且使该比特位的前一个值对后续的指令可用，如条件跳转。</p>
+<p>当这些操作影响多个比特位，它们不能由单个 x86-64
+指令表示。类似地，fetch_max 和 fetch_min 操作也没有相应的 x86-64
+指令。对于这些操作，我们需要一个不同与简单 lock 前缀的策略。</p>
+<h4 id="x86-比较并交换指令">x86 比较并交换指令</h4>
+<p>（<a href="https://marabos.nl/atomics/hardware.html#x86-cas" target="_blank">英文版本</a>）</p>
+<p>在<a
+href="./2_Atomics.md#比较并交换操作">第二章“比较并交换操作”</a>中，我们看到任何原子「获取并修改」操作都可以实现为一个「比较并交换」循环。对于由单个
+x86-64
+指令表示的操作，编译器可以使用这种方式，因为该架构确实包含一个（lock
+前缀）的 cmpxcchg（比较并交换）指令。</p>
+<p>我们可以通过将最后一个示例从 fetch_add 更改为 fetch_or
+来在操作中看到这一点：</p>
+<div
+style="columns: 2;column-gap: 20px;column-rule-color: green;column-rule-style: solid;">
+<div style="break-inside: avoid">
+<pre><code>Rust 源码
+&lt;pre&gt;pub fn a(x: &amp;AtomicI32) -&gt; i32 {
+x.fetch_or(10, Relaxed)</code></pre>
+}
+</pre>
+</div>
+<div style="break-inside: avoid">
+<pre><code>编译的 x86-64
+&lt;pre&gt;a:
+mov eax, dword ptr [rdi]</code></pre>
+.L1: mov ecx, eax or ecx, 10 lock cmpxchg dword ptr [rdi], ecx jne .L1
+ret
+</pre>
+</div>
+</div>
+<p>第一条 mov 指令从原子变量加载值到 eax 寄存器。以下 mov 和 or
+指令是将该值复制到 ecx 和应用二进制或操作，以至于 eax 包含旧值，ecx
+包含新值。紧随之后的 cmpxchg 指令行为完全类似于 Rust 中
+<code>compare_exchange</code>
+方法。它的第一个参数是要操作的内存地址（原子变量），第二个参数（ecx）是新值，期望的值隐式地从
+eax 取出，并且返回值隐式地存储在 eax
+中。它还设置了一个状态标识，后续的指令可以用根据操作是否成功，来有条件的进行分支跳转。在这种情况下，使用
+jne（如果与期待值不等则跳转）指令跳回 <code>.L1</code>
+标签，在失败时再次尝试。</p>
+<p>以下是 Rust 中等效的「比较并交换」循环的样子，就像我们在<a
+href="./2_Atomics.md#比较并交换操作">第2章的“比较并交换操作”</a>中看到的那样：</p>
+<div class="sourceCode" id="cb22"><pre
+class="sourceCode rust"><code class="sourceCode rust"><span id="cb22-1"><a href="#cb22-1" aria-hidden="true" tabindex="-1"></a><span class="kw">pub</span> <span class="kw">fn</span> a(x<span class="op">:</span> <span class="op">&amp;</span>AtomicI32) <span class="op">-&gt;</span> <span class="dt">i32</span> <span class="op">{</span></span>
+<span id="cb22-2"><a href="#cb22-2" aria-hidden="true" tabindex="-1"></a>    <span class="kw">let</span> <span class="kw">mut</span> current <span class="op">=</span> x<span class="op">.</span>load(Relaxed)<span class="op">;</span></span>
+<span id="cb22-3"><a href="#cb22-3" aria-hidden="true" tabindex="-1"></a>    <span class="cf">loop</span> <span class="op">{</span></span>
+<span id="cb22-4"><a href="#cb22-4" aria-hidden="true" tabindex="-1"></a>        <span class="kw">let</span> new <span class="op">=</span> current <span class="op">|</span> <span class="dv">10</span><span class="op">;</span></span>
+<span id="cb22-5"><a href="#cb22-5" aria-hidden="true" tabindex="-1"></a>        <span class="cf">match</span> x<span class="op">.</span>compare_exchange(current<span class="op">,</span> new<span class="op">,</span> Relaxed<span class="op">,</span> Relaxed) <span class="op">{</span></span>
+<span id="cb22-6"><a href="#cb22-6" aria-hidden="true" tabindex="-1"></a>            <span class="cn">Ok</span>(v) <span class="op">=&gt;</span> <span class="cf">return</span> v<span class="op">,</span></span>
+<span id="cb22-7"><a href="#cb22-7" aria-hidden="true" tabindex="-1"></a>            <span class="cn">Err</span>(v) <span class="op">=&gt;</span> current <span class="op">=</span> v<span class="op">,</span></span>
+<span id="cb22-8"><a href="#cb22-8" aria-hidden="true" tabindex="-1"></a>        <span class="op">}</span></span>
+<span id="cb22-9"><a href="#cb22-9" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb22-10"><a href="#cb22-10" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p>编译此代码会导致与 <code>fetch_or</code>
+版本完全相同的汇编。这表明，至少在 x86-64
+上，它们在各方面确实都是相等的。</p>
+<blockquote>
+<p>在 x86_64，在 compare_exchange 和 compare_exchange_weak
+之间是有没有区别的。两者都编译为 lock cmpxchg 指令。</p>
+</blockquote>
+<h3 id="ll-和-sc-指令">LL 和 SC 指令</h3>
+<p>（<a href="https://marabos.nl/atomics/hardware.html#load-linked-and-store-conditional-instructions" target="_blank">英文版本</a>）</p>
+<p>在 RISC 架构上最接近「比较并交换」循环的是
+<em>load-linked/store-conditional</em>（LL/SC）循环。它包括两个特殊的指令，这两个指令成对出现：LL
+指令的行为更像常规的 load 指令；SC 指令，其行为更像常规的 store
+指令。它们都成对的使用，两个指令都针对同一个内存地址。与常规的 load 和
+store 指令的主要区别是 store 是有条件的：如果自从 LL
+指令以来任何其他线程已经覆盖了该内存，它就会拒绝存储到内存。</p>
+<p>这两条指令允许我们从内存加载一个值，修改它，并只有在仅在没有人从我们加载它以来覆盖该值的情况下，才将新值存回。如果失败，我们可以简单地重试。一旦成功，我们可以安全地假装整个操作是原子的，因为它没有被打断。</p>
+<p>使这些指令可行且高效的关键有两点：（1）一次只能追踪一个内存地址（每个核心），（2）存储条件允许有伪阴性<a
+href="#fn1" class="footnote-ref" id="fnref1"
+role="doc-noteref"><sup>1</sup></a>，意味着即使没有任何东西改变这个特定的内存片段，它也可能失败存储。</p>
+<p>这使得可以在跟踪内存更改时不那么精确，但可能需要通过 LL/SC
+循环额外花几个周期。访问内存的跟踪可以不按字节，而是按 64
+字节的分块，或者按千字节，甚至整个内存作为一个整体。不够精确的内存跟踪导致更多不必要的
+LL/SC 循环，显著降低性能，但也降低了实现的复杂性。</p>
+<p>采用一个极端的想法，一个基本的、假设的单核系统可以使用一种策略，即完全不跟踪对内存的写入。相反，它可以跟踪中断或上下文切换，这些事件可以导致处理器切换到另一个线程。如果在一个没有任何并行性的系统中，没有发生这样的事件，它可以安全地假设没有其他线程可能触及到内存。如果发生了这样的事件，它可以仅假设最糟糕的情况，拒绝存储，并希望在循环的下一次迭代中有更好的运气。</p>
+<h4 id="arm-的-ldxr-和-stxr-指令">ARM 的 ldxr 和 stxr 指令</h4>
+<p>（<a href="https://marabos.nl/atomics/hardware.html#arm-load-exclusive-and-store-exclusive" target="_blank">英文版本</a>）</p>
+<p>在 ARM64 中，或者至少是 ARMv8
+的第一个版本，没有任何原子「获取并修改」或者「比较并交换」操作可以通过单个指令表示。对于
+RISC 的性质，load 和 store 步骤与计算和比较是分离的。</p>
+<p>ARM64 的 LL 和 SC 指令被称为 ldxr（加载独占寄存器）和
+stxr（存储独占寄存器）。此外，clrex（清理独占）指令可以用作停止跟踪对内存的写入，而不存储任何东西的
+stxr 替代。</p>
+<p>为了看到它们的实际效果，让我们看看在 ARM64
+上进行原子加时会发生什么：</p>
+<div
+style="columns: 2;column-gap: 20px;column-rule-color: green;column-rule-style: solid;">
+<div style="break-inside: avoid">
+<pre><code>Rust 源码
+&lt;pre&gt;pub fn a(x: &amp;AtomicI32) {
+x.fetch_add(10, Relaxed);</code></pre>
+}
+</pre>
+</div>
+<div style="break-inside: avoid">
+<pre><code>编译的 ARM64
+&lt;pre&gt;a:
+mov eax, dword ptr [rdi]</code></pre>
+.L1: ldxr w8, [x0] add w9, w8, #10 stxr w10, w9, [x0] cbnz w10, .L1 ret
+</pre>
+</div>
+</div>
+<p>我们得到的东西看起来非常类似于我们之前得到的非原子版本（在<a
+href="#读并修改并写操作">“读并修改并写操作”</a>）：一个 load 指令、一个
+add 指令以及一个 store 指令。load 和 store
+指令已经被替换为它们的“独占”LL/SC 版本，并且出现一个新的 cbnz（非 0
+比较和分支）指令。如果成功，stxr 指令在 w10 存储一个 0，如果失败，则存储
+1。cbnz 指令利用这点，如果操作失败，则重启整个操作。</p>
+<p>注意，与 x86-64 上的 lock add
+不同，我们不需要做任何特殊的处理检索旧值。在以上示例中，操作成功后，旧值将仍然在寄存器
+w8 可获得，所以并不需要相 xadd 这样的特殊指令。</p>
+<p>这钟 LL/SC 模式是非常灵活的：它不仅可以用于像 add 和 or
+这样有限的操作集，而是可以用于几乎任何操作。我们可以通过在 ldxr 和 stxr
+指令之间放入相应的指令，轻松地实现原子 fetch_divide 或 fetch_shift_left
+操作。然而，如果它们之间有太多的指令，中断的几率就会越来越高，导致额外的周期。通常，编译器会尝试在
+LL/SC 模式中的指令数量尽可能少，防止 LL/SC
+循环频繁失败可能从不成功，并且以及可能无限自旋的情况。</p>
+<div class="box">
+<h2 style="text-align: center;">
+ARMv8.1 原子指令
+</h2>
+<p>
+ARMv8.1 的后续版本 ARM64，还包括新的 CISC
+风格指令，用于常见的原子操作。例如，新的
+ldadd（加载并添加）指令等效于一个原子 fetch_add 操作，无需使用 LL/SC
+循环。它甚至包括像 fetch_max 这样的操作指令，这在 x86-64 上并不存在。
+</p>
+<p>
+它还包括一个与 <code>com⁠pare_​exchange</code> 相对应的
+cas（比较并交换）指令。当使用此指令时，<code>compare_exchange</code> 和
+<code>compare_exchange_weak</code> 之间没有差别，就像在 x86-64 上一样。
+</p>
+<p>
+尽管 LL/SC 模式非常灵活，并且很好地适应了一般的 RISC
+模式，但这些新指令可以更高效，因为它们可以通过特定的硬件进行更轻松的优化。
+</p>
+</div>
+<h4 id="arm-的比较并交换操作">ARM 的「比较并交换」操作</h4>
+<p>（<a href="https://marabos.nl/atomics/hardware.html#compare-and-exchange-on-arm" target="_blank">英文版本</a>）</p>
+<p><code>compare_exchange</code>
+操作通过使用条件分支指令在比较失败时跳过 store 指令，这与 LL/LC
+模式的映射非常恰当。让我们来看看生成汇编的代码：</p>
+<div
+style="columns: 2;column-gap: 20px;column-rule-color: green;column-rule-style: solid;">
+<div style="break-inside: avoid">
+<pre><code>Rust 源码
+&lt;pre&gt;pub fn a(x: &amp;AtomicI32) {
+x.compare_exchange_weak(5, 6, Relaxed, Relaxed);</code></pre>
+}
+</pre>
+</div>
+<div style="break-inside: avoid">
+<pre><code>编译的 ARM64
+&lt;pre&gt;a:
+ldxr w8, [x0]
+cmp w8, #5
+b.ne .L1
+mov w8, #6
+stxr w9, w8, [x0]
+ret</code></pre>
+.L1: clrex ret
+</pre>
+</div>
+</div>
+<blockquote>
+<p>注意，compare_and_exchange
+操作通常用于一个循环，如果该比较失败，则循环重复。然而，对于该示例，我们仅调用一次并且忽略它的返回值，这让我们在无干扰的情况下查看汇编。</p>
+</blockquote>
+<p>ldxr 指令加载了值，然后立即通过 cmp（比较）指令将其与预期的值 5
+进行比较。如果值不符合预期，<code>b.ne</code>（如果与预期值不等则跳转分支）指令会导致跳转到
+<code>.L1</code> 标签，在此刻，clrex 指令用于中止 LL/SC 模式。如果值是
+5，流程将通过 mov 和 stxr 指令继续，将新的值 6
+存储到内存中，但这只会在与此同时没有任何东西覆盖 5 的情况下发生。</p>
+<p>请记住，stxr 允许有伪阴性；即使 5
+没有被覆盖，这里也可能失败。这没问题，因为我们正在使用
+<code>compare_exchange_weak</code>，它也允许有伪阴性。事实上，这就是为什么存在
+<code>compare_exchange</code> 的 weak 版本。</p>
+<p>如果我们将 <code>compare_exchange_weak</code> 替换为
+<code>compare_exchange</code>，我们得到的汇编代码几乎完全相同，除了在操作失败时会有额外的分支来重新启动操作：</p>
+<div
+style="columns: 2;column-gap: 20px;column-rule-color: green;column-rule-style: solid;">
+<div style="break-inside: avoid">
+<pre><code>Rust 源码
+&lt;pre&gt;pub fn a(x: &amp;AtomicI32) {
+x.compare_exchange(5, 6, Relaxed, Relaxed);</code></pre>
+}
+</pre>
+</div>
+<div style="break-inside: avoid">
+<pre><code>编译的 ARM64
+&lt;pre&gt;a:
+mov w8, #6</code></pre>
+.L1: ldxr w9, [x0] cmp w9, #5 b.ne .L2 stxr w9, w8, [x0] cbnz w9, .L1
+ret .L2: clrex ret
+</pre>
+</div>
+</div>
+<p>正如预期的那样，现在有一个额外的 cbnz（非 0
+的比较和分支）指令，在失败时去重新开始 LL/LC 循环。此外，mov
+指令已经移出循环，以保证循环尽可能地短。</p>
+<div class="box">
+<h2 style="text-align: center;">
+「比较并交换」循环的优化
+</h2>
+<p>
+<a>正如我们在<a href="#x86-比较并交换指令">x86-比较并交换指令</a>中看到的，在
+x86-64 上，<code>fetch_or</code> 操作和等效的
+<code>compare_exchange</code> 循环编译成了完全相同的指令。人们可能期望在
+ARM 上也会发生同样的情况，至少在 <code>compare_exchange_weak</code>
+上，因为加载和「弱比较并交换」操作可以直接映射到 LL/SC 指令。</a>
+</p>
+<p>
+不幸的是，当前（截至 Rust 1.66.0）的情况并非如此。
+</p>
+<p>
+虽然随着编译器的不断改进，这种情况可能会在未来发生变化，但编译器要安全地将手动编写的「比较并交换」循环转化为相应的
+LL/SC 循环还是相当困难的。其中一个原因是，可以放在 stxr 和 ldxr
+指令之间的指令的数量和类型是有限的，这不是编译器在应用其他优化时需要考虑的内容。在像「比较并交换」这样的模式还可以识别时，表达式将编译成的确切指令还不清楚，这使得对于一般情况来说，这是一个非常棘手的优化问题。
+</p>
+<p>
+因此，直到在我们有更聪明的编译器之前，如果可能的话，建议使用专用的「获取并修改」方法，而不是「比较并交换」循环。
+</p>
+</div>
+<h2 id="缓存3">缓存<a href="#fn2" class="footnote-ref" id="fnref2"
+role="doc-noteref"><sup>2</sup></a></h2>
+<p>（<a href="https://marabos.nl/atomics/hardware.html#caching" target="_blank">英文版本</a>）</p>
+<p>读取和写入内存是缓慢的，并且很容易花费执行数十甚至数百条指令的时间。这就是为什么所有高性能的处理器都实现了<em>缓存</em>，以尽可能避免与相对较慢的内存进行交互。现代处理器中内存缓存的具体实现细节复杂、有的是独有的，而且最重要的是，当我们编写软件时，这些细节大部分对我们来说都不相关。毕竟，<em>缓存</em>（cache）这个词源自法语单词
+<code>caché</code>，意思是<em>隐藏</em>。尽管如此，在优化软件性能时，理解大多数处理器幕后如何实现缓存的基本原理时可能非常有用。（当然，我们并不需要借口去学习更多有关的主题。）</p>
+<p>除了非常小的微控制器，几乎所有现代处理器都使用缓存。这样的处理器从不直接与主内存交互，而是通过它的缓存路由每个读取和写入请求。如果一个指令需要从内存中读取某些内容，处理器将向其缓存请求这些数据。如果数据已经在缓存中，缓存将快速响应并提供缓存的数据，从而避免与主内存交互。否则，它将不得不走一条慢路，即缓存可能需要向主内存请求相关数据的副本。一旦主内存响应，缓存不仅最终会响应原始的读取请求，同时也会记住这些数据，以便在下次请求这些数据时能更快地响应。如果缓存满了，它会通过丢弃一些它认为最不可能有用的旧数据来腾出空间。</p>
+<p>当一个指令想要将某些内容写入内存时，缓存可能会决定保留修改后的数据，而不将其写入主内存。任何后续对相同内存地址的读取请求将得到修改后数据的副本，从而忽略主内存中过时的数据。仅有在需要从缓存中丢弃修改后的数据以腾出空间时，才会实际将数据写回主内存。</p>
+<p>在大多数处理器架构中，缓存以 64
+字节的分块读取和写入内存，即使只请求了一个字节。这些块通常被称为<em>缓存行</em>（cache
+line）。通过缓存该请求字节周围的整个 64
+字节分块，任何后续需要访问该分块中的其他字节的指令都不必等待主内存。</p>
+<h3 id="缓存一致性">缓存一致性</h3>
+<p>（<a href="https://marabos.nl/atomics/hardware.html#cache-coherence" target="_blank">英文版本</a>）</p>
+<p>在现代处理器中，通常有不止一层缓存。第一层缓存，或者称为<em>一级</em>（L1）缓存，是最小且最快的。它不和主内存通信，而是和<em>二级</em>（L2）缓存通信，后者虽然更大，但速度慢一些。<em>L2
+缓存</em>可能是与主内存通信的那个，或者可能还有另一个更大更慢的 L3
+缓存——甚至可能有 L4 缓存。</p>
+<p>添加额外的层并不会改变它们的工作方式；每一层都可以独立运行。然而，当存在多个处理器核心，每个核心都有自己的缓存时，情况就变得有趣了。在多核系统中，每个处理器核心通常有自己的
+L1 缓存，而 L2 或 L3 缓存往往与部分或所有其他核心共享。</p>
+<p>在这种条件下，原本的缓存实现会崩溃，因为缓存不能再假设它控制着所有与下一层的交互。如果一个缓存接受了写操作并将某个缓存行标记为已修改，而没有通知其他的缓存，那么缓存的状态可能会变得不一致。修改后的数据直到缓存将数据写入下一层之前，不会对其他核心可用，而且最终可能会与其他缓存中缓存的不同修改发生冲突。</p>
+<p>为了解决这个问题，我们使用了一种叫做<em>缓存一致性协议</em>。这样的协议定义了如何准确地操作缓存并与其他缓存通信，以保持所有的状态一致。具体使用的协议根据架构、处理器模型，甚至每个缓存层都有所不同。</p>
+<p>我们将讨论两种基本的缓存一致性协议。现代处理器使用这些协议的许多变体。</p>
+<h4 id="write-through-协议">write-through 协议</h4>
+<p>（<a href="https://marabos.nl/atomics/hardware.html#the-write-through-protocol" target="_blank">英文版本</a>）</p>
+<p>在缓存中，实施 write-through
+缓存一致性协议，写操作不会被缓存，而是立即发送到下一层。其它缓存通过同一共享通信通道连接到下一层，这意味着它们可以观察到其它缓存与下一层的通信状况。当缓存观察到某个地址的写操作，而该地址当前已在缓存中，它会立即丢弃或更新自己的缓存行，以保持一致性。</p>
+<p>使用这种协议，缓存永远不会包含任何处于已修改状态的缓存行。尽管这极大地简化了事情，但对于写操作，它丧失了缓存的优势。当仅针对读取进行优化时，这可能是一个很好的选择。</p>
+<h4 id="mesi-协议4">MESI 协议<a href="#fn3" class="footnote-ref"
+id="fnref3" role="doc-noteref"><sup>3</sup></a></h4>
+<p>（<a href="https://marabos.nl/atomics/hardware.html#mesi" target="_blank">英文版本</a>）</p>
+<p><em>MESI
+缓存一致性协议</em>是由之后的四种可能状态命名的，它为缓存行定义了：已修改（Modified，M）、独占（Exclusive，E）、共享（Shared，S）和无效（Invalid，I）。已修改（M）用于包含已经修改数据的缓存行，但该数据尚未写入到内存（或下一级缓存）数据。独占（E）用于包含未修改数据的缓存行，且该数据没有缓存在任意其他缓存中（在同一级别）。共享（S）用于包含未修改数据的缓存行，这些缓存行可能也出现在一个或多个其他（同级别）的缓存中。无效（I）用于未使用（空的或被丢弃）的缓存行，它们不包含任何有用的数据。</p>
+<p>使用此协议的缓存会与同级别的所有其他缓存进行通信。它们互相发送更新和请求，使它们能够保持一致性。</p>
+<p>当一个缓存接收到一个它尚未缓存的地址的请求（也称为<em>缓存未命中</em>）时，它不会立即从下一层请求。相反，它首先询问其他（同级别的）缓存是否有可用的这个缓存行。如果没有，缓存将继续从（更慢的）下一层请求地址，并将结果标记为独占（E）。当此缓存行被写操作修改时，缓存可以将状态改为已修改（M），而不通知其他缓存，因为它知道其他缓存没有缓存相同的缓存行。</p>
+<p>当请求一个已经在任何其他缓存中可用的缓存行时，结果是一个共享（S）的缓存行，可以直接从其他缓存获得。如果缓存行处于已修改（M）状态，它将首先被写入（或<em>刷新</em>）到下一层，然后再改变为共享（S）并共享。如果它处于独占（E）状态，它将立即被改变为共享（S）。</p>
+<p>如果缓存想要独占访问权，而不是共享访问权（例如，因为它将在之后立即修改数据），其他缓存不会保持缓存行在共享（S）状态，而是通过将其更改为无效（I）来完全丢弃它。在这种情况下，结果是一个独占（E）的缓存行。</p>
+<p>如果一个缓存需要对已经在共享（S）状态下可用的缓存行进行独占访问，它只需告诉其他缓存丢弃这个缓存行，然后再将其升级为独占（E）。</p>
+<p>此协议有几种变体。例如，<em>MOESI</em>
+协议添加了一个额外的状态，以允许在不立即将其写入下一层的情况下共享修改过的数据，而
+<em>MESIF</em>
+协议使用一个额外的状态，该状态决定哪个缓存可以响应多个缓存中可用的共享缓存行的请求。现代处理器通常使用更复杂的和专有的缓存一致性协议。</p>
+<h3 id="对性能的影响">对性能的影响</h3>
+<p>（<a href="https://marabos.nl/atomics/hardware.html#performance-experiment" target="_blank">英文版本</a>）</p>
+<p>尽管缓存大多数时候对我们是隐藏的，但缓存行为对我们的原子操作性能可能有重要影响。让我们尝试测量其中一些影响。</p>
+<p>测量单个原子操作的速度非常棘手，因为它们速度极快。为了能得到一些有用的数据，我们必须重复一个操作，比如说，十亿次，然后测量总体花费的时间。例如，我们可以尝试测量十亿次加载
+load 需要多少时间，就像这样：</p>
+<div class="sourceCode" id="cb29"><pre
+class="sourceCode rust"><code class="sourceCode rust"><span id="cb29-1"><a href="#cb29-1" aria-hidden="true" tabindex="-1"></a><span class="kw">static</span> A<span class="op">:</span> AtomicU64 <span class="op">=</span> <span class="pp">AtomicU64::</span>new(<span class="dv">0</span>)<span class="op">;</span></span>
+<span id="cb29-2"><a href="#cb29-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb29-3"><a href="#cb29-3" aria-hidden="true" tabindex="-1"></a><span class="kw">fn</span> main() <span class="op">{</span></span>
+<span id="cb29-4"><a href="#cb29-4" aria-hidden="true" tabindex="-1"></a>    <span class="kw">let</span> start <span class="op">=</span> <span class="pp">Instant::</span>now()<span class="op">;</span></span>
+<span id="cb29-5"><a href="#cb29-5" aria-hidden="true" tabindex="-1"></a>    <span class="cf">for</span> _ <span class="kw">in</span> <span class="dv">0</span><span class="op">..</span><span class="dv">1_000_000_000</span> <span class="op">{</span></span>
+<span id="cb29-6"><a href="#cb29-6" aria-hidden="true" tabindex="-1"></a>        A<span class="op">.</span>load(Relaxed)<span class="op">;</span></span>
+<span id="cb29-7"><a href="#cb29-7" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb29-8"><a href="#cb29-8" aria-hidden="true" tabindex="-1"></a>    <span class="pp">println!</span>(<span class="st">&quot;{:?}&quot;</span><span class="op">,</span> start<span class="op">.</span>elapsed())<span class="op">;</span></span>
+<span id="cb29-9"><a href="#cb29-9" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p>不幸的是，这并没有按照我们的预期工作。</p>
+<p>当通过优化之后运行这段代码时（例如，使用
+<code>cargo run --release</code> 或者
+<code>rustc -O</code>），我们将看见不合理的低测量时间。编译器足够智能知道发生了什么状况，它能够理解我们并没有使用加载的值，所以它决定完全优化掉<em>不需要的</em>循环。</p>
+<p>为了避免这种情况，我们可以使用特殊的
+<code>std::hint::black_box</code>
+函数。这个函数接受任何类型的参数，它只是在不做任何优化的情况下返回这个参数。这个函数的特殊之处在于，编译器会尽可能不假设这个函数做的任何事情；它把这个函数当作一个可能做任何事情的“黑箱”来对待。</p>
+<p>我们可以使用这个函数来避免某些可能使基准测试无效的优化。在这种情况下，我们可以将
+load 操作的结果传递给
+<code>black_box()</code>，以停止任何优化，这里假设我们实际上不需要加载值的优化。然而，这还不够，因为编译器可能仍然假设
+A 总是 0，这使得 load
+操作是不必要的。为了避免这种情况，我们可以在开始时将一个指向 A
+的引用传递给
+<code>black_box()</code>，这样编译器就不能再假设只有一个线程访问 A
+了。毕竟，它必须假设 <code>black_box(&amp;A)</code> 可能已经产生了一个与
+A 交互的额外线程。</p>
+<p>让我们试试看：</p>
+<div class="sourceCode" id="cb30"><pre
+class="sourceCode rust"><code class="sourceCode rust"><span id="cb30-1"><a href="#cb30-1" aria-hidden="true" tabindex="-1"></a><span class="kw">use</span> <span class="pp">std::hint::</span>black_box<span class="op">;</span></span>
+<span id="cb30-2"><a href="#cb30-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb30-3"><a href="#cb30-3" aria-hidden="true" tabindex="-1"></a><span class="kw">static</span> A<span class="op">:</span> AtomicU64 <span class="op">=</span> <span class="pp">AtomicU64::</span>new(<span class="dv">0</span>)<span class="op">;</span></span>
+<span id="cb30-4"><a href="#cb30-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb30-5"><a href="#cb30-5" aria-hidden="true" tabindex="-1"></a><span class="kw">fn</span> main() <span class="op">{</span></span>
+<span id="cb30-6"><a href="#cb30-6" aria-hidden="true" tabindex="-1"></a>    black_box(<span class="op">&amp;</span>A)<span class="op">;</span> <span class="co">// 新增！</span></span>
+<span id="cb30-7"><a href="#cb30-7" aria-hidden="true" tabindex="-1"></a>    <span class="kw">let</span> start <span class="op">=</span> <span class="pp">Instant::</span>now()<span class="op">;</span></span>
+<span id="cb30-8"><a href="#cb30-8" aria-hidden="true" tabindex="-1"></a>    <span class="cf">for</span> _ <span class="kw">in</span> <span class="dv">0</span><span class="op">..</span><span class="dv">1_000_000_000</span> <span class="op">{</span></span>
+<span id="cb30-9"><a href="#cb30-9" aria-hidden="true" tabindex="-1"></a>        black_box(A<span class="op">.</span>load(Relaxed))<span class="op">;</span> <span class="co">// 新增！</span></span>
+<span id="cb30-10"><a href="#cb30-10" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb30-11"><a href="#cb30-11" aria-hidden="true" tabindex="-1"></a>    <span class="pp">println!</span>(<span class="st">&quot;{:?}&quot;</span><span class="op">,</span> start<span class="op">.</span>elapsed())<span class="op">;</span></span>
+<span id="cb30-12"><a href="#cb30-12" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p>这段代码在运行多次时，输出可能有点波动，但是在一台不是很新的 x86-64
+电脑上，它似乎是大约 300 毫秒的结果。</p>
+<p>为了观察任何缓存影响，我们将产生一个后台线程与原子变量交互。这样，我们可以看到它是否影响主线程的的
+load 操作。</p>
+<p>首先，让我们尝试一下，只需在后台线程上加载操作，如下所示：</p>
+<div class="sourceCode" id="cb31"><pre
+class="sourceCode rust"><code class="sourceCode rust"><span id="cb31-1"><a href="#cb31-1" aria-hidden="true" tabindex="-1"></a><span class="kw">static</span> A<span class="op">:</span> AtomicU64 <span class="op">=</span> <span class="pp">AtomicU64::</span>new(<span class="dv">0</span>)<span class="op">;</span></span>
+<span id="cb31-2"><a href="#cb31-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb31-3"><a href="#cb31-3" aria-hidden="true" tabindex="-1"></a><span class="kw">fn</span> main() <span class="op">{</span></span>
+<span id="cb31-4"><a href="#cb31-4" aria-hidden="true" tabindex="-1"></a>    black_box(<span class="op">&amp;</span>A)<span class="op">;</span></span>
+<span id="cb31-5"><a href="#cb31-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb31-6"><a href="#cb31-6" aria-hidden="true" tabindex="-1"></a>    <span class="pp">thread::</span>spawn(<span class="op">||</span> <span class="op">{</span> <span class="co">// 新增！</span></span>
+<span id="cb31-7"><a href="#cb31-7" aria-hidden="true" tabindex="-1"></a>        <span class="cf">loop</span> <span class="op">{</span></span>
+<span id="cb31-8"><a href="#cb31-8" aria-hidden="true" tabindex="-1"></a>            black_box(A<span class="op">.</span>load(Relaxed))<span class="op">;</span></span>
+<span id="cb31-9"><a href="#cb31-9" aria-hidden="true" tabindex="-1"></a>        <span class="op">}</span></span>
+<span id="cb31-10"><a href="#cb31-10" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span>)<span class="op">;</span></span>
+<span id="cb31-11"><a href="#cb31-11" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb31-12"><a href="#cb31-12" aria-hidden="true" tabindex="-1"></a>    <span class="kw">let</span> start <span class="op">=</span> <span class="pp">Instant::</span>now()<span class="op">;</span></span>
+<span id="cb31-13"><a href="#cb31-13" aria-hidden="true" tabindex="-1"></a>    <span class="cf">for</span> _ <span class="kw">in</span> <span class="dv">0</span><span class="op">..</span><span class="dv">1_000_000_000</span> <span class="op">{</span></span>
+<span id="cb31-14"><a href="#cb31-14" aria-hidden="true" tabindex="-1"></a>        black_box(A<span class="op">.</span>load(Relaxed))<span class="op">;</span></span>
+<span id="cb31-15"><a href="#cb31-15" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb31-16"><a href="#cb31-16" aria-hidden="true" tabindex="-1"></a>    <span class="pp">println!</span>(<span class="st">&quot;{:?}&quot;</span><span class="op">,</span> start<span class="op">.</span>elapsed())<span class="op">;</span></span>
+<span id="cb31-17"><a href="#cb31-17" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p>注意，我们没有测量后台线程上的操作性能。我们仍然仅是测量主线程上执行一百万的
+load 操作的性能。</p>
+<p>运行这个程序，导致与之前类似的测量结果：当在同一台 x86-64
+计算机上进行测试时，它会在 300
+毫秒左右波动。后台线程并不会对主线程有什么影响。它们大概都在一个单独的处理器内核上运行，但<em>两个</em>核心的缓存都包含
+A 的副本，这允许非常快速的访问。</p>
+<p>现在让我们更改后台线程来执行 store 操作：</p>
+<div class="sourceCode" id="cb32"><pre
+class="sourceCode rust"><code class="sourceCode rust"><span id="cb32-1"><a href="#cb32-1" aria-hidden="true" tabindex="-1"></a><span class="kw">static</span> A<span class="op">:</span> AtomicU64 <span class="op">=</span> <span class="pp">AtomicU64::</span>new(<span class="dv">0</span>)<span class="op">;</span></span>
+<span id="cb32-2"><a href="#cb32-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb32-3"><a href="#cb32-3" aria-hidden="true" tabindex="-1"></a><span class="kw">fn</span> main() <span class="op">{</span></span>
+<span id="cb32-4"><a href="#cb32-4" aria-hidden="true" tabindex="-1"></a>    black_box(<span class="op">&amp;</span>A)<span class="op">;</span></span>
+<span id="cb32-5"><a href="#cb32-5" aria-hidden="true" tabindex="-1"></a>    <span class="pp">thread::</span>spawn(<span class="op">||</span> <span class="op">{</span></span>
+<span id="cb32-6"><a href="#cb32-6" aria-hidden="true" tabindex="-1"></a>        <span class="cf">loop</span> <span class="op">{</span></span>
+<span id="cb32-7"><a href="#cb32-7" aria-hidden="true" tabindex="-1"></a>            A<span class="op">.</span>store(<span class="dv">0</span><span class="op">,</span> Relaxed)<span class="op">;</span> <span class="co">// 新增！</span></span>
+<span id="cb32-8"><a href="#cb32-8" aria-hidden="true" tabindex="-1"></a>        <span class="op">}</span></span>
+<span id="cb32-9"><a href="#cb32-9" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span>)<span class="op">;</span></span>
+<span id="cb32-10"><a href="#cb32-10" aria-hidden="true" tabindex="-1"></a>    <span class="kw">let</span> start <span class="op">=</span> <span class="pp">Instant::</span>now()<span class="op">;</span></span>
+<span id="cb32-11"><a href="#cb32-11" aria-hidden="true" tabindex="-1"></a>    <span class="cf">for</span> _ <span class="kw">in</span> <span class="dv">0</span><span class="op">..</span><span class="dv">1_000_000_000</span> <span class="op">{</span></span>
+<span id="cb32-12"><a href="#cb32-12" aria-hidden="true" tabindex="-1"></a>        black_box(A<span class="op">.</span>load(Relaxed))<span class="op">;</span></span>
+<span id="cb32-13"><a href="#cb32-13" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb32-14"><a href="#cb32-14" aria-hidden="true" tabindex="-1"></a>    <span class="pp">println!</span>(<span class="st">&quot;{:?}&quot;</span><span class="op">,</span> start<span class="op">.</span>elapsed())<span class="op">;</span></span>
+<span id="cb32-15"><a href="#cb32-15" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p>这次，我们确实看到了显著的差异。现在在 x86-64
+架构上运行这个程序，导致的输出波动大概有 3
+秒，是之前的十倍。最新的计算机将展示更小的差异，但仍然是可衡量的不同。例如，在最新的苹果
+M1 处理器上，它从 350 毫秒上升到 500 毫秒，在最新的 x86-64 AMD
+处理器上，它从 250 毫秒上升到 650 毫秒。</p>
+<p>这种行为匹配我们对缓存一致性的理解：store
+操作需要独占访问缓存行，这会减慢在其他核上不再共享缓存行的后续 load
+操作。</p>
+<div class="box">
+<h2 style="text-align: center;">
+「比较并交换」操作失败
+</h2>
+<p>
+有趣的是，在大多数处理器架构中，当后台线程只进行「比较并交换」操作时，我们也能观察到和
+store 操作相同的效果，即使所有的「比较并交换」操作都失败。
+</p>
+<p>
+为了验证这一点，我们可以将后台线程的 store 操作替换为一个永远不会成功的
+compare_exchange 调用：
+</p>
+<pre>    …
+        loop {
+            // 从不成功，因为 A 从不会是 10
+            black_box(A.compare_exchange(10, 20, Relaxed, Relaxed).is_ok());
+        }
+    …</pre>
+<p>
+因为 A 总是 0，<code>compare_exchange</code>
+操作将从不成功。它将加载当前的 A 值，但是从不更新它到一个新值。
+</p>
+<p>
+人们可能合理的将这个行为与 load
+操作等同，因为它从没有修改原子变量。然而，在大多数处理器架构中，无论比较是否成功，<code>compare_exchange</code>
+的指令都将声明相关缓存行的独占访问权限。
+</p>
+<p>
+这意味着，对于我们在<a href="./4_Building_Our_Own_Spin_Lock.html">第四章</a>的
+SpinLock 中不使用 compare_exchange（或
+swap）来自旋循环可能更高效，而是首先使用 load
+操作去检查锁是否已经释放锁。那样，我们可以避免不必要地声明相关缓存行的独占访问权限。
+</p>
+</div>
+<p>由于缓存是按照缓存行进行的，而不是按照单个字节或变量进行的，所以我们应该能够看到使用相邻的变量而不是相同的变量也会产生相同的效果。为了验证这个，让我们使用三个原子变量而不是一个，让主线程仅使用中间的变量，并让后台线程只使用其他两个，如下所示：</p>
+<div class="sourceCode" id="cb33"><pre
+class="sourceCode rust"><code class="sourceCode rust"><span id="cb33-1"><a href="#cb33-1" aria-hidden="true" tabindex="-1"></a><span class="kw">static</span> A<span class="op">:</span> [AtomicU64<span class="op">;</span> <span class="dv">3</span>] <span class="op">=</span> [</span>
+<span id="cb33-2"><a href="#cb33-2" aria-hidden="true" tabindex="-1"></a>    <span class="pp">AtomicU64::</span>new(<span class="dv">0</span>)<span class="op">,</span></span>
+<span id="cb33-3"><a href="#cb33-3" aria-hidden="true" tabindex="-1"></a>    <span class="pp">AtomicU64::</span>new(<span class="dv">0</span>)<span class="op">,</span></span>
+<span id="cb33-4"><a href="#cb33-4" aria-hidden="true" tabindex="-1"></a>    <span class="pp">AtomicU64::</span>new(<span class="dv">0</span>)<span class="op">,</span></span>
+<span id="cb33-5"><a href="#cb33-5" aria-hidden="true" tabindex="-1"></a>]<span class="op">;</span></span>
+<span id="cb33-6"><a href="#cb33-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb33-7"><a href="#cb33-7" aria-hidden="true" tabindex="-1"></a><span class="kw">fn</span> main() <span class="op">{</span></span>
+<span id="cb33-8"><a href="#cb33-8" aria-hidden="true" tabindex="-1"></a>    black_box(<span class="op">&amp;</span>A)<span class="op">;</span></span>
+<span id="cb33-9"><a href="#cb33-9" aria-hidden="true" tabindex="-1"></a>    <span class="pp">thread::</span>spawn(<span class="op">||</span> <span class="op">{</span></span>
+<span id="cb33-10"><a href="#cb33-10" aria-hidden="true" tabindex="-1"></a>        <span class="cf">loop</span> <span class="op">{</span></span>
+<span id="cb33-11"><a href="#cb33-11" aria-hidden="true" tabindex="-1"></a>            A[<span class="dv">0</span>]<span class="op">.</span>store(<span class="dv">0</span><span class="op">,</span> Relaxed)<span class="op">;</span></span>
+<span id="cb33-12"><a href="#cb33-12" aria-hidden="true" tabindex="-1"></a>            A[<span class="dv">2</span>]<span class="op">.</span>store(<span class="dv">0</span><span class="op">,</span> Relaxed)<span class="op">;</span></span>
+<span id="cb33-13"><a href="#cb33-13" aria-hidden="true" tabindex="-1"></a>        <span class="op">}</span></span>
+<span id="cb33-14"><a href="#cb33-14" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span>)<span class="op">;</span></span>
+<span id="cb33-15"><a href="#cb33-15" aria-hidden="true" tabindex="-1"></a>    <span class="kw">let</span> start <span class="op">=</span> <span class="pp">Instant::</span>now()<span class="op">;</span></span>
+<span id="cb33-16"><a href="#cb33-16" aria-hidden="true" tabindex="-1"></a>    <span class="cf">for</span> _ <span class="kw">in</span> <span class="dv">0</span><span class="op">..</span><span class="dv">1_000_000_000</span> <span class="op">{</span></span>
+<span id="cb33-17"><a href="#cb33-17" aria-hidden="true" tabindex="-1"></a>        black_box(A[<span class="dv">1</span>]<span class="op">.</span>load(Relaxed))<span class="op">;</span></span>
+<span id="cb33-18"><a href="#cb33-18" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb33-19"><a href="#cb33-19" aria-hidden="true" tabindex="-1"></a>    <span class="pp">println!</span>(<span class="st">&quot;{:?}&quot;</span><span class="op">,</span> start<span class="op">.</span>elapsed())<span class="op">;</span></span>
+<span id="cb33-20"><a href="#cb33-20" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p>运行这个片段后，我们得到的结果和之前类似：在同样的 x86-64
+计算机上，它还是需要花费数秒的时间。尽管
+<code>A[0]</code>、<code>A[1]</code> 和 <code>A[2]</code>
+仅被一个线程使用，我们仍然看到相同的效果，与两个线程使用同一个变量一样。原因在于，<code>A[1]</code>
+和其他一或两个变量共享同一缓存行。运行后台线程的处理器核心反复地对包含
+<code>A[0]</code> 和 <code>A[2]</code> 的缓存行（也包含
+<code>A[1]</code>）声明独占访问权限，从而拖慢了对 <code>A[1]</code>
+的“无关”操作。这种问题被称为伪共享<a href="#fn4" class="footnote-ref"
+id="fnref4" role="doc-noteref"><sup>4</sup></a>。</p>
+<p>我们可以通过将原子变量间隔更远来避免这个问题，这样每个变量都可以拥有自己的缓存行。如前所述，64
+字节是一个合理的猜测值，用于表示缓存行的大小，所以让我们试着将我们的原子变量包装在一个
+64 字节对齐的结构体中，如下所示：</p>
+<div class="sourceCode" id="cb34"><pre
+class="sourceCode rust"><code class="sourceCode rust"><span id="cb34-1"><a href="#cb34-1" aria-hidden="true" tabindex="-1"></a><span class="at">#[</span>repr<span class="at">(</span>align<span class="at">(</span><span class="dv">64</span><span class="at">))]</span> <span class="co">// 这个结构体必须是 64 字节对齐</span></span>
+<span id="cb34-2"><a href="#cb34-2" aria-hidden="true" tabindex="-1"></a><span class="kw">struct</span> Aligned(AtomicU64)<span class="op">;</span></span>
+<span id="cb34-3"><a href="#cb34-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb34-4"><a href="#cb34-4" aria-hidden="true" tabindex="-1"></a><span class="kw">static</span> A<span class="op">:</span> [Aligned<span class="op">;</span> <span class="dv">3</span>] <span class="op">=</span> [</span>
+<span id="cb34-5"><a href="#cb34-5" aria-hidden="true" tabindex="-1"></a>    Aligned(<span class="pp">AtomicU64::</span>new(<span class="dv">0</span>))<span class="op">,</span></span>
+<span id="cb34-6"><a href="#cb34-6" aria-hidden="true" tabindex="-1"></a>    Aligned(<span class="pp">AtomicU64::</span>new(<span class="dv">0</span>))<span class="op">,</span></span>
+<span id="cb34-7"><a href="#cb34-7" aria-hidden="true" tabindex="-1"></a>    Aligned(<span class="pp">AtomicU64::</span>new(<span class="dv">0</span>))<span class="op">,</span></span>
+<span id="cb34-8"><a href="#cb34-8" aria-hidden="true" tabindex="-1"></a>]<span class="op">;</span></span>
+<span id="cb34-9"><a href="#cb34-9" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb34-10"><a href="#cb34-10" aria-hidden="true" tabindex="-1"></a><span class="kw">fn</span> main() <span class="op">{</span></span>
+<span id="cb34-11"><a href="#cb34-11" aria-hidden="true" tabindex="-1"></a>    black_box(<span class="op">&amp;</span>A)<span class="op">;</span></span>
+<span id="cb34-12"><a href="#cb34-12" aria-hidden="true" tabindex="-1"></a>    <span class="pp">thread::</span>spawn(<span class="op">||</span> <span class="op">{</span></span>
+<span id="cb34-13"><a href="#cb34-13" aria-hidden="true" tabindex="-1"></a>        <span class="cf">loop</span> <span class="op">{</span></span>
+<span id="cb34-14"><a href="#cb34-14" aria-hidden="true" tabindex="-1"></a>            A[<span class="dv">0</span>]<span class="op">.</span><span class="dv">0</span><span class="op">.</span>store(<span class="dv">1</span><span class="op">,</span> Relaxed)<span class="op">;</span></span>
+<span id="cb34-15"><a href="#cb34-15" aria-hidden="true" tabindex="-1"></a>            A[<span class="dv">2</span>]<span class="op">.</span><span class="dv">0</span><span class="op">.</span>store(<span class="dv">1</span><span class="op">,</span> Relaxed)<span class="op">;</span></span>
+<span id="cb34-16"><a href="#cb34-16" aria-hidden="true" tabindex="-1"></a>        <span class="op">}</span></span>
+<span id="cb34-17"><a href="#cb34-17" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span>)<span class="op">;</span></span>
+<span id="cb34-18"><a href="#cb34-18" aria-hidden="true" tabindex="-1"></a>    <span class="kw">let</span> start <span class="op">=</span> <span class="pp">Instant::</span>now()<span class="op">;</span></span>
+<span id="cb34-19"><a href="#cb34-19" aria-hidden="true" tabindex="-1"></a>    <span class="cf">for</span> _ <span class="kw">in</span> <span class="dv">0</span><span class="op">..</span><span class="dv">1_000_000_000</span> <span class="op">{</span></span>
+<span id="cb34-20"><a href="#cb34-20" aria-hidden="true" tabindex="-1"></a>        black_box(A[<span class="dv">1</span>]<span class="op">.</span><span class="dv">0</span><span class="op">.</span>load(Relaxed))<span class="op">;</span></span>
+<span id="cb34-21"><a href="#cb34-21" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb34-22"><a href="#cb34-22" aria-hidden="true" tabindex="-1"></a>    <span class="pp">println!</span>(<span class="st">&quot;{:?}&quot;</span><span class="op">,</span> start<span class="op">.</span>elapsed())<span class="op">;</span></span>
+<span id="cb34-23"><a href="#cb34-23" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p><a class="indexterm" id="index-alignment"></a><code>#[repr(align)]</code>
+属性允许我们告诉编译器我们的类型的（最小）对齐值，以字节为单位。由于
+AtomicU64 仅有 8 字节，这将给我们的 Aligned 结构体添加 56
+字节的填充。</p>
+<p>运行这个程序不再给出缓慢的结果。相反，我们得到的结果和完全没有后台线程一样：当在与之前同一台
+x86-64 计算机上运行时，约需要 300 毫秒。</p>
+<blockquote>
+<p>根据你正在尝试的处理器的类型，你可能需要使用 128
+字节的对齐才能看到相同的效果。</p>
+</blockquote>
+<p>上面的实验表明，建议不要把不相关的原子变量放得太近。例如，密集的小型
+mutex 数组可能并不总是能够表现得和一个让 mutex
+间距隔离更远的替代结构一样好。</p>
+<p>另一方面，当多个（原子）变量相关并且经常快速连续访问时，将它们放在一起可能是有益的。例如，我们在<a
+href="./4_Building_Our_Own_Spin_Lock.md">第4章</a>中的
+<code>SpinLock&lt;T&gt;</code> 将 T 紧挨着 AtomicBool 存储，这意味着包含
+AtomicBool 的缓存行也可能包含
+T，因此对一个（独占）访问的声明也包括了另一个。这是否有益完全取决于情况。</p>
+<h2 id="重排">重排</h2>
+<p>（<a href="https://marabos.nl/atomics/hardware.html#reordering" target="_blank">英文版本</a>）</p>
+<p>一致性缓存，例如我们在本章前面探讨的 MESI
+协议，通常不会影响程序的正确性，即使涉及多个线程。由一致性缓存引起的唯一可观察的差异归结为时间上的差异。然而，现代处理器实现了更多的优化，尤其是这些优化在涉及多个线程时可能对正确性产生重大影响。</p>
+<p>在<a href="./3_Memory_Ordering.md">第 3
+章</a>开始时，我们简要地讨论了<em>指令重排</em>，即编译器和处理器如何改变指令的顺序。仅关注处理器，这里有一些指令，或者它们的效果，可能以<em>不同的顺序</em>发生的示例：</p>
+<ul>
+<li><p><em>存储缓冲区</em>（store buffer）<a href="#fn5"
+class="footnote-ref" id="fnref5" role="doc-noteref"><sup>5</sup></a></p>
+<p>因为写入可能较慢，即使有缓存，处理器核心通常包含一个<em>存储缓冲区</em>。内存的写操作可以存储在这个存储缓冲区中，这非常快，这允许处理器立即继续执行随后的指令。然后，在后台，通过写入（L1）缓存完成写操作，这可能要慢得多。这样，处理器就不需要等待缓存一致性协议跳入动作，以得到相关缓存行的独占访问权限。</p>
+<p>只要采取对后续来自同一内存地址的读操作特别注意的处理，这对于作为同一处理器核心上的同一线程的一部分运行的指令来说，是完全不可见的。然而，对于一个短暂的时刻，写操作还没有对其他核心可见，这导致了从在不同核心上运行的不同线程看内存的视图不一致。</p></li>
+<li><p><em>失效队列</em>（Invalidation queue）<a href="#fn6"
+class="footnote-ref" id="fnref6" role="doc-noteref"><sup>6</sup></a></p>
+<p>无论精确的一致性协议如何，并行方式运行的缓存都需要处理失效请求：这是一种指令，指示丢弃特定的缓存行，因为这个缓存行即将被修改并变得无效。作为性能优化，通常这样的请求并不会立即处理，而是排队等待（稍后）处理。当使用这样的失效队列时，缓存不再始终是一致的，因为缓存行可能在被丢弃前短暂地过时。然而，除了使单线程程序加快，这对单线程程序没有影响。唯一的影响是来自其他核心的写操作的可见性，这可能现在看起来像是（非常轻微的）延迟。</p></li>
+<li><p><em>流水线</em>（pipeline）<a href="#fn7" class="footnote-ref"
+id="fnref7" role="doc-noteref"><sup>7</sup></a></p>
+<p>另一个极其常见的可以显著提高性能的处理器特性是<em>流水线</em>：如果可能的话，尽可能并行执行连续的指令。在一个指令完成执行之前，处理器可能已经开始执行下一个指令。现代处理器通常可以在第一个指令仍在处理的同时，开始执行一系列的指令。</p>
+<p>如果每个指令都在根据前一个指令的结果运行，这并没有什么帮助；它们仍然需要等待前一个的结果。但是，当一个指令可以独立于前一个指令执行时，它甚至可能先完成。例如，一个对寄存器仅仅进行递增的指令可能很快就完成，而前面开始的一个指令可能仍在等待从内存中读取数据，或者其他一些慢的操作。</p>
+<p>虽然这对单线程程序（除了速度）没有影响，但当一个操作内存的指令在其前面的指令完成执行之前就完成了，可能会导致与其他核的交互发生在预期顺序之外。</p></li>
+</ul>
+<p>在很多方面，现代处理器可能以完全不同于预期的顺序执行指令。其中涉及许多专有技术，有些只有在发现可以被恶意软件利用的微妙错误时才公开。然而，当它们按预期工作时，它们都有一个共同点：除了时间，它们不会影响单线程程序，但可能导致与其他核心的交互看起来是不一致的顺序。</p>
+<p>允许内存操作被重排的处理器架构也提供了通过特殊指令防止这种情况发生的方式。例如，这些指令可能强制刷新处理器的存储缓冲区，或者在继续之前完成任何流水线的指令。有时，这些指令只防止某种类型的重排。例如，可能有一种指令可以防止存储操作相对于彼此被重排，同时仍然允许
+load
+操作被重排。可能发生哪种类型的重排，以及如何防止它们，取决于处理器架构。</p>
+<h2 id="内存排序">内存排序</h2>
+<p>（<a href="https://marabos.nl/atomics/hardware.html#memory-ordering" target="_blank">英文版本</a>）</p>
+<p>当执行像 Rust 或 C
+这样的语言中的任意原子操作时，我们会指定一个内存排序去告知编译器我们的排序需求。编译器将为处理器生成正确的指令，以防止它以某种方式重排指令，这将可能打破规则，使程序不正确。</p>
+<p>允许哪种类型的指令重新排序屈居于内存的操作。对于非原子和 relaxed
+原子操作，任意类型的重排是可接受的。在另一个极端情况下，顺序一致原子操作完全不允许任意类型的原子排序。</p>
+<p>acquire 操作不能与随后的任意内存操作重排，而 release
+操作不能与之前的任意内存操作重排。否则，可能在 acquire mutex 之前或者
+release mutex 之后，访问一些受 mutex 保护的数据可能会导致数据竞争。</p>
+<div class="box">
+<h2 style="text-align: center;">
+Other-Multi-Copy Atomicity
+</h2>
+<p>
+在一些处理器架构（例如，可能在显卡中找到的那些）中，内存操作顺序的影响方式并不总是可以通过指令重排序来解释。在一个核上的两个连续的
+store
+操作的效果可能会按照相同的顺序在第二个核上变得可见，但在第三个核上的顺序可能恰恰相反。例如，由于缓存不一致或共享存储缓冲区，可能会发生这种情况。由于这并不能解释第二核和第三核的观察结果之间的不一致性情况，所以无法通过第一个核上的指令被重排序来解释这种情况。
+</p>
+<p>
+我们在<a href="./3_Memory_Ordering.html">第 3
+章</a>中讨论的理论内存模型为此类处理器架构留出了空间，因为它不要求除顺序一致的原子操作之外的任何操作具有全局一致的顺序。
+</p>
+<p>
+我们在本章中聚焦的架构（x86-64 和 ARM64）是“other-multi-copy
+atomic”，这意味着一旦写操作对任何核可见，它们就同时对所有核可见。对于其他“other-multi-copy
+atomic”架构，内存排序只是指令重排序的问题。<a class="indexterm" id="index-ARM64processorarchitecture-other-multi-copyatomic"></a>
+</p>
+</div>
+<p>一些架构（例如
+ARM64）被称为<em>弱排序</em>，因为它们允许处理器自由地重排任意的内存操作。另一方面，<em>强排序</em>架构（例如
+x86-64）对哪些内存操作可以排序是非常严格的。</p>
+<h3 id="x86-64强排序">x86-64：强排序</h3>
+<p>（<a href="https://marabos.nl/atomics/hardware.html#x86-64-strongly-ordered" target="_blank">英文版本</a>）</p>
+<p>在 x86-64 处理器上，load
+操作将从不会在后续的内存操作之后发生。类似的，该架构也不允许 store
+操作在之前的内存操作之前发生。你可能在 x86-64 上看到的唯一一种重新排序是
+store 操作被延迟到稍后的 load 操作之后。</p>
+<blockquote>
+<p>由于 x86-64
+架构的重排序限制，它通常被描述为强排序架构，尽管有些人更愿意保留这个这个术语描述所有保留内存操作排序的架构。</p>
+</blockquote>
+<p>这些限制满足了 acquire-load（因为 load 从不和后续操作重排序）和
+release-store（因为 store 从不和之前的操作重排序）的所有需要。这意味着在
+x86-64 上，我们可以“免费的”获取 release 和 acquire 语义：release 和
+acquire 与 relaxed 操作等同。</p>
+<p>我们可以通过查来自<a href="#加载和存储操作">加载和存储</a>以及 <a
+href="#x86-lock-前缀">x86 lock 前缀</a>片段来验证这些，然而我们要将
+Relaxed 改变到 Release、Acquire 或 AcqRel：</p>
+<div
+style="columns: 2;column-gap: 20px;column-rule-color: green;column-rule-style: solid;">
+<div style="break-inside: avoid">
+<pre><code>Rust 源码
+&lt;pre&gt;pub fn a(x: &amp;AtomicI32) {
+x.store(0, Release);</code></pre>
+}
+</pre>
+<pre><code>&lt;pre&gt;pub fn a(x: &amp;AtomicI32) -&gt; i32 {
+x.load(Acquire)</code></pre>
+}
+</pre>
+<pre><code>&lt;pre&gt;pub fn a(x: &amp;AtomicI32) {
+x.fetch_add(10, AcqRel);</code></pre>
+}
+</pre>
+</div>
+<div style="break-inside: avoid">
+<pre><code>编译的 x86-64
+&lt;pre&gt;a:
+mov dword ptr [rdi], 0
+ret&lt;/pre&gt;
+&lt;pre&gt;a:
+mov eax, dword ptr [rdi]
+ret&lt;/pre&gt;
+&lt;pre&gt;a:
+lock add dword ptr [rdi], 10
+ret&lt;/pre&gt;</code></pre>
+</div>
+</div>
+<p>不出所料，尽管我们指定了更强的内存顺序，但汇编是相同的。</p>
+<p>我们可以得出结论，在 x86-64 上，忽略潜在的编译器优化，acquire 和
+release 操作仅和 relaxed 操作一样便宜。或者，更准确地说，relaxed 操作和
+acquire 和 release 操作一样昂贵。</p>
+<p>让我们看看 SeqCst 发生了什么：</p>
+<div
+style="columns: 2;column-gap: 20px;column-rule-color: green;column-rule-style: solid;">
+<div style="break-inside: avoid">
+<pre><code>Rust 源码
+&lt;pre&gt;pub fn a(x: &amp;AtomicI32) {
+x.store(0, SeqCst);</code></pre>
+}
+</pre>
+<pre><code>&lt;pre&gt;pub fn a(x: &amp;AtomicI32) -&gt; i32 {
+x.load(SeqCst)</code></pre>
+}
+</pre>
+<pre><code>&lt;pre&gt;pub fn a(x: &amp;AtomicI32) {
+x.fetch_add(10, SeqCst);</code></pre>
+}
+</pre>
+</div>
+<div style="break-inside: avoid">
+<pre><code>编译的 x86-64
+&lt;pre&gt;a:
+xor eax, eax
+xchg dword ptr [rdi], eax
+ret&lt;/pre&gt;
+&lt;pre&gt;a:
+mov eax, dword ptr [rdi]
+ret&lt;/pre&gt;
+&lt;pre&gt;a:
+lock add dword ptr [rdi], 10
+ret&lt;/pre&gt;</code></pre>
+</div>
+</div>
+<p>这段代码的 load 和 fetch_add 操作仍然导致和之前相同的汇编，单 store
+操作的汇编代码完全改变了。xor 指令看起来有点突兀，但这仅是通过自己异或将
+eax 寄存器设置为 0 的常见方式，异或结果总是 0。<code>mov eax, 0</code>
+指令将也达到同样的效果，但是需要更多的空间。</p>
+<p>有趣的部分是 xchg 指令，它通常用于 swap 操作：一个同时检索旧值的
+store 操作。</p>
+<p>对于 SeqCst store，像之前常规的 mov
+指令不能满足要求，因为它将允许稍后的 load
+操作重新排序，打破全局一致性排序。通过将其改为也执行 load
+的操作，即使我们不关心它加载的值，我们也可以获得额外的保证，即我们的指令不会与后续的内存操作重排序，从而解决了问题。</p>
+<blockquote>
+<p>SeqCst load 操作可以仍然是一个常规的 mov 指令，这正是因为 SeqCst
+store 被升级到 xchg。SeqCst 操作仅保证和其他 SeqCst
+操作有全局一致性排序。SeqCst load 的 mov 可能仍然与前面的非 SeqCst store
+操作的 mov 进行重排序，但这完全没有问题。</p>
+</blockquote>
+<p>在 x86-64 上，store 操作是唯一一个在 SeqCst
+和较弱的内存排序之间存在差异的原子操作。换句话说，除了 store 之外的
+x86-64 SeqCst 操作与 Release、Acquire、AcqRel，甚至 Relaxed
+操作的一样便宜。或者，如果你愿意，x86-64 使得除 store 之外的 Relaxed
+操作和 SeqCst 操作一样昂贵。</p>
+<h3 id="arm64弱排序">ARM64：弱排序</h3>
+<p>（<a href="https://marabos.nl/atomics/hardware.html#arm64-weakly-ordered" target="_blank">英文版本</a>）</p>
+<p>在如 ARM64
+这样的<em>弱排序</em>架构上，所有的内存操作都有可能彼此之间被重新排序。这意味着，不像
+x86-64，acquire 和 release 操作不会和 relaxed 操作一样。</p>
+<p>让我们看看在 ARM64 上对于 Release、Acquire 和 AcqRel 会发生什么：</p>
+<div
+style="columns: 2;column-gap: 20px;column-rule-color: green;column-rule-style: solid;">
+<div style="break-inside: avoid">
+<pre><code>Rust 源码
+&lt;pre&gt;pub fn a(x: &amp;AtomicI32) {
+x.store(0, Release);</code></pre>
+}
+</pre>
+<pre><code>&lt;pre&gt;pub fn a(x: &amp;AtomicI32) -&gt; i32 {
+x.load(Acquire)</code></pre>
+}
+</pre>
+<pre><code>&lt;pre&gt;pub fn a(x: &amp;AtomicI32) {
+x.fetch_add(10, AcqRel);</code></pre>
+}
+</pre>
+</div>
+<div style="break-inside: avoid">
+<pre><code>编译的 x86-64
+&lt;pre&gt;a:
+stlr wzr, [x0] #(1)
+ret&lt;/pre&gt;
+&lt;pre&gt;a:
+ldar w0, [x0] #(2)
+ret&lt;/pre&gt;
+&lt;pre&gt;a:</code></pre>
+.L1: ldaxr w8, [x0] #(3) add w9, w8, #10 stlxr w10, w9, [x0] #(4) cbnz
+w10, .L1 ret
+</pre>
+</div>
+</div>
+<p>与我们之前的 Relaxed 版本相比，这些改变是微妙的：</p>
+<ol type="1">
+<li>str（store 寄存器）现在是 stlr（store-release 寄存器）</li>
+<li>ldr（load 寄存器）现在是 ldar（load-acquire 寄存器）</li>
+<li>ldxr（load exclusive 寄存器）现在是 ldaxr（load-acquire exclusive
+寄存器）</li>
+<li>stxr（store exclusive 寄存器）现在是 stlxr（store-release exclusive
+寄存器）</li>
+</ol>
+<p>如上所示，ARM64 对于 acquire 和 release 排序有一个特殊的版本的 load
+和 store 指令。不同于 ldr 或者 ldxr 指令，ldar 或者 ldxar
+指令将从不与任意后续的内存操作重排。类似地，与 str 或者 stxr
+指令不同，stlr 或 stxlr 指令将从不会和任何之前的内存操作重排。</p>
+<p>使用仅有 Release 或 Acquire 排序的「获取并修改」操作，而非
+AcqRel，将仅使用 stlxr 或 ldxar 指令分别配对一个常规的 ldxr 或 stxr
+指令。</p>
+<p>除了对 release 和 acquire 语义所需的限制外，任何特殊的 acquire 和
+release 指令都永远不会与其他任何这些特殊指令重新排序，这也使它们适合用于
+SeqCst。</p>
+<p>如下面所示，升级到 SeqCst 会产生和之前完全一样的汇编代码：</p>
+<div
+style="columns: 2;column-gap: 20px;column-rule-color: green;column-rule-style: solid;">
+<div style="break-inside: avoid">
+<pre><code>Rust 源码
+&lt;pre&gt;pub fn a(x: &amp;AtomicI32) {
+x.store(0, SeqCst);</code></pre>
+}
+</pre>
+<pre><code>&lt;pre&gt;pub fn a(x: &amp;AtomicI32) -&gt; i32 {
+x.load(SeqCst)</code></pre>
+}
+</pre>
+<pre><code>&lt;pre&gt;pub fn a(x: &amp;AtomicI32) {
+x.fetch_add(10, SeqCst);</code></pre>
+}
+</pre>
+</div>
+<div style="break-inside: avoid">
+<pre><code>编译的 x86-64
+&lt;pre&gt;a:
+stlr wzr, [x0]
+ret&lt;/pre&gt;
+&lt;pre&gt;a:
+ldar w0, [x0]
+ret&lt;/pre&gt;
+&lt;pre&gt;a:</code></pre>
+.L1: ldaxr w8, [x0] add w9, w8, #10 stlxr w10, w9, [x0] cbnz w10, .L1
+ret
+</pre>
+</div>
+</div>
+<p>这意味着在 ARM64 上，顺序一致性操作的和 acquire 操作和 release
+操作一样便宜。或者说，ARM64 的 Acquire、Release 和 AcqRel 操作和 SeqCst
+一样昂贵。然而，与 x86-64 不同，Relaxed
+操作相对较便宜，因为它们不会导致比必要的更强的排序保证。</p>
+<div class="box">
+<h2 style="text-align: center;">
+ARMv8.1 原子 Release 和 Acquire 指令
+</h2>
+<p>
+正如我们在 <a href="#armv8-1-原子指令">ARMv8.1 原子指令</a>讨论的，ARM64
+的 ARMv8.1 版本包括 CISC 风格的原子操作指令，如 ldadd（load 和 add）作为
+ldxr/stxr 循环的替代。
+</p>
+<p>
+就像 load 和 store 操作带有 acquire 和 release
+语义的特殊版本一样，这些指令也有对于更强内存排序的变体。因为这些指令既涉及到加载又涉及到存储，它们每一个都有三个额外的变体：一个用于
+release（<code>-l</code>），一个用于
+acquire（<code>-a</code>），和一个用于组合的 release 和
+acquire（<code>-al</code>）语义。
+</p>
+<p>
+例如，对于 ldadd，还有 ldaddl、ldadda 和 ldaddal。类似地，cas 指令带有
+casl、casa 和 casal 变体。
+</p>
+<p>
+就像 load 和 store 指令一样，组合的 release 和
+acquire（-al）变体也足以用于 SeqCst 操作。
+</p>
+</div>
+<h3 id="一个实验">一个实验</h3>
+<p>（<a href="https://marabos.nl/atomics/hardware.html#reordering-experiment" target="_blank">英文版本</a>）</p>
+<p>由强排序架构的普遍性带来的不幸后果是，某些类型的内存排序 bug
+可能很容易被忽视。在需要 Acquire 或 Release 的地方使用 Relaxed
+是不正确的，但在 x86-64
+上，假设编译器没有重新排序你的原子操作，这可能最终在实践中偶然工作得很好。</p>
+<blockquote>
+<p>请记住，不仅处理器可以导致事情无序发生。只要考虑到内存排序的约束，编译器也被允许重新排序它产生的指令。</p>
+<p>实际上，编译器在涉及原子操作的优化上往往非常保守，但这在未来可能会发生改变。</p>
+</blockquote>
+<p>这意味着人们可以轻易地编写不正确的并发代码，在 x86-64
+上（意外地）运行得很好，但当在 ARM64 处理器编译和运行时可能会崩溃。</p>
+<p>让我们试着做到这一点。</p>
+<p>我们将创建一个自旋锁保护的计数器，但将所有的内存排序改为
+Relaxed。让我们不费心创建自定义类型或者不安全的代码。相反，让我们仅使用
+AtomicBool 作为锁和 AtomicUsize 作为计数器。</p>
+<p>为确保编译器不会重新排序我们操作，我们将使用
+<code>std::sync::atomic::compiler_fence()</code>
+函数来通知编译器哪些操作应该是 Acquire 或 Release
+的，但不告诉处理器。</p>
+<p>我们将让四个线程反复锁定、增加 counter
+和解锁——每个线程一百万次。把这些都放在一起，我们得到了以下代码：</p>
+<div class="sourceCode" id="cb51"><pre
+class="sourceCode rust"><code class="sourceCode rust"><span id="cb51-1"><a href="#cb51-1" aria-hidden="true" tabindex="-1"></a><span class="kw">fn</span> main() <span class="op">{</span></span>
+<span id="cb51-2"><a href="#cb51-2" aria-hidden="true" tabindex="-1"></a>    <span class="kw">let</span> locked <span class="op">=</span> <span class="pp">AtomicBool::</span>new(<span class="cn">false</span>)<span class="op">;</span></span>
+<span id="cb51-3"><a href="#cb51-3" aria-hidden="true" tabindex="-1"></a>    <span class="kw">let</span> counter <span class="op">=</span> <span class="pp">AtomicUsize::</span>new(<span class="dv">0</span>)<span class="op">;</span></span>
+<span id="cb51-4"><a href="#cb51-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb51-5"><a href="#cb51-5" aria-hidden="true" tabindex="-1"></a>    <span class="pp">thread::</span>scope(<span class="op">|</span>s<span class="op">|</span> <span class="op">{</span></span>
+<span id="cb51-6"><a href="#cb51-6" aria-hidden="true" tabindex="-1"></a>        <span class="co">// 产生 4 个线程，每个都迭代 100 万次</span></span>
+<span id="cb51-7"><a href="#cb51-7" aria-hidden="true" tabindex="-1"></a>        <span class="cf">for</span> _ <span class="kw">in</span> <span class="dv">0</span><span class="op">..</span><span class="dv">4</span> <span class="op">{</span></span>
+<span id="cb51-8"><a href="#cb51-8" aria-hidden="true" tabindex="-1"></a>            s<span class="op">.</span>spawn(<span class="op">||</span> <span class="cf">for</span> _ <span class="kw">in</span> <span class="dv">0</span><span class="op">..</span><span class="dv">1_000_000</span> <span class="op">{</span></span>
+<span id="cb51-9"><a href="#cb51-9" aria-hidden="true" tabindex="-1"></a>                <span class="co">// 使用错误的内存排序获取锁</span></span>
+<span id="cb51-10"><a href="#cb51-10" aria-hidden="true" tabindex="-1"></a>                <span class="cf">while</span> locked<span class="op">.</span>swap(<span class="cn">true</span><span class="op">,</span> Relaxed) <span class="op">{}</span></span>
+<span id="cb51-11"><a href="#cb51-11" aria-hidden="true" tabindex="-1"></a>                compiler_fence(Acquire)<span class="op">;</span></span>
+<span id="cb51-12"><a href="#cb51-12" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb51-13"><a href="#cb51-13" aria-hidden="true" tabindex="-1"></a>                <span class="co">// 持有锁的同时，非原子地增加 counter</span></span>
+<span id="cb51-14"><a href="#cb51-14" aria-hidden="true" tabindex="-1"></a>                <span class="kw">let</span> old <span class="op">=</span> counter<span class="op">.</span>load(Relaxed)<span class="op">;</span></span>
+<span id="cb51-15"><a href="#cb51-15" aria-hidden="true" tabindex="-1"></a>                <span class="kw">let</span> new <span class="op">=</span> old <span class="op">+</span> <span class="dv">1</span><span class="op">;</span></span>
+<span id="cb51-16"><a href="#cb51-16" aria-hidden="true" tabindex="-1"></a>                counter<span class="op">.</span>store(new<span class="op">,</span> Relaxed)<span class="op">;</span></span>
+<span id="cb51-17"><a href="#cb51-17" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb51-18"><a href="#cb51-18" aria-hidden="true" tabindex="-1"></a>                <span class="co">// 使用错误的内存排序释放锁</span></span>
+<span id="cb51-19"><a href="#cb51-19" aria-hidden="true" tabindex="-1"></a>                compiler_fence(Release)<span class="op">;</span></span>
+<span id="cb51-20"><a href="#cb51-20" aria-hidden="true" tabindex="-1"></a>                locked<span class="op">.</span>store(<span class="cn">false</span><span class="op">,</span> Relaxed)<span class="op">;</span></span>
+<span id="cb51-21"><a href="#cb51-21" aria-hidden="true" tabindex="-1"></a>            <span class="op">}</span>)<span class="op">;</span></span>
+<span id="cb51-22"><a href="#cb51-22" aria-hidden="true" tabindex="-1"></a>        <span class="op">}</span></span>
+<span id="cb51-23"><a href="#cb51-23" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span>)<span class="op">;</span></span>
+<span id="cb51-24"><a href="#cb51-24" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb51-25"><a href="#cb51-25" aria-hidden="true" tabindex="-1"></a>    <span class="pp">println!</span>(<span class="st">&quot;{}&quot;</span><span class="op">,</span> counter<span class="op">.</span>into_inner())<span class="op">;</span></span>
+<span id="cb51-26"><a href="#cb51-26" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p>如果锁工作正常，我们预期 counter 的最终值应该恰好是四百万。注意，增加
+counter 的方式是非原子的，用的是单独的 load 和 store 操作，而不是单个
+fetch_add
+操作。这样做是确保自旋锁如果存在任何问题，可能会导致部分递增操作没有正确计入，从而使
+counter 的总值降低。</p>
+<p>在配备 x86-64 处理器的计算机上运行此程序几次：</p>
+<div class="sourceCode" id="cb52"><pre
+class="sourceCode txt"><code class="sourceCode default"><span id="cb52-1"><a href="#cb52-1" aria-hidden="true" tabindex="-1"></a>4000000</span>
+<span id="cb52-2"><a href="#cb52-2" aria-hidden="true" tabindex="-1"></a>4000000</span>
+<span id="cb52-3"><a href="#cb52-3" aria-hidden="true" tabindex="-1"></a>4000000</span></code></pre></div>
+<p>不出所料，我们获得了“免费”的 Release 和 Acquire
+语义，我们的错误不会造成任何问题。</p>
+<p>在 2021 年的安卓手机和 Raspberry Pi 3 model B 上尝试这个，两者都使用
+ARM64 处理器，结果是相同的输出：</p>
+<div class="sourceCode" id="cb53"><pre
+class="sourceCode txt"><code class="sourceCode default"><span id="cb53-1"><a href="#cb53-1" aria-hidden="true" tabindex="-1"></a>4000000</span>
+<span id="cb53-2"><a href="#cb53-2" aria-hidden="true" tabindex="-1"></a>4000000</span>
+<span id="cb53-3"><a href="#cb53-3" aria-hidden="true" tabindex="-1"></a>4000000</span></code></pre></div>
+<p>这表明并非所有 ARM64
+处理器都使用所有形式的指令重新排序，尽管我们不能根据这个实验假设太多。</p>
+<p>在尝试使用 2021 款苹果的 iMac 时，它包含一个基于 ARM64 的 M1
+处理器，我们得到了不同的结果：</p>
+<div class="sourceCode" id="cb54"><pre
+class="sourceCode txt"><code class="sourceCode default"><span id="cb54-1"><a href="#cb54-1" aria-hidden="true" tabindex="-1"></a>3988255</span>
+<span id="cb54-2"><a href="#cb54-2" aria-hidden="true" tabindex="-1"></a>3982153</span>
+<span id="cb54-3"><a href="#cb54-3" aria-hidden="true" tabindex="-1"></a>3984205</span></code></pre></div>
+<p>我们之前隐藏的错误突然变成了一个实际问题——这个问题只在弱排序系统上可见。计数器仅仅偏离了大约
+0.4%，这显示了这样的问题可能会有多么微妙。在现实生活的场景中，像这样的问题可能会长时间地保持未被发现。</p>
+<blockquote>
+<p>当试图复现上述结果时，不要忘记启用优化（使用
+<code>cargo run --release</code> 或
+<code>rustc -O</code>）。如果没有优化，同样的代码通常会产生更多的指令，这可能会掩盖指令重排序的微妙影响。</p>
+</blockquote>
+<h3 id="内存屏障">内存屏障</h3>
+<p>（<a href="https://marabos.nl/atomics/hardware.html#memory-fences" target="_blank">英文版本</a>）</p>
+<p>我们还有一种与内存排序相关的指令尚未看到：内存屏障。<em>内存屏障</em>（fence）或<em>内存屏障</em>（barrier）指令用于表示我们在<a
+href="./3_Memory_Ordering.md#屏障fence2">第三章的“屏障”</a>部分讨论过的
+<code>std::sync::atomic::fence</code>。</p>
+<p>正如我们之前看到的，x86-64 和 ARM64
+的内存排序都关乎指令重排的。屏障指令防止某些类型的指令被重排。</p>
+<p>acquire 屏障必须防止之前的 load
+操作与任何后续的内存操作进行重排序。同样，release 屏障必须防止后续的
+store
+操作与任何之前的内存操作进行重排序。顺序一致的屏障必须防止所有在其之前的内存操作与屏障之后的内存操作进行重排序。</p>
+<p>在 x86-64 上，基本的内存排序语义已经满足了 acquire 和 release
+屏障的需要。这是因为，该架构不允许发生这些屏障试图阻止的指令重排。</p>
+<p>让我们深入了解一下四种不同屏障在 x86-64 和 ARM64
+上编译为什么指令：</p>
+<div
+style="columns: 3;column-gap: 20px;column-rule-color: green;column-rule-style: solid;">
+<div style="break-inside: avoid">
+<pre><code>Rust 源码
+&lt;pre&gt;pub fn a() {
+fence(Acquire);</code></pre>
+}
+</pre>
+<pre><code>&lt;pre&gt;pub fn a() {
+fence(Release);</code></pre>
+}
+</pre>
+<pre><code>&lt;pre&gt;pub fn a() {
+fence(AcqRel);</code></pre>
+}
+</pre>
+<pre><code>&lt;pre&gt;pub fn a() {
+fence(SeqCst);</code></pre>
+}
+</pre>
+</div>
+<div style="break-inside: avoid">
+<pre><code>编译的 x86-64
+&lt;pre&gt;a:
+ret&lt;/pre&gt;
+&lt;pre&gt;a:
+ret&lt;/pre&gt;
+&lt;pre&gt;a:
+ret&lt;/pre&gt;
+&lt;pre&gt;a:
+mfence
+ret&lt;/pre&gt;</code></pre>
+</div>
+<div style="break-inside: avoid">
+<pre><code>编译的 ARM64
+&lt;pre&gt;a:
+dmb ishld
+ret&lt;/pre&gt;
+&lt;pre&gt;a:
+dmb ish
+ret&lt;/pre&gt;
+&lt;pre&gt;a:
+dmb ish
+ret&lt;/pre&gt;
+&lt;pre&gt;a:
+dmb ish
+ret&lt;/pre&gt;</code></pre>
+</div>
+</div>
+<p>不用惊讶，x86-64 上的 acquire 和 release
+屏障不会生成任何指令。在这种架构上，我们可以“免费”获得 release 和
+acquire 的语义。只有 SeqCst 屏障会导致生成
+mfence（内存屏障）指令。这个指令确保在继续之前，所有的内存操作都已经完成。</p>
+<p>在 ARM64 上，等效的指令是 <code>dmb ish</code>（data memory barrier,
+inner shared domain）。与 x86-64 不同，它也被用于 Release 和
+AcqRel，因为这种架构不会隐式地提供 Acquire 和 Release 的语义。对于
+Acquire，使用了一种影响稍微小一点的变体：<code>dmb ishld</code>。这种变体只等待
+load 操作完成，但是允许先前的 store 操作自由地重新排序到它之后。</p>
+<p>这与我们之前看到的原子操作类似，我们看到 x86-64 为我们“免费”提供了
+Release 和 Acquire 的屏障，而在 ARM64 上，顺序一致的屏障的成本与 Release
+屏障相同。</p>
+<h2 id="总结">总结</h2>
+<p>（<a href="https://marabos.nl/atomics/hardware.html#summary" target="_blank">英文版本</a>）</p>
+<ul>
+<li>在 x86-64 和 ARM64 中，relaxed load 和 store
+操作与它们的非原子版本等同。</li>
+<li>常见的原子「获取并修改」和「比较并交换」操作在 x86-64（以及从 ARM8.1
+开始的 ARM64）上有它们自己的指令。</li>
+<li>在 x86-64
+中，对于等效的指令原子操作会编译到「比较并交换」循环。</li>
+<li>在 ARM64 中，任意ID原子操作都可以通过 ll/sc
+指令循环表示：如果试图的内存操作被中断，循环会自动重新开始。</li>
+<li>缓存的操作时缓存行，一般是 64 字节。</li>
+<li>缓存使用缓存一致性协议保持一致，例如通过写入或者 MESI。</li>
+<li>填充可以通过防止伪共享<a href="#fn8" class="footnote-ref"
+id="fnref8" role="doc-noteref"><sup>8</sup></a>来提高性能，例如通过
+<code>#[repr(align(64)]</code>。</li>
+<li>load
+操作可能比失败的「比较并交换」操作要便宜得多，部分原因是后者通常需要对缓存行进行独占访问。</li>
+<li>指令重排序在单线程程序内部是不可见的。</li>
+<li>在大多数架构上，包括 x86-64 和
+ARM64，内存排序是为了防止某些类型的指令重排。</li>
+<li>在 x86-64 上，每个内存操作都具有 acquire 和 release 语义，使其与
+relaxed
+操作一样便宜或昂贵。除存储和屏障外的所有其他操作也具有顺序一致的语义，无需额外成本。</li>
+<li>在 ARM64 上，acquire 和 release 语义不如 relaxed
+操作便宜，但它们在没有额外成本的情况下也包括顺序一致（SeqCst）语义。</li>
+</ul>
+<p>我们在本章节可以看见的汇编指令的总结可以在图 7-1 找到。</p>
+<p><img
+src="https://github.com/rustcc/Rust_Atomics_and_Locks/raw/main/picture/raal_0701.svg" /></p>
+<p>图 7-1。各种原子操作在 ARM64 和 x86-64
+上编译为每个内存排序的指令概述。</p>
+<p style="text-align: center; padding-block-start: 5rem;">
+<a href="./8_Operating_System_Primitives.html">下一篇，第八章：操作系统原语</a>
+</p>
+<aside id="footnotes" class="footnotes footnotes-end-of-document"
+role="doc-endnotes">
+<hr />
+<ol>
+<li id="fn1"><p><a href="https://zh.wikipedia.org/zh-cn/偽陽性和偽陰性"
+class="uri">https://zh.wikipedia.org/zh-cn/偽陽性和偽陰性</a><a
+href="#fnref1" class="footnote-back" role="doc-backlink">↩︎</a></p></li>
+<li id="fn2"><p><a href="https://zh.wikipedia.org/wiki/缓存"
+class="uri">https://zh.wikipedia.org/wiki/缓存</a><a href="#fnref2"
+class="footnote-back" role="doc-backlink">↩︎</a></p></li>
+<li id="fn3"><p><a href="https://zh.wikipedia.org/wiki/MESI协议"
+class="uri">https://zh.wikipedia.org/wiki/MESI协议</a><a href="#fnref3"
+class="footnote-back" role="doc-backlink">↩︎</a></p></li>
+<li id="fn4"><p><a href="https://zh.wikipedia.org/wiki/伪共享"
+class="uri">https://zh.wikipedia.org/wiki/伪共享</a><a href="#fnref4"
+class="footnote-back" role="doc-backlink">↩︎</a></p></li>
+<li id="fn5"><p><a
+href="https://en.wikipedia.org/wiki/MESI_protocol#Store_Buffer"
+class="uri">https://en.wikipedia.org/wiki/MESI_protocol#Store_Buffer</a><a
+href="#fnref5" class="footnote-back" role="doc-backlink">↩︎</a></p></li>
+<li id="fn6"><p><a
+href="https://en.wikipedia.org/wiki/MESI_protocol#Invalidate_Queues"
+class="uri">https://en.wikipedia.org/wiki/MESI_protocol#Invalidate_Queues</a><a
+href="#fnref6" class="footnote-back" role="doc-backlink">↩︎</a></p></li>
+<li id="fn7"><p><a href="https://zh.wikipedia.org/wiki/流水线_(计算机)"
+class="uri">https://zh.wikipedia.org/wiki/流水线_(计算机)</a><a
+href="#fnref7" class="footnote-back" role="doc-backlink">↩︎</a></p></li>
+<li id="fn8"><p><a href="https://zh.wikipedia.org/wiki/伪共享"
+class="uri">https://zh.wikipedia.org/wiki/伪共享</a><a href="#fnref8"
+class="footnote-back" role="doc-backlink">↩︎</a></p></li>
+</ol>
+</aside>      </div>
+            <!-- JS, Popper.js, and jQuery -->
+      <script src="https://code.jquery.com/jquery-3.5.1.slim.min.js" integrity="sha384-DfXdz2htPH0lsSSs5nCTpuj/zy4C+OGpamoFVy38MVBnE+IbbVYUew+OrCXaRkfj" crossorigin="anonymous"></script>
+      <script src="https://cdn.jsdelivr.net/npm/popper.js@1.16.0/dist/umd/popper.min.js" integrity="sha384-Q6E9RHvbIyZFJoft+2mJbHaEWldlvI9IOYy5n3zV9zzTtmI3UksdQRVvoxMfooAo" crossorigin="anonymous"></script>
+      <script src="https://stackpath.bootstrapcdn.com/bootstrap/4.5.0/js/bootstrap.min.js" integrity="sha384-OgVRvuATP1z7JjHLkuOU7Xw704+h835Lr+6QL9UvYjZE3Ipu6Tp75j7Bh/kR0JKI" crossorigin="anonymous"></script>
+      <!-- Mathjax -->
+      <script src="https://polyfill.io/v3/polyfill.min.js?features=es6"></script>
+      <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+      <script>
+         /* Bootstrap styles to tables */
+         function bootstrapStylePandocTables() {
+         $('tr.header').parent('thead').parent('table').addClass('table table-condensed'); }
+         $(document).ready(function () { bootstrapStylePandocTables(); });
+         /* Adjust the height when click the toc */
+         var shiftWindow = function() { scrollBy(0, -60) };
+         window.addEventListener("hashchange", shiftWindow);
+         function load() { if (window.location.hash) shiftWindow(); }
+      </script>
+   </body>
+</html>
