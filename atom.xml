@@ -4,7 +4,7 @@
   <subtitle><![CDATA[大道至简 Simplicity is the ultimate form of sophistication]]></subtitle>
   <link href="/atom.xml" rel="self"/>
   <link href="https://colobu.com/"/>
-  <updated>2024-08-04T09:30:38.673Z</updated>
+  <updated>2024-08-14T06:11:52.789Z</updated>
   <id>https://colobu.com/</id>
   
   <author>
@@ -15,11 +15,257 @@
   <generator uri="http://zespia.tw/hexo/">Hexo</generator>
   
   <entry>
+    <title><![CDATA[四种字符串和bytes互相转换方式的性能比较]]></title>
+    <link href="https://colobu.com/2024/08/13/string-bytes-benchmark/"/>
+    <id>https://colobu.com/2024/08/13/string-bytes-benchmark/</id>
+    <published>2024-08-13T14:16:34.000Z</published>
+    <updated>2024-08-14T05:10:38.219Z</updated>
+    <content type="html"><![CDATA[<p>昨天公司群中同事提到 Go 1.22 中 string 和 bytes 的互转不需要再用 unsafe 那个包了，直接转就可以。我翻看了 Go 1.22 的 release notes 没找到相应的介绍，但是大家提到了 kubernetes 的 <a href="https://github.com/kubernetes/kubernetes/issues/124656" target="_blank" rel="external">issue</a> 中有这个说法：</p>
+<blockquote>
+<p>As of go 1.22, for string to bytes conversion, we can replace the usage of <code>unsafe.Slice(unsafe.StringData(s), len(s))</code> with type casting <code>[]bytes(str)</code>, without the worry of losing performance.</p>
+<p>As of go 1.22, string to bytes conversion <code>[]bytes(str)</code> is faster than using the <code>unsafe</code> package. Both methods have 0 memory allocation now.</p>
+</blockquote>
+<blockquote>
+<p>自 Go 1.22 起，对于 string 到 bytes 的转换，我们可以用类型转换 <code>[]bytes(str)</code> 来替换 <code>unsafe.Slice(unsafe.StringData(s), len(s))</code> 的用法，而不用担心性能损失。<br>自 Go 1.22 起，string 到 bytes 的转换 <code>[]bytes(str)</code> 比使用 unsafe 包更快。现在两种方法都不会有内存分配。</p>
+</blockquote>
+<p>这个说法让我很好奇，但是我还是想验证一下这个说法。</p>
+<p>注意，这个说法只谈到了 string 到 bytes 的转换，并没有提到 bytes 到 string 的转换，这篇文章也会关注这两者的互转。</p>
+<p>首先，让我们看看几种 string 和 bytes 的转换方式，然后我们再写 benchmark 比较它们之间的性能。<br><a id="more"></a></p>
+<h2 id="一、强转">一、强转</h2>
+<p>字符串和 bytes 之间可以强制转换，编译器会内部处理。代码如下：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> toRawBytes(s <span class="typename">string</span>) []<span class="typename">byte</span> {</div><div class="line">	<span class="keyword">if</span> <span class="built_in">len</span>(s) ==<span class="number"> 0</span> {</div><div class="line">		<span class="keyword">return</span> <span class="constant">nil</span></div><div class="line">	}</div><div class="line">	<span class="keyword">return</span> []<span class="typename">byte</span>(s)</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> toRawString(b []<span class="typename">byte</span>) <span class="typename">string</span> {</div><div class="line">	<span class="keyword">if</span> <span class="built_in">len</span>(b) ==<span class="number"> 0</span> {</div><div class="line">		<span class="keyword">return</span> <span class="string">""</span></div><div class="line">	}</div><div class="line">	<span class="keyword">return</span> <span class="typename">string</span>(b)</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>这里我们做了一点点优化，处理空 string或者 bytes 的情况。</p>
+<h2 id="二、传统_unsafe_方式">二、传统 unsafe 方式</h2>
+<p>reflect 包中定义了 <code>SliceHeader</code> 和 <code>StringHeader</code>, 分别对应 slice 和 string 的数据结构</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> SliceHeader <span class="keyword">struct</span> {</div><div class="line">	Data <span class="typename">uintptr</span></div><div class="line">	Len  <span class="typename">int</span></div><div class="line">	Cap  <span class="typename">int</span></div><div class="line">}</div><div class="line"><span class="keyword">type</span> StringHeader <span class="keyword">struct</span> {</div><div class="line">	Data <span class="typename">uintptr</span></div><div class="line">	Len  <span class="typename">int</span></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>我们按照这种数据结构，可以实现 string 和 bytes 的互转。我们暂且把它叫做 <code>reflect</code> 方式吧，虽然下面的代码没有用到 <code>reflect</code> 包，但是实际我们是按照 <code>reflect</code> 包中的这两个数据结构进行转换的:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> toReflectBytes(s <span class="typename">string</span>) []<span class="typename">byte</span> {</div><div class="line">	<span class="keyword">if</span> <span class="built_in">len</span>(s) ==<span class="number"> 0</span> {</div><div class="line">		<span class="keyword">return</span> <span class="constant">nil</span></div><div class="line">	}</div><div class="line"></div><div class="line">	x := (*<span class="number">[2</span>]<span class="typename">uintptr</span>)(unsafe.Pointer(&s))</div><div class="line">	h := <span class="number">[3</span>]<span class="typename">uintptr</span>{x<span class="number">[0</span>], x<span class="number">[1</span>], x<span class="number">[1</span>]}</div><div class="line">	<span class="keyword">return</span> *(*[]<span class="typename">byte</span>)(unsafe.Pointer(&h))</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> toReflectString(b []<span class="typename">byte</span>) <span class="typename">string</span> {</div><div class="line">	<span class="keyword">if</span> <span class="built_in">len</span>(b) ==<span class="number"> 0</span> {</div><div class="line">		<span class="keyword">return</span> <span class="string">""</span></div><div class="line">	}</div><div class="line">	<span class="keyword">return</span> *(*<span class="typename">string</span>)(unsafe.Pointer(&b))</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<h2 id="三、新型_unsafe_方式">三、新型 unsafe 方式</h2>
+<p>我在两年前的文章<a href="https://colobu.com/2022/09/06/string-byte-convertion/" target="_blank" rel="external">与日俱进，在 Go 1.20 中这种高效转换的方式又变了</a>介绍了新的 unsafe 方式，reflect 包中的 <code>SliceHeader</code> 和 <code>StringHeader</code> 准备废弃了。让我们看看这种新的转换方式：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> toBytes(s <span class="typename">string</span>) []<span class="typename">byte</span> {</div><div class="line">	<span class="keyword">if</span> <span class="built_in">len</span>(s) ==<span class="number"> 0</span> {</div><div class="line">		<span class="keyword">return</span> <span class="constant">nil</span></div><div class="line">	}</div><div class="line">	<span class="keyword">return</span> unsafe.Slice(unsafe.StringData(s), <span class="built_in">len</span>(s))</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> toString(b []<span class="typename">byte</span>) <span class="typename">string</span> {</div><div class="line">	<span class="keyword">if</span> <span class="built_in">len</span>(b) ==<span class="number"> 0</span> {</div><div class="line">		<span class="keyword">return</span> <span class="string">""</span></div><div class="line">	}</div><div class="line">	<span class="keyword">return</span> unsafe.String(unsafe.SliceData(b), <span class="built_in">len</span>(b))</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>利用 <code>unsafe.Slice</code> 、<code>unsafe.String</code>、<code>unsafe.StringData</code> 和 <code>unsafe.SliceData</code> 完成 Slice 和 String 的转换以及底层数据的指针的获取。</p>
+<h2 id="四、kubernetes_的实现">四、kubernetes 的实现</h2>
+<p>在 k8s 中，使用的是下面方式的优化的转换：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> toK8sBytes(s <span class="typename">string</span>) []<span class="typename">byte</span> {</div><div class="line">	<span class="keyword">return</span> *(*[]<span class="typename">byte</span>)(unsafe.Pointer(&s))</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> toK8sString(b []<span class="typename">byte</span>) <span class="typename">string</span> {</div><div class="line">	<span class="keyword">return</span> *(*<span class="typename">string</span>)(unsafe.Pointer(&b))</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>可以看到，相对于传统 unsafe 方式，k8s 的实现更简洁，并没有为<code>toBytes</code>临时构造3元素的数组，而是直接将 string 和 bytes 的指针进行转换。</p>
+<p>string不是只包含两个字段么？slice不是包含三个字段么？<code>toK8sBytes</code>返回的[]byte的cap是怎么确定的呢？ 最后我们再分析这个问题，现在先把这几个实现的性能搞清楚。 </p>
+<h2 id="性能比较">性能比较</h2>
+<p>我们分别对这几种实现进行 benchmark，看看它们之间的性能差异。<br>使用一个简单的字符串和它对应的bytes, 分别进行 string 到 bytes 、 bytes 到 string 的转换。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div><div class="line">35</div><div class="line">36</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">var</span> s = <span class="string">"hello, world"</span></div><div class="line"><span class="keyword">var</span> bts = []<span class="typename">byte</span>(<span class="string">"hello, world"</span>)</div><div class="line"></div><div class="line"><span class="keyword">func</span> BenchmarkStringToBytes(b *testing.B) {</div><div class="line">	<span class="keyword">var</span> fns = <span class="keyword">map</span>[<span class="typename">string</span>]<span class="keyword">func</span>(<span class="typename">string</span>) []<span class="typename">byte</span>{</div><div class="line">		<span class="string">"强制转换"</span>:  toRawBytes,</div><div class="line">		<span class="string">"传统转换"</span>:  toReflectBytes,</div><div class="line">		<span class="string">"新型转换"</span>:  toBytes,</div><div class="line">		<span class="string">"k8s转换"</span>: toK8sBytes,</div><div class="line">	}</div><div class="line"></div><div class="line">	<span class="keyword">for</span> name, fn := <span class="keyword">range</span> fns {</div><div class="line">		b.Run(name, <span class="keyword">func</span>(b *testing.B) {</div><div class="line">			<span class="keyword">for</span> i :=<span class="number"> 0</span>; i &lt; b.N; i++ {</div><div class="line">				bts = fn(s)</div><div class="line">			}</div><div class="line">		})</div><div class="line">	}</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> BenchmarkBytesToString(b *testing.B) {</div><div class="line">	<span class="keyword">var</span> fns = <span class="keyword">map</span>[<span class="typename">string</span>]<span class="keyword">func</span>([]<span class="typename">byte</span>) <span class="typename">string</span>{</div><div class="line">		<span class="string">"强制转换"</span>:  toRawString,</div><div class="line">		<span class="string">"传统转换"</span>:  toReflectString,</div><div class="line">		<span class="string">"新型转换"</span>:  toString,</div><div class="line">		<span class="string">"k8s转换"</span>: toK8sString,</div><div class="line">	}</div><div class="line"></div><div class="line">	<span class="keyword">for</span> name, fn := <span class="keyword">range</span> fns {</div><div class="line">		b.Run(name, <span class="keyword">func</span>(b *testing.B) {</div><div class="line">			<span class="keyword">for</span> i :=<span class="number"> 0</span>; i &lt; b.N; i++ {</div><div class="line">				s = fn(bts)</div><div class="line">			}</div><div class="line">		})</div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>在Mac mini M2上运行，go1.22.6 darwin/arm64，结果如下：</p>
+<figure class="highlight shell"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div></pre></td><td class="code"><pre><div class="line"><span class="attribute">goos</span>: <span class="string">darwin</span></div><div class="line"><span class="attribute">goarch</span>: <span class="string">arm64</span></div><div class="line"><span class="attribute">pkg</span>: <span class="string">github.com/smallnest/study/str2bytes</span></div><div class="line"></div><div class="line"><span class="gradle">BenchmarkStringToBytes<span class="regexp">/强制转换-8              	78813638	        14.73 ns/</span>op	      <span class="number">16</span> B<span class="regexp">/op	       1 allocs/</span>op</span></div><div class="line">BenchmarkStringToBytes<span class="regexp">/传统转换-8              	599346962	         2.010 ns/</span>op	       <span class="number">0</span> B<span class="regexp">/op	       0 allocs/</span>op</div><div class="line">BenchmarkStringToBytes<span class="regexp">/新型转换-8              	624976126	         1.929 ns/</span>op	       <span class="number">0</span> B<span class="regexp">/op	       0 allocs/</span>op</div><div class="line">BenchmarkStringToBytes<span class="regexp">/k8s转换-8             	887370499	         1.211 ns/</span>op	       <span class="number">0</span> B<span class="regexp">/op	       0 allocs/</span>op</div></pre></td></tr></table></figure>
+
+<p>string 转 bytes性能最好的是k8s方案， 新型转换和传统转换性能差不多，新型方案略好，强制转换性能最差。</p>
+<figure class="highlight shell"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div></pre></td><td class="code"><pre><div class="line"></div><div class="line">BenchmarkBytesToString<span class="regexp">/强制转换-8              	92011309	        12.68 ns/</span>op	      <span class="number">16</span> B<span class="regexp">/op	       1 allocs/</span>op</div><div class="line">BenchmarkBytesToString<span class="regexp">/传统转换-8              	815922964	         1.471 ns/</span>op	       <span class="number">0</span> B<span class="regexp">/op	       0 allocs/</span>op</div><div class="line">BenchmarkBytesToString<span class="regexp">/新型转换-8              	624965414	         1.922 ns/</span>op	       <span class="number">0</span> B<span class="regexp">/op	       0 allocs/</span>op</div><div class="line">BenchmarkBytesToString<span class="regexp">/k8s转换-8             	1000000000	         1.194 ns/</span>op	       <span class="number">0</span> B<span class="regexp">/op	       0 allocs/</span>op</div></pre></td></tr></table></figure>
+
+<p>而对于 bytes 转 string，k8s方案性能最好，传统转换次之，新型转换性能再次之，强制转换性能非常不好。</p>
+<p>在Linux amd64上运行，go1.22.0 linux/amd64，结果如下：</p>
+<figure class="highlight shell"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div></pre></td><td class="code"><pre><div class="line">goos: linux</div><div class="line">goarch: amd64</div><div class="line">pkg: test</div><div class="line">cpu: Intel(R) Xeon(R) Platinum</div><div class="line">BenchmarkStringToBytes<span class="regexp">/强制转换-2                 	30606319	        42.02 ns/</span>op	      <span class="number">16</span> B<span class="regexp">/op	       1 allocs/</span>op</div><div class="line">BenchmarkStringToBytes<span class="regexp">/传统转换-2                 	315913948	         3.779 ns/</span>op	       <span class="number">0</span> B<span class="regexp">/op	       0 allocs/</span>op</div><div class="line">BenchmarkStringToBytes<span class="regexp">/新型转换-2                 	411972518	         2.753 ns/</span>op	       <span class="number">0</span> B<span class="regexp">/op	       0 allocs/</span>op</div><div class="line">BenchmarkStringToBytes<span class="regexp">/k8s转换-2                	449640819	         2.770 ns/</span>op	       <span class="number">0</span> B<span class="regexp">/op	       0 allocs/</span>op</div><div class="line"></div><div class="line"></div><div class="line">BenchmarkBytesToString<span class="regexp">/强制转换-2                 	38716465	        29.18 ns/</span>op	      <span class="number">16</span> B<span class="regexp">/op	       1 allocs/</span>op</div><div class="line">BenchmarkBytesToString<span class="regexp">/传统转换-2                 	458832459	         2.593 ns/</span>op	       <span class="number">0</span> B<span class="regexp">/op	       0 allocs/</span>op</div><div class="line">BenchmarkBytesToString<span class="regexp">/新型转换-2                 	439537762	         2.762 ns/</span>op	       <span class="number">0</span> B<span class="regexp">/op	       0 allocs/</span>op</div><div class="line">BenchmarkBytesToString<span class="regexp">/k8s转换-2                	478885546	         2.375 ns/</span>op	       <span class="number">0</span> B<span class="regexp">/op	       0 allocs/</span>op</div></pre></td></tr></table></figure>
+
+<p>整体上看，k8s方案、传统转换、新型转换性能都挺好，强制转换性能最差。k8s在bytes转string上性能最好。</p>
+<h2 id="性能分析">性能分析</h2>
+<p>等等，kubernates的讨论中，不是说Go1.22中string到bytes的转换可以直接用<code>[]byte(str)</code>了么？为什么这里的性能测试中，强制转换为什么性能那么差呢？</p>
+<p>同时你也可以看到，强制转换每个op都会有一次内存分配:<code>1 allocs/op</code>,这严重影响了它的性能。</p>
+<p>如果我们编写两个benchmark测试函数, 如下:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> BenchmarkStringToBytesRaw(b *testing.B) {</div><div class="line">	<span class="keyword">for</span> i :=<span class="number"> 0</span>; i &lt; b.N; i++ {</div><div class="line">		_ = toRawBytes(s)</div><div class="line">	}</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> BenchmarkBytesToStringRaw(b *testing.B) {</div><div class="line">	<span class="keyword">for</span> i :=<span class="number"> 0</span>; i &lt; b.N; i++ {</div><div class="line">		_ = toRawString(bts)</div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>执行:</p>
+<figure class="highlight shell"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div></pre></td><td class="code"><pre><div class="line"><span class="label">goos:</span> darwin</div><div class="line"><span class="label">goarch:</span> arm64</div><div class="line"><span class="label">pkg:</span> github.com/smallnest/study/str2bytes</div><div class="line">BenchmarkStringToBytesRaw-<span class="number">8</span>   	<span class="number">1000000000</span>	         <span class="number">0.2921</span> ns/op	       <span class="number">0</span> B/op	       <span class="number">0</span> allocs/op</div><div class="line">BenchmarkBytesToStringRaw-<span class="number">8</span>   	<span class="number">506502222</span>	         <span class="number">2.363</span> ns/op	       <span class="number">0</span> B/op	       <span class="number">0</span> allocs/op</div></pre></td></tr></table></figure>
+
+<p>你会发现一个令人诧异的事情，强制转换的性能非常好，没有额外的内存分配(零拷贝)，设置字符串转换为bytes好太多。</p>
+<p>这是咋回事呢？</p>
+<p>当然聪明的你就会想到这个肯定是编译器做了优化，通过内联，把toRawBytes的函数调用展开了，这个好处是发现s</p>
+<figure class="highlight shell"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div></pre></td><td class="code"><pre><div class="line"><span class="comment"># go test -gcflags="-m=2" -bench Raw -benchmem</span></div><div class="line"><span class="keyword">...</span></div><div class="line">./convert_test.go:<span class="number">48</span>:<span class="number">6</span>: can inline toRawBytes with cost <span class="number">10</span> as: func(string) []byte { <span class="keyword">if</span> len(s) == <span class="number">0</span> { <span class="keyword">return</span> nil }; <span class="keyword">return</span> ([]byte)(s) }</div><div class="line">./convert_test.go:<span class="number">55</span>:<span class="number">6</span>: can inline toRawString with cost <span class="number">10</span> as: func([]byte) string { <span class="keyword">if</span> len(b) == <span class="number">0</span> { <span class="keyword">return</span> <span class="string">""</span> }; <span class="keyword">return</span> string(b) }</div><div class="line"><span class="keyword">...</span></div><div class="line">./convert_test.go:<span class="number">101</span>:<span class="number">17</span>: ([]byte)(s) does not escape</div><div class="line">./convert_test.go:<span class="number">101</span>:<span class="number">17</span>: zero-copy string-&gt;[]byte conversion</div><div class="line"><span class="keyword">...</span></div></pre></td></tr></table></figure>
+
+<p>通过<code>-gcflags=&quot;-m=2&quot;</code>, 我们可以观察内联和逃逸分析的结果，可以看到编译器优化了强制转换的函数，将string转换为bytes的操作优化为零拷贝。</p>
+<p>而上一节我们的benchmark中，<code>bts = toRawBytes(s)</code>这个操作，会导致<code>([]byte)(s)</code>逃逸到堆上，这样就会有一次内存分配，并且性能底下。</p>
+<p>所以你现在情况了，Go1.22确实对强制转换做了优化，但是这个优化是通过编译器的内联和逃逸分析来实现的，并不是所有的场景都能够优化到零拷贝。</p>
+<p>谁能在编写代码的时候注意到这个优化呢，甚至准确的判断能否避免逃逸？所以可能在现阶段，我们还是会通过其他三种方式进行优化。</p>
+<p>貌似Go 1.23会进一步优化，参考这个CL: <a href="https://github.com/golang/go/commit/925d2fb36c8e4c9c0e6e240a1621db36c34e5d31" target="_blank" rel="external">cmd/compile: restore zero-copy string-&gt;[]byte optimization</a></p>
+<h2 id="k8s实现的问题">k8s实现的问题</h2>
+<p>一开始，我们留了一个问题：<code>toK8sBytes</code>返回的[]byte的cap是多少？</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> toK8sBytes(s <span class="typename">string</span>) []<span class="typename">byte</span> {</div><div class="line">	<span class="keyword">return</span> *(*[]<span class="typename">byte</span>)(unsafe.Pointer(&s))</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p><code>len</code>是明确的，字段对应字符串的len字段，但是<code>cap</code>是多少呢？字符串可是没有<code>cap</code>字段的。</p>
+<p>我们可以通过下面的代码来验证:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> Test_toK8sBytes(t *testing.T) {</div><div class="line">	a := *(*<span class="number">[3</span>]<span class="typename">int64</span>)(unsafe.Pointer(&s))</div><div class="line">	fmt.Printf(<span class="string">"%d, %d, %d\n"</span>, a<span class="number">[0</span>], a<span class="number">[1</span>], a<span class="number">[2</span>])</div><div class="line"></div><div class="line">	b := *(*[]<span class="typename">byte</span>)(unsafe.Pointer(&s))</div><div class="line">	fmt.Printf(<span class="string">"%d, %d, %d\n"</span>, unsafe.SliceData(b), <span class="built_in">len</span>(b), <span class="built_in">cap</span>(b))</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>首先我们强制获取三个字段，第一个字段应该是字符串底层数据的指针。第二个字段是字符串的长度，第三个字段是什么呢？<br>同样我进行强制转换成slice of byte, 然后打印slice的底层数据指针，长度和容量。</p>
+<p>输出结果如下(每次运行可能会得到不同的结果):</p>
+<figure class="highlight shell"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div></pre></td><td class="code"><pre><div class="line">4375580047, 12, 4375914624</div><div class="line">4375580047, 12, 4375914624</div></pre></td></tr></table></figure>
+
+<p>可以看到两者的结果是一致的，第一个值就是底层数据指针，第二个值是长度12，第三个啥也不是，就取得的内存中的值，随机的，并不是容量12。</p>
+<p>所以通过这种方式转换的slice，其容量是不确定的，这个是一个问题，可能会导致一些问题，比如slice的append操作。</p>
+<p>1、如果得到的slice的容量那么大，我们是不是尽情的append数据呢？</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line">b := *(*[]<span class="typename">byte</span>)(unsafe.Pointer(&s))</div><div class="line">fmt.Printf(<span class="string">"%d, %d, %d\n"</span>, unsafe.SliceData(b), <span class="built_in">len</span>(b), <span class="built_in">cap</span>(b))</div><div class="line"></div><div class="line">b = <span class="built_in">append</span>(b, <span class="string">'!'</span>)</div></pre></td></tr></table></figure>
+
+<p>运行上面的测试会导致panic:</p>
+<figure class="highlight shell"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line">unexpected fault address <span class="number">0x105020dfb</span></div><div class="line">fatal error: fault</div><div class="line">[signal SIGBUS: bus error code=<span class="number">0x1</span> addr=<span class="number">0x105020dfb</span> pc=<span class="number">0x10501ee98</span>]</div></pre></td></tr></table></figure>
+
+<p>2、如果修改返回的bytes, 共享底层数据的原始string是不是也会发生变化？</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line">b := *(*[]<span class="typename">byte</span>)(unsafe.Pointer(&s))</div><div class="line">fmt.Printf(<span class="string">"%d, %d, %d\n"</span>, unsafe.SliceData(b), <span class="built_in">len</span>(b), <span class="built_in">cap</span>(b))</div><div class="line">b<span class="number">[0</span>] = <span class="string">'H'</span></div></pre></td></tr></table></figure>
+
+<p>运行上面的测试，会导致string的值<code>s</code>发生变化吗? 答案是不会，运行这段代码依然会导致panic&quot;</p>
+<figure class="highlight shell"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div></pre></td><td class="code"><pre><div class="line">unexpected fault address <span class="number">0x104f1cdcf</span></div><div class="line">fatal error: fault</div><div class="line">[signal SIGBUS: bus error code=<span class="number">0x1</span> addr=<span class="number">0x104f1cdcf</span> pc=<span class="number">0x104f1ae74</span>]</div></pre></td></tr></table></figure>
+
+<p>3、如果修改原始的bytes, 返回的string是不是也会发生变化？<br>我们知道，字符串是不可变的，所以这个问题的答案是？<br>测试代码如下：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line">c := *(*<span class="typename">string</span>)(unsafe.Pointer(&bts))</div><div class="line">fmt.Printf(<span class="string">"%s\n"</span>, c)</div><div class="line">bts<span class="number">[0</span>] = <span class="string">'H'</span></div><div class="line">fmt.Printf(<span class="string">"%s\n"</span>, c)</div></pre></td></tr></table></figure>
+
+<p>原始的bytes bts发生变化，返回的string c会发生变化吗？上面的代码打印出修改前后同一个字符串的值：</p>
+<figure class="highlight shell"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div></pre></td><td class="code"><pre><div class="line">hello, world</div><div class="line">Hello, world</div></pre></td></tr></table></figure>
+
+<p>哈，字符串也变成了&quot;可变&quot;的了。</p>
+<h2 id="总结">总结</h2>
+<p>Go 1.22中，string和bytes的互转在部分场景(未逃逸的情况)下做了优化，实现了零拷贝，性能优秀，但是并不是所有的场景都能优化到零拷贝，所以我们、可以再等等，再等几个版本优化完全后再替换传统的互转方式。</p>
+<p>在字符串和bytes互转的情况下，我们要确定bytes是不是可变的，这样会避免意外的情况发生，否则不妨采用强制转换的方式，安全第一。</p>
+]]></content>
+    <summary type="html">
+    <![CDATA[<p>昨天公司群中同事提到 Go 1.22 中 string 和 bytes 的互转不需要再用 unsafe 那个包了，直接转就可以。我翻看了 Go 1.22 的 release notes 没找到相应的介绍，但是大家提到了 kubernetes 的 <a href="https://github.com/kubernetes/kubernetes/issues/124656" target="_blank" rel="external">issue</a> 中有这个说法：</p>
+<blockquote>
+<p>As of go 1.22, for string to bytes conversion, we can replace the usage of <code>unsafe.Slice(unsafe.StringData(s), len(s))</code> with type casting <code>[]bytes(str)</code>, without the worry of losing performance.</p>
+<p>As of go 1.22, string to bytes conversion <code>[]bytes(str)</code> is faster than using the <code>unsafe</code> package. Both methods have 0 memory allocation now.</p>
+</blockquote>
+<blockquote>
+<p>自 Go 1.22 起，对于 string 到 bytes 的转换，我们可以用类型转换 <code>[]bytes(str)</code> 来替换 <code>unsafe.Slice(unsafe.StringData(s), len(s))</code> 的用法，而不用担心性能损失。<br>自 Go 1.22 起，string 到 bytes 的转换 <code>[]bytes(str)</code> 比使用 unsafe 包更快。现在两种方法都不会有内存分配。</p>
+</blockquote>
+<p>这个说法让我很好奇，但是我还是想验证一下这个说法。</p>
+<p>注意，这个说法只谈到了 string 到 bytes 的转换，并没有提到 bytes 到 string 的转换，这篇文章也会关注这两者的互转。</p>
+<p>首先，让我们看看几种 string 和 bytes 的转换方式，然后我们再写 benchmark 比较它们之间的性能。<br>]]>
+    
+    </summary>
+    
+      <category term="Go" scheme="https://colobu.com/categories/Go/"/>
+    
+  </entry>
+  
+  <entry>
+    <title><![CDATA[没有什么不可能：修改 Go 结构体的私有字段]]></title>
+    <link href="https://colobu.com/2024/08/08/access-the-unexported-fields/"/>
+    <id>https://colobu.com/2024/08/08/access-the-unexported-fields/</id>
+    <published>2024-08-08T15:12:59.000Z</published>
+    <updated>2024-08-14T05:10:38.219Z</updated>
+    <content type="html"><![CDATA[<p>在Go语言中,结构体(struct)中的字段如果是私有的,只能在定义该结构体的同一个包内访问。这是为了实现数据的封装和信息隐藏,提高代码的健壮性和安全性。</p>
+<p>但是在某些情况下,我们可能需要在外部包中访问或修改结构体的私有字段。这时,我们可以使用 Go 语言提供的反射(reflect)机制来实现这一功能。</p>
+<p>即使我们能够实现访问，这些字段你没有办法修改，如果尝试通过反射设置这些私有字段的值，会 panic。</p>
+<p>甚至有时，我们通过反射设置一些变量或者字段的值的时候，会 panic, 报错 <code>panic: reflect: reflect.Value.Set using unaddressable value</code>。</p>
+<p>在本文中，你将了解到：</p>
+<ol>
+<li>如何通过 hack 的方式访问外部结构体的私有字段</li>
+<li>如何通过 hack 的方式设置外部结构体的私有字段</li>
+<li>如何通过 hack 的方式设置 unaddressable 的值</li>
+</ol>
+<a id="more"></a>
+<p>首先我先介绍通过反射设置值遇到的 unaddressable 的困境。</p>
+<h2 id="通过反射设置一个变量的值">通过反射设置一个变量的值</h2>
+<p>如果你使用过反射设置值的变量，你可能熟悉下面的代码，而且这个代码工作正常：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">var</span> x =<span class="number"> 47</span></div><div class="line"></div><div class="line">v := reflect.ValueOf(&x).Elem()</div><div class="line">fmt.Printf(<span class="string">"原始值: %d, CanSet: %v\n"</span>, v.Int(), v.CanSet()) <span class="comment">// 47, false</span></div><div class="line">v.Set(reflect.ValueOf<span class="number">(50</span>))</div></pre></td></tr></table></figure>
+
+<p>注意这里传入给 <code>reflect.ValueOf</code> 的是 x 的指针 <code>&amp;x</code>, 所以这个 Value 值是 <code>addresable</code> 的，我们可以进行赋值。</p>
+<p>如果把 <code>&amp;x</code> 替换成 <code>x</code>, 我们再尝试运行：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">var</span> x =<span class="number"> 47</span></div><div class="line"></div><div class="line">v := reflect.ValueOf(x)</div><div class="line">fmt.Printf(<span class="string">"Original value: %d, CanSet: %v\n"</span>, v.Int(), v.CanSet()) <span class="comment">// 47, false</span></div><div class="line">v.Set(reflect.ValueOf<span class="number">(50</span>))</div></pre></td></tr></table></figure>
+
+<p>可以看到panic:</p>
+<figure class="highlight shell"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div></pre></td><td class="code"><pre><div class="line">Original value: <span class="number">47</span>, CanSet: <span class="keyword">false</span></div><div class="line">panic: reflect: reflect.Value.Set using unaddressable value</div><div class="line"></div><div class="line">goroutine <span class="number">1</span> [running]:</div><div class="line">reflect.flag.mustBeAssignableSlow(<span class="number">0</span>x1400012c410?)</div><div class="line">	<span class="regexp">/usr/</span>local<span class="regexp">/go/</span>src<span class="regexp">/reflect/</span>value.go:<span class="number">272</span> +<span class="number">0</span>x74</div><div class="line">reflect.flag.mustBeAssignable(...)</div><div class="line">	<span class="regexp">/usr/</span>local<span class="regexp">/go/</span>src<span class="regexp">/reflect/</span>value.go:<span class="number">259</span></div><div class="line">reflect.Value.Set({<span class="number">0</span>x104e13e40?, <span class="number">0</span>x104e965b8?, <span class="number">0</span>x104dec7e6?}, {<span class="number">0</span>x104e13e40?, <span class="number">0</span>x104e0ada0?, <span class="number">0</span>x2?})</div><div class="line">	<span class="regexp">/usr/</span>local<span class="regexp">/go/</span>src<span class="regexp">/reflect/</span>value.go:<span class="number">2319</span> +<span class="number">0</span>x58</div><div class="line">main.setUnaddressableValue()</div><div class="line">	<span class="regexp">/Users/</span>smallnest<span class="regexp">/workspace/</span>study<span class="regexp">/private/m</span>ain.go:<span class="number">27</span> +<span class="number">0</span>x1c0</div><div class="line">main.main()</div><div class="line">	<span class="regexp">/Users/</span>smallnest<span class="regexp">/workspace/</span>study<span class="regexp">/private/m</span>ain.go:<span class="number">18</span> +<span class="number">0</span>x1c</div><div class="line">exit status <span class="number">2</span></div></pre></td></tr></table></figure>
+
+<p>文章最后我会介绍如何通过 hack 的方式解决这个问题。</p>
+<p>接下来我再介绍访问私有字段的问题。</p>
+<h2 id="访问外部包的结构体的私有字段">访问外部包的结构体的私有字段</h2>
+<p>我们先准备一个 <code>model</code> 包，在它之下定义了两个结构体：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> model</div><div class="line"></div><div class="line"><span class="keyword">type</span> Person <span class="keyword">struct</span> {</div><div class="line">	Name <span class="typename">string</span></div><div class="line">	age  <span class="typename">int</span></div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> NewPerson(name <span class="typename">string</span>, age <span class="typename">int</span>) Person {</div><div class="line">	<span class="keyword">return</span> Person{</div><div class="line">		Name: name,</div><div class="line">		age:  age, <span class="comment">// unexported field</span></div><div class="line">	}</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">type</span> Teacher <span class="keyword">struct</span> {</div><div class="line">	Name <span class="typename">string</span></div><div class="line">	Age  <span class="typename">int</span> <span class="comment">// exported field</span></div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> NewTeacher(name <span class="typename">string</span>, age <span class="typename">int</span>) Teacher {</div><div class="line">	<span class="keyword">return</span> Teacher{</div><div class="line">		Name: name,</div><div class="line">		Age:  age,</div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>注意<code>Person</code>的<code>age</code>字段是私有的，<code>Teacher</code>的<code>Age</code>字段是公开的。</p>
+<p>在我们的<code>main</code>函数中，你不能访问<code>Person</code>的<code>age</code>字段：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> main;</div><div class="line"></div><div class="line"><span class="keyword">import</span> (</div><div class="line">    <span class="string">"fmt"</span></div><div class="line">    <span class="string">"reflect"</span></div><div class="line">    <span class="string">"unsafe"</span></div><div class="line"></div><div class="line">    <span class="string">"github.com/smallnest/private/model"</span></div><div class="line">)   </div><div class="line"></div><div class="line"><span class="keyword">func</span> main() {</div><div class="line">    p := model.NewPerson(<span class="string">"Alice"</span>,<span class="number"> 30</span>)</div><div class="line">    fmt.Printf(<span class="string">"Person: %+v\n"</span>, p)</div><div class="line"></div><div class="line">    <span class="comment">// fmt.Println(p.age) // error: p.age undefined (cannot refer to unexported field or method age)</span></div><div class="line"></div><div class="line">    t := model.NewTeacher(<span class="string">"smallnest"</span>,<span class="number"> 18</span>)</div><div class="line">    fmt.Printf(<span class="string">"Teacher: %+v\n"</span>, t) <span class="comment">// Teacher: {Name:Alice Age:30}</span></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>那么真的就无法访问了吗？也不一定，我们可以通过反射的方式访问私有字段:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line">p := model.NewPerson(<span class="string">"Alice"</span>,<span class="number"> 30</span>)</div><div class="line"></div><div class="line">age := reflect.ValueOf(p).FieldByName(<span class="string">"age"</span>)</div><div class="line">fmt.Printf(<span class="string">"原始值: %d, CanSet: %v\n"</span>, age.Int(), age.CanSet()) <span class="comment">// 30, false</span></div></pre></td></tr></table></figure>
+
+<p>运行这个程序，可以看到我们获得了这个私有字段<code>age</code>的值:</p>
+<figure class="highlight shell"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">原始值: <span class="number">30</span>, CanSet: <span class="literal">false</span></div></pre></td></tr></table></figure>
+
+<p>这样我们就绕过了Go语言的访问限制，访问了私有字段。</p>
+<h2 id="设置结构体的私有字段">设置结构体的私有字段</h2>
+<p>但是如果我们尝试修改这个私有字段的值，会 panic:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">age.SetInt<span class="number">(50</span>)</div></pre></td></tr></table></figure>
+
+<p>或者</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line">age.Set(reflect.ValueOf<span class="number">(50</span>))</div></pre></td></tr></table></figure>
+
+<p>报错信息：</p>
+<figure class="highlight shell"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div></pre></td><td class="code"><pre><div class="line">原始值: <span class="number">30</span>, CanSet: <span class="keyword">false</span></div><div class="line">panic: reflect: reflect.Value.SetInt using value obtained using unexported field</div><div class="line"></div><div class="line">goroutine <span class="number">1</span> [running]:</div><div class="line">reflect.flag.mustBeAssignableSlow(<span class="number">0</span>x2?)</div><div class="line">	<span class="regexp">/usr/</span>local<span class="regexp">/go/</span>src<span class="regexp">/reflect/</span>value.go:<span class="number">269</span> +<span class="number">0</span>xb4</div><div class="line">reflect.flag.mustBeAssignable(...)</div><div class="line">	<span class="regexp">/usr/</span>local<span class="regexp">/go/</span>src<span class="regexp">/reflect/</span>value.go:<span class="number">259</span></div><div class="line">reflect.Value.SetInt({<span class="number">0</span>x1050ac0c0?, <span class="number">0</span>x14000118f20?, <span class="number">0</span>x1050830a8?}, <span class="number">0</span>x32)</div><div class="line">	<span class="regexp">/usr/</span>local<span class="regexp">/go/</span>src<span class="regexp">/reflect/</span>value.go:<span class="number">2398</span> +<span class="number">0</span>x44</div><div class="line">main.setUnexportedField()</div><div class="line">	<span class="regexp">/Users/</span>smallnest<span class="regexp">/workspace/</span>study<span class="regexp">/private/m</span>ain.go:<span class="number">37</span> +<span class="number">0</span>x1a0</div><div class="line">main.main()</div><div class="line">	<span class="regexp">/Users/</span>smallnest<span class="regexp">/workspace/</span>study<span class="regexp">/private/m</span>ain.go:<span class="number">18</span> +<span class="number">0</span>x1c</div><div class="line">exit status <span class="number">2</span></div></pre></td></tr></table></figure>
+
+<p>实际上，<code>reflect.Value</code>的<code>Set</code>方法会做一系列的检查，包括检查是否是<code>addressable</code>的，以及是否是exported的字段:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> (v Value) Set(x Value) {</div><div class="line">	v.mustBeAssignable()</div><div class="line">	x.mustBeExported() <span class="comment">// do not let unexported x leak</span></div><div class="line">	...</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p><code>v.mustBeAssignable()</code>检查是否是<code>addressable</code>的，而且是exported的字段:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> (f flag) mustBeAssignable() {</div><div class="line">	<span class="keyword">if</span> f&flagRO !=<span class="number"> 0</span> || f&flagAddr ==<span class="number"> 0</span> {</div><div class="line">		f.mustBeAssignableSlow()</div><div class="line">	}</div><div class="line">}</div><div class="line"><span class="keyword">func</span> (f flag) mustBeAssignableSlow() {</div><div class="line">	<span class="keyword">if</span> f ==<span class="number"> 0</span> {</div><div class="line">		<span class="built_in">panic</span>(&ValueError{valueMethodName(), Invalid})</div><div class="line">	}</div><div class="line">	<span class="comment">// Assignable if addressable and not read-only.</span></div><div class="line">	<span class="keyword">if</span> f&flagRO !=<span class="number"> 0</span> {</div><div class="line">		<span class="built_in">panic</span>(<span class="string">"reflect: "</span> + valueMethodName() + <span class="string">" using value obtained using unexported field"</span>)</div><div class="line">	}</div><div class="line">	<span class="keyword">if</span> f&flagAddr ==<span class="number"> 0</span> {</div><div class="line">		<span class="built_in">panic</span>(<span class="string">"reflect: "</span> + valueMethodName() + <span class="string">" using unaddressable value"</span>)</div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p><code>f&amp;flagRO == 0</code> 代表是可写的（<code>exported</code>），<code>f&amp;flagAddr != 0</code> 代表是<code>addressable</code>的,当这两个条件任意一个不满足时，就会报错。</p>
+<p>既然我们明白了它检查的原理，我们就可以通过 hack 的方式绕过这个检查，设置私有字段的值。我们还是要使用<code>unsafe</code>代码。</p>
+<p>这里我们以标准库的<code>sync.Mutex</code>结构体为例， <code>sync.Mutex</code>包含两个字段，这两个字段都是私有的：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> Mutex <span class="keyword">struct</span> {</div><div class="line">    state <span class="typename">int32</span></div><div class="line">    sema  <span class="typename">uint32</span></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>正常情况下你只能通过<code>Mutex.Lock</code>和<code>Mutex.Unlock</code>来间接的修改这两个字段。</p>
+<p>现在我们演示通过 hack 的方式修改<code>Mutex</code>的<code>state</code>字段的值：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> setPrivateField() {</div><div class="line">	<span class="keyword">var</span> mu sync.Mutex</div><div class="line">	mu.Lock()</div><div class="line"></div><div class="line">	field := reflect.ValueOf(&mu).Elem().FieldByName(<span class="string">"state"</span>)</div><div class="line">	state := field.Interface().(*<span class="typename">int32</span>)</div><div class="line">	fmt.Println(*state) <span class="comment">// ❶ </span></div><div class="line"></div><div class="line">	flagField := reflect.ValueOf(&field).Elem().FieldByName(<span class="string">"flag"</span>)</div><div class="line">	flagPtr := (*<span class="typename">uintptr</span>)(unsafe.Pointer(flagField.UnsafeAddr()))</div><div class="line"></div><div class="line">	<span class="comment">// 修改flag字段的值</span></div><div class="line">	*flagPtr &= ^<span class="typename">uintptr</span>(flagRO) <span class="comment">// ❷</span></div><div class="line">	field.Set(reflect.ValueOf(<span class="typename">int32</span><span class="number">(0</span>)))</div><div class="line"></div><div class="line">	mu.Lock() <span class="comment">// ❸</span></div><div class="line">	fmt.Println(*state)</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">type</span> flag <span class="typename">uintptr</span></div><div class="line"></div><div class="line"><span class="keyword">const</span> (</div><div class="line">	flagKindWidth        =<span class="number"> 5</span> <span class="comment">// there are 27 kinds</span></div><div class="line">	flagKindMask    flag =<span class="number"> 1</span>&lt;&lt;flagKindWidth -<span class="number"> 1</span></div><div class="line">	flagStickyRO    flag =<span class="number"> 1</span> &lt;&lt;<span class="number"> 5</span></div><div class="line">	flagEmbedRO     flag =<span class="number"> 1</span> &lt;&lt;<span class="number"> 6</span></div><div class="line">	flagIndir       flag =<span class="number"> 1</span> &lt;&lt;<span class="number"> 7</span></div><div class="line">	flagAddr        flag =<span class="number"> 1</span> &lt;&lt;<span class="number"> 8</span></div><div class="line">	flagMethod      flag =<span class="number"> 1</span> &lt;&lt;<span class="number"> 9</span></div><div class="line">	flagMethodShift      =<span class="number"> 10</span></div><div class="line">	flagRO          flag = flagStickyRO | flagEmbedRO</div><div class="line">)</div></pre></td></tr></table></figure>
+
+<p>❶ 处我们已经介绍过了，访问私有字段的值，这里会打印出1<br>❶ 处我们清除了<code>flag</code>字段的<code>flagRO</code>标志位，这样就不会报<code>reflect: reflect.Value.SetInt using value obtained using unexported field</code>错误了<br>❸ 处不会导致二次加锁带来的死锁，因为<code>state</code>字段的值已经被修改为0了，所以不会阻塞。最后打印结果还是1</p>
+<p>这样我们就可以实现了修改私有字段的值了。</p>
+<h2 id="使用unexported字段的Value设置公开字段">使用unexported字段的Value设置公开字段</h2>
+<p>看<code>reflect.Value.Set</code>的源码，我们可以看到它会检查参数的值是否<code>unexported</code>，如果是，就会报错,下面就是一个例子：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> setUnexportedField2() {</div><div class="line">	alice := model.NewPerson(<span class="string">"Alice"</span>,<span class="number"> 30</span>)</div><div class="line">	bob := model.NewTeacher(<span class="string">"Bob"</span>,<span class="number"> 40</span>)</div><div class="line"></div><div class="line">	bobAgent := reflect.ValueOf(&bob).Elem().FieldByName(<span class="string">"Age"</span>)</div><div class="line"></div><div class="line">	aliceAge := reflect.ValueOf(&alice).Elem().FieldByName(<span class="string">"age"</span>)</div><div class="line"></div><div class="line">	bobAgent.Set(aliceAge) <span class="comment">// ❹</span></div><div class="line"></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>注意❹处，我们尝试把<code>alice</code>的私有字段<code>age</code>的值赋值给<code>bob</code>的公开字段<code>Age</code>，这里会报错：</p>
+<figure class="highlight shell"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div></pre></td><td class="code"><pre><div class="line"><span class="attribute">panic</span>: <span class="string">reflect: reflect.Value.Set using value obtained using unexported field</span></div><div class="line"></div><div class="line"><span class="gradle">goroutine <span class="number">1</span> [running]:</span></div><div class="line">reflect.flag.mustBeExportedSlow(<span class="number">0</span>x1400012a000?)</div><div class="line">	<span class="regexp">/usr/</span>local<span class="regexp">/go/</span>src<span class="regexp">/reflect/</span>value.go:<span class="number">250</span> +<span class="number">0</span>x70</div><div class="line">reflect.flag.mustBeExported(...)</div><div class="line">	<span class="regexp">/usr/</span>local<span class="regexp">/go/</span>src<span class="regexp">/reflect/</span>value.go:<span class="number">241</span></div><div class="line">reflect.Value.Set({<span class="number">0</span>x102773a60?, <span class="number">0</span>x1400012a028?, <span class="number">0</span>x60?}, {<span class="number">0</span>x102773a60?, <span class="number">0</span>x1400012a010?, <span class="number">0</span>x1027002b8?})</div><div class="line">	<span class="regexp">/usr/</span>local<span class="regexp">/go/</span>src<span class="regexp">/reflect/</span>value.go:<span class="number">2320</span> +<span class="number">0</span>x88</div><div class="line">main.setUnexportedField2()</div><div class="line">	<span class="regexp">/Users/</span>smallnest<span class="regexp">/workspace/</span>study<span class="regexp">/private/m</span>ain.go:<span class="number">50</span> +<span class="number">0</span>x168</div><div class="line">main.main()</div><div class="line">	<span class="regexp">/Users/</span>smallnest<span class="regexp">/workspace/</span>study<span class="regexp">/private/m</span>ain.go:<span class="number">18</span> +<span class="number">0</span>x1c</div><div class="line">exit status <span class="number">2</span></div></pre></td></tr></table></figure>
+
+<p>原因<code>alice</code>的<code>age</code>值被识别为私有字段，它是不能用来赋值给公开字段的。</p>
+<p>有了上一节的经验，我们同样可以绕过这个检查，实现这个赋值：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> setUnexportedField2() {</div><div class="line">	alice := model.NewPerson(<span class="string">"Alice"</span>,<span class="number"> 30</span>)</div><div class="line">	bob := model.NewTeacher(<span class="string">"Bob"</span>,<span class="number"> 40</span>)</div><div class="line"></div><div class="line">	bobAgent := reflect.ValueOf(&bob).Elem().FieldByName(<span class="string">"Age"</span>)</div><div class="line"></div><div class="line">	aliceAge := reflect.ValueOf(&alice).Elem().FieldByName(<span class="string">"age"</span>)</div><div class="line">	<span class="comment">// 修改flag字段的值</span></div><div class="line">	flagField := reflect.ValueOf(&aliceAge).Elem().FieldByName(<span class="string">"flag"</span>)</div><div class="line">	flagPtr := (*<span class="typename">uintptr</span>)(unsafe.Pointer(flagField.UnsafeAddr()))</div><div class="line">	*flagPtr &= ^<span class="typename">uintptr</span>(flagRO) <span class="comment">// ❺</span></div><div class="line"></div><div class="line">	bobAgent.Set(reflect.ValueOf<span class="number">(50</span>))</div><div class="line">	bobAgent.Set(aliceAge) <span class="comment">// ❻</span></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>❺ 处我们修改了<code>aliceAge</code>的<code>flag</code>字段，去掉了<code>flagRO</code>标志位，这样就不会报错了,❻处我们成功的把<code>alice</code>的私有字段<code>age</code>的值赋值给<code>bob</code>的公开字段<code>Age</code>。</p>
+<p>这样我们就可以实现了使用私有字段的值给其他Value值进行赋值了。</p>
+<h2 id="给unaddressable的值设置值">给unaddressable的值设置值</h2>
+<p>回到最初的问题，我们尝试给一个unaddressable的值设置值，会报错。</p>
+<p>结合上面的hack手段，我们也可以绕过限制，给unaddressable的值设置值：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> setUnaddressableValue() {</div><div class="line">	<span class="keyword">var</span> x =<span class="number"> 47</span></div><div class="line"></div><div class="line">	v := reflect.ValueOf(x)</div><div class="line">	fmt.Printf(<span class="string">"原始值: %d, CanSet: %v\n"</span>, v.Int(), v.CanSet()) <span class="comment">// 47, false</span></div><div class="line">	<span class="comment">// v.Set(reflect.ValueOf(50))</span></div><div class="line"></div><div class="line">	flagField := reflect.ValueOf(&v).Elem().FieldByName(<span class="string">"flag"</span>)</div><div class="line">	flagPtr := (*<span class="typename">uintptr</span>)(unsafe.Pointer(flagField.UnsafeAddr()))</div><div class="line"></div><div class="line">	<span class="comment">// 修改flag字段的值</span></div><div class="line">	*flagPtr |= <span class="typename">uintptr</span>(flagAddr)          <span class="comment">// 设置可寻址标志位</span></div><div class="line">	fmt.Printf(<span class="string">"CanSet: %v\n"</span>, v.CanSet()) <span class="comment">// true</span></div><div class="line">	v.SetInt<span class="number">(50</span>)</div><div class="line">	fmt.Printf(<span class="string">"修改后的值: %d\n"</span>, v.Int()) <span class="comment">// 50</span></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>运行这个程序，不会报错，可以看到我们成功的给unaddressable的值设置了新的值。</p>
+<h2 id="回顾">回顾</h2>
+<p>我们通过修改<code>Value</code>值的flag标志位，可以绕过<code>reflect</code>的检查，实现了访问私有字段、设置私有字段的值、用私有字段设置值，以及给unaddressable的值设置值。</p>
+<p>这些都是<code>unsafe</code>的方式，一般情况下不鼓励进行这样的hack操作，但是这种技术也不是完全没有用户，如果你正在写一个debugger，用户在断点出可能想修改某些值，或者你在写深拷贝的库，或者编写某种ORM库，或者你就像突破限制，访问第三方不愿意公开的字段，你有可能会采用这种非常规的技术。</p>
+<p>我是鸟窝，一位老程序员，在百度写代码。如果你感觉这篇文章给你带来了帮助，请点击下方点赞按钮或者评论区进行评论。</p>
+]]></content>
+    <summary type="html">
+    <![CDATA[<p>在Go语言中,结构体(struct)中的字段如果是私有的,只能在定义该结构体的同一个包内访问。这是为了实现数据的封装和信息隐藏,提高代码的健壮性和安全性。</p>
+<p>但是在某些情况下,我们可能需要在外部包中访问或修改结构体的私有字段。这时,我们可以使用 Go 语言提供的反射(reflect)机制来实现这一功能。</p>
+<p>即使我们能够实现访问，这些字段你没有办法修改，如果尝试通过反射设置这些私有字段的值，会 panic。</p>
+<p>甚至有时，我们通过反射设置一些变量或者字段的值的时候，会 panic, 报错 <code>panic: reflect: reflect.Value.Set using unaddressable value</code>。</p>
+<p>在本文中，你将了解到：</p>
+<ol>
+<li>如何通过 hack 的方式访问外部结构体的私有字段</li>
+<li>如何通过 hack 的方式设置外部结构体的私有字段</li>
+<li>如何通过 hack 的方式设置 unaddressable 的值</li>
+</ol>
+]]>
+    
+    </summary>
+    
+      <category term="Go" scheme="https://colobu.com/categories/Go/"/>
+    
+  </entry>
+  
+  <entry>
     <title><![CDATA[使用eBPF编写系统调用跟踪器]]></title>
     <link href="https://colobu.com/2024/08/04/beetracer/"/>
     <id>https://colobu.com/2024/08/04/beetracer/</id>
     <published>2024-08-04T09:27:25.000Z</published>
-    <updated>2024-08-04T09:30:05.452Z</updated>
+    <updated>2024-08-09T06:26:33.133Z</updated>
     <content type="html"><![CDATA[<h2 id="先决条件">先决条件</h2>
 <p>系统调用、eBPF、C语言、底层编程基础。</p>
 <h2 id="简介">简介</h2>
@@ -132,7 +378,7 @@
     <link href="https://colobu.com/2024/08/02/Russ-Cox-and-his-Oscar/"/>
     <id>https://colobu.com/2024/08/02/Russ-Cox-and-his-Oscar/</id>
     <published>2024-08-02T06:51:25.000Z</published>
-    <updated>2024-08-02T06:55:34.401Z</updated>
+    <updated>2024-08-09T06:26:33.026Z</updated>
     <content type="html"><![CDATA[<p>Go 第一代技术领导人 Rob Pike, 近两年已经隐居澳大利亚。<br>Go 第二代技术领导人 Russ Cox 2024 年 8 月 2 日宣布卸任，转战 AI 项目，聚焦 Oscar 项目。<br>Go 第三代技术领导人 Austin Clements, 同样和 Russ Cox 一样毕业于美国的一个计算机技术比较出名的一个学院，算是 Russ Cox 的师弟，Austin是Go语言运行时系统和垃圾收集器的主要贡献者之一，在运行时和内存管理等底层系统方面有深入的专长。</p>
 <a id="more"></a>
 <p>Go 第一代技术领导人 Rob Pike, 近两年已经隐居澳大利亚。<br>Go 第二代技术领导人 Russ Cox 2024 年 8 月 2 日宣布卸任，转战 AI 项目，聚焦 Oscar 项目。<br>Go 第三代技术领导人 Austin Clements, 同样和 Russ Cox 一样毕业于美国的一个计算机技术比较出名的一个学院，算是 Russ Cox 的师弟，Austin是Go语言运行时系统和垃圾收集器的主要贡献者之一，在运行时和内存管理等底层系统方面有深入的专长。</p>
@@ -193,7 +439,7 @@
     <link href="https://colobu.com/2024/06/16/atomic128/"/>
     <id>https://colobu.com/2024/06/16/atomic128/</id>
     <published>2024-06-16T03:42:29.000Z</published>
-    <updated>2024-07-26T05:09:49.985Z</updated>
+    <updated>2024-08-09T06:26:33.110Z</updated>
     <content type="html"><![CDATA[<p>我们已经知道，标准库中的 atomic 针对 int32/uint32、int64/uint64 提供了原子操作的方法和函数，但是如果针对 128 bit 的整数呢？<br><a id="more"></a></p>
 <p>当然使用128 bit 整数的原子操作的场景可能比较少，也不会有太多人有这个需求，但是如果我们需要对几个 32 bit、64 bit 变量进行原子操作吗， atomic128 可能就很有用。</p>
 <p><a href="https://github.com/tmthrgd/atomic128" target="_blank" rel="external">tmthrgd/atomic128</a> 在几年前提供了 atomic 128 的实验性功能，最后放弃了，但是他提供了一个思路，可以使用 <a href="http://www.felixcloutier.com/x86/CMPXCHG8B:CMPXCHG16B.html" target="_blank" rel="external">CMPXCHG16B</a> 指令为 AMD 64 架构的CPU 提供 atomic 128 功能。</p>
@@ -260,7 +506,7 @@
     <link href="https://colobu.com/2024/06/11/go-evolves-in-the-wrong-direction/"/>
     <id>https://colobu.com/2024/06/11/go-evolves-in-the-wrong-direction/</id>
     <published>2024-06-11T14:02:06.000Z</published>
-    <updated>2024-07-26T05:09:49.990Z</updated>
+    <updated>2024-08-09T06:26:33.362Z</updated>
     <content type="html"><![CDATA[<p>这是 Aliaksandr Valialkin 昨天刚写的一篇文章, 心有戚戚焉，所以特意翻译成中文，个人感觉，自从Rob Pike退休后，Go在大方向迷失了，正如老貘(Go101)所说，目前Go的开发就像完成KPI一样，也许, 大师不会再回来了。</p>
 <p>Aliaksandr Valialkin是fasthttp的作者，也是VictoriaMetrics开发者，一位资深的Go程序员。</p>
 <p>以下是译文。<br><a id="more"></a></p>
@@ -341,7 +587,7 @@
     <link href="https://colobu.com/2024/06/10/The-Analects-of-Rob-Pike/"/>
     <id>https://colobu.com/2024/06/10/The-Analects-of-Rob-Pike/</id>
     <published>2024-06-10T04:39:59.000Z</published>
-    <updated>2024-07-26T05:09:49.982Z</updated>
+    <updated>2024-08-09T06:26:33.039Z</updated>
     <content type="html"><![CDATA[<h2 id="1-_计算机领域里，没有什么问题是加一层间接寻址解决不了的。">1. 计算机领域里，没有什么问题是加一层间接寻址解决不了的。</h2>
 <blockquote>
 <p>There&#39;s nothing in computing that can&#39;t be broken by another level of indirection.</p>
@@ -653,7 +899,7 @@
     <link href="https://colobu.com/2024/06/09/rust-tips-81-90/"/>
     <id>https://colobu.com/2024/06/09/rust-tips-81-90/</id>
     <published>2024-06-09T03:36:28.000Z</published>
-    <updated>2024-07-26T05:09:50.081Z</updated>
+    <updated>2024-08-09T06:26:33.786Z</updated>
     <content type="html"><![CDATA[<a id="more"></a>
 ]]></content>
     <summary type="html">
@@ -670,7 +916,7 @@
     <link href="https://colobu.com/2024/06/09/rust-tips-61-80/"/>
     <id>https://colobu.com/2024/06/09/rust-tips-61-80/</id>
     <published>2024-06-09T03:36:19.000Z</published>
-    <updated>2024-07-26T05:09:50.072Z</updated>
+    <updated>2024-08-09T06:26:33.780Z</updated>
     <content type="html"><![CDATA[<h2 id="Tip_#61">Tip #61</h2>
 <p>前几天有人问我关于智能指针的事。这里简单介绍一下 <code>Rc&lt;T&gt;</code> 智能指针的基础知识：</p>
 <a id="more"></a>
@@ -828,7 +1074,7 @@
     <link href="https://colobu.com/2024/06/09/rust-tips-41-60/"/>
     <id>https://colobu.com/2024/06/09/rust-tips-41-60/</id>
     <published>2024-06-09T03:36:11.000Z</published>
-    <updated>2024-07-26T05:09:50.055Z</updated>
+    <updated>2024-08-09T06:26:33.771Z</updated>
     <content type="html"><![CDATA[<h2 id="Tip_#41">Tip #41</h2>
 <p>类似于 Go 语言中的通道（Go 的 <code>channel</code>），Rust 中的 <code>std::sync::mpsc</code> 提供了一种线程间安全地读写数据的机制:</p>
 <figure class="highlight rust"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">use</span> std::sync::mpsc;</div><div class="line"><span class="keyword">use</span> std::thread;</div><div class="line"></div><div class="line"><span class="function"><span class="keyword">fn</span> <span class="title">main</span></span>() {</div><div class="line">    <span class="keyword">let</span> (tx, rx) = mpsc::channel();</div><div class="line"></div><div class="line">    thread::spawn(move || {</div><div class="line">        <span class="keyword">let</span> val = String::from(<span class="string">"hi"</span>);</div><div class="line">        tx.send(val).unwrap();</div><div class="line">    });</div><div class="line"></div><div class="line">    <span class="keyword">let</span> received = rx.recv().unwrap();</div><div class="line">    println!(<span class="string">"Got: {}"</span>, received);</div><div class="line">}</div></pre></td></tr></table></figure>
@@ -948,7 +1194,7 @@
     <link href="https://colobu.com/2024/06/08/rust-tips-21-40/"/>
     <id>https://colobu.com/2024/06/08/rust-tips-21-40/</id>
     <published>2024-06-08T10:51:42.000Z</published>
-    <updated>2024-07-26T05:09:50.053Z</updated>
+    <updated>2024-08-09T06:26:33.771Z</updated>
     <content type="html"><![CDATA[<h2 id="Tip_#21">Tip #21</h2>
 <p>在 Rust 中，我们经常使用 <code>Clone()</code> 或 <code>Copy()</code>。这两者之间的区别是什么？</p>
 <ul>
@@ -1079,7 +1325,7 @@
     <link href="https://colobu.com/2024/06/06/image-to-base64/"/>
     <id>https://colobu.com/2024/06/06/image-to-base64/</id>
     <published>2024-06-06T15:19:17.000Z</published>
-    <updated>2024-07-26T05:09:49.992Z</updated>
+    <updated>2024-08-09T06:26:33.526Z</updated>
     <content type="html"><![CDATA[<p>图片的 base64 编码在多种上下文中都很有用。当需要通过旨在处理文本数据的媒体存储或传输图片时，它通常会被使用，比如嵌入到网页或者通过 API 上传图片。这篇文章将介绍如何使用 Go 标准库得到任何图片的 base64 编码的值。</p>
 <a id="more"></a>
 <p>在 Go 中将图片转换为其 base64 表示很容易。所有你需要做的是将文件读取为字节 slice并使用包 <code>encoding/base64</code> 对其进行编码。</p>
@@ -1115,7 +1361,7 @@
     <link href="https://colobu.com/2024/06/06/rust-tips-1-20/"/>
     <id>https://colobu.com/2024/06/06/rust-tips-1-20/</id>
     <published>2024-06-06T01:26:42.000Z</published>
-    <updated>2024-07-26T05:09:50.052Z</updated>
+    <updated>2024-08-09T06:26:33.770Z</updated>
     <content type="html"><![CDATA[<h2 id="Tip_#001">Tip #001</h2>
 <p>Rust 不支持静态 vec(<code>static vec</code>),但是最接近的是静态数组。例如,如果你想存储三个字符串的数组,可以尝试这样: <code>static STRINGS : [&amp;str;3] = [&quot;a&quot;, &quot;b&quot;, &quot;c&quot;]</code></p>
 <a id="more"></a>
@@ -1233,7 +1479,7 @@
     <link href="https://colobu.com/2024/06/04/redka-redis-with-sqlite/"/>
     <id>https://colobu.com/2024/06/04/redka-redis-with-sqlite/</id>
     <published>2024-06-03T23:28:39.000Z</published>
-    <updated>2024-07-03T03:41:24.521Z</updated>
+    <updated>2024-08-09T06:26:33.743Z</updated>
     <content type="html"><![CDATA[<p>Redka旨在使用SQLite重新实现Redis的优秀部分,同时保持与Redis API的兼容性。</p>
 <p>有意思的特性:</p>
 <ul>
@@ -1353,7 +1599,7 @@
     <link href="https://colobu.com/2024/06/03/command-dispacher-pattern/"/>
     <id>https://colobu.com/2024/06/03/command-dispacher-pattern/</id>
     <published>2024-06-02T23:53:37.000Z</published>
-    <updated>2024-07-03T03:41:24.498Z</updated>
+    <updated>2024-08-09T06:26:33.187Z</updated>
     <content type="html"><![CDATA[<p>命令分发模式 (command dispatcher pattern)不属于23种经典的设计模式。它是一种不太为人所知的设计模式,它主要用于构建可扩展、可插拔的系统架构,将请求与执行请求的操作对象解耦。它类似于命令模式(Command Pattern),但更加灵活和动态。</p>
 <p>虽然Command Dispatch Pattern不属于那23种经典模式,但它确实是一种很有价值的模式,可以应用于需要在运行时动态添加、修改或删除操作的系统中,使系统更加灵活和可扩展。</p>
 <p>这种模式通过允许方便的添加、替换或移除任何命令处理器, 非常的灵活，将命令调用和命令处理解耦。而且每个命令可以由单独的命令处理器处理，代码组织和维护也很方便。</p>
@@ -1468,7 +1714,7 @@
     <link href="https://colobu.com/2024/05/22/parse-tcp-timestamp-in-Rust/"/>
     <id>https://colobu.com/2024/05/22/parse-tcp-timestamp-in-Rust/</id>
     <published>2024-05-22T14:14:30.000Z</published>
-    <updated>2024-07-03T03:41:24.520Z</updated>
+    <updated>2024-08-09T06:26:33.704Z</updated>
     <content type="html"><![CDATA[<p>前两篇文章介绍了C++和Go中利用TCP Option中的时间戳实现计算网络时延。基于“用Rust重写一切”的哲学，今天我们来看看Rust中如何做这个事情。夜深人静，再肝一篇关于网络编程的文章。<br><a id="more"></a></p>
 <p>Rust中还没有和 gopacket一样功能强大的包，它的<a href="https://crates.io/crates/pcap" target="_blank" rel="external">pcap</a>用来捕获网络包没有问题，但是缺乏解析的能力，所以我们使用另外一个包<a href="https://docs.rs/pdu/latest/pdu/" target="_blank" rel="external">pdu</a>来实现网络包的解析。</p>
 <blockquote>
@@ -1533,7 +1779,7 @@
     <link href="https://colobu.com/2024/05/20/implemenmt-pping-in-go/"/>
     <id>https://colobu.com/2024/05/20/implemenmt-pping-in-go/</id>
     <published>2024-05-20T15:15:55.000Z</published>
-    <updated>2024-07-03T03:41:24.514Z</updated>
+    <updated>2024-08-09T06:26:33.593Z</updated>
     <content type="html"><![CDATA[<p>大家好，我是鸟窝。</p>
 <p>在前一篇“pping：被动式ping,计算网络时延”一篇中，我给大家介绍了 pping 这个工具的原理和使用方法。这篇文章中，我将使用 Go 语言实现 pping 工具。<br><a id="more"></a><br>通过这篇文章，你将了解到：</p>
 <ul>
@@ -1613,7 +1859,7 @@
     <link href="https://colobu.com/2024/05/19/let-Rob-Pike-write-a-Red-Black-tree/"/>
     <id>https://colobu.com/2024/05/19/let-Rob-Pike-write-a-Red-Black-tree/</id>
     <published>2024-05-19T07:24:10.000Z</published>
-    <updated>2024-07-03T03:41:24.516Z</updated>
+    <updated>2024-08-09T06:26:33.631Z</updated>
     <content type="html"><![CDATA[<p>红黑树（英语：Red–black tree）是一种自平衡二叉查找树，是在计算机科学中用到的一种数据结构。它在1972年由鲁道夫·贝尔发明，被称为“对称二叉B树”，它现代的名字源于利奥尼达斯·J·吉巴斯和罗伯特·塞奇威克于1978年写的一篇论文。红黑树的结构复杂，以至于有些个别公司拿它当做面试题现场实现，但它的操作有着良好的最坏情况运行时间，并且在实践中高效：它可以在<code>O(log^n)</code>时间内完成查找、插入和删除。</p>
 <a id="more"></a>
 <p>红黑树是每个节点都带有颜色属性的二叉查找树，颜色为红色或黑色。在二叉查找树强制一般要求以外，对于任何有效的红黑树我们增加了如下的额外要求：</p>
@@ -1687,7 +1933,7 @@
     <link href="https://colobu.com/2024/05/12/sqlx-an-async-pure-Rust-SQL-crate/"/>
     <id>https://colobu.com/2024/05/12/sqlx-an-async-pure-Rust-SQL-crate/</id>
     <published>2024-05-12T02:42:26.000Z</published>
-    <updated>2024-07-03T03:41:24.521Z</updated>
+    <updated>2024-08-09T06:26:33.875Z</updated>
     <content type="html"><![CDATA[<p>上一篇我介绍了Go生态圈的sqlx库。 Rust生态圈也有一个知名的<a href="https://github.com/launchbadge/sqlx" target="_blank" rel="external">sqlx库</a>，今天给大家介绍一下。这两个没有什么关联啊，纯粹属于名称相同而已。</p>
 <a id="more"></a>
 <h2 id="概览">概览</h2>
@@ -1977,7 +2223,7 @@
     <link href="https://colobu.com/2024/05/10/sqlx-a-brief-introduction/"/>
     <id>https://colobu.com/2024/05/10/sqlx-a-brief-introduction/</id>
     <published>2024-05-10T14:08:45.000Z</published>
-    <updated>2024-07-03T03:41:24.521Z</updated>
+    <updated>2024-08-09T06:26:33.875Z</updated>
     <content type="html"><![CDATA[<p><a href="https://github.com/jmoiron/sqlx" target="_blank" rel="external">sqlx</a>是一个用于扩展标准库database/sql的库，它提供了一些额外的功能，使得在Go中使用sql更加方便。sqlx的目标是保持database/sql的简单性，同时提供更多的功能。<br><a id="more"></a><br><code>sqlx</code> 为 Go 的标准 <code>database/sql</code> 库提供了一组扩展。sqlx 中的 <code>sql.Conn</code>、<code>sql.DB</code>、<code>sql.TX</code>、<code>sql.Stmt</code>、<code>sql.Rows</code>、<code>sql.Row</code> 等版本都保留了底层接口不变，因此它们的接口是标准接口的超集。这使得将使用 <code>database/sql</code> 的现有代码库与 <code>sqlx</code> 集成相对容易。</p>
 <p>主要的额外概念有：</p>
 <ul>
@@ -2208,247 +2454,6 @@
 ]]></content>
     <summary type="html">
     <![CDATA[<p><a href="https://github.com/jmoiron/sqlx" target="_blank" rel="external">sqlx</a>是一个用于扩展标准库database/sql的库，它提供了一些额外的功能，使得在Go中使用sql更加方便。sqlx的目标是保持database/sql的简单性，同时提供更多的功能。<br>]]>
-    
-    </summary>
-    
-      <category term="Go" scheme="https://colobu.com/categories/Go/"/>
-    
-  </entry>
-  
-  <entry>
-    <title><![CDATA[“测试 Rust 的 I/O 性能”]]></title>
-    <link href="https://colobu.com/2024/05/10/Linux-File-IO-using-Rust/"/>
-    <id>https://colobu.com/2024/05/10/Linux-File-IO-using-Rust/</id>
-    <published>2024-05-09T23:38:13.000Z</published>
-    <updated>2024-07-03T03:41:24.495Z</updated>
-    <content type="html"><![CDATA[<p>我们将尝试使用 Rust 来比较读取文件的各种不同方法。除了 <code>wc -l</code> 之外，我们将使用 <code>criterion</code> 对每个函数运行 10 次，然后取平均值。</p>
-<p>以下基准测试的代码存放在 <a href="https://github.com/deepankarsharma/shatranj/blob/main/benches/bench.rs" target="_blank" rel="external">Benchmark code for Linux IO using Rust</a>。<br>在以下代码中，BUFFER_SIZE 为 8192，NUM_BUFFERS 为 32。</p>
-<p>原文: <a href="[Linux File IO using Rust (opdroid.org"># Linux File IO using Rust</a>](<a href="https://opdroid.org/rust-io.html)" target="_blank" rel="external">https://opdroid.org/rust-io.html)</a>) by opdroid</p>
-<a id="more"></a>
-<h2 id="测试机器细节">测试机器细节</h2>
-<ol>
-<li>Framework 16 笔记本，带有锐龙 7840 HS 处理器和 64 G 内存的电脑。电源已接通并启用了性能模式。（这个笔记本是一个模块化的笔记本）</li>
-<li>SSD: WD_BLACK SN850X 4000GB。使用Gnome Disks进行测试显示读取速度为3.6 GB/s(样本大小为1000MB,共100个样本)。</li>
-<li>文件系统：btrfs</li>
-<li>操作系统版本 (uname 结果)：Linux fedora 6.8.8-300. Fc 40. X 86_64 #1 SMP PREEMPT_DYNAMIC Sat Apr 27 17:53:31 UTC 2024 x 86_64 GNU/Linux</li>
-</ol>
-<h2 id="文件细节">文件细节</h2>
-<ul>
-<li>未压缩大小：22G</li>
-<li>行数：200,000,000 </li>
-<li>使用 btrfs 压缩（zstd）后的压缩大小：5.3G</li>
-</ul>
-<h2 id="对于不耐烦的读者：结果概述">对于不耐烦的读者：结果概述</h2>
-<table>
-<thead>
-<tr>
-<th>读取方法</th>
-<th>时间 (单位：秒)</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>Mmap with AVX512</td>
-<td>2.61</td>
-</tr>
-<tr>
-<td>Mmap with AVX2</td>
-<td>2.64</td>
-</tr>
-<tr>
-<td>io_uring with Vectored IO</td>
-<td>2.86</td>
-</tr>
-<tr>
-<td>Vectored IO</td>
-<td>2.89</td>
-</tr>
-<tr>
-<td>Mmap</td>
-<td>3.43</td>
-</tr>
-<tr>
-<td>io_uring</td>
-<td>5.26</td>
-</tr>
-<tr>
-<td>wc -l (baseline)</td>
-<td>8.01</td>
-</tr>
-<tr>
-<td>Direct IO</td>
-<td>10.56</td>
-</tr>
-<tr>
-<td>BufReader without appends</td>
-<td>15.94</td>
-</tr>
-<tr>
-<td>BufReader with lines().count()</td>
-<td>33.50</td>
-</tr>
-</tbody>
-</table>
-<p>一个有趣的观察是，AVX512 需要 2.61 秒，文件大小约为 22G，而 SSD 基准测试显示读取速度为 3.6 GB/s。这意味着文件应该在大约 6 秒内被读取完毕。但 AVX512 的实现实际上是以约 8.4 GB/s 的速度读取文件。</p>
-<p><strong>这是怎么回事呢？比磁盘的读取速度都快不少？不科学啊？</strong></p>
-<p>原来 Fedora 使用了 btrfs 文件系统，它默认启用了 zstd 压缩。实际的磁盘上大小可以使用 <code>compsize</code> 命令来查看。</p>
-<figure class="highlight shell"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div></pre></td><td class="code"><pre><div class="line">opdroid<span class="variable">@box</span><span class="symbol">:~/tmp</span><span class="variable">$ </span>sudo compsize data </div><div class="line"><span class="constant">Processed</span> <span class="number">1</span> file, <span class="number">177437</span> regular extents (<span class="number">177437</span> refs), <span class="number">0</span> inline.</div><div class="line"><span class="constant">Type</span>       <span class="constant">Perc</span>     <span class="constant">Disk</span> <span class="constant">Usage</span>   <span class="constant">Uncompressed</span> <span class="constant">Referenced</span>  </div><div class="line"><span class="constant">TOTAL</span>       <span class="number">24</span>%      <span class="number">5.3</span>G          <span class="number">21</span>G          <span class="number">21</span>G       </div><div class="line">none       <span class="number">100</span>%       <span class="number">32</span>K          <span class="number">32</span>K          <span class="number">32</span>K       </div><div class="line">zstd        <span class="number">24</span>%      <span class="number">5.3</span>G          <span class="number">21</span>G          <span class="number">21</span>G</div></pre></td></tr></table></figure>
-
-<p><strong>感谢这些优秀的人</strong>  </p>
-<ul>
-<li>@alextjensen - 感谢他指导我使用 <code>BufReader</code> 的合理默认值，并编译为本机架构。  </li>
-<li>@aepau2 - 感谢他发现了 <code>wc</code> 数字中的一个明显错误。我在使用 <code>wc</code> 测量之前忘记了清空缓存。  </li>
-<li>@rflaherty71 - 感谢他建议我使用更多且更大的缓冲区（64 x 64k）。  </li>
-<li>@daniel_c0deb0t - 感谢他建议我使用更大的缓冲区。 </li>
-<li></li>
-</ul>
-<p>不使用我们编写的代码作为基线总是一个好主意，这样比较客观。</p>
-<h2 id="使用_wc_-l_作为基线">使用 <code>wc -l</code> 作为基线</h2>
-<figure class="highlight"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div></pre></td><td class="code"><pre><div class="line">opdroid<span class="variable">@box</span><span class="symbol">:~/tmp</span><span class="variable">$ </span>time wc -l data</div><div class="line"><span class="number">200000000</span> data</div><div class="line"></div><div class="line">real    0m8.<span class="number">010</span>s</div><div class="line">user    0m<span class="number">0</span>.<span class="number">193</span>s</div><div class="line">sys 0m7.<span class="number">591</span>s</div></pre></td></tr></table></figure>
-
-<p>在每个函数的末尾，我们使用以下命令重置文件缓存。我还没有弄清楚如何在 criterion 中使用 teardown 函数，以便这个时间不被计入总耗时。</p>
-<figure class="highlight shell"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div></pre></td><td class="code"><pre><div class="line">// TODO: move to a teardown function in criterion</div><div class="line">fn reset_file_caches() {</div><div class="line">    // <span class="operator"><span class="keyword">Execute</span> the command <span class="keyword">to</span> <span class="keyword">reset</span> file caches</span></div><div class="line">    let <span class="keyword">output</span> = Command::new(<span class="string">"sudo"</span>)</div><div class="line">        .arg(<span class="string">"sh"</span>)</div><div class="line">        .arg(<span class="string">"-c"</span>)</div><div class="line">        .arg(<span class="string">"echo 3 &gt; /proc/sys/vm/drop_caches"</span>)</div><div class="line">        .<span class="keyword">output</span>()</div><div class="line">        .expect(<span class="string">"Failed to reset file caches"</span>);</div><div class="line"></div><div class="line">    // <span class="operator"><span class="keyword">Check</span> <span class="keyword">if</span> the command executed successfully</span></div><div class="line">    <span class="keyword">if</span> !<span class="keyword">output</span>.<span class="keyword">status</span>.success() {</div><div class="line">        panic!(<span class="string">"Failed to reset file caches: {:?}"</span>, <span class="keyword">output</span>);</div><div class="line">    }</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<h2 id="方法1：使用_BufReader_读取文件，并使用_reader-lines()-count()_计算行数">方法1：使用 <code>BufReader</code> 读取文件，并使用 <code>reader.lines().count()</code> 计算行数</h2>
-<figure class="highlight rust"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div></pre></td><td class="code"><pre><div class="line"><span class="function"><span class="keyword">fn</span> <span class="title">count_newlines_standard</span></span>(filename: &<span class="keyword">str</span>) -&gt; Result&lt;usize, std::io::Error&gt; {</div><div class="line">    <span class="keyword">let</span> file = File::open(filename)?;</div><div class="line">    <span class="keyword">let</span> reader = BufReader::with_capacity(<span class="number">16</span> * <span class="number">1024</span>, file);</div><div class="line"></div><div class="line">    <span class="keyword">let</span> newline_count = reader.lines().count();</div><div class="line"></div><div class="line">    reset_file_caches();</div><div class="line">    Ok(newline_count)</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>在我的机器上，这需要大约 36.5 秒的时间。</p>
-<p><img src="1.png" alt=""><br>在 <code>count_newlines_standard</code> 函数中，字符串拼接（String appends）可能是导致性能问题的原因。</p>
-<h2 id="方法_2：使用_BufReader_读取文件并避免字符串拼接">方法 2：使用 <code>BufReader</code> 读取文件并避免字符串拼接</h2>
-<figure class="highlight rust"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">pub</span> <span class="function"><span class="keyword">fn</span> <span class="title">count_newlines_standard_non_appending</span></span>(filename: &<span class="keyword">str</span>) -&gt; Result&lt;usize, std::io::Error&gt; {</div><div class="line">    <span class="keyword">let</span> file = File::open(filename)?;</div><div class="line">    <span class="keyword">let</span> <span class="keyword">mut</span> reader = BufReader::with_capacity(<span class="number">64</span> * <span class="number">1024</span>, file);</div><div class="line">    <span class="keyword">let</span> <span class="keyword">mut</span> newline_count = <span class="number">0</span>;</div><div class="line"></div><div class="line">    <span class="keyword">loop</span> {</div><div class="line">        <span class="keyword">let</span> len = {</div><div class="line">            <span class="keyword">let</span> buffer = reader.fill_buf()?;</div><div class="line">            <span class="keyword">if</span> buffer.is_empty() {</div><div class="line">                <span class="keyword">break</span>;</div><div class="line">            }</div><div class="line">            newline_count += buffer.iter().filter(|&&b| b == b<span class="string">'\n'</span>).count();</div><div class="line">            buffer.len()</div><div class="line">        };</div><div class="line"></div><div class="line">        reader.consume(len);</div><div class="line">    }</div><div class="line"></div><div class="line">    reset_file_caches();</div><div class="line">    Ok(newline_count)</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>在我的机器上，这大约需要 15.94 秒。这比使用字符串拼接的版本快了一半以上。</p>
-<p>当我们查看火焰图时，我们可以确认字符串拼接的操作已经不存在了。<br><img src="2.png" alt=""></p>
-<h2 id="方法_3：使用_Direct_I/O_读取文件">方法 3：使用 Direct I/O 读取文件</h2>
-<figure class="highlight rust"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div></pre></td><td class="code"><pre><div class="line"><span class="function"><span class="keyword">fn</span> <span class="title">count_newlines_direct_io</span></span>(filename: &<span class="keyword">str</span>) -&gt; Result&lt;usize, Error&gt; {</div><div class="line">    <span class="keyword">let</span> <span class="keyword">mut</span> open_options = File::options();</div><div class="line">    open_options.read(<span class="keyword">true</span>).custom_flags(libc::O_DIRECT);</div><div class="line"></div><div class="line">    <span class="keyword">let</span> <span class="keyword">mut</span> file = open_options.open(filename)?;</div><div class="line">    <span class="keyword">let</span> <span class="keyword">mut</span> buffer = vec![<span class="number">0</span>; BUFFER_SIZE];</div><div class="line">    <span class="keyword">let</span> <span class="keyword">mut</span> newline_count = <span class="number">0</span>;</div><div class="line"></div><div class="line">    <span class="keyword">loop</span> {</div><div class="line">        <span class="keyword">let</span> bytes_read = file.read(&<span class="keyword">mut</span> buffer)?;</div><div class="line">        <span class="keyword">if</span> bytes_read == <span class="number">0</span> {</div><div class="line">            <span class="keyword">break</span>;</div><div class="line">        }</div><div class="line"></div><div class="line">        <span class="keyword">let</span> chunk_newline_count = buffer[..bytes_read].iter().filter(|&&b| b == b<span class="string">'\n'</span>).count();</div><div class="line">        newline_count += chunk_newline_count;</div><div class="line">    }</div><div class="line">    reset_file_caches();</div><div class="line">    Ok(newline_count)</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>在我的机器上，这大约需要 35.7 秒。</p>
-<h2 id="方法_4：使用内存映射（Mmap）读取文件">方法 4：使用内存映射（Mmap）读取文件</h2>
-<figure class="highlight rust"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div></pre></td><td class="code"><pre><div class="line"><span class="function"><span class="keyword">fn</span> <span class="title">count_newlines_memmap</span></span>(filename: &<span class="keyword">str</span>) -&gt; Result&lt;usize, Error&gt; {</div><div class="line">    <span class="keyword">let</span> file = File::open(filename)?;</div><div class="line">    <span class="keyword">let</span> mmap = <span class="keyword">unsafe</span> { Mmap::map(&file)? };</div><div class="line"></div><div class="line">    <span class="keyword">let</span> newline_count = mmap.iter().filter(|&&b| b == b<span class="string">'\n'</span>).count();</div><div class="line">    reset_file_caches();</div><div class="line">    Ok(newline_count)</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>在我的机器上，这大约需要 8.3 秒。</p>
-<h2 id="方法_5：使用内存映射（Mmap）和_AVX2_指令集读取文件">方法 5：使用内存映射（Mmap）和 AVX2 指令集读取文件</h2>
-<figure class="highlight rust"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">unsafe</span> <span class="function"><span class="keyword">fn</span> <span class="title">count_newlines_memmap_avx2</span></span>(filename: &<span class="keyword">str</span>) -&gt; Result&lt;usize, Error&gt; {</div><div class="line">    <span class="keyword">let</span> file = File::open(filename)?;</div><div class="line">    <span class="keyword">let</span> mmap = <span class="keyword">unsafe</span> { Mmap::map(&file)? };</div><div class="line"></div><div class="line">    <span class="keyword">let</span> newline_byte = b<span class="string">'\n'</span>;</div><div class="line">    <span class="keyword">let</span> newline_vector = <span class="number">_</span>mm256_set1_epi8(newline_byte <span class="keyword">as</span> <span class="keyword">i8</span>);</div><div class="line">    <span class="keyword">let</span> <span class="keyword">mut</span> newline_count = <span class="number">0</span>;</div><div class="line"></div><div class="line">    <span class="keyword">let</span> <span class="keyword">mut</span> ptr = mmap.as_ptr();</div><div class="line">    <span class="keyword">let</span> end_ptr = <span class="keyword">unsafe</span> { ptr.add(mmap.len()) };</div><div class="line"></div><div class="line">    <span class="keyword">while</span> ptr &lt;= end_ptr.sub(<span class="number">32</span>) {</div><div class="line">        <span class="keyword">let</span> data = <span class="keyword">unsafe</span> { <span class="number">_</span>mm256_loadu_si256(ptr <span class="keyword">as</span> *<span class="keyword">const</span> <span class="number">__</span>m256i) };</div><div class="line">        <span class="keyword">let</span> cmp_result = <span class="number">_</span>mm256_cmpeq_epi8(data, newline_vector);</div><div class="line">        <span class="keyword">let</span> mask = <span class="number">_</span>mm256_movemask_epi8(cmp_result);</div><div class="line">        newline_count += mask.count_ones() <span class="keyword">as</span> usize;</div><div class="line">        ptr = <span class="keyword">unsafe</span> { ptr.add(<span class="number">32</span>) };</div><div class="line">    }</div><div class="line"></div><div class="line">    <span class="comment">// Count remaining bytes</span></div><div class="line">    <span class="keyword">let</span> remaining_bytes = end_ptr <span class="keyword">as</span> usize - ptr <span class="keyword">as</span> usize;</div><div class="line">    newline_count += mmap[mmap.len() - remaining_bytes..].iter().filter(|&&b| b == newline_byte).count();</div><div class="line"></div><div class="line">    reset_file_caches();</div><div class="line">    Ok(newline_count)</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>这个方法在我的机器上大约耗时 2.64 秒。</p>
-<h2 id="方法_6：使用内存映射（Mmap）和_AVX-512_指令集读取文件">方法 6：使用内存映射（Mmap）和 AVX-512 指令集读取文件</h2>
-<figure class="highlight rust"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">unsafe</span> <span class="function"><span class="keyword">fn</span> <span class="title">count_newlines_memmap_avx512</span></span>(filename: &<span class="keyword">str</span>) -&gt; Result&lt;usize, Error&gt; {</div><div class="line">    <span class="keyword">let</span> file = File::open(filename)?;</div><div class="line">    <span class="keyword">let</span> mmap = <span class="keyword">unsafe</span> { Mmap::map(&file)? };</div><div class="line"></div><div class="line">    <span class="keyword">let</span> newline_byte = b<span class="string">'\n'</span>;</div><div class="line">    <span class="keyword">let</span> newline_vector = <span class="number">_</span>mm512_set1_epi8(newline_byte <span class="keyword">as</span> <span class="keyword">i8</span>);</div><div class="line">    <span class="keyword">let</span> <span class="keyword">mut</span> newline_count = <span class="number">0</span>;</div><div class="line"></div><div class="line">    <span class="keyword">let</span> <span class="keyword">mut</span> ptr = mmap.as_ptr();</div><div class="line">    <span class="keyword">let</span> end_ptr = <span class="keyword">unsafe</span> { ptr.add(mmap.len()) };</div><div class="line"></div><div class="line">    <span class="keyword">while</span> ptr &lt;= end_ptr.sub(<span class="number">64</span>) {</div><div class="line">        <span class="keyword">let</span> data = <span class="keyword">unsafe</span> { <span class="number">_</span>mm512_loadu_si512(ptr <span class="keyword">as</span> *<span class="keyword">const</span> <span class="keyword">i32</span>) };</div><div class="line">        <span class="keyword">let</span> cmp_result = <span class="number">_</span>mm512_cmpeq_epi8_mask(data, newline_vector);</div><div class="line">        newline_count += cmp_result.count_ones() <span class="keyword">as</span> usize;</div><div class="line">        ptr = <span class="keyword">unsafe</span> { ptr.add(<span class="number">64</span>) };</div><div class="line">    }</div><div class="line"></div><div class="line">    <span class="comment">// Count remaining bytes</span></div><div class="line">    <span class="keyword">let</span> remaining_bytes = end_ptr <span class="keyword">as</span> usize - ptr <span class="keyword">as</span> usize;</div><div class="line">    newline_count += mmap[mmap.len() - remaining_bytes..].iter().filter(|&&b| b == newline_byte).count();</div><div class="line"></div><div class="line">    reset_file_caches();</div><div class="line">    Ok(newline_count)</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>这个方法在我的机器上大约需要 2.61 秒。</p>
-<h2 id="方法_7：使用向量_I/O_读取文件">方法 7：使用向量 I/O 读取文件</h2>
-<figure class="highlight rust"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div></pre></td><td class="code"><pre><div class="line"><span class="function"><span class="keyword">fn</span> <span class="title">count_newlines_vectored_io</span></span>(path: &<span class="keyword">str</span>) -&gt; Result&lt;usize, Error&gt;  {</div><div class="line">    <span class="keyword">let</span> <span class="keyword">mut</span> file = File::open(path)?;</div><div class="line"></div><div class="line">    <span class="keyword">let</span> <span class="keyword">mut</span> buffers_: Vec&lt;<span class="number">_</span>&gt; = (<span class="number">0</span>..<span class="number">16</span>).map(|<span class="number">_</span>| vec![<span class="number">0</span>; BUFFER_SIZE]).collect();</div><div class="line">    <span class="keyword">let</span> <span class="keyword">mut</span> buffers: Vec&lt;<span class="number">_</span>&gt; = buffers_.iter_mut().map(|buf| io::IoSliceMut::new(buf)).collect();</div><div class="line"></div><div class="line">    <span class="keyword">let</span> <span class="keyword">mut</span> newline_count = <span class="number">0</span>;</div><div class="line"></div><div class="line">    <span class="keyword">loop</span> {</div><div class="line">        <span class="keyword">let</span> bytes_read = file.read_vectored(&<span class="keyword">mut</span> buffers)?;</div><div class="line">        <span class="keyword">if</span> bytes_read == <span class="number">0</span> {</div><div class="line">            <span class="keyword">break</span>;</div><div class="line">        }</div><div class="line"></div><div class="line">        <span class="comment">// Calculate how many buffers were filled</span></div><div class="line">        <span class="keyword">let</span> filled_buffers = bytes_read / BUFFER_SIZE;</div><div class="line"></div><div class="line">        <span class="comment">// Process the fully filled buffers</span></div><div class="line">        <span class="keyword">for</span> buf <span class="keyword">in</span> &buffers[..filled_buffers] {</div><div class="line">            newline_count += buf.iter().filter(|&&b| b == b<span class="string">'\n'</span>).count();</div><div class="line">        }</div><div class="line"></div><div class="line">        <span class="comment">// Handle the potentially partially filled last buffer</span></div><div class="line">        <span class="keyword">if</span> filled_buffers &lt; buffers.len() {</div><div class="line">            <span class="keyword">let</span> last_buffer = &buffers[filled_buffers];</div><div class="line">            <span class="keyword">let</span> end = bytes_read % BUFFER_SIZE;</div><div class="line">            newline_count += last_buffer[..end].iter().filter(|&&b| b == b<span class="string">'\n'</span>).count();</div><div class="line">        }</div><div class="line">    }</div><div class="line">    Ok(newline_count)</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>在我的机器上，这大约需要 7.7 秒。</p>
-<h2 id="方法_8：使用_io_uring_读取文件">方法 8：使用 <code>io_uring</code> 读取文件</h2>
-<figure class="highlight rust"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div><div class="line">35</div><div class="line">36</div><div class="line">37</div><div class="line">38</div><div class="line">39</div><div class="line">40</div><div class="line">41</div><div class="line">42</div></pre></td><td class="code"><pre><div class="line"><span class="function"><span class="keyword">fn</span> <span class="title">count_lines_io_uring</span></span>(path: &<span class="keyword">str</span>) -&gt; io::Result&lt;usize&gt; {</div><div class="line">    <span class="keyword">let</span> file = File::open(path)?;</div><div class="line">    <span class="keyword">let</span> fd = file.as_raw_fd();</div><div class="line"></div><div class="line">    <span class="keyword">let</span> <span class="keyword">mut</span> ring = IoUring::new(<span class="number">8</span>)?;</div><div class="line">    <span class="keyword">let</span> <span class="keyword">mut</span> line_count = <span class="number">0</span>;</div><div class="line">    <span class="keyword">let</span> <span class="keyword">mut</span> offset = <span class="number">0</span>;</div><div class="line"></div><div class="line">    <span class="keyword">let</span> <span class="keyword">mut</span> buf = vec![<span class="number">0</span>; <span class="number">4096</span>];</div><div class="line">    <span class="keyword">let</span> <span class="keyword">mut</span> read_size = buf.len();</div><div class="line"></div><div class="line">    <span class="keyword">loop</span> {</div><div class="line">        <span class="keyword">let</span> <span class="keyword">mut</span> sqe = opcode::Read::new(types::Fd(fd), buf.as_mut_ptr(), read_size <span class="keyword">as</span> <span class="number">_</span>)</div><div class="line">            .offset(offset <span class="keyword">as</span> <span class="number">_</span>)</div><div class="line">            .build()</div><div class="line">            .user_data(line_count <span class="keyword">as</span> <span class="number">_</span>);</div><div class="line"></div><div class="line">        <span class="keyword">unsafe</span> {</div><div class="line">            ring.submission()</div><div class="line">                .push(&<span class="keyword">mut</span> sqe)</div><div class="line">                .expect(<span class="string">"submission queue is full"</span>);</div><div class="line">        }</div><div class="line"></div><div class="line">        ring.submit_and_wait(<span class="number">1</span>)?;</div><div class="line"></div><div class="line">        <span class="keyword">let</span> cqe = ring.completion().next().expect(<span class="string">"completion queue is empty"</span>);</div><div class="line"></div><div class="line">        <span class="keyword">let</span> bytes_read = cqe.result() <span class="keyword">as</span> usize;</div><div class="line">        line_count = cqe.user_data() <span class="keyword">as</span> usize;</div><div class="line"></div><div class="line">        <span class="keyword">if</span> bytes_read == <span class="number">0</span> {</div><div class="line">            <span class="keyword">break</span>;</div><div class="line">        }</div><div class="line"></div><div class="line">        <span class="keyword">let</span> data = &buf[..bytes_read];</div><div class="line">        line_count += data.iter().filter(|&&b| b == b<span class="string">'\n'</span>).count();</div><div class="line"></div><div class="line">        offset += bytes_read <span class="keyword">as</span> <span class="keyword">u64</span>;</div><div class="line">        read_size = (buf.len() - (offset <span class="keyword">as</span> usize % buf.len())) <span class="keyword">as</span> usize;</div><div class="line">    }</div><div class="line">    Ok(line_count)</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>在我的机器上，这大约需要 10.5 秒。</p>
-<h2 id="方法_9：使用带有向量_I/O_的_io_uring_读取文件">方法 9：使用带有向量 I/O 的 <code>io_uring</code> 读取文件</h2>
-<figure class="highlight rust"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div><div class="line">35</div><div class="line">36</div><div class="line">37</div><div class="line">38</div><div class="line">39</div><div class="line">40</div><div class="line">41</div><div class="line">42</div><div class="line">43</div><div class="line">44</div><div class="line">45</div><div class="line">46</div><div class="line">47</div><div class="line">48</div><div class="line">49</div><div class="line">50</div><div class="line">51</div><div class="line">52</div><div class="line">53</div><div class="line">54</div><div class="line">55</div><div class="line">56</div><div class="line">57</div></pre></td><td class="code"><pre><div class="line"><span class="function"><span class="keyword">fn</span> <span class="title">count_lines_io_uring_vectored</span></span>(path: &<span class="keyword">str</span>) -&gt; io::Result&lt;usize&gt; {</div><div class="line">    <span class="keyword">let</span> file = File::open(path)?;</div><div class="line">    <span class="keyword">let</span> fd = file.as_raw_fd();</div><div class="line"></div><div class="line">    <span class="keyword">let</span> <span class="keyword">mut</span> ring = IoUring::new(NUM_BUFFERS <span class="keyword">as</span> <span class="keyword">u32</span>)?;</div><div class="line">    <span class="keyword">let</span> <span class="keyword">mut</span> line_count = <span class="number">0</span>;</div><div class="line">    <span class="keyword">let</span> <span class="keyword">mut</span> offset = <span class="number">0</span>;</div><div class="line"></div><div class="line">    <span class="keyword">let</span> <span class="keyword">mut</span> buffers = vec![vec![<span class="number">0</span>; <span class="number">8192</span>]; NUM_BUFFERS];</div><div class="line">    <span class="keyword">let</span> <span class="keyword">mut</span> iovecs: Vec&lt;iovec&gt; = buffers</div><div class="line">        .iter_mut()</div><div class="line">        .map(|buf| iovec {</div><div class="line">            iov_base: buf.as_mut_ptr() <span class="keyword">as</span> *<span class="keyword">mut</span> <span class="number">_</span>,</div><div class="line">            iov_len: buf.len(),</div><div class="line">        })</div><div class="line">        .collect();</div><div class="line"></div><div class="line">    <span class="keyword">loop</span> {</div><div class="line">        <span class="keyword">let</span> <span class="keyword">mut</span> sqe = opcode::Readv::new(types::Fd(fd), iovecs.as_mut_ptr(), iovecs.len() <span class="keyword">as</span> <span class="number">_</span>)</div><div class="line">            .offset(offset <span class="keyword">as</span> <span class="number">_</span>)</div><div class="line">            .build()</div><div class="line">            .user_data(<span class="number">0</span>);</div><div class="line"></div><div class="line">        <span class="keyword">unsafe</span> {</div><div class="line">            ring.submission()</div><div class="line">                .push(&<span class="keyword">mut</span> sqe)</div><div class="line">                .expect(<span class="string">"submission queue is full"</span>);</div><div class="line">        }</div><div class="line"></div><div class="line">        ring.submit_and_wait(<span class="number">1</span>)?;</div><div class="line"></div><div class="line">        <span class="keyword">let</span> cqe = ring.completion().next().expect(<span class="string">"completion queue is empty"</span>);</div><div class="line">        <span class="keyword">let</span> bytes_read = cqe.result() <span class="keyword">as</span> usize;</div><div class="line"></div><div class="line">        <span class="keyword">if</span> bytes_read == <span class="number">0</span> {</div><div class="line">            <span class="keyword">break</span>;</div><div class="line">        }</div><div class="line"></div><div class="line">        <span class="keyword">let</span> <span class="keyword">mut</span> buffer_line_count = <span class="number">0</span>;</div><div class="line">        <span class="keyword">let</span> <span class="keyword">mut</span> remaining_bytes = bytes_read;</div><div class="line">        <span class="keyword">for</span> buf <span class="keyword">in</span> &buffers[..iovecs.len()] {</div><div class="line">            <span class="keyword">let</span> buf_size = buf.len();</div><div class="line">            <span class="keyword">let</span> data_size = remaining_bytes.min(buf_size);</div><div class="line">            <span class="keyword">let</span> data = &buf[..data_size];</div><div class="line">            buffer_line_count += data.iter().filter(|&&b| b == b<span class="string">'\n'</span>).count();</div><div class="line">            remaining_bytes -= data_size;</div><div class="line">            <span class="keyword">if</span> remaining_bytes == <span class="number">0</span> {</div><div class="line">                <span class="keyword">break</span>;</div><div class="line">            }</div><div class="line">        }</div><div class="line">        line_count += buffer_line_count;</div><div class="line"></div><div class="line">        offset += bytes_read <span class="keyword">as</span> <span class="keyword">u64</span>;</div><div class="line">    }</div><div class="line"></div><div class="line">    Ok(line_count)</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>在我的机器上，这大约需要 7.6 秒。</p>
-]]></content>
-    <summary type="html">
-    <![CDATA[<p>我们将尝试使用 Rust 来比较读取文件的各种不同方法。除了 <code>wc -l</code> 之外，我们将使用 <code>criterion</code> 对每个函数运行 10 次，然后取平均值。</p>
-<p>以下基准测试的代码存放在 <a href="https://github.com/deepankarsharma/shatranj/blob/main/benches/bench.rs" target="_blank" rel="external">Benchmark code for Linux IO using Rust</a>。<br>在以下代码中，BUFFER_SIZE 为 8192，NUM_BUFFERS 为 32。</p>
-<p>原文: <a href="[Linux File IO using Rust (opdroid.org"># Linux File IO using Rust</a>](<a href="https://opdroid.org/rust-io.html)" target="_blank" rel="external">https://opdroid.org/rust-io.html)</a>) by opdroid</p>
-]]>
-    
-    </summary>
-    
-      <category term="rust" scheme="https://colobu.com/categories/rust/"/>
-    
-  </entry>
-  
-  <entry>
-    <title><![CDATA[重复了很多次，我终于不再忍了]]></title>
-    <link href="https://colobu.com/2024/05/08/db-query-helpers/"/>
-    <id>https://colobu.com/2024/05/08/db-query-helpers/</id>
-    <published>2024-05-08T15:49:39.000Z</published>
-    <updated>2024-07-03T03:41:24.498Z</updated>
-    <content type="html"><![CDATA[<p>虽然我不做管理系统，但是在项目中和数据库打交道还是比较多的，经常会从数据库中 (比如 Mysql 、ClickHouse 等) 查询一些记录，偶尔也会写入一些数据，但是不多。</p>
-<a id="more"></a>
-<p>每次从数据库中查询一些数据，套路几乎是一样的，无非是：</p>
-<ul>
-<li>定义和表相关的 struct (Entity)</li>
-</ul>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> User <span class="keyword">struct</span> {</div><div class="line">	ID   <span class="typename">int</span>    <span class="string">`db:"id" json:"id,omitempty"`</span></div><div class="line">	Name <span class="typename">string</span> <span class="string">`db:"name" json:"name,omitempty"`</span></div><div class="line">}</div></pre></td></tr></table></figure>
-
-<ul>
-<li>根据 dsn 创建 sql. DB</li>
-</ul>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div></pre></td><td class="code"><pre><div class="line">db, err := sql.Open(<span class="string">"mysql"</span>,<span class="string">"user:password@tcp(127.0.0.1:3306)/test"</span>)</div><div class="line"><span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">	log.Fatal(err)</div><div class="line">}</div><div class="line"><span class="keyword">defer</span> db.Close()</div></pre></td></tr></table></figure>
-
-<ul>
-<li>执行查询, 获得一组Row</li>
-</ul>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">var</span> (</div><div class="line">	id <span class="typename">int</span></div><div class="line">	name <span class="typename">string</span></div><div class="line">)</div><div class="line">rows, err := db.Query(<span class="string">"select id, name from users where id = ?"</span>,<span class="number"> 1</span>)</div><div class="line"><span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">	log.Fatal(err)</div><div class="line">}</div><div class="line"><span class="keyword">defer</span> rows.Close()</div></pre></td></tr></table></figure>
-
-<ul>
-<li>遍历 rows, 读取数据,并填充struct</li>
-</ul>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div></pre></td><td class="code"><pre><div class="line"></div><div class="line"><span class="keyword">var</span> users []User</div><div class="line"><span class="keyword">for</span> rows.Next() {</div><div class="line">    <span class="keyword">var</span> user User</div><div class="line">	err := rows.Scan(&user.ID, &user.Name)</div><div class="line">	<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">		log.Fatal(err)</div><div class="line">	}</div><div class="line">	</div><div class="line">    users = <span class="built_in">append</span>(users, user)</div><div class="line">}</div><div class="line">err = rows.Err()</div><div class="line"><span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">	log.Fatal(err)</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>每一次，都是这个套路，套路用多了，也烦了。</p>
-<p>当然也可以用 orm 库，比如 gorm, 减少一些代码。但是我还是想用原始的 sql 和最精简的代码，把查询这一块能抽象出一个通用的代码。</p>
-<p>那么梳理一下我的需求：</p>
-<ol>
-<li>提供一个 raw sql 语句</li>
-<li>返回一个指定类型的 struct、或者是一个指定类型的struct 的切片</li>
-</ol>
-<p><img src="1.png" alt=""></p>
-<p>但是等等，好歹也得提供数据库的连接信息吧，或者提供一个连接好的 sql. DB, 所以输入变成了两项：<br><img src="2.png" alt=""></p>
-<p>那么是输入 dsn 还是创建好的 sql. DB 呢？我最终选择了 sql. DB, 原因有两点：</p>
-<ul>
-<li>可以重用创建好的 sql. DB, 多个地方可以共享使用</li>
-<li>用户可以在外部配置 sql. DB </li>
-</ul>
-<p>输入输出确定了，那么就是实现了。相关的代码在 <a href="https://github.com/blockloop/scan" target="_blank" rel="external">smallnest/exp</a> 让我们看看它是怎么封装的。</p>
-<h2 id="查询多条记录">查询多条记录</h2>
-<p><code>func Rows[T any](ctx context.Context, db *sql.DB, query string, args ...any) ([]T, error)</code></p>
-<ul>
-<li><code>ctx</code> 可以设置超时时间，或者不想设置的话用 <code>context.Background</code> 即可</li>
-<li><code>db</code> 外部已经创建好的数据库连接</li>
-<li><code>query</code>  sql 查询语句</li>
-<li><code>args</code> sql 中的参数，可选</li>
-</ul>
-<p>返回结果就是 <code>[]T</code>, 如果查询失败，返回 <code>error</code></p>
-<p>本质上，这个函数也没啥，就是执行查询，遍历 rows, 利用反射将数据库记录转换成 <code>T</code> 类型的结构体，所以我把它称之为 helper 函数，减少我的重复工作量。</p>
-<p>其实底层我没也没有从零去写，而是使用了 <a href="github.com/blockloop/scan">blockloop/scan</a> , 封装的更方便使用，同时支持泛型。</p>
-<p>一个例子如下, 演示了查询多个  <code>person</code> 的方法以及只查某个字段的方法：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> person <span class="keyword">struct</span> {</div><div class="line">	ID   <span class="typename">int</span>    <span class="string">`db:"id" json:"id,omitempty"`</span></div><div class="line">	Name <span class="typename">string</span> <span class="string">`json:"name,omitempty"`</span> <span class="comment">// `db:"name" json:"name,omitempty"`</span></div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> TestRows(t *testing.T) {</div><div class="line">	db := exampleDB(t)</div><div class="line"></div><div class="line">	persons, err := Rows[person](context.Background(), db, <span class="string">"SELECT * FROM persons order by id"</span>)</div><div class="line">	assert.NoError(t, err)</div><div class="line">	require.Equal(t,<span class="number"> 2</span>, <span class="built_in">len</span>(persons))</div><div class="line">	assert.Equal(t,<span class="number"> 1</span>, persons<span class="number">[0</span>].ID)</div><div class="line">	assert.Equal(t, <span class="string">"brett"</span>, persons<span class="number">[0</span>].Name)</div><div class="line">	assert.Equal(t,<span class="number"> 2</span>, persons<span class="number">[1</span>].ID)</div><div class="line">	assert.Equal(t, <span class="string">"fred"</span>, persons<span class="number">[1</span>].Name)</div><div class="line"></div><div class="line">	names, err := Rows[<span class="typename">string</span>](context.Background(), db, <span class="string">"SELECT name FROM persons order by id"</span>)</div><div class="line">	assert.NoError(t, err)</div><div class="line">	assert.Equal(t,<span class="number"> 2</span>, <span class="built_in">len</span>(names))</div><div class="line">	assert.Equal(t, <span class="string">"brett"</span>, names<span class="number">[0</span>])</div><div class="line">	assert.Equal(t, <span class="string">"fred"</span>, names<span class="number">[1</span>])</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<h2 id="查询单条记录">查询单条记录</h2>
-<p>如果查询单条记录，你可以使用 <code>Row</code> 函数：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> Row[T any](ctx context.Context, db *sql.DB, query <span class="typename">string</span>, args ...any) (T, error)</div></pre></td></tr></table></figure>
-
-<p>和查询多条记录类似，只不过它返回一个 struct 而已。</p>
-<p>也是使用了 <a href="github.com/blockloop/scan">blockloop/scan</a> , 同时支持泛型。</p>
-<p>查询例子如下：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> TestRow(t *testing.T) {</div><div class="line">	db := exampleDB(t)</div><div class="line"></div><div class="line">	person, err := Row[person](context.Background(), db, <span class="string">"SELECT * FROM persons order by id limit 1"</span>)</div><div class="line">	assert.NoError(t, err)</div><div class="line">	assert.Equal(t,<span class="number"> 1</span>, person.ID)</div><div class="line">	assert.Equal(t, <span class="string">"brett"</span>, person.Name)</div><div class="line"></div><div class="line">	name, err := Row[<span class="typename">string</span>](context.Background(), db, <span class="string">"SELECT name FROM persons order by id limit 1"</span>)</div><div class="line">	assert.NoError(t, err)</div><div class="line">	assert.Equal(t, <span class="string">"brett"</span>, name)</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>总得来说，这两个函数基本满足了我的日常查询需求，也减少了很多重复的代码，同时也提高了代码的可读性，同时它们还实现了简单的ORM的功能，把数据库的记录转换成了结构体。</p>
-<p>这里你可能注意到了，我最开始定义了所需的结构体，如果你想更懒一些，你可以不定义结构体，直接使用 <code>map[string]any</code> 来接收查询结果, 但是这样会失去类型检查，只推荐在特定的场景下使用。</p>
-<p>下面的提供了两个函数，和上面的函数，但是返回的是 <code>map[string]any</code>。</p>
-<h2 id="返回_map_类型">返回 map 类型</h2>
-<p>为了方便，我给<code>map[string]any</code>起了一个别名:</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div></pre></td><td class="code"><pre><div class="line"><span class="comment">// Record is a type alias for map[string]any.</span></div><div class="line"><span class="keyword">type</span> Record = <span class="keyword">map</span>[<span class="typename">string</span>]any</div></pre></td></tr></table></figure>
-
-<p>Record代表一条记录，key是字段名，value是字段的值。</p>
-<p>查询多条记录的函数如下，这里我没有依赖第三方的库，而是直接实现，遍历 rows, 读取数据,并填充 <code>map[string]any</code>:</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> RowsMap(ctx context.Context, db *sql.DB, query <span class="typename">string</span>, args ...any) ([]Record, error) {</div><div class="line">	rows, err := db.QueryContext(ctx, query, args...)</div><div class="line">	<span class="keyword">defer</span> rows.Close()</div><div class="line">	<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">		<span class="keyword">return</span> <span class="constant">nil</span>, err</div><div class="line">	}</div><div class="line"></div><div class="line">	colNames, err := rows.Columns()</div><div class="line">	<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">		<span class="keyword">return</span> <span class="constant">nil</span>, err</div><div class="line">	}</div><div class="line">	cols := <span class="built_in">make</span>([]any, <span class="built_in">len</span>(colNames))</div><div class="line">	colPtrs := <span class="built_in">make</span>([]any, <span class="built_in">len</span>(colNames))</div><div class="line"></div><div class="line">	<span class="keyword">for</span> i :=<span class="number"> 0</span>; i &lt; <span class="built_in">len</span>(colNames); i++ {</div><div class="line">		colPtrs[i] = &cols[i]</div><div class="line">	}</div><div class="line"></div><div class="line">	<span class="keyword">var</span> ret []Record</div><div class="line">	<span class="keyword">for</span> rows.Next() {</div><div class="line">		err = rows.Scan(colPtrs...)</div><div class="line">		<span class="keyword">if</span> err != <span class="constant">nil</span> {</div><div class="line">			<span class="keyword">return</span> <span class="constant">nil</span>, err</div><div class="line">		}</div><div class="line"></div><div class="line">		row := <span class="built_in">make</span>(Record)</div><div class="line">		<span class="keyword">for</span> i, col := <span class="keyword">range</span> cols {</div><div class="line">			row[colNames[i]] = col</div><div class="line">		}</div><div class="line">		ret = <span class="built_in">append</span>(ret, row)</div><div class="line">	}</div><div class="line"></div><div class="line">	<span class="keyword">return</span> ret, <span class="constant">nil</span></div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>查询单条记录类似，只不过返回的是 <code>Record</code>:</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> RowMap(ctx context.Context, db *sql.DB, query <span class="typename">string</span>, args ...any) (Record, error)</div></pre></td></tr></table></figure>
-
-<p>接下来。我们看一个例子。这个例子和上面的例子类似，只不过调用我们这里介绍的两个函数，返回的是 <code>map[string]any</code>:</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> TestRowsMap(t *testing.T) {</div><div class="line">	db := exampleDB(t)</div><div class="line"></div><div class="line">	persons, err := RowsMap(context.Background(), db, <span class="string">"SELECT * FROM persons order by id"</span>)</div><div class="line">	assert.NoError(t, err)</div><div class="line">	require.Equal(t,<span class="number"> 2</span>, <span class="built_in">len</span>(persons))</div><div class="line">	assert.Equal(t, <span class="typename">int64</span><span class="number">(1</span>), persons<span class="number">[0</span>][<span class="string">"id"</span>])</div><div class="line">	assert.Equal(t, <span class="string">"brett"</span>, persons<span class="number">[0</span>][<span class="string">"name"</span>])</div><div class="line">	assert.Equal(t, <span class="typename">int64</span><span class="number">(2</span>), persons<span class="number">[1</span>][<span class="string">"id"</span>])</div><div class="line">	assert.Equal(t, <span class="string">"fred"</span>, persons<span class="number">[1</span>][<span class="string">"name"</span>])</div><div class="line"></div><div class="line">	names, err := RowsMap(context.Background(), db, <span class="string">"SELECT name FROM persons order by id"</span>)</div><div class="line">	assert.NoError(t, err)</div><div class="line">	assert.Equal(t,<span class="number"> 2</span>, <span class="built_in">len</span>(names))</div><div class="line">	assert.Equal(t, <span class="string">"brett"</span>, names<span class="number">[0</span>][<span class="string">"name"</span>])</div><div class="line">	assert.Equal(t, <span class="string">"fred"</span>, names<span class="number">[1</span>][<span class="string">"name"</span>])</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> TestRowMap(t *testing.T) {</div><div class="line">	db := exampleDB(t)</div><div class="line"></div><div class="line">	person, err := RowMap(context.Background(), db, <span class="string">"SELECT * FROM persons order by id limit 1"</span>)</div><div class="line">	assert.NoError(t, err)</div><div class="line">	assert.Equal(t, <span class="typename">int64</span><span class="number">(1</span>), person[<span class="string">"id"</span>])</div><div class="line">	assert.Equal(t, <span class="string">"brett"</span>, person[<span class="string">"name"</span>])</div><div class="line"></div><div class="line">	name, err := Row[<span class="typename">string</span>](context.Background(), db, <span class="string">"SELECT name FROM persons order by id limit 1"</span>)</div><div class="line">	assert.NoError(t, err)</div><div class="line">	assert.Equal(t, <span class="string">"brett"</span>, name)</div><div class="line">}</div></pre></td></tr></table></figure>
-
-<p>使用这里介绍的函数，直接引用<code>github.com/smallnest/exp/db</code>即可。</p>
-]]></content>
-    <summary type="html">
-    <![CDATA[<p>虽然我不做管理系统，但是在项目中和数据库打交道还是比较多的，经常会从数据库中 (比如 Mysql 、ClickHouse 等) 查询一些记录，偶尔也会写入一些数据，但是不多。</p>
-]]>
     
     </summary>
     
