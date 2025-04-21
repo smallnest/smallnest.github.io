@@ -1,0 +1,988 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset="utf-8">
+  
+  <title>Go中秘而不宣的数据结构 spmc, 10倍性能于 channel</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+  <meta name="description" content="Go 标准库和运行中中，有一些专门针对特定场景优化的数据结构，这些数据结构并没有暴露出来，这个系列就是逐一介绍这些数据结构。
+这一次给大家介绍的就是一个 lock-free、高性能的单生产者多消费者的队列：PoolDequeue 和 PoolChain。到底是一个还是两个呢？主要是 PoolDequeue, 它是一个固定尺寸，使用 ringbuffer (环形队列) 方式实现的队列。PoolCha">
+<meta property="og:type" content="article">
+<meta property="og:title" content="Go中秘而不宣的数据结构 spmc, 10倍性能于 channel">
+<meta property="og:url" content="https://colobu.com/2024/10/20/go-internal-ds-spmc/">
+<meta property="og:site_name" content="鸟窝">
+<meta property="og:description" content="Go 标准库和运行中中，有一些专门针对特定场景优化的数据结构，这些数据结构并没有暴露出来，这个系列就是逐一介绍这些数据结构。
+这一次给大家介绍的就是一个 lock-free、高性能的单生产者多消费者的队列：PoolDequeue 和 PoolChain。到底是一个还是两个呢？主要是 PoolDequeue, 它是一个固定尺寸，使用 ringbuffer (环形队列) 方式实现的队列。PoolCha">
+<meta property="og:image" content="benchmark.png">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="Go中秘而不宣的数据结构 spmc, 10倍性能于 channel">
+<meta name="twitter:description" content="Go 标准库和运行中中，有一些专门针对特定场景优化的数据结构，这些数据结构并没有暴露出来，这个系列就是逐一介绍这些数据结构。
+这一次给大家介绍的就是一个 lock-free、高性能的单生产者多消费者的队列：PoolDequeue 和 PoolChain。到底是一个还是两个呢？主要是 PoolDequeue, 它是一个固定尺寸，使用 ringbuffer (环形队列) 方式实现的队列。PoolCha">
+
+  
+  <link rel="alternative" href="/atom.xml" title="鸟窝" type="application/atom+xml">
+  
+  
+  <link rel="icon" href="/favicon.png">
+  
+  <link rel="stylesheet" href="../../../../css/style.css" type="text/css">
+
+  <link href="//cdn.bootcdn.net/ajax/libs/font-awesome/6.6.0/css/all.min.css" rel="stylesheet">
+  
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/fancybox/2.1.7/css/jquery.fancybox.min.css"
+    media="screen" type="text/css">
+  
+  <link rel="stylesheet" href="//cdnjs.cloudflare.com/ajax/libs/animate.css/3.1.1/animate.min.css" media="screen"
+    type="text/css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/tonsky/FiraCode@1.207/distr/fira_code.css">
+</head>
+<body>
+  <div id="container">
+    <div id="wrap">
+      <header id="header">
+  <div id="banner"></div>
+  <div id="header-outer" class="outer">
+    <div id="header-title" class="inner">
+      <h1 id="logo-wrap" class="animated bounceInLeft">
+        <a href="../../../.." id="logo">鸟窝</a>
+      </h1>
+      
+        <!-- <h2 id="subtitle-wrap" class="animated bounceInLeft"> -->
+        <h2 id="subtitle-wrap">
+          <!-- <a href="../../../.." id="subtitle">大道至简 Simplicity is the ultimate form of sophistication</a> -->
+          <a href="https://item.jd.com/14283252.html" target="_blank" style="color: #e32d40;text-decoration: none;"><b>《Go語言全功能開發養成書》繁体中文版发售。一书在手，并发无忧</b></a>
+        </h2>
+      
+    </div>
+    <div id="header-inner" class="inner">
+      <nav id="main-nav">
+        <a id="main-nav-toggle" class="nav-icon"></a>
+        
+          
+            <a class="main-nav-link" href="../../../.."><i class="fa fa-home">&nbsp;</i>首页</a>
+          
+          
+          
+            <a class="main-nav-link" href="../../../../archives"><i class="fa fa-regular fa-folder-open">&nbsp;</i>归档</a>
+          
+          
+          
+            <a class="main-nav-link" href="https://github.com/smallnest"><i class="fa fa-brands fa-github-alt">&nbsp;</i>github</a>
+          
+          
+          
+            <div class="dropdown main-nav-link"><a class="main-nav-link" href="#"><i class="fa fa-brands fa-golang">&nbsp;</i>Go学习资源</a>
+              <div class="dropdown-content">
+          
+            
+              <a href="/goasm"><i class="fa fa-brands fa-golang"></i>&nbsp;Go汇编示例</a>
+            
+                
+          
+            
+              <a href="https://gowebexamples.com"><i class="fa fa-brands fa-golang"></i>&nbsp;Go Web开发示例</a>
+            
+                
+          
+            
+              <a href="http://go-database-sql.org"><i class="fa fa-brands fa-golang"></i>&nbsp;Go 数据库开发教程</a>
+            
+                
+          
+            
+              <a href="https://colobu.com/gotips/"><i class="fa fa-brands fa-golang"></i>&nbsp;Go 语言编程技巧</a>
+            
+                
+          
+            
+              <hr>
+            
+                
+          
+            
+              <a href="http://rpcx.io"><i class="fa undefined"></i>&nbsp;RPCX官网</a>
+            
+                
+          
+            
+              <a href="http://cn.doc.rpcx.io"><i class="fa undefined"></i>&nbsp;RPC开发指南</a>
+            
+                
+          
+          </div>
+        </div>
+          
+          
+          
+            <div class="dropdown main-nav-link"><a class="main-nav-link" href="#"><i class="fa fa-brands fa-rust">&nbsp;</i>Rust学习资源</a>
+              <div class="dropdown-content">
+          
+            
+              <a href="/perf-book"><i class="fa fa-brands fa-rust"></i>&nbsp;Rust高性能编程指南</a>
+            
+                
+          
+            
+              <a href="/rust100"><i class="fa fa-brands fa-rust"></i>&nbsp;100个练习题学习Rust</a>
+            
+                
+          
+            
+              <a href="/atomics"><i class="fa fa-brands fa-rust"></i>&nbsp;Rust原子操作和锁</a>
+            
+                
+          
+            
+              <a href="/effective-rust"><i class="fa fa-brands fa-rust"></i>&nbsp;高效Rust编程</a>
+            
+                
+          
+            
+              <a href="/thebook"><i class="fa fa-brands fa-rust"></i>&nbsp;Rust程序设计语言</a>
+            
+                
+          
+            
+              <a href="/nomicon"><i class="fa fa-brands fa-rust"></i>&nbsp;Rust死灵书</a>
+            
+                
+          
+            
+              <a href="/rust-reference"><i class="fa fa-brands fa-rust"></i>&nbsp;Rust参考手册</a>
+            
+                
+          
+            
+              <a href="/tlborm"><i class="fa fa-brands fa-rust"></i>&nbsp;Rust宏小册</a>
+            
+                
+          
+            
+              <a href="/async-book"><i class="fa fa-brands fa-rust"></i>&nbsp;Rust异步编程书</a>
+            
+                
+          
+            
+              <a href="/rust-by-example"><i class="fa fa-brands fa-rust"></i>&nbsp;通过例子学Rust</a>
+            
+                
+          
+            
+              <a href="/api-guidelines"><i class="fa fa-brands fa-rust"></i>&nbsp;Rust API 编写指南</a>
+            
+                
+          
+            
+              <a href="/comprehensive-rust"><i class="fa fa-brands fa-rust"></i>&nbsp;全面Rust课程</a>
+            
+                
+          
+            
+              <a href="/easy-rust"><i class="fa fa-brands fa-rust"></i>&nbsp;简单英语学Rust</a>
+            
+                
+          
+            
+              <a href="/rust-patterns"><i class="fa fa-brands fa-rust"></i>&nbsp;Rust设计模式</a>
+            
+                
+          
+            
+              <a href="/2020/03/05/A-half-hour-to-learn-Rust/"><i class="fa fa-brands fa-rust"></i>&nbsp;半小时学会Rust</a>
+            
+                
+          
+            
+              <a href="/rust-cookbook"><i class="fa fa-brands fa-rust"></i>&nbsp;Rust实用指南(cookbook)</a>
+            
+                
+          
+            
+              <a href="/rust-rand"><i class="fa fa-brands fa-rust"></i>&nbsp;Rust随机库</a>
+            
+                
+          
+            
+              <hr>
+            
+                
+          
+            
+              <a href="https://rpcx.io/r/E6v8U"><i class="fa undefined"></i>&nbsp;Rust for the Polyglot Programmer</a>
+            
+                
+          
+            
+              <a href="https://rpcx.io/r/oC5ii"><i class="fa undefined"></i>&nbsp;LifetimeKata</a>
+            
+                
+          
+            
+              <a href="https://tfpk.github.io/macrokata/"><i class="fa undefined"></i>&nbsp;macrokata</a>
+            
+                
+          
+          </div>
+        </div>
+          
+          
+          
+            <div class="dropdown main-nav-link"><a class="main-nav-link" href="#"><i class="fa undefined">&nbsp;</i>出版书籍</a>
+              <div class="dropdown-content">
+          
+            
+              <a href="/ScalaCollectionsCookbook"><i class="fa undefined"></i>&nbsp;Scala集合技术手册（简/繁）</a>
+            
+                
+          
+            
+              <a href="https://cpgo.colobu.com/"><i class="fa undefined"></i>&nbsp;深入理解Go并发编程（简/繁）</a>
+            
+                
+          
+            
+              <a href="https://item.jd.com/14347716.html"><i class="fa undefined"></i>&nbsp;100个Go语言典型错误</a>
+            
+                
+          
+          </div>
+        </div>
+          
+          
+          
+            <a class="main-nav-link" href="../../../../ScalaCollectionsCookbook"><i class="fa fa-solid fa-book">&nbsp;</i>Scala集合技术手册</a>
+          
+          
+          
+            <a class="main-nav-link" href="../../../../about"><i class="fa fa-regular fa-address-card">&nbsp;</i>关于</a>
+          
+          
+
+
+      </nav>
+      <nav id="sub-nav">
+        
+          <a id="nav-rss-link" class="nav-icon" href="/atom.xml" title="RSS Feed"></a>
+        
+        <a id="nav-search-btn" class="nav-icon" title="Search"></a>
+      </nav>
+      <div id="search-form-wrap">
+        <form action="https://www.google.com/search" method="get" accept-charset="utf-8" class="search-form">
+          <input type="search" id="search-word" name="q" maxlength="20" class="search-form-input" placeholder="Search">
+          <input type=hidden name=ie value="utf-8">
+          <input type=hidden name=oe value="utf-8">
+          <input type=hidden name=hl value="zh-CN">
+          <input type="submit" id="search-submit" value="" class="search-form-submit">
+        </form>
+      </div>
+    </div>
+  </div>
+</header>
+      <div class="outer">
+        <section id="main"><article id="post-go-internal-ds-spmc" class="article article-type-post" itemscope
+  itemprop="blogPost">
+  <div class="article-meta">
+    <a href="" class="article-date">
+  <time datetime="2024-10-20T04:14:44.000Z" itemprop="datePublished">2024年10月20日</time>
+</a>
+    
+  <div class="article-category">
+    <a class="article-category-link" href="../../../../categories/Go">Go</a>
+  </div>
+
+    
+  <div class="article-author"> by smallnest</div>
+
+  </div>
+  <div class="article-inner">
+    
+    
+    <header class="article-header">
+      
+  
+    <h1 class="article-title" itemprop="name">
+      Go中秘而不宣的数据结构 spmc, 10倍性能于 channel
+	  
+    </h1>
+  
+
+    </header>
+    
+    <div class="article-entry" itemprop="articleBody">
+      
+      
+      
+      <script>function show_answer(btn, x) { if (btn.value === "显示答案") { btn.value = "隐藏答案" } else { btn.value = "显示答案" } var as = document.getElementById(x); if (as.style.display === "none") { as.style.display = "block" } else { as.style.display = "none" } }</script>
+      <p>Go 标准库和运行中中，有一些专门针对特定场景优化的数据结构，这些数据结构并没有暴露出来，这个系列就是逐一介绍这些数据结构。</p>
+<p>这一次给大家介绍的就是一个 lock-free、高性能的单生产者多消费者的队列：<code>PoolDequeue</code> 和 <code>PoolChain</code>。<br>到底是一个还是两个呢？<br>主要是 <code>PoolDequeue</code>, 它是一个固定尺寸，使用 ringbuffer (环形队列) 方式实现的队列。<br><code>PoolChain</code> 是在它的基础上上，实现的一个动态尺寸的队列。</p>
+<a id="more"></a>
+<p>生产者消费者模式是常见的一种并发模式，根据生产者的数量和消费者的数量，可以分为四种情况：</p>
+<ul>
+<li>单生产者-单消费者模式: spsc</li>
+<li>单生产者-多消费者模式: spmc</li>
+<li>多生产者-单消费者模式: mpsc</li>
+<li>多生产者-多消费者模式: mpmc</li>
+</ul>
+<p>Channel 基本上可以看做是一种多生产者多消费者模式的队列。可以同时允许多个生产者发送数据，有可以允许多个消费者消费数据，它也可以应用在其他模式的场景，比如 rpc 包中的 oneshot 模式、通知情况下的的单生产者多消费者模式、rpc 和服务端单连接通讯时的消息处理，就是多生产者单消费者模式。</p>
+<p>但是 Go 标准库的 sync 包下，有一个针对单生产者多消费者的数据结构，它是一个 lock-free 的数据结构，针对这个场景做了优化，被使用在 <code>sync.Pool</code> 中。</p>
+<p><code>sync.Pool</code> 采用了一种类似 Go 运行时调度的机制，针对每个 p 有一个 <code>private</code> 的数据，同时还有一个 <code>shared</code> 的数据，如果在本地 <code>private</code>、<code>shared</code> 中没有数据，就去其他 P 对应的 <code>shared</code> 去偷取。难么同时可能有多个 P 偷取同一个 <code>shared</code>, 这是多消费者。</p>
+<p>同时对 <code>shared</code> 的写只有它隶属的 p 执行 <code>Put</code> 的时候才会发生：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div></pre></td><td class="code"><pre><div class="line">l, _ := p.pin()</div><div class="line"><span class="keyword">if</span> l.private == <span class="constant">nil</span> {</div><div class="line">	l.private = x</div><div class="line">} <span class="keyword">else</span> {</div><div class="line">	l.shared.pushHead(x)</div><div class="line">}</div><div class="line">runtime_procUnpin()</div></pre></td></tr></table></figure>
+
+<p>这有属于单生产者模式。<code>sync.Pool</code> 使用了 <code>PoolDequeue</code> 和 <code>PoolChain</code> 来做优化。</p>
+<p>首先我们先来了解 <code>poolDequeue</code>。</p>
+<h2 id="poolDequeue">poolDequeue</h2>
+<p><code>poolDequeue</code> 是一个 lock-free 的数据结构，必然会使用 <code>atomic</code>, 同时它要求必须使用单生产者，否则会有并发问题。消费者可以是并发多个，当然你用一个也没问题。</p>
+<p>其中，生产者可以使用下面的方法：</p>
+<ul>
+<li><strong>pushHead</strong>: 在队列头部新增加一个数据。如果队列满了，增加失败</li>
+<li><strong>popHead</strong>： 在队列头部弹出一个数据。生产者总是弹出新增加的数据，除非队列为空</li>
+</ul>
+<p>消费者可以使用下面的一个方法：</p>
+<ul>
+<li><strong>popTail</strong>: 从队尾处弹出一个数据，除非队列为空。所以消费者总是消费最老的数据，这也正好符合大部分的场景</li>
+</ul>
+<p>接下来就是分析代码了，有点枯燥，你可以跳过。</p>
+<h3 id="代码分析">代码分析</h3>
+<p>首先我们看这个struct的定义：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> poolDequeue <span class="keyword">struct</span> {</div><div class="line">	headTail atomic.Uint64</div><div class="line">	vals []eface</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>这里有两个重要的字段：</p>
+<ul>
+<li><code>headTail</code>： 一个 <code>atomic.Uint64</code> 类型的字段，它的高 32 位是 <code>head</code>，低 32 位是 <code>tail</code>。<code>head</code> 是下一个要填充的位置，<code>tail</code> 是最老的数据的位置。</li>
+<li><code>vals</code>： 一个 <code>eface</code> 类型的切片，它是一个环形队列，大小必须是 2 的幂次方。</li>
+</ul>
+<p>生产者增加数据的逻辑如下：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> (d *poolDequeue) pushHead(val any) <span class="typename">bool</span> {</div><div class="line">	ptrs := d.headTail.Load()</div><div class="line">	head, tail := d.unpack(ptrs)</div><div class="line">	<span class="keyword">if</span> (tail+<span class="typename">uint32</span>(<span class="built_in">len</span>(d.vals)))&<span class="number">(1</span>&lt;&lt;dequeueBits<span class="number">-1</span>) == head {</div><div class="line">		<span class="comment">// 队列满</span></div><div class="line">		<span class="keyword">return</span> <span class="constant">false</span></div><div class="line">	}</div><div class="line">	slot := &d.vals[head&<span class="typename">uint32</span>(<span class="built_in">len</span>(d.vals<span class="number">)-1</span>)]</div><div class="line"></div><div class="line">    <span class="comment">// 检查 head slot 是否被 popTail 释放</span></div><div class="line">	typ := atomic.LoadPointer(&slot.typ)</div><div class="line">	<span class="keyword">if</span> typ != <span class="constant">nil</span> {</div><div class="line">        <span class="comment">// 另一个 goroutine 正在清理 tail，所以队列还是满的</span></div><div class="line">		<span class="keyword">return</span> <span class="constant">false</span></div><div class="line">	}</div><div class="line"></div><div class="line">    <span class="comment">// 如果值为空，那么设置一个特殊值</span></div><div class="line">	<span class="keyword">if</span> val == <span class="constant">nil</span> {</div><div class="line">		val = dequeueNil(<span class="constant">nil</span>)</div><div class="line">	}</div><div class="line">    <span class="comment">// 队列头是空的，将数据写入 slot</span></div><div class="line">	*(*any)(unsafe.Pointer(slot)) = val <span class="comment">// ①</span></div><div class="line"></div><div class="line">    <span class="comment">// 增加 head，这样 popTail 就可以消费这个 slot 了</span></div><div class="line">    <span class="comment">// 同时也是一个 store barrier，保证了 slot 的写入</span></div><div class="line">	d.headTail.Add<span class="number">(1</span> &lt;&lt; dequeueBits)</div><div class="line">	<span class="keyword">return</span> <span class="constant">true</span></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>① 处会有并发问题吗？万一有两个 goroutine 同时执行到这里，会不会有问题？这里没有问题，因为要求只有一个生产者，不会有另外一个goroutine同时写这个槽位。</p>
+<p>注意它还实现了<code>pack</code>和<code>unpack</code>方法，用于将 <code>head</code> 和 <code>tail</code> 打包到一个 <code>uint64</code> 中，或者从 <code>uint64</code> 中解包出 <code>head</code> 和 <code>tail</code>。</p>
+<p>消费者消费数据的逻辑如下：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> (d *poolDequeue) popTail() (any, <span class="typename">bool</span>) {</div><div class="line">	<span class="keyword">var</span> slot *eface</div><div class="line">	<span class="keyword">for</span> { <span class="comment">// ②</span></div><div class="line">		ptrs := d.headTail.Load()</div><div class="line">		head, tail := d.unpack(ptrs)</div><div class="line">		<span class="keyword">if</span> tail == head {</div><div class="line">			<span class="comment">// 队列为空</span></div><div class="line">			<span class="keyword">return</span> <span class="constant">nil</span>, <span class="constant">false</span></div><div class="line">		}</div><div class="line"></div><div class="line">        <span class="comment">// 确认头部和尾部（用于我们之前的推测性检查），并递增尾部。如果成功，那么我们就拥有了尾部的插槽。</span></div><div class="line">		ptrs2 := d.pack(head, tail<span class="number">+1</span>)</div><div class="line">		<span class="keyword">if</span> d.headTail.CompareAndSwap(ptrs, ptrs2) {</div><div class="line">			<span class="comment">// 成功读取了一个 slot</span></div><div class="line">			slot = &d.vals[tail&<span class="typename">uint32</span>(<span class="built_in">len</span>(d.vals<span class="number">)-1</span>)]</div><div class="line">			<span class="keyword">break</span></div><div class="line">		}</div><div class="line">	}</div><div class="line"></div><div class="line">	<span class="comment">// 剩下来就是读取槽位的值</span></div><div class="line">	val := *(*any)(unsafe.Pointer(slot))</div><div class="line">	<span class="keyword">if</span> val == dequeueNil(<span class="constant">nil</span>) { <span class="comment">// 如果本身就存储的nil</span></div><div class="line">		val = <span class="constant">nil</span></div><div class="line">	}</div><div class="line"></div><div class="line">    <span class="comment">// 释放 slot，这样 pushHead 就可以继续写入这个 slot 了</span></div><div class="line">	slot.val = <span class="constant">nil</span> <span class="comment">// ③</span></div><div class="line">	atomic.StorePointer(&slot.typ, <span class="constant">nil</span>) <span class="comment">// ④</span></div><div class="line">	</div><div class="line">	<span class="keyword">return</span> val, <span class="constant">true</span></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>② 处是一个 for 循环，这是一个自旋的过程，直到成功读取到一个 slot 为止。在有大量的goroutine的时候，这里可能会是一个瓶颈点，但是少量的消费者应该还不算大问题。</p>
+<p>③ 和 ④ 处是释放 slot 的过程，这样生产者就可以继续写入这个 slot 了。</p>
+<p>生产者还可以调用<code>popHead</code>方法，用来弹出刚刚压入还没有消费的数据:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">func</span> (d *poolDequeue) popHead() (any, <span class="typename">bool</span>) {</div><div class="line">	<span class="keyword">var</span> slot *eface</div><div class="line">	<span class="keyword">for</span> {</div><div class="line">		ptrs := d.headTail.Load()</div><div class="line">		head, tail := d.unpack(ptrs)</div><div class="line">		<span class="keyword">if</span> tail == head {</div><div class="line">			<span class="comment">// 队列为空</span></div><div class="line">			<span class="keyword">return</span> <span class="constant">nil</span>, <span class="constant">false</span></div><div class="line">		}</div><div class="line"></div><div class="line">        <span class="comment">// 确认头部和尾部（用于我们之前的推测性检查），并递减头部。如果成功，那么我们就拥有了头部的插槽。</span></div><div class="line">		head--</div><div class="line">		ptrs2 := d.pack(head, tail)</div><div class="line">		<span class="keyword">if</span> d.headTail.CompareAndSwap(ptrs, ptrs2) {</div><div class="line">            <span class="comment">// 成功取回了一个 slot</span></div><div class="line">			slot = &d.vals[head&<span class="typename">uint32</span>(<span class="built_in">len</span>(d.vals<span class="number">)-1</span>)]</div><div class="line">			<span class="keyword">break</span></div><div class="line">		}</div><div class="line">	}</div><div class="line"></div><div class="line">	val := *(*any)(unsafe.Pointer(slot))</div><div class="line">	<span class="keyword">if</span> val == dequeueNil(<span class="constant">nil</span>) {</div><div class="line">		val = <span class="constant">nil</span></div><div class="line">	}</div><div class="line">	</div><div class="line">    <span class="comment">// 释放 slot，这样 pushHead 就可以继续写入这个 slot 了</span></div><div class="line">	*slot = eface{}</div><div class="line">	<span class="keyword">return</span> val, <span class="constant">true</span></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>这是一个固定大小的队列，如果队列满了，生产者就会失败。这个队列的大小是 2 的幂次方，这样可以用 <code>&amp;</code> 来取模，而不用 <code>%</code>，这样可以提高性能。</p>
+<h2 id="PoolChain">PoolChain</h2>
+<p><code>PoolChain</code> 是在 <code>PoolDequeue</code> 的基础上实现的一个动态尺寸的队列，它的实现和 <code>PoolDequeue</code> 类似，只是增加了一个 <code>headTail</code> 的链表，用于存储多个 <code>PoolDequeue</code>。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> poolChain <span class="keyword">struct</span> {</div><div class="line">    <span class="comment">// head 是生产者用来push的 poolDequeue。只有生产者访问，所以不需要同步</span></div><div class="line">	head *poolChainElt</div><div class="line"></div><div class="line">    <span class="comment">// tail 是消费者用来pop的 poolDequeue。消费者访问，所以需要原子操作</span></div><div class="line">	tail atomic.Pointer[poolChainElt]</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">type</span> poolChainElt <span class="keyword">struct</span> {</div><div class="line">	poolDequeue</div><div class="line"></div><div class="line">    <span class="comment">// next由生产者原子写入，消费者原子读取。它只能从nil转换为非nil。</span></div><div class="line">    <span class="comment">// prev由消费者原子写入，生产者原子读取。它只能从非nil转换为nil。</span></div><div class="line">	next, prev atomic.Pointer[poolChainElt]</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>考虑到文章中代码过多，大家就会感觉很枯燥了，我就不具体展示代码了，你可以在 <a href="https://github.com/golang/go/blob/master/src/sync/poolqueue.go#L220-L302" target="_blank" rel="external">https://github.com/golang/go/blob/master/src/sync/poolqueue.go#L220-L302</a> 查看具体的实现。<br>整体的思想就是将多个<code>poolDequeue</code>串联起来，生产者在<code>head</code>处增加数据，消费者在<code>tail</code>处消费数据，当<code>tail</code>的<code>poolDequeue</code>为空时，就从<code>head</code>处获取一个<code>poolDequeue</code>。<br>当<code>head</code>满了的时候，就增加一个新的<code>poolDequeue</code>。<br>这样就实现了动态尺寸的队列。</p>
+<p><code>sync.Pool</code>中就是使用的<code>PoolChain</code>来实现的，它是一个单生产者多消费者的队列，可以同时有多个消费者消费数据，但是只有一个生产者生产数据。</p>
+<p>为了能将这个数据结构暴露出来使用，我把相关的代码复制到 <a href="https://github.com/smallnest/exp/blob/master/gods/poolqueue.go" target="_blank" rel="external">https://github.com/smallnest/exp/blob/master/gods/poolqueue.go</a> , 增加了单元测试和性能测试的代码。</p>
+<p>你可以学到这个方法，使用类似的技术，创建一个 look-free 无线长度的 byte buffer。在一些 Go 的网络优化库中就使用这种方法，避免频繁的 grow 和 copy 既有数据。</p>
+<h2 id="与channel的性能比较">与channel的性能比较</h2>
+<p>我们来看一下<code>poolDequeue</code>、<code>PoolChain</code>和<code>channel</code>的性能对比。<br>我们使用一个goroutine进行写入，10个goroutine进行读取：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div><div class="line">35</div><div class="line">36</div><div class="line">37</div><div class="line">38</div><div class="line">39</div><div class="line">40</div><div class="line">41</div><div class="line">42</div><div class="line">43</div><div class="line">44</div><div class="line">45</div><div class="line">46</div><div class="line">47</div><div class="line">48</div><div class="line">49</div><div class="line">50</div><div class="line">51</div><div class="line">52</div><div class="line">53</div><div class="line">54</div><div class="line">55</div><div class="line">56</div><div class="line">57</div><div class="line">58</div><div class="line">59</div><div class="line">60</div><div class="line">61</div><div class="line">62</div><div class="line">63</div><div class="line">64</div><div class="line">65</div><div class="line">66</div><div class="line">67</div><div class="line">68</div><div class="line">69</div><div class="line">70</div><div class="line">71</div><div class="line">72</div><div class="line">73</div><div class="line">74</div><div class="line">75</div><div class="line">76</div><div class="line">77</div><div class="line">78</div><div class="line">79</div><div class="line">80</div><div class="line">81</div><div class="line">82</div><div class="line">83</div><div class="line">84</div><div class="line">85</div><div class="line">86</div><div class="line">87</div><div class="line">88</div><div class="line">89</div><div class="line">90</div><div class="line">91</div><div class="line">92</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">package</span> gods</div><div class="line"></div><div class="line"><span class="keyword">import</span> (</div><div class="line">	<span class="string">"sync"</span></div><div class="line">	<span class="string">"testing"</span></div><div class="line">)</div><div class="line"></div><div class="line"><span class="keyword">func</span> BenchmarkPoolDequeue(b *testing.B) {</div><div class="line">	<span class="keyword">const</span> size =<span class="number"> 1024</span></div><div class="line">	pd := NewPoolDequeue(size)</div><div class="line">	<span class="keyword">var</span> wg sync.WaitGroup</div><div class="line"></div><div class="line">	<span class="comment">// Producer</span></div><div class="line">	<span class="keyword">go</span> <span class="keyword">func</span>() {</div><div class="line">		<span class="keyword">for</span> i :=<span class="number"> 0</span>; i &lt; b.N; i++ {</div><div class="line">			pd.PushHead(i)</div><div class="line">		}</div><div class="line">		wg.Done()</div><div class="line">	}()</div><div class="line"></div><div class="line">	<span class="comment">// Consumers</span></div><div class="line">	numConsumers :=<span class="number"> 10</span></div><div class="line">	wg.Add(numConsumers +<span class="number"> 1</span>)</div><div class="line">	<span class="keyword">for</span> i :=<span class="number"> 0</span>; i &lt; numConsumers; i++ {</div><div class="line">		<span class="keyword">go</span> <span class="keyword">func</span>() {</div><div class="line">			<span class="keyword">for</span> {</div><div class="line">				<span class="keyword">if</span> _, ok := pd.PopTail(); !ok {</div><div class="line">					<span class="keyword">break</span></div><div class="line">				}</div><div class="line">			}</div><div class="line">			wg.Done()</div><div class="line">		}()</div><div class="line">	}</div><div class="line"></div><div class="line">	wg.Wait()</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> BenchmarkPoolChain(b *testing.B) {</div><div class="line">	pc := NewPoolChain()</div><div class="line">	<span class="keyword">var</span> wg sync.WaitGroup</div><div class="line"></div><div class="line">	<span class="comment">// Producer</span></div><div class="line">	<span class="keyword">go</span> <span class="keyword">func</span>() {</div><div class="line">		<span class="keyword">for</span> i :=<span class="number"> 0</span>; i &lt; b.N; i++ {</div><div class="line">			pc.PushHead(i)</div><div class="line">		}</div><div class="line">		wg.Done()</div><div class="line">	}()</div><div class="line"></div><div class="line">	<span class="comment">// Consumers</span></div><div class="line">	numConsumers :=<span class="number"> 10</span></div><div class="line">	wg.Add(numConsumers +<span class="number"> 1</span>)</div><div class="line">	<span class="keyword">for</span> i :=<span class="number"> 0</span>; i &lt; numConsumers; i++ {</div><div class="line">		<span class="keyword">go</span> <span class="keyword">func</span>() {</div><div class="line">			<span class="keyword">for</span> {</div><div class="line">				<span class="keyword">if</span> _, ok := pc.PopTail(); !ok {</div><div class="line">					<span class="keyword">break</span></div><div class="line">				}</div><div class="line">			}</div><div class="line">			wg.Done()</div><div class="line">		}()</div><div class="line">	}</div><div class="line"></div><div class="line">	wg.Wait()</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> BenchmarkChannel(b *testing.B) {</div><div class="line">	ch := <span class="built_in">make</span>(<span class="keyword">chan</span> <span class="keyword">interface</span>{},<span class="number"> 1024</span>)</div><div class="line">	<span class="keyword">var</span> wg sync.WaitGroup</div><div class="line"></div><div class="line">	<span class="comment">// Producer</span></div><div class="line">	<span class="keyword">go</span> <span class="keyword">func</span>() {</div><div class="line">		<span class="keyword">for</span> i :=<span class="number"> 0</span>; i &lt; b.N; i++ {</div><div class="line">			ch &lt;- i</div><div class="line">		}</div><div class="line">		<span class="built_in">close</span>(ch)</div><div class="line">		wg.Done()</div><div class="line">	}()</div><div class="line"></div><div class="line">	<span class="comment">// Consumers</span></div><div class="line">	numConsumers :=<span class="number"> 10</span></div><div class="line">	wg.Add(numConsumers +<span class="number"> 1</span>)</div><div class="line">	<span class="keyword">for</span> i :=<span class="number"> 0</span>; i &lt; numConsumers; i++ {</div><div class="line">		<span class="keyword">go</span> <span class="keyword">func</span>() {</div><div class="line">			<span class="keyword">for</span> <span class="keyword">range</span> ch {</div><div class="line">			}</div><div class="line">			wg.Done()</div><div class="line">		}()</div><div class="line">	}</div><div class="line"></div><div class="line">	wg.Wait()</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>运行这个benchmark,我们可以看到<code>poolDequeue</code>和<code>PoolChain</code>的性能要比<code>channel</code>高很多，大约是<code>channel</code>的10倍。<br><code>poolDequeue</code> 比 <code>PoolChain</code> 要好一些，性能是后者的两倍。<br><img src="benchmark.png" alt=""></p>
+
+      
+    </div>
+    <footer class="article-footer">
+      
+
+      
+      <!-- <link rel="stylesheet" href="https://unpkg.com/gitalk/dist/gitalk.css">
+      <script src="https://unpkg.com/gitalk/dist/gitalk.min.js"></script> -->
+      <section id="comments">
+        <script src="https://utteranc.es/client.js"
+                repo="smallnest/gitalk"
+                issue-term="title"
+                theme="github-light"
+                crossorigin="anonymous"
+                async>
+        </script>
+        <!-- <div id="gitalk-container"></div>
+        <script type="text/javascript">
+          var gitalkOpts = {
+            id: '2024/10/20/go-internal-ds-spmc/',
+            owner: 'smallnest',
+            repo: 'gitalk',
+            title: 'Go中秘而不宣的数据结构 spmc, 10倍性能于 channel',
+            body: 'https://colobu.com/2024/10/20/go-internal-ds-spmc/',
+            clientID: 'bc02724130ed5b7ee275',
+            clientSecret: '68cb0bae2f93a8b88b09e0eb9b08c844b06a9047',
+            admin: ['smallnest'],
+            distractionFreeMode: false
+          };
+
+          const gitalk = new Gitalk(gitalkOpts)
+          gitalk.render('gitalk-container')
+        </script> -->
+        <noscript> 为正常使用评论功能请激活JavaScript</noscript>
+      </section>
+
+      
+
+    </footer>
+  </div>
+  
+  
+<nav id="article-nav">
+  
+    <a href="../go-internal-ds-runq" id="article-nav-newer" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">Newer</strong>
+      <div class="article-nav-title">
+        
+          Go中秘而不宣的数据结构 runq, 难怪运行时调度那么好
+        
+      </div>
+    </a>
+  
+  
+    <a href="../../../08/28/rust-async-sync" id="article-nav-older" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">Older</strong>
+      <div class="article-nav-title">在 Rust 中同时支持异步和同步代码</div>
+    </a>
+  
+</nav>
+
+  
+</article></section>
+        
+          <aside id="sidebar">
+  
+    <div class="widget-wrap">
+  <h3 class="widget-title">访问者来源</h3>
+  <div class="widget">
+    <script type="text/javascript" id="clstr_globe" src="//clustrmaps.com/globe.js?d=Hf4EJSi2XvL6TMcuFSH51Qn6nf5nZ8qnjVBnWCQ4FGc"></script>
+  </div>
+</div>
+
+<div class="widget-wrap">
+  <h3 class="widget-title">微信公众号</h3>
+  <div class="widget">
+    <img width="100%" src="/images/widgets/gopatterns.jpg">
+  </div>
+</div>
+
+<div class="widget-wrap">
+  <h3 class="widget-title">极客时间专栏</h3>
+  <div class="widget">
+    <a href="https://time.geekbang.org/column/intro/100061801">
+      <img width="100%" src="/images/widgets/geekbang.png">
+    </a>
+  </div>
+</div>
+
+<div class="widget-wrap">
+    <h3 class="widget-title">出版图书</h3>
+    <div class="widget">
+      <a href="https://cpgo.colobu.com/">
+        <img width="100%" src="/cpgolang/cpgo.png">
+      </a>
+    </div>
+    <div class="widget">
+      <a href="https://www.books.com.tw/products/0010991366">
+        <img width="100%" src="/cpgolang/cpgo2.jpg">
+      </a>
+    </div>
+    <div class="widget">
+      <a href="https://item.jd.com/14347716.html">
+        <img width="100%" src="/100gomistakes/cover.png">
+      </a>
+    </div>
+    <div class="widget">
+      <a href="/ScalaCollectionsCookbook/">
+        <img width="100%" src="/ScalaCollectionsCookbook/scala_collections_cookbook.jpg">
+        <img width="100%" src="/ScalaCollectionsCookbook/scala_collections_cookbook_tw.png">
+      </a>
+    </div>
+</div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">分类</h3>
+    <div class="widget">
+      <ul class="category-list"><li class="category-list-item"><a class="category-list-link" href="../../../../categories/Android">Android</a><span class="category-list-count">12</span></li><li class="category-list-item"><a class="category-list-link" href="../../../../categories/C">C++</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="../../../../categories/DOTNET">DOTNET</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="../../../../categories/Docker">Docker</a><span class="category-list-count">5</span></li><li class="category-list-item"><a class="category-list-link" href="../../../../categories/Go">Go</a><span class="category-list-count">301</span></li><li class="category-list-item"><a class="category-list-link" href="../../../../categories/Java">Java</a><span class="category-list-count">64</span></li><li class="category-list-item"><a class="category-list-link" href="../../../../categories/Linux">Linux</a><span class="category-list-count">8</span></li><li class="category-list-item"><a class="category-list-link" href="../../../../categories/Rust">Rust</a><span class="category-list-count">16</span></li><li class="category-list-item"><a class="category-list-link" href="../../../../categories/Scala">Scala</a><span class="category-list-count">18</span></li><li class="category-list-item"><a class="category-list-link" href="../../../../categories/go">go</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="../../../../categories/k8s">k8s</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="../../../../categories/rust">rust</a><span class="category-list-count">10</span></li><li class="category-list-item"><a class="category-list-link" href="../../../../categories/分享">分享</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="../../../../categories/前端开发">前端开发</a><span class="category-list-count">18</span></li><li class="category-list-item"><a class="category-list-link" href="../../../../categories/区块链">区块链</a><span class="category-list-count">8</span></li><li class="category-list-item"><a class="category-list-link" href="../../../../categories/大数据">大数据</a><span class="category-list-count">60</span></li><li class="category-list-item"><a class="category-list-link" href="../../../../categories/工具">工具</a><span class="category-list-count">28</span></li><li class="category-list-item"><a class="category-list-link" href="../../../../categories/数据库">数据库</a><span class="category-list-count">3</span></li><li class="category-list-item"><a class="category-list-link" href="../../../../categories/架构">架构</a><span class="category-list-count">27</span></li><li class="category-list-item"><a class="category-list-link" href="../../../../categories/算法">算法</a><span class="category-list-count">4</span></li><li class="category-list-item"><a class="category-list-link" href="../../../../categories/管理">管理</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="../../../../categories/网络编程">网络编程</a><span class="category-list-count">13</span></li><li class="category-list-item"><a class="category-list-link" href="../../../../categories/设计模式">设计模式</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="../../../../categories/读书笔记">读书笔记</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="../../../../categories/运维">运维</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="../../../../categories/高并发编程">高并发编程</a><span class="category-list-count">20</span></li></ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">标签云</h3>
+    <div class="widget tagcloud">
+      <a href="../../../../tags/Android" style="font-size: 15.00px;">Android</a><a href="../../../../tags/ApacheBench" style="font-size: 11.25px;">ApacheBench</a><a href="../../../../tags/Bower" style="font-size: 10.00px;">Bower</a><a href="../../../../tags/C" style="font-size: 10.00px;">C#</a><a href="../../../../tags/CDN" style="font-size: 10.00px;">CDN</a><a href="../../../../tags/CQRS" style="font-size: 10.00px;">CQRS</a><a href="../../../../tags/CRC" style="font-size: 10.00px;">CRC</a><a href="../../../../tags/CSS" style="font-size: 11.25px;">CSS</a><a href="../../../../tags/CompletableFuture" style="font-size: 10.00px;">CompletableFuture</a><a href="../../../../tags/Comsat" style="font-size: 10.00px;">Comsat</a><a href="../../../../tags/Curator" style="font-size: 18.75px;">Curator</a><a href="../../../../tags/DSL" style="font-size: 10.00px;">DSL</a><a href="../../../../tags/Disruptor" style="font-size: 10.00px;">Disruptor</a><a href="../../../../tags/Docker" style="font-size: 11.25px;">Docker</a><a href="../../../../tags/Ember" style="font-size: 11.25px;">Ember</a><a href="../../../../tags/FastJson" style="font-size: 10.00px;">FastJson</a><a href="../../../../tags/Fiber" style="font-size: 10.00px;">Fiber</a><a href="../../../../tags/GAE" style="font-size: 10.00px;">GAE</a><a href="../../../../tags/GC" style="font-size: 12.50px;">GC</a><a href="../../../../tags/Gnuplot" style="font-size: 10.00px;">Gnuplot</a><a href="../../../../tags/Go" style="font-size: 16.25px;">Go</a><a href="../../../../tags/Gradle" style="font-size: 10.00px;">Gradle</a><a href="../../../../tags/Grunt" style="font-size: 10.00px;">Grunt</a><a href="../../../../tags/Gulp" style="font-size: 10.00px;">Gulp</a><a href="../../../../tags/Hadoop" style="font-size: 10.00px;">Hadoop</a><a href="../../../../tags/Hazelcast" style="font-size: 10.00px;">Hazelcast</a><a href="../../../../tags/IPFS" style="font-size: 10.00px;">IPFS</a><a href="../../../../tags/Ignite" style="font-size: 10.00px;">Ignite</a><a href="../../../../tags/JVM" style="font-size: 10.00px;">JVM</a><a href="../../../../tags/Java" style="font-size: 17.50px;">Java</a><a href="../../../../tags/Kafka" style="font-size: 20.00px;">Kafka</a><a href="../../../../tags/Lambda" style="font-size: 13.75px;">Lambda</a><a href="../../../../tags/Linux" style="font-size: 12.50px;">Linux</a><a href="../../../../tags/LongAdder" style="font-size: 10.00px;">LongAdder</a><a href="../../../../tags/MathJax" style="font-size: 10.00px;">MathJax</a><a href="../../../../tags/Maven" style="font-size: 11.25px;">Maven</a><a href="../../../../tags/Memcached" style="font-size: 10.00px;">Memcached</a><a href="../../../../tags/Metrics" style="font-size: 10.00px;">Metrics</a><a href="../../../../tags/Mongo" style="font-size: 12.50px;">Mongo</a><a href="../../../../tags/Netty" style="font-size: 15.00px;">Netty</a>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">归档</h3>
+    <div class="widget">
+      <ul class="archive-list"><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2025/02">February 2025</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2025/01">January 2025</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2024/11">November 2024</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2024/10">October 2024</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2024/08">August 2024</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2024/06">June 2024</a><span class="archive-list-count">11</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2024/05">May 2024</a><span class="archive-list-count">9</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2024/04">April 2024</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2024/03">March 2024</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2024/02">February 2024</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2024/01">January 2024</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2023/12">December 2023</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2023/11">November 2023</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2023/10">October 2023</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2023/09">September 2023</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2023/08">August 2023</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2023/07">July 2023</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2023/06">June 2023</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2023/05">May 2023</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2023/04">April 2023</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2023/03">March 2023</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2023/01">January 2023</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2022/12">December 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2022/11">November 2022</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2022/10">October 2022</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2022/09">September 2022</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2022/08">August 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2022/07">July 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2022/06">June 2022</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2022/05">May 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2022/04">April 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2022/03">March 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2022/02">February 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2022/01">January 2022</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2021/12">December 2021</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2021/11">November 2021</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2021/10">October 2021</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2021/08">August 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2021/07">July 2021</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2021/06">June 2021</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2021/05">May 2021</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2021/04">April 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2021/03">March 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2021/02">February 2021</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2021/01">January 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2020/12">December 2020</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2020/11">November 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2020/09">September 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2020/08">August 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2020/07">July 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2020/06">June 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2020/05">May 2020</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2020/04">April 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2020/03">March 2020</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2020/02">February 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2020/01">January 2020</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2019/12">December 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2019/11">November 2019</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2019/10">October 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2019/09">September 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2019/08">August 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2019/07">July 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2019/06">June 2019</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2019/05">May 2019</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2019/04">April 2019</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2019/03">March 2019</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2019/02">February 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2019/01">January 2019</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2018/12">December 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2018/11">November 2018</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2018/10">October 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2018/09">September 2018</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2018/08">August 2018</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2018/07">July 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2018/06">June 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2018/05">May 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2018/04">April 2018</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2018/03">March 2018</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2018/02">February 2018</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2018/01">January 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2017/12">December 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2017/11">November 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2017/10">October 2017</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2017/09">September 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2017/08">August 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2017/07">July 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2017/06">June 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2017/05">May 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2017/04">April 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2017/03">March 2017</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2017/02">February 2017</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2017/01">January 2017</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2016/12">December 2016</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2016/11">November 2016</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2016/10">October 2016</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2016/09">September 2016</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2016/08">August 2016</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2016/07">July 2016</a><span class="archive-list-count">11</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2016/06">June 2016</a><span class="archive-list-count">14</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2016/05">May 2016</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2016/04">April 2016</a><span class="archive-list-count">14</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2016/03">March 2016</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2016/02">February 2016</a><span class="archive-list-count">8</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2016/01">January 2016</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2015/12">December 2015</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2015/11">November 2015</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2015/10">October 2015</a><span class="archive-list-count">9</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2015/09">September 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2015/08">August 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2015/07">July 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2015/06">June 2015</a><span class="archive-list-count">8</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2015/05">May 2015</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2015/04">April 2015</a><span class="archive-list-count">15</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2015/03">March 2015</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2015/02">February 2015</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2015/01">January 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2014/12">December 2014</a><span class="archive-list-count">28</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2014/11">November 2014</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2014/10">October 2014</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2014/09">September 2014</a><span class="archive-list-count">28</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2014/08">August 2014</a><span class="archive-list-count">19</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2014/07">July 2014</a><span class="archive-list-count">1</span></li></ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">近期文章</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+            <a href="../../../../2025/02/01/the-state-of-simd-in-go">啥时候等到Go官方支持SIMD?</a>
+          </li>
+        
+          <li>
+            <a href="../../../../2025/01/31/scan-clickhouse-service">DeepSeek数据库暴露？扫描一下，应该不止此一家吧!</a>
+          </li>
+        
+          <li>
+            <a href="../../../../2025/01/30/some-notes-about-go-io-fs-package">趁着假期， 快速了解 Go io/fs 包</a>
+          </li>
+        
+          <li>
+            <a href="../../../../2025/01/27/how-long-to-scan-all-IPs-of-cn">扫描全国的公网IP需要多久？</a>
+          </li>
+        
+          <li>
+            <a href="../../../11/18/go-internal-ds-4-ary-heap">Go中秘而不宣的数据结构: 四叉堆，不是普通的二叉堆</a>
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">友情链接</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+			 
+            <a href="http://stackshare.io" target="_blank">技术栈</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://toutiao.io/" target="_blank">开发者头条</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://weekly.manong.io/issues/" target="_blank">码农周刊</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.tuicool.com/mags" target="_blank">编程狂人周刊</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.importnew.com/" target="_blank">importnew</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://ifeve.com/" target="_blank">并发编程网</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://github.com" target="_blank">github</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://stackoverflow.com/" target="_blank">stackoverflow</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.javacodegeeks.com/" target="_blank">javacodegeeks</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.infoq.com/" target="_blank">infoq</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.dzone.com/links/index.html" target="_blank">dzone</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://oj.leetcode.com/problems/" target="_blank">leetcode</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://tutorials.jenkov.com" target="_blank">jenkov</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://howtodoinjava.com" target="_blank">HowToDoInJava</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://java-design-patterns.com/patterns/" target="_blank">java design patterns</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://medium.com/netflix-techblog" target="_blank">Netflix技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://www.techiedelight.com" target="_blank">Techie Delight</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://engineering.linkedin.com/blog" target="_blank">Linkedin技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://blogs.dropbox.com/tech/" target="_blank">Dropbox技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://code.fb.com" target="_blank">Facebook技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://jm.taobao.org" target="_blank">淘宝中间件团队</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://tech.meituan.com" target="_blank">美团技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://blogs.360.cn" target="_blank">360技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://xiaomi-info.github.io" target="_blank">小米信息部技术团队</a>
+			
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+      
+
+  
+</aside>
+        
+      </div>
+      <footer id="footer">
+  
+  <div class="outer">
+    <div id="footer-info" class="inner">
+      &copy; 2025 smallnest<br>
+	  Powered by <a href="http://hexo.io/" target="_blank">Hexo</a>
+    </div>
+  </div>
+</footer>
+    </div>
+    <nav id="mobile-nav">
+  
+    
+      <a href="../../../.." class="mobile-nav-link"><i class="fa fa-home">&nbsp;</i>首页</a>
+    
+  
+    
+      <a href="../../../../archives" class="mobile-nav-link"><i class="fa fa-regular fa-folder-open">&nbsp;</i>归档</a>
+    
+  
+    
+      <a href="https://github.com/smallnest" class="mobile-nav-link"><i class="fa fa-brands fa-github-alt">&nbsp;</i>github</a>
+    
+  
+    
+      <a class="mobile-nav-link" href="#"><i class="fa fa-brands fa-golang">&nbsp;</i>Go学习资源</a>
+    
+      
+            <a class="mobile-nav-link" href="/goasm">&nbsp;&nbsp;<i class="fa fa-brands fa-golang">&nbsp;</i>Go汇编示例</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="https://gowebexamples.com">&nbsp;&nbsp;<i class="fa fa-brands fa-golang">&nbsp;</i>Go Web开发示例</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://go-database-sql.org">&nbsp;&nbsp;<i class="fa fa-brands fa-golang">&nbsp;</i>Go 数据库开发教程</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="https://colobu.com/gotips/">&nbsp;&nbsp;<i class="fa fa-brands fa-golang">&nbsp;</i>Go 语言编程技巧</a>
+          
+          
+    
+      
+            
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://rpcx.io">&nbsp;&nbsp;<i class="fa undefined">&nbsp;</i>RPCX官网</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://cn.doc.rpcx.io">&nbsp;&nbsp;<i class="fa undefined">&nbsp;</i>RPC开发指南</a>
+          
+          
+    
+    
+  
+    
+      <a class="mobile-nav-link" href="#"><i class="fa fa-brands fa-rust">&nbsp;</i>Rust学习资源</a>
+    
+      
+            <a class="mobile-nav-link" href="/perf-book">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>Rust高性能编程指南</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/rust100">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>100个练习题学习Rust</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/atomics">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>Rust原子操作和锁</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/effective-rust">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>高效Rust编程</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/thebook">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>Rust程序设计语言</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/nomicon">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>Rust死灵书</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/rust-reference">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>Rust参考手册</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/tlborm">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>Rust宏小册</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/async-book">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>Rust异步编程书</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/rust-by-example">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>通过例子学Rust</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/api-guidelines">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>Rust API 编写指南</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/comprehensive-rust">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>全面Rust课程</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/easy-rust">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>简单英语学Rust</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/rust-patterns">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>Rust设计模式</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/2020/03/05/A-half-hour-to-learn-Rust/">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>半小时学会Rust</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/rust-cookbook">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>Rust实用指南(cookbook)</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/rust-rand">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>Rust随机库</a>
+          
+          
+    
+      
+            
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="https://rpcx.io/r/E6v8U">&nbsp;&nbsp;<i class="fa undefined">&nbsp;</i>Rust for the Polyglot Programmer</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="https://rpcx.io/r/oC5ii">&nbsp;&nbsp;<i class="fa undefined">&nbsp;</i>LifetimeKata</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="https://tfpk.github.io/macrokata/">&nbsp;&nbsp;<i class="fa undefined">&nbsp;</i>macrokata</a>
+          
+          
+    
+    
+  
+    
+      <a class="mobile-nav-link" href="#"><i class="fa undefined">&nbsp;</i>出版书籍</a>
+    
+      
+            <a class="mobile-nav-link" href="/ScalaCollectionsCookbook">&nbsp;&nbsp;<i class="fa undefined">&nbsp;</i>Scala集合技术手册（简/繁）</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="https://cpgo.colobu.com/">&nbsp;&nbsp;<i class="fa undefined">&nbsp;</i>深入理解Go并发编程（简/繁）</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="https://item.jd.com/14347716.html">&nbsp;&nbsp;<i class="fa undefined">&nbsp;</i>100个Go语言典型错误</a>
+          
+          
+    
+    
+  
+    
+      <a href="../../../../ScalaCollectionsCookbook" class="mobile-nav-link"><i class="fa fa-solid fa-book">&nbsp;</i>Scala集合技术手册</a>
+    
+  
+    
+      <a href="../../../../about" class="mobile-nav-link"><i class="fa fa-regular fa-address-card">&nbsp;</i>关于</a>
+    
+  
+</nav>
+    
+<script src="//cdn.staticfile.org/jquery/1.11.1/jquery.min.js"></script>
+<script src="//cdn.bootcss.com/jquery.lazyload/1.9.1/jquery.lazyload.min.js"></script>
+
+<script src="//cdnjs.cloudflare.com/ajax/libs/fancybox/3.2.5/jquery.fancybox.min.js"></script>
+
+
+<script src="../../../../js/script.js" type="text/javascript"></script>
+
+<!-- mathjax config similar to math.stackexchange -->
+<script type="text/x-mathjax-config">
+  MathJax.Hub.Config({
+    tex2jax: {
+      inlineMath: [ ['$','$'], ["\\(","\\)"] ],
+      processEscapes: true,
+      skipTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code']
+    }
+  });
+  MathJax.Hub.Queue(function() {
+      var all = MathJax.Hub.getAllJax(), i;
+      for(i=0; i < all.length; i += 1) {
+        all[i].SourceElement().parentNode.className += ' has-jax';
+      }
+  });
+</script>
+<script type="text/javascript" src="//cdn.bootcss.com/mathjax/2.6.0-beta.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML">
+</script>
+
+<div id="totop" style="position:fixed;bottom:150px;right:10px;cursor: pointer;z-index: 2000;">
+	<a title="返回顶部"><img src="/images/scrollup.png"/></a>
+</div>
+<script src="../../../../js/totop.js" type="text/javascript"></script>
+
+
+
+
+<script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "//hm.baidu.com/hm.js?e085d87993250aab11f3e0c15f1c2785";
+  var s = document.getElementsByTagName("script")[0]; 
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+
+
+  </div>
+</body>
+</html>

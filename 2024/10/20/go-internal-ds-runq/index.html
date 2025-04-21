@@ -1,0 +1,1011 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset="utf-8">
+  
+  <title>Go中秘而不宣的数据结构 runq, 难怪运行时调度那么好</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+  <meta name="description" content="首先，让我们先来回顾 Go 运行时的 GPM 模型。这方面的介绍网上的资料都非常非常多了，但是我们也不妨回顾一下：
+
+GPM模型中的G代表goroutine。每个goroutine只占用几KB的内存,可以轻松创建成千上万个。G包含了goroutine的栈、指令指针和其他信息,如阻塞channel的等待队列等。
+P代表processor,可以理解为一个抽象的CPU核心。P的数量默认等于实际的CPU核">
+<meta property="og:type" content="article">
+<meta property="og:title" content="Go中秘而不宣的数据结构 runq, 难怪运行时调度那么好">
+<meta property="og:url" content="https://colobu.com/2024/10/20/go-internal-ds-runq/">
+<meta property="og:site_name" content="鸟窝">
+<meta property="og:description" content="首先，让我们先来回顾 Go 运行时的 GPM 模型。这方面的介绍网上的资料都非常非常多了，但是我们也不妨回顾一下：
+
+GPM模型中的G代表goroutine。每个goroutine只占用几KB的内存,可以轻松创建成千上万个。G包含了goroutine的栈、指令指针和其他信息,如阻塞channel的等待队列等。
+P代表processor,可以理解为一个抽象的CPU核心。P的数量默认等于实际的CPU核">
+<meta property="og:image" content="gpm.png">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="Go中秘而不宣的数据结构 runq, 难怪运行时调度那么好">
+<meta name="twitter:description" content="首先，让我们先来回顾 Go 运行时的 GPM 模型。这方面的介绍网上的资料都非常非常多了，但是我们也不妨回顾一下：
+
+GPM模型中的G代表goroutine。每个goroutine只占用几KB的内存,可以轻松创建成千上万个。G包含了goroutine的栈、指令指针和其他信息,如阻塞channel的等待队列等。
+P代表processor,可以理解为一个抽象的CPU核心。P的数量默认等于实际的CPU核">
+
+  
+  <link rel="alternative" href="/atom.xml" title="鸟窝" type="application/atom+xml">
+  
+  
+  <link rel="icon" href="/favicon.png">
+  
+  <link rel="stylesheet" href="../../../../css/style.css" type="text/css">
+
+  <link href="//cdn.bootcdn.net/ajax/libs/font-awesome/6.6.0/css/all.min.css" rel="stylesheet">
+  
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/fancybox/2.1.7/css/jquery.fancybox.min.css"
+    media="screen" type="text/css">
+  
+  <link rel="stylesheet" href="//cdnjs.cloudflare.com/ajax/libs/animate.css/3.1.1/animate.min.css" media="screen"
+    type="text/css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/tonsky/FiraCode@1.207/distr/fira_code.css">
+</head>
+<body>
+  <div id="container">
+    <div id="wrap">
+      <header id="header">
+  <div id="banner"></div>
+  <div id="header-outer" class="outer">
+    <div id="header-title" class="inner">
+      <h1 id="logo-wrap" class="animated bounceInLeft">
+        <a href="../../../.." id="logo">鸟窝</a>
+      </h1>
+      
+        <!-- <h2 id="subtitle-wrap" class="animated bounceInLeft"> -->
+        <h2 id="subtitle-wrap">
+          <!-- <a href="../../../.." id="subtitle">大道至简 Simplicity is the ultimate form of sophistication</a> -->
+          <a href="https://item.jd.com/14283252.html" target="_blank" style="color: #e32d40;text-decoration: none;"><b>《Go語言全功能開發養成書》繁体中文版发售。一书在手，并发无忧</b></a>
+        </h2>
+      
+    </div>
+    <div id="header-inner" class="inner">
+      <nav id="main-nav">
+        <a id="main-nav-toggle" class="nav-icon"></a>
+        
+          
+            <a class="main-nav-link" href="../../../.."><i class="fa fa-home">&nbsp;</i>首页</a>
+          
+          
+          
+            <a class="main-nav-link" href="../../../../archives"><i class="fa fa-regular fa-folder-open">&nbsp;</i>归档</a>
+          
+          
+          
+            <a class="main-nav-link" href="https://github.com/smallnest"><i class="fa fa-brands fa-github-alt">&nbsp;</i>github</a>
+          
+          
+          
+            <div class="dropdown main-nav-link"><a class="main-nav-link" href="#"><i class="fa fa-brands fa-golang">&nbsp;</i>Go学习资源</a>
+              <div class="dropdown-content">
+          
+            
+              <a href="/goasm"><i class="fa fa-brands fa-golang"></i>&nbsp;Go汇编示例</a>
+            
+                
+          
+            
+              <a href="https://gowebexamples.com"><i class="fa fa-brands fa-golang"></i>&nbsp;Go Web开发示例</a>
+            
+                
+          
+            
+              <a href="http://go-database-sql.org"><i class="fa fa-brands fa-golang"></i>&nbsp;Go 数据库开发教程</a>
+            
+                
+          
+            
+              <a href="https://colobu.com/gotips/"><i class="fa fa-brands fa-golang"></i>&nbsp;Go 语言编程技巧</a>
+            
+                
+          
+            
+              <hr>
+            
+                
+          
+            
+              <a href="http://rpcx.io"><i class="fa undefined"></i>&nbsp;RPCX官网</a>
+            
+                
+          
+            
+              <a href="http://cn.doc.rpcx.io"><i class="fa undefined"></i>&nbsp;RPC开发指南</a>
+            
+                
+          
+          </div>
+        </div>
+          
+          
+          
+            <div class="dropdown main-nav-link"><a class="main-nav-link" href="#"><i class="fa fa-brands fa-rust">&nbsp;</i>Rust学习资源</a>
+              <div class="dropdown-content">
+          
+            
+              <a href="/perf-book"><i class="fa fa-brands fa-rust"></i>&nbsp;Rust高性能编程指南</a>
+            
+                
+          
+            
+              <a href="/rust100"><i class="fa fa-brands fa-rust"></i>&nbsp;100个练习题学习Rust</a>
+            
+                
+          
+            
+              <a href="/atomics"><i class="fa fa-brands fa-rust"></i>&nbsp;Rust原子操作和锁</a>
+            
+                
+          
+            
+              <a href="/effective-rust"><i class="fa fa-brands fa-rust"></i>&nbsp;高效Rust编程</a>
+            
+                
+          
+            
+              <a href="/thebook"><i class="fa fa-brands fa-rust"></i>&nbsp;Rust程序设计语言</a>
+            
+                
+          
+            
+              <a href="/nomicon"><i class="fa fa-brands fa-rust"></i>&nbsp;Rust死灵书</a>
+            
+                
+          
+            
+              <a href="/rust-reference"><i class="fa fa-brands fa-rust"></i>&nbsp;Rust参考手册</a>
+            
+                
+          
+            
+              <a href="/tlborm"><i class="fa fa-brands fa-rust"></i>&nbsp;Rust宏小册</a>
+            
+                
+          
+            
+              <a href="/async-book"><i class="fa fa-brands fa-rust"></i>&nbsp;Rust异步编程书</a>
+            
+                
+          
+            
+              <a href="/rust-by-example"><i class="fa fa-brands fa-rust"></i>&nbsp;通过例子学Rust</a>
+            
+                
+          
+            
+              <a href="/api-guidelines"><i class="fa fa-brands fa-rust"></i>&nbsp;Rust API 编写指南</a>
+            
+                
+          
+            
+              <a href="/comprehensive-rust"><i class="fa fa-brands fa-rust"></i>&nbsp;全面Rust课程</a>
+            
+                
+          
+            
+              <a href="/easy-rust"><i class="fa fa-brands fa-rust"></i>&nbsp;简单英语学Rust</a>
+            
+                
+          
+            
+              <a href="/rust-patterns"><i class="fa fa-brands fa-rust"></i>&nbsp;Rust设计模式</a>
+            
+                
+          
+            
+              <a href="/2020/03/05/A-half-hour-to-learn-Rust/"><i class="fa fa-brands fa-rust"></i>&nbsp;半小时学会Rust</a>
+            
+                
+          
+            
+              <a href="/rust-cookbook"><i class="fa fa-brands fa-rust"></i>&nbsp;Rust实用指南(cookbook)</a>
+            
+                
+          
+            
+              <a href="/rust-rand"><i class="fa fa-brands fa-rust"></i>&nbsp;Rust随机库</a>
+            
+                
+          
+            
+              <hr>
+            
+                
+          
+            
+              <a href="https://rpcx.io/r/E6v8U"><i class="fa undefined"></i>&nbsp;Rust for the Polyglot Programmer</a>
+            
+                
+          
+            
+              <a href="https://rpcx.io/r/oC5ii"><i class="fa undefined"></i>&nbsp;LifetimeKata</a>
+            
+                
+          
+            
+              <a href="https://tfpk.github.io/macrokata/"><i class="fa undefined"></i>&nbsp;macrokata</a>
+            
+                
+          
+          </div>
+        </div>
+          
+          
+          
+            <div class="dropdown main-nav-link"><a class="main-nav-link" href="#"><i class="fa undefined">&nbsp;</i>出版书籍</a>
+              <div class="dropdown-content">
+          
+            
+              <a href="/ScalaCollectionsCookbook"><i class="fa undefined"></i>&nbsp;Scala集合技术手册（简/繁）</a>
+            
+                
+          
+            
+              <a href="https://cpgo.colobu.com/"><i class="fa undefined"></i>&nbsp;深入理解Go并发编程（简/繁）</a>
+            
+                
+          
+            
+              <a href="https://item.jd.com/14347716.html"><i class="fa undefined"></i>&nbsp;100个Go语言典型错误</a>
+            
+                
+          
+          </div>
+        </div>
+          
+          
+          
+            <a class="main-nav-link" href="../../../../ScalaCollectionsCookbook"><i class="fa fa-solid fa-book">&nbsp;</i>Scala集合技术手册</a>
+          
+          
+          
+            <a class="main-nav-link" href="../../../../about"><i class="fa fa-regular fa-address-card">&nbsp;</i>关于</a>
+          
+          
+
+
+      </nav>
+      <nav id="sub-nav">
+        
+          <a id="nav-rss-link" class="nav-icon" href="/atom.xml" title="RSS Feed"></a>
+        
+        <a id="nav-search-btn" class="nav-icon" title="Search"></a>
+      </nav>
+      <div id="search-form-wrap">
+        <form action="https://www.google.com/search" method="get" accept-charset="utf-8" class="search-form">
+          <input type="search" id="search-word" name="q" maxlength="20" class="search-form-input" placeholder="Search">
+          <input type=hidden name=ie value="utf-8">
+          <input type=hidden name=oe value="utf-8">
+          <input type=hidden name=hl value="zh-CN">
+          <input type="submit" id="search-submit" value="" class="search-form-submit">
+        </form>
+      </div>
+    </div>
+  </div>
+</header>
+      <div class="outer">
+        <section id="main"><article id="post-go-internal-ds-runq" class="article article-type-post" itemscope
+  itemprop="blogPost">
+  <div class="article-meta">
+    <a href="" class="article-date">
+  <time datetime="2024-10-20T04:17:47.000Z" itemprop="datePublished">2024年10月20日</time>
+</a>
+    
+  <div class="article-category">
+    <a class="article-category-link" href="../../../../categories/Go">Go</a>
+  </div>
+
+    
+  <div class="article-author"> by smallnest</div>
+
+  </div>
+  <div class="article-inner">
+    
+    
+    <header class="article-header">
+      
+  
+    <h1 class="article-title" itemprop="name">
+      Go中秘而不宣的数据结构 runq, 难怪运行时调度那么好
+	  
+    </h1>
+  
+
+    </header>
+    
+    <div class="article-entry" itemprop="articleBody">
+      
+      
+      
+      <script>function show_answer(btn, x) { if (btn.value === "显示答案") { btn.value = "隐藏答案" } else { btn.value = "显示答案" } var as = document.getElementById(x); if (as.style.display === "none") { as.style.display = "block" } else { as.style.display = "none" } }</script>
+      <p>首先，让我们先来回顾 Go 运行时的 GPM 模型。这方面的介绍网上的资料都非常非常多了，但是我们也不妨回顾一下：</p>
+<blockquote>
+<p>GPM模型中的G代表goroutine。每个goroutine只占用几KB的内存,可以轻松创建成千上万个。G包含了goroutine的栈、指令指针和其他信息,如阻塞channel的等待队列等。</p>
+<p>P代表processor,可以理解为一个抽象的CPU核心。P的数量默认等于实际的CPU核心数,但可以通过环境变量进行调整。P维护了一个本地的goroutine队列,还负责执行goroutine并管理与之关联的上下文信息。</p>
+<p>M代表machine,是操作系统线程。一个M必须绑定一个P才能执行goroutine。当一个M阻塞时,运行时会创建一个新的M或者复用一个空闲的M来保证P的数量总是等于GOMAXPROCS的值,从而充分利用CPU资源。</p>
+<p>在这个模型中,P扮演了承上启下的角色。它连接了G和M,实现了用户层级的goroutine到操作系统线程的映射。这种设计允许Go在用户空间进行调度,避免了频繁的系统调用,大大提高了并发效率。</p>
+<p>调度过程中,当一个goroutine被创建时,它会被放到P的本地队列或全局队列中。如果P的本地队列已满,一些goroutine会被放到全局队列。当P执行完当前的goroutine后,会优先从本地队列获取新的goroutine来执行。如果本地队列为空,P会尝试从全局队列或其他P的队列中偷取goroutine。</p>
+<p>这种工作窃取(work-stealing)算法确保了负载的动态平衡。当某个P的本地队列为空时,它可以从其他P的队列中窃取一半的goroutine,这有效地平衡了各个P之间的工作负载。</p>
+</blockquote>
+<a id="more"></a>
+<p><img src="gpm.png" alt=""></p>
+<p>Go 运行时这么做，主要还是减少 P 之间对获取 goroutine 之间的竞争。本地队列 runq 主要由持有它的 P 进行读写，只有在&quot;被偷&quot;的情况下，才可能有&quot;数据竞争&quot;的问题，而这种情况发生概率较少，所以它设计了一个高效的 <code>runq</code> 数据结构来应对这么场景。实际看起来和上面介绍的 PoolDequeue 有异曲同工之妙。</p>
+<blockquote>
+<p>本文还会介绍 global queue 等数据结构，但不是本文的重点。</p>
+</blockquote>
+<h2 id="runq">runq</h2>
+<p>在运行时中 <code>P</code> 是一个复杂的数据结构，下面列出了本文关注的它的几个字段:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div><div class="line">35</div><div class="line">36</div><div class="line">37</div><div class="line">38</div><div class="line">39</div><div class="line">40</div><div class="line">41</div><div class="line">42</div><div class="line">43</div></pre></td><td class="code"><pre><div class="line"><span class="comment">// 一个goroutine的指针</span></div><div class="line"><span class="keyword">type</span> guintptr <span class="typename">uintptr</span></div><div class="line"></div><div class="line"><span class="comment">//go:nosplit</span></div><div class="line"><span class="keyword">func</span> (gp guintptr) ptr() *g { <span class="keyword">return</span> (*g)(unsafe.Pointer(gp)) }</div><div class="line"></div><div class="line"><span class="comment">//go:nosplit</span></div><div class="line"><span class="keyword">func</span> (gp *guintptr) set(g *g) { *gp = guintptr(unsafe.Pointer(g)) }</div><div class="line"></div><div class="line"><span class="comment">//go:nosplit</span></div><div class="line"><span class="keyword">func</span> (gp *guintptr) cas(old, <span class="built_in">new</span> guintptr) <span class="typename">bool</span> {</div><div class="line">	<span class="keyword">return</span> atomic.Casuintptr((*<span class="typename">uintptr</span>)(unsafe.Pointer(gp)), <span class="typename">uintptr</span>(old), <span class="typename">uintptr</span>(<span class="built_in">new</span>))</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">type</span> p <span class="keyword">struct</span> {</div><div class="line">	id          <span class="typename">int32</span></div><div class="line">	status      <span class="typename">uint32</span> <span class="comment">// one of pidle/prunning/...</span></div><div class="line">	link        puintptr</div><div class="line">	schedtick   <span class="typename">uint32</span>     <span class="comment">// incremented on every scheduler call</span></div><div class="line">	syscalltick <span class="typename">uint32</span>     <span class="comment">// incremented on every system call</span></div><div class="line">	sysmontick  sysmontick <span class="comment">// last tick observed by sysmon</span></div><div class="line">	m           muintptr   <span class="comment">// back-link to associated m (nil if idle)</span></div><div class="line">	mcache      *mcache</div><div class="line">	pcache      pageCache</div><div class="line">	raceprocctx <span class="typename">uintptr</span></div><div class="line"></div><div class="line">	deferpool    []*_defer <span class="comment">// pool of available defer structs (see panic.go)</span></div><div class="line">	deferpoolbuf <span class="number">[32</span>]*_defer</div><div class="line"></div><div class="line">	<span class="comment">// Cache of goroutine ids, amortizes accesses to runtime·sched.goidgen.</span></div><div class="line">	goidcache    <span class="typename">uint64</span></div><div class="line">	goidcacheend <span class="typename">uint64</span></div><div class="line"></div><div class="line">	<span class="comment">// 本地运行的无锁循环队列</span></div><div class="line">	runqhead <span class="typename">uint32</span></div><div class="line">	runqtail <span class="typename">uint32</span></div><div class="line">	runq     <span class="number">[256</span>]guintptr</div><div class="line"></div><div class="line">	<span class="comment">// 如果非nil，是一个可优先运行的G</span></div><div class="line">	runnext guintptr</div><div class="line"></div><div class="line">	...</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p><code>runq</code> 是一个无锁循环队列，由数组实现，它的长度是 256，这个长度是固定的，不会动态调整。<code>runqhead</code> 和 <code>runqtail</code> 分别是队列的头和尾，<code>runqhead</code> 指向队列的头部，<code>runqtail</code> 指向队列的尾部。<br><code>runq</code> 数组的每个元素是一个 <code>guintptr</code> 类型，它是一个 <code>uintptr</code> 类型的别名，用来存储 <code>g</code> 的指针。</p>
+<p><code>runq</code> 的操作主要是 <code>runqput</code>、<code>runqputslow</code>、<code>runqputbatch</code>、<code>runqget</code>、<code>runqdrain</code>、<code>runqgrab</code>、<code>runqsteal</code>等方法。</p>
+<p>接下来我们捡重点的方法看一下它是怎么实现高效额度并发读写的.</p>
+<h3 id="runqput">runqput</h3>
+<p><code>runqput</code> 方法是向 <code>runq</code> 中添加一个 <code>g</code> 的方法，它是一个无锁的操作，不会阻塞。它的实现如下：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div><div class="line">35</div><div class="line">36</div><div class="line">37</div><div class="line">38</div><div class="line">39</div><div class="line">40</div><div class="line">41</div><div class="line">42</div><div class="line">43</div><div class="line">44</div><div class="line">45</div></pre></td><td class="code"><pre><div class="line"><span class="comment">// runqput 尝试将 g 放到本地可运行队列上。</span></div><div class="line"><span class="comment">// 如果 next 为 false，runqput 将 g 添加到可运行队列的尾部。</span></div><div class="line"><span class="comment">// 如果 next 为 true，runqput 将 g 放在 pp.runnext 位置。</span></div><div class="line"><span class="comment">// 如果可运行队列已满，runnext 将 g 放到全局队列上。</span></div><div class="line"><span class="comment">// 只能由拥有 P 的所有者执行。</span></div><div class="line"><span class="keyword">func</span> runqput(pp *p, gp *g, next <span class="typename">bool</span>) {</div><div class="line">	<span class="keyword">if</span> !haveSysmon && next {</div><div class="line">        <span class="comment">// 如果没有 sysmon，我们必须完全避免 runnext，否则会导致饥饿。</span></div><div class="line">		next = <span class="constant">false</span></div><div class="line">	}</div><div class="line">	<span class="keyword">if</span> randomizeScheduler && next && randn<span class="number">(2</span>) ==<span class="number"> 0</span> {</div><div class="line">        <span class="comment">// 如果随机调度器打开，我们有一半的机会避免运行 runnext</span></div><div class="line">		next = <span class="constant">false</span></div><div class="line">	}</div><div class="line"></div><div class="line">    <span class="comment">// 如果 next 为 true，优先处理 runnext</span></div><div class="line">    <span class="comment">// 将当前的goroutine放到 runnext 中, 如果原来runnext中有goroutine, 则将其放到runq中</span></div><div class="line">	<span class="keyword">if</span> next {</div><div class="line">	retryNext:</div><div class="line">		oldnext := pp.runnext</div><div class="line">		<span class="keyword">if</span> !pp.runnext.cas(oldnext, guintptr(unsafe.Pointer(gp))) {</div><div class="line">			<span class="keyword">goto</span> retryNext</div><div class="line">		}</div><div class="line">		<span class="keyword">if</span> oldnext ==<span class="number"> 0</span> {</div><div class="line">			<span class="keyword">return</span></div><div class="line">		}</div><div class="line">		<span class="comment">// Kick the old runnext out to the regular run queue.</span></div><div class="line">		gp = oldnext.ptr()</div><div class="line">	}</div><div class="line"></div><div class="line">    <span class="comment">// 重点来了，将goroutine放入runq中</span></div><div class="line">retry:</div><div class="line">	h := atomic.LoadAcq(&pp.runqhead) <span class="comment">// ①</span></div><div class="line">	t := pp.runqtail</div><div class="line">	<span class="keyword">if</span> t-h &lt; <span class="typename">uint32</span>(<span class="built_in">len</span>(pp.runq)) { <span class="comment">// ② 如果队列未满</span></div><div class="line">		pp.runq[t%<span class="typename">uint32</span>(<span class="built_in">len</span>(pp.runq))].set(gp) <span class="comment">// ③ 将goroutine放入队列</span></div><div class="line">		atomic.StoreRel(&pp.runqtail, t<span class="number">+1</span>) <span class="comment">// ④ 更新队尾</span></div><div class="line">		<span class="keyword">return</span></div><div class="line">	}</div><div class="line">	<span class="keyword">if</span> runqputslow(pp, gp, h, t) { <span class="comment">// ⑤ 如果队列满了，调用runqputslow 尝试将goroutine放入全局队列</span></div><div class="line">		<span class="keyword">return</span></div><div class="line">	}</div><div class="line">	<span class="comment">// 如果队列未满，上面的操作应该已经成功返回，否则重试</span></div><div class="line">	<span class="keyword">goto</span> retry</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p><code>runqput</code> 方法的实现非常简单，它首先判断是否需要优先处理 <code>runnext</code>，如果需要，就将 <code>g</code> 放到 <code>runnext</code> 中，然后再将 <code>g</code> 放到 <code>runq</code> 中。<br><code>runq</code> 的操作是无锁的，它通过 <code>atomic</code> 包提供的原子操作来实现。<br>这里使用的内部的更精细化的原子操作，这个也是我后面专门有一篇文章来讲解的。你现在大概把①、④ 理解为<code>Load</code>、<code>Store</code>操作即可。</p>
+<p>②、⑤ 分别处理本地队列未满和队列已满的情况，如果队列未满，就将 <code>g</code> 放到队列中，然后更新队尾；如果队列已满，就调用 <code>runqputslow</code> 方法，将 <code>g</code> 放到全局队列中。</p>
+<p>③ 处直接将 <code>g</code> 放到队列中，这是因为只有当前的 <code>P</code> 才能操作 <code>runq</code>，所以不会有并发问题。<br>同时我们也可以看到，我们总是往尾部插入, <code>t</code>总是一直增加的， 取余操作保证了循环队列的特性。</p>
+<p><code>runqputslow</code> 会把本地队列中的一半的 <code>g</code> 放到全局队列中，包括当前要放入的 <code>g</code>。一旦涉及到全局队列，就会有一定的竞争，Go运行时使用了一把锁来控制并发，所以 <code>runqputslow</code> 方法是一个慢路径，是性能的瓶颈点。</p>
+<h3 id="runqputbatch">runqputbatch</h3>
+<p><code>func runqputbatch(pp *p, q *gQueue, qsize int)</code> 是批量往本地队列中放入 <code>g</code> 的方法，比如它从其它 <code>P</code> 那里偷来一批 <code>g</code> ，需要放到本地队列中，就会调用这个方法。它的实现如下：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div></pre></td><td class="code"><pre><div class="line"><span class="comment">// runqputbatch 尝试将 q 上的所有 G 放到本地可运行队列上。</span></div><div class="line"><span class="comment">// 如果队列已满，它们将被放到全局队列上；在这种情况下，这将暂时获取调度器锁。</span></div><div class="line"><span class="comment">// 只能由拥有 P 的所有者执行。</span></div><div class="line"><span class="keyword">func</span> runqputbatch(pp *p, q *gQueue, qsize <span class="typename">int</span>) {</div><div class="line">	h := atomic.LoadAcq(&pp.runqhead) <span class="comment">// ①</span></div><div class="line">	t := pp.runqtail</div><div class="line">	n := <span class="typename">uint32</span><span class="number">(0</span>)</div><div class="line">	<span class="keyword">for</span> !q.empty() && t-h &lt; <span class="typename">uint32</span>(<span class="built_in">len</span>(pp.runq)) { <span class="comment">// ② 放入的批量goroutine非空， 并且本地队列还足以放入</span></div><div class="line">		gp := q.pop()</div><div class="line">		pp.runq[t%<span class="typename">uint32</span>(<span class="built_in">len</span>(pp.runq))].set(gp)</div><div class="line">		t++</div><div class="line">		n++</div><div class="line">	}</div><div class="line">	qsize -= <span class="typename">int</span>(n)</div><div class="line"></div><div class="line">	<span class="keyword">if</span> randomizeScheduler { <span class="comment">// ③ 随机调度器, 随机打乱</span></div><div class="line">		off := <span class="keyword">func</span>(o <span class="typename">uint32</span>) <span class="typename">uint32</span> {</div><div class="line">			<span class="keyword">return</span> (pp.runqtail + o) % <span class="typename">uint32</span>(<span class="built_in">len</span>(pp.runq))</div><div class="line">		}</div><div class="line">		<span class="keyword">for</span> i := <span class="typename">uint32</span><span class="number">(1</span>); i &lt; n; i++ {</div><div class="line">			j := cheaprandn(i +<span class="number"> 1</span>)</div><div class="line">			pp.runq[off(i)], pp.runq[off(j)] = pp.runq[off(j)], pp.runq[off(i)]</div><div class="line">		}</div><div class="line">	}</div><div class="line"></div><div class="line">	atomic.StoreRel(&pp.runqtail, t) <span class="comment">// ④ 更新队尾</span></div><div class="line">	<span class="keyword">if</span> !q.empty() {</div><div class="line">		lock(&sched.lock)</div><div class="line">		globrunqputbatch(q, <span class="typename">int32</span>(qsize))</div><div class="line">		unlock(&sched.lock)</div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>①获取队列头,使用原子操作获取队头。</p>
+<blockquote>
+<p>它下面一行是获取队尾的值，你可以思考下为什么不需要使用<code>atomic.LoadAcq</code>。</p>
+</blockquote>
+<p>② 逐个的将 <code>g</code> 放到队列中，直到放完或者放满。</p>
+<p>如果是随机调度器，则使用混淆算法将队列中的 <code>g</code> 随机打乱。</p>
+<p>最后如果队列还有剩余的 <code>g</code>，则调用 <code>globrunqputbatch</code> 方法，将剩余的 <code>g</code> 放到全局队列中。</p>
+<h3 id="runqget">runqget</h3>
+<p><code>runqget</code> 方法是从 <code>runq</code> 中获取一个 <code>g</code> 的方法，它是一个无锁的操作，不会阻塞。它的实现如下：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div></pre></td><td class="code"><pre><div class="line"><span class="comment">// runqget 从本地可运行队列中获取一个 G。</span></div><div class="line"><span class="comment">// 如果 inheritTime 为 true，gp 应该继承当前时间片的剩余时间。</span></div><div class="line"><span class="comment">// 否则，它应该开始一个新的时间片。</span></div><div class="line"><span class="comment">// 只能由拥有 P 的所有者执行。</span></div><div class="line"><span class="keyword">func</span> runqget(pp *p) (gp *g, inheritTime <span class="typename">bool</span>) {</div><div class="line">	next := pp.runnext</div><div class="line">    <span class="comment">// 如果有 runnext，优先处理 runnext</span></div><div class="line">	<span class="keyword">if</span> next !=<span class="number"> 0</span> && pp.runnext.cas(next,<span class="number"> 0</span>) { <span class="comment">// ①</span></div><div class="line">		<span class="keyword">return</span> next.ptr(), <span class="constant">true</span></div><div class="line">	}</div><div class="line"></div><div class="line">	<span class="keyword">for</span> {</div><div class="line">		h := atomic.LoadAcq(&pp.runqhead) <span class="comment">// ② 获取队头</span></div><div class="line">		t := pp.runqtail</div><div class="line">		<span class="keyword">if</span> t == h { <span class="comment">// ③ 队列为空</span></div><div class="line">			<span class="keyword">return</span> <span class="constant">nil</span>, <span class="constant">false</span></div><div class="line">		}</div><div class="line">		gp := pp.runq[h%<span class="typename">uint32</span>(<span class="built_in">len</span>(pp.runq))].ptr() <span class="comment">// ④ 获取队头的goroutine</span></div><div class="line">		<span class="keyword">if</span> atomic.CasRel(&pp.runqhead, h, h<span class="number">+1</span>) { <span class="comment">// ⑤ 更新队头</span></div><div class="line">			<span class="keyword">return</span> gp, <span class="constant">false</span></div><div class="line">		}</div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>① 如果有 <code>runnext</code>，则优先处理 <code>runnext</code>，将 <code>runnext</code> 中的 <code>g</code> 取出来。</p>
+<p>② 获取队列头。 如果 ③ 队列为空，直接返回。</p>
+<p>④ 获取队头的 <code>g</code>，这就是要读取的 <code>g</code>。</p>
+<p>⑤ 更新队头，这里使用的是 <code>atomic.CasRel</code> 方法，它是一个原子的 <code>Compare-And-Swap</code> 操作，用来更新队头。</p>
+<p>可以看到这里只使用到了队列头<code>runqhead</code>。</p>
+<h3 id="runqdrain">runqdrain</h3>
+<p><code>runqdrain</code> 方法是从 <code>runq</code> 中获取所有的 <code>g</code> 的方法，它是一个无锁的操作，不会阻塞。它的实现如下：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div></pre></td><td class="code"><pre><div class="line"><span class="comment">// runqdrain 从 pp 的本地可运行队列中获取所有的 G 并返回。</span></div><div class="line"><span class="comment">// 只能由拥有 P 的所有者执行。</span></div><div class="line"><span class="keyword">func</span> runqdrain(pp *p) (drainQ gQueue, n <span class="typename">uint32</span>) {</div><div class="line">	oldNext := pp.runnext</div><div class="line">	<span class="keyword">if</span> oldNext !=<span class="number"> 0</span> && pp.runnext.cas(oldNext,<span class="number"> 0</span>) {</div><div class="line">		drainQ.pushBack(oldNext.ptr()) <span class="comment">// ① 将 runnext 中的goroutine放入队列</span></div><div class="line">		n++</div><div class="line">	}</div><div class="line"></div><div class="line">retry:</div><div class="line">	h := atomic.LoadAcq(&pp.runqhead) <span class="comment">// ② 获取队头</span></div><div class="line">	t := pp.runqtail</div><div class="line">	qn := t - h</div><div class="line">	<span class="keyword">if</span> qn ==<span class="number"> 0</span> {</div><div class="line">		<span class="keyword">return</span></div><div class="line">	}</div><div class="line">	<span class="keyword">if</span> qn &gt; <span class="typename">uint32</span>(<span class="built_in">len</span>(pp.runq)) { <span class="comment">// ③ 居然超出队列的长度了？</span></div><div class="line">		<span class="keyword">goto</span> retry</div><div class="line">	}</div><div class="line"></div><div class="line">	<span class="keyword">if</span> !atomic.CasRel(&pp.runqhead, h, h+qn) { <span class="comment">// ④ 更新队头</span></div><div class="line">		<span class="keyword">goto</span> retry</div><div class="line">	}</div><div class="line"></div><div class="line">    <span class="comment">// ⑤ 将队列中的goroutine放入队列drainQ中</span></div><div class="line">	<span class="keyword">for</span> i := <span class="typename">uint32</span><span class="number">(0</span>); i &lt; qn; i++ {</div><div class="line">		gp := pp.runq[(h+i)%<span class="typename">uint32</span>(<span class="built_in">len</span>(pp.runq))].ptr()</div><div class="line">		drainQ.pushBack(gp)</div><div class="line">		n++</div><div class="line">	}</div><div class="line">	<span class="keyword">return</span></div><div class="line">}</div></pre></td></tr></table></figure>
+
+<h3 id="runqgrab">runqgrab</h3>
+<p><code>runqgrab</code> 方法是从 <code>runq</code> 中获取一半的 <code>g</code> 的方法，它是一个无锁的操作，不会阻塞。它的实现如下：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div><div class="line">35</div><div class="line">36</div><div class="line">37</div><div class="line">38</div><div class="line">39</div><div class="line">40</div><div class="line">41</div><div class="line">42</div><div class="line">43</div><div class="line">44</div><div class="line">45</div></pre></td><td class="code"><pre><div class="line"><span class="comment">// runqgrab 从 pp 的本地可运行队列中获取一半的 G 并返回。</span></div><div class="line"><span class="comment">// Batch 是一个环形缓冲区，从 batchHead 开始。</span></div><div class="line"><span class="comment">// 返回获取的 goroutine 数量。</span></div><div class="line"><span class="comment">// 可以由任何 P 执行。</span></div><div class="line"><span class="keyword">func</span> runqgrab(pp *p, batch *<span class="number">[256</span>]guintptr, batchHead <span class="typename">uint32</span>, stealRunNextG <span class="typename">bool</span>) <span class="typename">uint32</span> {</div><div class="line">	<span class="keyword">for</span> {</div><div class="line">		h := atomic.LoadAcq(&pp.runqhead) <span class="comment">// load-acquire, synchronize with other consumers</span></div><div class="line">		t := atomic.LoadAcq(&pp.runqtail) <span class="comment">// load-acquire, synchronize with the producer</span></div><div class="line">		n := t - h</div><div class="line">		n = n - n<span class="number">/2</span> <span class="comment">// ① 取一半的goroutine</span></div><div class="line">		<span class="keyword">if</span> n ==<span class="number"> 0</span> {</div><div class="line">			<span class="keyword">if</span> stealRunNextG {</div><div class="line">                <span class="comment">// ② 如果要偷取runnext中的goroutine</span></div><div class="line">				<span class="keyword">if</span> next := pp.runnext; next !=<span class="number"> 0</span> {</div><div class="line">					<span class="keyword">if</span> pp.status == _Prunning {</div><div class="line">                        <span class="comment">// ② 如果要偷取runnext中的goroutine，这里会sleep一会</span></div><div class="line">						<span class="keyword">if</span> !osHasLowResTimer {</div><div class="line">							usleep<span class="number">(3</span>)</div><div class="line">						} <span class="keyword">else</span> {</div><div class="line">							osyield()</div><div class="line">						}</div><div class="line">					}</div><div class="line">					<span class="keyword">if</span> !pp.runnext.cas(next,<span class="number"> 0</span>) {</div><div class="line">						<span class="keyword">continue</span></div><div class="line">					}</div><div class="line">					batch[batchHead%<span class="typename">uint32</span>(<span class="built_in">len</span>(batch))] = next</div><div class="line">					<span class="keyword">return</span><span class="number"> 1</span></div><div class="line">				}</div><div class="line">			}</div><div class="line">			<span class="keyword">return</span><span class="number"> 0</span></div><div class="line">		}</div><div class="line">		<span class="keyword">if</span> n &gt; <span class="typename">uint32</span>(<span class="built_in">len</span>(pp.runq)<span class="number">/2</span>) { <span class="comment">// ③ 如果要偷取的goroutine数量超过一半, 重试</span></div><div class="line">			<span class="keyword">continue</span></div><div class="line">		}</div><div class="line"></div><div class="line">        <span class="comment">// ④ 将队列中至多一半的goroutine放入batch中</span></div><div class="line">		<span class="keyword">for</span> i := <span class="typename">uint32</span><span class="number">(0</span>); i &lt; n; i++ {</div><div class="line">			g := pp.runq[(h+i)%<span class="typename">uint32</span>(<span class="built_in">len</span>(pp.runq))]</div><div class="line">			batch[(batchHead+i)%<span class="typename">uint32</span>(<span class="built_in">len</span>(batch))] = g</div><div class="line">		}</div><div class="line">		<span class="keyword">if</span> atomic.CasRel(&pp.runqhead, h, h+n) { <span class="comment">// ⑤ 更新队头</span></div><div class="line">			<span class="keyword">return</span> n</div><div class="line">		}</div><div class="line">	}</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>① 取一半的 <code>g</code>，这里是一个简单的算法，取一半的 <code>g</code>。</p>
+<p>② 如果要偷取 <code>runnext</code> 中的 <code>g</code>，则会尝试偷取 <code>runnext</code> 中的 <code>g</code>。</p>
+<p>③ 如果要偷取的 <code>g</code> 数量超过一半，则重试。</p>
+<p>④ 将队列中至多一半的 <code>g</code> 放入 <code>batch</code> 中。</p>
+<p>⑤ 更新队头，这里使用的是 <code>atomic.CasRel</code> 方法，它是一个原子的 <code>Compare-And-Swap</code> 操作，用来更新队头。</p>
+<h3 id="runqsteal">runqsteal</h3>
+<p><code>runqsteal</code> 方法是从其它 <code>P</code> 的 <code>runq</code> 中偷取 <code>g</code> 的方法，它是一个无锁的操作，不会阻塞。它的实现如下：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div></pre></td><td class="code"><pre><div class="line"><span class="comment">// runqsteal 从 p2 的本地可运行队列中偷取一半的 G 并返回。</span></div><div class="line"><span class="comment">// 如果 stealRunNextG 为 true，它还会尝试偷取 runnext 中的 G。</span></div><div class="line"><span class="keyword">func</span> runqsteal(pp, p2 *p, stealRunNextG <span class="typename">bool</span>) *g {</div><div class="line">	t := pp.runqtail</div><div class="line">	n := runqgrab(p2, &pp.runq, t, stealRunNextG) <span class="comment">// ① 从p2中偷取一半的goroutine</span></div><div class="line">	<span class="keyword">if</span> n ==<span class="number"> 0</span> {</div><div class="line">		<span class="keyword">return</span> <span class="constant">nil</span></div><div class="line">	}</div><div class="line">	n--</div><div class="line">	gp := pp.runq[(t+n)%<span class="typename">uint32</span>(<span class="built_in">len</span>(pp.runq))].ptr() <span class="comment">// ② 获取偷取的一个goroutine</span></div><div class="line">	<span class="keyword">if</span> n ==<span class="number"> 0</span> {</div><div class="line">		<span class="keyword">return</span> gp</div><div class="line">	}</div><div class="line">	h := atomic.LoadAcq(&pp.runqhead) <span class="comment">// ③ 获取队头</span></div><div class="line">	<span class="keyword">if</span> t-h+n &gt;= <span class="typename">uint32</span>(<span class="built_in">len</span>(pp.runq)) { <span class="comment">// ④ 如果队列满了，重置队列</span></div><div class="line">		throw(<span class="string">"runqsteal: runq overflow"</span>)</div><div class="line">	}</div><div class="line">	atomic.StoreRel(&pp.runqtail, t+n) <span class="comment">// ⑤ 更新队尾</span></div><div class="line">	<span class="keyword">return</span> gp</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>它实际使用了 <code>runqgrab</code> 方法来偷取 <code>g</code>，然后再从 <code>runq</code> 中取出一个 <code>g</code>。</p>
+<p>以上就是<code>runq</code>的主要操作，它针对Go调度器的特点，设计了一套特定的队列操作的函数，这些函数都是无锁的，不会阻塞，保证了高效的并发读写。</p>
+<h2 id="gQueue_和_gList"><code>gQueue</code> 和 <code>gList</code></h2>
+<p><code>gQueue</code> 和 <code>gList</code> 是 Go 运行时中的两个队列，它们都是用来存储 <code>g</code> 的，但是它们的实现方式不同。</p>
+<p><code>gQueue</code>是一个G的双端队列，可以从首尾增加gp, 通过g.schedlink链接。一个G只能在一个gQueue或gList上。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div><div class="line">35</div><div class="line">36</div><div class="line">37</div><div class="line">38</div><div class="line">39</div><div class="line">40</div><div class="line">41</div><div class="line">42</div><div class="line">43</div><div class="line">44</div><div class="line">45</div><div class="line">46</div><div class="line">47</div><div class="line">48</div><div class="line">49</div><div class="line">50</div><div class="line">51</div><div class="line">52</div><div class="line">53</div><div class="line">54</div><div class="line">55</div><div class="line">56</div><div class="line">57</div><div class="line">58</div><div class="line">59</div><div class="line">60</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> gQueue <span class="keyword">struct</span> {</div><div class="line">	head guintptr</div><div class="line">	tail guintptr</div><div class="line">}</div><div class="line"><span class="keyword">func</span> (q *gQueue) empty() <span class="typename">bool</span> {</div><div class="line">	<span class="keyword">return</span> q.head ==<span class="number"> 0</span></div><div class="line">}</div><div class="line"></div><div class="line"><span class="comment">// push 将gp添加到q的头部。</span></div><div class="line"><span class="keyword">func</span> (q *gQueue) push(gp *g) {</div><div class="line">	gp.schedlink = q.head</div><div class="line">	q.head.set(gp)</div><div class="line">	<span class="keyword">if</span> q.tail ==<span class="number"> 0</span> {</div><div class="line">		q.tail.set(gp)</div><div class="line">	}</div><div class="line">}</div><div class="line"></div><div class="line"><span class="comment">// pushBack 增加gp到q的尾部。</span></div><div class="line"><span class="keyword">func</span> (q *gQueue) pushBack(gp *g) {</div><div class="line">	gp.schedlink =<span class="number"> 0</span></div><div class="line">	<span class="keyword">if</span> q.tail !=<span class="number"> 0</span> {</div><div class="line">		q.tail.ptr().schedlink.set(gp)</div><div class="line">	} <span class="keyword">else</span> {</div><div class="line">		q.head.set(gp)</div><div class="line">	}</div><div class="line">	q.tail.set(gp)</div><div class="line">}</div><div class="line"></div><div class="line"><span class="comment">// q2的所有G添加到q的尾部。之后不能再使用q2。</span></div><div class="line"><span class="keyword">func</span> (q *gQueue) pushBackAll(q2 gQueue) {</div><div class="line">	<span class="keyword">if</span> q2.tail ==<span class="number"> 0</span> {</div><div class="line">		<span class="keyword">return</span></div><div class="line">	}</div><div class="line">	q2.tail.ptr().schedlink =<span class="number"> 0</span></div><div class="line">	<span class="keyword">if</span> q.tail !=<span class="number"> 0</span> {</div><div class="line">		q.tail.ptr().schedlink = q2.head</div><div class="line">	} <span class="keyword">else</span> {</div><div class="line">		q.head = q2.head</div><div class="line">	}</div><div class="line">	q.tail = q2.tail</div><div class="line">}</div><div class="line"></div><div class="line"><span class="comment">// pop 移除并返回队列q的头部。如果q为空，则返回nil。</span></div><div class="line"><span class="keyword">func</span> (q *gQueue) pop() *g {</div><div class="line">	gp := q.head.ptr()</div><div class="line">	<span class="keyword">if</span> gp != <span class="constant">nil</span> {</div><div class="line">		q.head = gp.schedlink</div><div class="line">		<span class="keyword">if</span> q.head ==<span class="number"> 0</span> {</div><div class="line">			q.tail =<span class="number"> 0</span></div><div class="line">		}</div><div class="line">	}</div><div class="line">	<span class="keyword">return</span> gp</div><div class="line">}</div><div class="line"></div><div class="line"><span class="comment">// popList 将所有的元素从队列q中取出并返回一个gList。</span></div><div class="line"><span class="keyword">func</span> (q *gQueue) popList() gList {</div><div class="line">	stack := gList{q.head}</div><div class="line">	*q = gQueue{}</div><div class="line">	<span class="keyword">return</span> stack</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>而<code>gList</code>是一个G的链表，通过g.schedlink链接。一个G只能在一个gQueue或gList上。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div></pre></td><td class="code"><pre><div class="line"><span class="keyword">type</span> gList <span class="keyword">struct</span> {</div><div class="line">	head guintptr</div><div class="line">}</div><div class="line"><span class="keyword">func</span> (l *gList) empty() <span class="typename">bool</span> {</div><div class="line">	<span class="keyword">return</span> l.head ==<span class="number"> 0</span></div><div class="line">}</div><div class="line"></div><div class="line"><span class="comment">// push 将gp添加到l的头部。</span></div><div class="line"><span class="keyword">func</span> (l *gList) push(gp *g) {</div><div class="line">	gp.schedlink = l.head</div><div class="line">	l.head.set(gp)</div><div class="line">}</div><div class="line"></div><div class="line"><span class="comment">// pushAll 将q中的所有G添加到l的头部。</span></div><div class="line"><span class="keyword">func</span> (l *gList) pushAll(q gQueue) {</div><div class="line">	<span class="keyword">if</span> !q.empty() {</div><div class="line">		q.tail.ptr().schedlink = l.head</div><div class="line">		l.head = q.head</div><div class="line">	}</div><div class="line">}</div><div class="line"></div><div class="line"><span class="comment">// pop 移除并返回l的头部。如果l为空，则返回nil。</span></div><div class="line"><span class="keyword">func</span> (l *gList) pop() *g {</div><div class="line">	gp := l.head.ptr()</div><div class="line">	<span class="keyword">if</span> gp != <span class="constant">nil</span> {</div><div class="line">		l.head = gp.schedlink</div><div class="line">	}</div><div class="line">	<span class="keyword">return</span> gp</div><div class="line">}</div></pre></td></tr></table></figure>
+
+<p>这是常规的数据结构中链表的实现，你可以和教科书中的介绍和实现做对比，看看书本中的内容如何应用到显示的工程中的。</p>
+<h2 id="global_runq">global runq</h2>
+<p>一个全局的<code>runq</code>用来处理太多的goroutine, 在本地<code>runq</code>中的goroutine太少的情况下，从全局队列中偷取goroutine。<br>主要用来处理P中goroutine不均的情况。</p>
+<p>因为它直接使用一把锁(<code>sched.lock</code>)，而不是lock-free的数据结构，所以代码阅读和理解起来会相对简单一些。这里就不详细介绍了</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><div class="line">1</div><div class="line">2</div><div class="line">3</div><div class="line">4</div><div class="line">5</div><div class="line">6</div><div class="line">7</div><div class="line">8</div><div class="line">9</div><div class="line">10</div><div class="line">11</div><div class="line">12</div><div class="line">13</div><div class="line">14</div><div class="line">15</div><div class="line">16</div><div class="line">17</div><div class="line">18</div><div class="line">19</div><div class="line">20</div><div class="line">21</div><div class="line">22</div><div class="line">23</div><div class="line">24</div><div class="line">25</div><div class="line">26</div><div class="line">27</div><div class="line">28</div><div class="line">29</div><div class="line">30</div><div class="line">31</div><div class="line">32</div><div class="line">33</div><div class="line">34</div><div class="line">35</div><div class="line">36</div><div class="line">37</div><div class="line">38</div><div class="line">39</div><div class="line">40</div><div class="line">41</div><div class="line">42</div><div class="line">43</div><div class="line">44</div><div class="line">45</div><div class="line">46</div><div class="line">47</div><div class="line">48</div><div class="line">49</div><div class="line">50</div><div class="line">51</div><div class="line">52</div><div class="line">53</div><div class="line">54</div><div class="line">55</div><div class="line">56</div><div class="line">57</div><div class="line">58</div><div class="line">59</div><div class="line">60</div><div class="line">61</div><div class="line">62</div><div class="line">63</div></pre></td><td class="code"><pre><div class="line"></div><div class="line"><span class="keyword">var</span> (</div><div class="line">	sched      schedt</div><div class="line">)</div><div class="line"></div><div class="line"><span class="keyword">type</span> schedt <span class="keyword">struct</span> {</div><div class="line">	...</div><div class="line">	<span class="comment">// Global runnable queue.</span></div><div class="line">	runq     gQueue</div><div class="line">	runqsize <span class="typename">int32</span></div><div class="line">    ...</div><div class="line">}</div><div class="line"><span class="keyword">func</span> globrunqput(gp *g) {</div><div class="line">	assertLockHeld(&sched.lock) <span class="comment">// 保证锁被持有</span></div><div class="line"></div><div class="line">	sched.runq.pushBack(gp)</div><div class="line">	sched.runqsize++</div><div class="line">}</div><div class="line"></div><div class="line"></div><div class="line"><span class="keyword">func</span> globrunqputhead(gp *g) {</div><div class="line">	assertLockHeld(&sched.lock) <span class="comment">// 保证锁被持有</span></div><div class="line"></div><div class="line">	sched.runq.push(gp)</div><div class="line">	sched.runqsize++</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> globrunqputbatch(batch *gQueue, n <span class="typename">int32</span>) {</div><div class="line">	assertLockHeld(&sched.lock) <span class="comment">// 保证锁被持有</span></div><div class="line"></div><div class="line">	sched.runq.pushBackAll(*batch)</div><div class="line">	sched.runqsize += n</div><div class="line">	*batch = gQueue{}</div><div class="line">}</div><div class="line"></div><div class="line"><span class="keyword">func</span> globrunqget(pp *p, max <span class="typename">int32</span>) *g {</div><div class="line">	assertLockHeld(&sched.lock) <span class="comment">// 保证锁被持有</span></div><div class="line"></div><div class="line">	<span class="keyword">if</span> sched.runqsize ==<span class="number"> 0</span> { <span class="comment">// 如果全局队列为空</span></div><div class="line">		<span class="keyword">return</span> <span class="constant">nil</span></div><div class="line">	}</div><div class="line"></div><div class="line">	n := sched.runqsize/gomaxprocs +<span class="number"> 1</span> <span class="comment">// 从全局队列中获取goroutine的数量</span></div><div class="line">	<span class="keyword">if</span> n &gt; sched.runqsize {</div><div class="line">		n = sched.runqsize</div><div class="line">	}</div><div class="line">	<span class="keyword">if</span> max &gt;<span class="number"> 0</span> && n &gt; max { <span class="comment">// 如果max大于0，取最小值</span></div><div class="line">		n = max</div><div class="line">	}</div><div class="line">	<span class="keyword">if</span> n &gt; <span class="typename">int32</span>(<span class="built_in">len</span>(pp.runq))<span class="number">/2</span> { <span class="comment">// 如果要获取的goroutine数量超过一半，只取一半，不贪婪</span></div><div class="line">		n = <span class="typename">int32</span>(<span class="built_in">len</span>(pp.runq)) /<span class="number"> 2</span></div><div class="line">	}</div><div class="line"></div><div class="line">	sched.runqsize -= n</div><div class="line"></div><div class="line">	gp := sched.runq.pop() <span class="comment">// 从全局队列中获取一个goroutine</span></div><div class="line">	n--</div><div class="line">	<span class="keyword">for</span> ; n &gt;<span class="number"> 0</span>; n-- { <span class="comment">// 从全局队列中获取n-1个goroutine</span></div><div class="line">		gp1 := sched.runq.pop()</div><div class="line">		runqput(pp, gp1, <span class="constant">false</span>) <span class="comment">// 将goroutine放入本地队列</span></div><div class="line">	}</div><div class="line">	<span class="keyword">return</span> gp <span class="comment">// 返回获取的goroutine</span></div><div class="line">}</div></pre></td></tr></table></figure>
+
+
+      
+    </div>
+    <footer class="article-footer">
+      
+
+      
+      <!-- <link rel="stylesheet" href="https://unpkg.com/gitalk/dist/gitalk.css">
+      <script src="https://unpkg.com/gitalk/dist/gitalk.min.js"></script> -->
+      <section id="comments">
+        <script src="https://utteranc.es/client.js"
+                repo="smallnest/gitalk"
+                issue-term="title"
+                theme="github-light"
+                crossorigin="anonymous"
+                async>
+        </script>
+        <!-- <div id="gitalk-container"></div>
+        <script type="text/javascript">
+          var gitalkOpts = {
+            id: '2024/10/20/go-internal-ds-runq/',
+            owner: 'smallnest',
+            repo: 'gitalk',
+            title: 'Go中秘而不宣的数据结构 runq, 难怪运行时调度那么好',
+            body: 'https://colobu.com/2024/10/20/go-internal-ds-runq/',
+            clientID: 'bc02724130ed5b7ee275',
+            clientSecret: '68cb0bae2f93a8b88b09e0eb9b08c844b06a9047',
+            admin: ['smallnest'],
+            distractionFreeMode: false
+          };
+
+          const gitalk = new Gitalk(gitalkOpts)
+          gitalk.render('gitalk-container')
+        </script> -->
+        <noscript> 为正常使用评论功能请激活JavaScript</noscript>
+      </section>
+
+      
+
+    </footer>
+  </div>
+  
+  
+<nav id="article-nav">
+  
+    <a href="../../../11/17/go-internal-ds-bitvec" id="article-nav-newer" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">Newer</strong>
+      <div class="article-nav-title">
+        
+          Go中秘而不宣的数据结构 BitVec, 资源优化方法之位向量
+        
+      </div>
+    </a>
+  
+  
+    <a href="../go-internal-ds-spmc" id="article-nav-older" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">Older</strong>
+      <div class="article-nav-title">Go中秘而不宣的数据结构 spmc, 10倍性能于 channel</div>
+    </a>
+  
+</nav>
+
+  
+</article></section>
+        
+          <aside id="sidebar">
+  
+    <div class="widget-wrap">
+  <h3 class="widget-title">访问者来源</h3>
+  <div class="widget">
+    <script type="text/javascript" id="clstr_globe" src="//clustrmaps.com/globe.js?d=Hf4EJSi2XvL6TMcuFSH51Qn6nf5nZ8qnjVBnWCQ4FGc"></script>
+  </div>
+</div>
+
+<div class="widget-wrap">
+  <h3 class="widget-title">微信公众号</h3>
+  <div class="widget">
+    <img width="100%" src="/images/widgets/gopatterns.jpg">
+  </div>
+</div>
+
+<div class="widget-wrap">
+  <h3 class="widget-title">极客时间专栏</h3>
+  <div class="widget">
+    <a href="https://time.geekbang.org/column/intro/100061801">
+      <img width="100%" src="/images/widgets/geekbang.png">
+    </a>
+  </div>
+</div>
+
+<div class="widget-wrap">
+    <h3 class="widget-title">出版图书</h3>
+    <div class="widget">
+      <a href="https://cpgo.colobu.com/">
+        <img width="100%" src="/cpgolang/cpgo.png">
+      </a>
+    </div>
+    <div class="widget">
+      <a href="https://www.books.com.tw/products/0010991366">
+        <img width="100%" src="/cpgolang/cpgo2.jpg">
+      </a>
+    </div>
+    <div class="widget">
+      <a href="https://item.jd.com/14347716.html">
+        <img width="100%" src="/100gomistakes/cover.png">
+      </a>
+    </div>
+    <div class="widget">
+      <a href="/ScalaCollectionsCookbook/">
+        <img width="100%" src="/ScalaCollectionsCookbook/scala_collections_cookbook.jpg">
+        <img width="100%" src="/ScalaCollectionsCookbook/scala_collections_cookbook_tw.png">
+      </a>
+    </div>
+</div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">分类</h3>
+    <div class="widget">
+      <ul class="category-list"><li class="category-list-item"><a class="category-list-link" href="../../../../categories/Android">Android</a><span class="category-list-count">12</span></li><li class="category-list-item"><a class="category-list-link" href="../../../../categories/C">C++</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="../../../../categories/DOTNET">DOTNET</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="../../../../categories/Docker">Docker</a><span class="category-list-count">5</span></li><li class="category-list-item"><a class="category-list-link" href="../../../../categories/Go">Go</a><span class="category-list-count">301</span></li><li class="category-list-item"><a class="category-list-link" href="../../../../categories/Java">Java</a><span class="category-list-count">64</span></li><li class="category-list-item"><a class="category-list-link" href="../../../../categories/Linux">Linux</a><span class="category-list-count">8</span></li><li class="category-list-item"><a class="category-list-link" href="../../../../categories/Rust">Rust</a><span class="category-list-count">16</span></li><li class="category-list-item"><a class="category-list-link" href="../../../../categories/Scala">Scala</a><span class="category-list-count">18</span></li><li class="category-list-item"><a class="category-list-link" href="../../../../categories/go">go</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="../../../../categories/k8s">k8s</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="../../../../categories/rust">rust</a><span class="category-list-count">10</span></li><li class="category-list-item"><a class="category-list-link" href="../../../../categories/分享">分享</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="../../../../categories/前端开发">前端开发</a><span class="category-list-count">18</span></li><li class="category-list-item"><a class="category-list-link" href="../../../../categories/区块链">区块链</a><span class="category-list-count">8</span></li><li class="category-list-item"><a class="category-list-link" href="../../../../categories/大数据">大数据</a><span class="category-list-count">60</span></li><li class="category-list-item"><a class="category-list-link" href="../../../../categories/工具">工具</a><span class="category-list-count">28</span></li><li class="category-list-item"><a class="category-list-link" href="../../../../categories/数据库">数据库</a><span class="category-list-count">3</span></li><li class="category-list-item"><a class="category-list-link" href="../../../../categories/架构">架构</a><span class="category-list-count">27</span></li><li class="category-list-item"><a class="category-list-link" href="../../../../categories/算法">算法</a><span class="category-list-count">4</span></li><li class="category-list-item"><a class="category-list-link" href="../../../../categories/管理">管理</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="../../../../categories/网络编程">网络编程</a><span class="category-list-count">13</span></li><li class="category-list-item"><a class="category-list-link" href="../../../../categories/设计模式">设计模式</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="../../../../categories/读书笔记">读书笔记</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="../../../../categories/运维">运维</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="../../../../categories/高并发编程">高并发编程</a><span class="category-list-count">20</span></li></ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">标签云</h3>
+    <div class="widget tagcloud">
+      <a href="../../../../tags/Android" style="font-size: 15.00px;">Android</a><a href="../../../../tags/ApacheBench" style="font-size: 11.25px;">ApacheBench</a><a href="../../../../tags/Bower" style="font-size: 10.00px;">Bower</a><a href="../../../../tags/C" style="font-size: 10.00px;">C#</a><a href="../../../../tags/CDN" style="font-size: 10.00px;">CDN</a><a href="../../../../tags/CQRS" style="font-size: 10.00px;">CQRS</a><a href="../../../../tags/CRC" style="font-size: 10.00px;">CRC</a><a href="../../../../tags/CSS" style="font-size: 11.25px;">CSS</a><a href="../../../../tags/CompletableFuture" style="font-size: 10.00px;">CompletableFuture</a><a href="../../../../tags/Comsat" style="font-size: 10.00px;">Comsat</a><a href="../../../../tags/Curator" style="font-size: 18.75px;">Curator</a><a href="../../../../tags/DSL" style="font-size: 10.00px;">DSL</a><a href="../../../../tags/Disruptor" style="font-size: 10.00px;">Disruptor</a><a href="../../../../tags/Docker" style="font-size: 11.25px;">Docker</a><a href="../../../../tags/Ember" style="font-size: 11.25px;">Ember</a><a href="../../../../tags/FastJson" style="font-size: 10.00px;">FastJson</a><a href="../../../../tags/Fiber" style="font-size: 10.00px;">Fiber</a><a href="../../../../tags/GAE" style="font-size: 10.00px;">GAE</a><a href="../../../../tags/GC" style="font-size: 12.50px;">GC</a><a href="../../../../tags/Gnuplot" style="font-size: 10.00px;">Gnuplot</a><a href="../../../../tags/Go" style="font-size: 16.25px;">Go</a><a href="../../../../tags/Gradle" style="font-size: 10.00px;">Gradle</a><a href="../../../../tags/Grunt" style="font-size: 10.00px;">Grunt</a><a href="../../../../tags/Gulp" style="font-size: 10.00px;">Gulp</a><a href="../../../../tags/Hadoop" style="font-size: 10.00px;">Hadoop</a><a href="../../../../tags/Hazelcast" style="font-size: 10.00px;">Hazelcast</a><a href="../../../../tags/IPFS" style="font-size: 10.00px;">IPFS</a><a href="../../../../tags/Ignite" style="font-size: 10.00px;">Ignite</a><a href="../../../../tags/JVM" style="font-size: 10.00px;">JVM</a><a href="../../../../tags/Java" style="font-size: 17.50px;">Java</a><a href="../../../../tags/Kafka" style="font-size: 20.00px;">Kafka</a><a href="../../../../tags/Lambda" style="font-size: 13.75px;">Lambda</a><a href="../../../../tags/Linux" style="font-size: 12.50px;">Linux</a><a href="../../../../tags/LongAdder" style="font-size: 10.00px;">LongAdder</a><a href="../../../../tags/MathJax" style="font-size: 10.00px;">MathJax</a><a href="../../../../tags/Maven" style="font-size: 11.25px;">Maven</a><a href="../../../../tags/Memcached" style="font-size: 10.00px;">Memcached</a><a href="../../../../tags/Metrics" style="font-size: 10.00px;">Metrics</a><a href="../../../../tags/Mongo" style="font-size: 12.50px;">Mongo</a><a href="../../../../tags/Netty" style="font-size: 15.00px;">Netty</a>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">归档</h3>
+    <div class="widget">
+      <ul class="archive-list"><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2025/02">February 2025</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2025/01">January 2025</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2024/11">November 2024</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2024/10">October 2024</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2024/08">August 2024</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2024/06">June 2024</a><span class="archive-list-count">11</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2024/05">May 2024</a><span class="archive-list-count">9</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2024/04">April 2024</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2024/03">March 2024</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2024/02">February 2024</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2024/01">January 2024</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2023/12">December 2023</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2023/11">November 2023</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2023/10">October 2023</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2023/09">September 2023</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2023/08">August 2023</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2023/07">July 2023</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2023/06">June 2023</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2023/05">May 2023</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2023/04">April 2023</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2023/03">March 2023</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2023/01">January 2023</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2022/12">December 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2022/11">November 2022</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2022/10">October 2022</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2022/09">September 2022</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2022/08">August 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2022/07">July 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2022/06">June 2022</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2022/05">May 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2022/04">April 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2022/03">March 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2022/02">February 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2022/01">January 2022</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2021/12">December 2021</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2021/11">November 2021</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2021/10">October 2021</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2021/08">August 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2021/07">July 2021</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2021/06">June 2021</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2021/05">May 2021</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2021/04">April 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2021/03">March 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2021/02">February 2021</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2021/01">January 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2020/12">December 2020</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2020/11">November 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2020/09">September 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2020/08">August 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2020/07">July 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2020/06">June 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2020/05">May 2020</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2020/04">April 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2020/03">March 2020</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2020/02">February 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2020/01">January 2020</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2019/12">December 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2019/11">November 2019</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2019/10">October 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2019/09">September 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2019/08">August 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2019/07">July 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2019/06">June 2019</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2019/05">May 2019</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2019/04">April 2019</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2019/03">March 2019</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2019/02">February 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2019/01">January 2019</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2018/12">December 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2018/11">November 2018</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2018/10">October 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2018/09">September 2018</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2018/08">August 2018</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2018/07">July 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2018/06">June 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2018/05">May 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2018/04">April 2018</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2018/03">March 2018</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2018/02">February 2018</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2018/01">January 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2017/12">December 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2017/11">November 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2017/10">October 2017</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2017/09">September 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2017/08">August 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2017/07">July 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2017/06">June 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2017/05">May 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2017/04">April 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2017/03">March 2017</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2017/02">February 2017</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2017/01">January 2017</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2016/12">December 2016</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2016/11">November 2016</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2016/10">October 2016</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2016/09">September 2016</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2016/08">August 2016</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2016/07">July 2016</a><span class="archive-list-count">11</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2016/06">June 2016</a><span class="archive-list-count">14</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2016/05">May 2016</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2016/04">April 2016</a><span class="archive-list-count">14</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2016/03">March 2016</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2016/02">February 2016</a><span class="archive-list-count">8</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2016/01">January 2016</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2015/12">December 2015</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2015/11">November 2015</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2015/10">October 2015</a><span class="archive-list-count">9</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2015/09">September 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2015/08">August 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2015/07">July 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2015/06">June 2015</a><span class="archive-list-count">8</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2015/05">May 2015</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2015/04">April 2015</a><span class="archive-list-count">15</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2015/03">March 2015</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2015/02">February 2015</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2015/01">January 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2014/12">December 2014</a><span class="archive-list-count">28</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2014/11">November 2014</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2014/10">October 2014</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2014/09">September 2014</a><span class="archive-list-count">28</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2014/08">August 2014</a><span class="archive-list-count">19</span></li><li class="archive-list-item"><a class="archive-list-link" href="../../../../archives/2014/07">July 2014</a><span class="archive-list-count">1</span></li></ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">近期文章</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+            <a href="../../../../2025/02/01/the-state-of-simd-in-go">啥时候等到Go官方支持SIMD?</a>
+          </li>
+        
+          <li>
+            <a href="../../../../2025/01/31/scan-clickhouse-service">DeepSeek数据库暴露？扫描一下，应该不止此一家吧!</a>
+          </li>
+        
+          <li>
+            <a href="../../../../2025/01/30/some-notes-about-go-io-fs-package">趁着假期， 快速了解 Go io/fs 包</a>
+          </li>
+        
+          <li>
+            <a href="../../../../2025/01/27/how-long-to-scan-all-IPs-of-cn">扫描全国的公网IP需要多久？</a>
+          </li>
+        
+          <li>
+            <a href="../../../11/18/go-internal-ds-4-ary-heap">Go中秘而不宣的数据结构: 四叉堆，不是普通的二叉堆</a>
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">友情链接</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+			 
+            <a href="http://stackshare.io" target="_blank">技术栈</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://toutiao.io/" target="_blank">开发者头条</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://weekly.manong.io/issues/" target="_blank">码农周刊</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.tuicool.com/mags" target="_blank">编程狂人周刊</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.importnew.com/" target="_blank">importnew</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://ifeve.com/" target="_blank">并发编程网</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://github.com" target="_blank">github</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://stackoverflow.com/" target="_blank">stackoverflow</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.javacodegeeks.com/" target="_blank">javacodegeeks</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.infoq.com/" target="_blank">infoq</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.dzone.com/links/index.html" target="_blank">dzone</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://oj.leetcode.com/problems/" target="_blank">leetcode</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://tutorials.jenkov.com" target="_blank">jenkov</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://howtodoinjava.com" target="_blank">HowToDoInJava</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://java-design-patterns.com/patterns/" target="_blank">java design patterns</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://medium.com/netflix-techblog" target="_blank">Netflix技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://www.techiedelight.com" target="_blank">Techie Delight</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://engineering.linkedin.com/blog" target="_blank">Linkedin技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://blogs.dropbox.com/tech/" target="_blank">Dropbox技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://code.fb.com" target="_blank">Facebook技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://jm.taobao.org" target="_blank">淘宝中间件团队</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://tech.meituan.com" target="_blank">美团技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://blogs.360.cn" target="_blank">360技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://xiaomi-info.github.io" target="_blank">小米信息部技术团队</a>
+			
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+      
+
+  
+</aside>
+        
+      </div>
+      <footer id="footer">
+  
+  <div class="outer">
+    <div id="footer-info" class="inner">
+      &copy; 2025 smallnest<br>
+	  Powered by <a href="http://hexo.io/" target="_blank">Hexo</a>
+    </div>
+  </div>
+</footer>
+    </div>
+    <nav id="mobile-nav">
+  
+    
+      <a href="../../../.." class="mobile-nav-link"><i class="fa fa-home">&nbsp;</i>首页</a>
+    
+  
+    
+      <a href="../../../../archives" class="mobile-nav-link"><i class="fa fa-regular fa-folder-open">&nbsp;</i>归档</a>
+    
+  
+    
+      <a href="https://github.com/smallnest" class="mobile-nav-link"><i class="fa fa-brands fa-github-alt">&nbsp;</i>github</a>
+    
+  
+    
+      <a class="mobile-nav-link" href="#"><i class="fa fa-brands fa-golang">&nbsp;</i>Go学习资源</a>
+    
+      
+            <a class="mobile-nav-link" href="/goasm">&nbsp;&nbsp;<i class="fa fa-brands fa-golang">&nbsp;</i>Go汇编示例</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="https://gowebexamples.com">&nbsp;&nbsp;<i class="fa fa-brands fa-golang">&nbsp;</i>Go Web开发示例</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://go-database-sql.org">&nbsp;&nbsp;<i class="fa fa-brands fa-golang">&nbsp;</i>Go 数据库开发教程</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="https://colobu.com/gotips/">&nbsp;&nbsp;<i class="fa fa-brands fa-golang">&nbsp;</i>Go 语言编程技巧</a>
+          
+          
+    
+      
+            
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://rpcx.io">&nbsp;&nbsp;<i class="fa undefined">&nbsp;</i>RPCX官网</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://cn.doc.rpcx.io">&nbsp;&nbsp;<i class="fa undefined">&nbsp;</i>RPC开发指南</a>
+          
+          
+    
+    
+  
+    
+      <a class="mobile-nav-link" href="#"><i class="fa fa-brands fa-rust">&nbsp;</i>Rust学习资源</a>
+    
+      
+            <a class="mobile-nav-link" href="/perf-book">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>Rust高性能编程指南</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/rust100">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>100个练习题学习Rust</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/atomics">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>Rust原子操作和锁</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/effective-rust">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>高效Rust编程</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/thebook">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>Rust程序设计语言</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/nomicon">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>Rust死灵书</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/rust-reference">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>Rust参考手册</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/tlborm">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>Rust宏小册</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/async-book">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>Rust异步编程书</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/rust-by-example">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>通过例子学Rust</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/api-guidelines">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>Rust API 编写指南</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/comprehensive-rust">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>全面Rust课程</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/easy-rust">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>简单英语学Rust</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/rust-patterns">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>Rust设计模式</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/2020/03/05/A-half-hour-to-learn-Rust/">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>半小时学会Rust</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/rust-cookbook">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>Rust实用指南(cookbook)</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/rust-rand">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>Rust随机库</a>
+          
+          
+    
+      
+            
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="https://rpcx.io/r/E6v8U">&nbsp;&nbsp;<i class="fa undefined">&nbsp;</i>Rust for the Polyglot Programmer</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="https://rpcx.io/r/oC5ii">&nbsp;&nbsp;<i class="fa undefined">&nbsp;</i>LifetimeKata</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="https://tfpk.github.io/macrokata/">&nbsp;&nbsp;<i class="fa undefined">&nbsp;</i>macrokata</a>
+          
+          
+    
+    
+  
+    
+      <a class="mobile-nav-link" href="#"><i class="fa undefined">&nbsp;</i>出版书籍</a>
+    
+      
+            <a class="mobile-nav-link" href="/ScalaCollectionsCookbook">&nbsp;&nbsp;<i class="fa undefined">&nbsp;</i>Scala集合技术手册（简/繁）</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="https://cpgo.colobu.com/">&nbsp;&nbsp;<i class="fa undefined">&nbsp;</i>深入理解Go并发编程（简/繁）</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="https://item.jd.com/14347716.html">&nbsp;&nbsp;<i class="fa undefined">&nbsp;</i>100个Go语言典型错误</a>
+          
+          
+    
+    
+  
+    
+      <a href="../../../../ScalaCollectionsCookbook" class="mobile-nav-link"><i class="fa fa-solid fa-book">&nbsp;</i>Scala集合技术手册</a>
+    
+  
+    
+      <a href="../../../../about" class="mobile-nav-link"><i class="fa fa-regular fa-address-card">&nbsp;</i>关于</a>
+    
+  
+</nav>
+    
+<script src="//cdn.staticfile.org/jquery/1.11.1/jquery.min.js"></script>
+<script src="//cdn.bootcss.com/jquery.lazyload/1.9.1/jquery.lazyload.min.js"></script>
+
+<script src="//cdnjs.cloudflare.com/ajax/libs/fancybox/3.2.5/jquery.fancybox.min.js"></script>
+
+
+<script src="../../../../js/script.js" type="text/javascript"></script>
+
+<!-- mathjax config similar to math.stackexchange -->
+<script type="text/x-mathjax-config">
+  MathJax.Hub.Config({
+    tex2jax: {
+      inlineMath: [ ['$','$'], ["\\(","\\)"] ],
+      processEscapes: true,
+      skipTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code']
+    }
+  });
+  MathJax.Hub.Queue(function() {
+      var all = MathJax.Hub.getAllJax(), i;
+      for(i=0; i < all.length; i += 1) {
+        all[i].SourceElement().parentNode.className += ' has-jax';
+      }
+  });
+</script>
+<script type="text/javascript" src="//cdn.bootcss.com/mathjax/2.6.0-beta.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML">
+</script>
+
+<div id="totop" style="position:fixed;bottom:150px;right:10px;cursor: pointer;z-index: 2000;">
+	<a title="返回顶部"><img src="/images/scrollup.png"/></a>
+</div>
+<script src="../../../../js/totop.js" type="text/javascript"></script>
+
+
+
+
+<script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "//hm.baidu.com/hm.js?e085d87993250aab11f3e0c15f1c2785";
+  var s = document.getElementsByTagName("script")[0]; 
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+
+
+  </div>
+</body>
+</html>
