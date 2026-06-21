@@ -1,0 +1,979 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset="utf-8">
+  
+  <title>ping, 回来后,请告诉我你经过的路由器地址</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+  <meta name="description" content="在使用Go实现ping工具那一篇文章中，我们自己实现了ping工具的基本功能，我们也了解了ping底层实现的原理。读者@ZerOne提出一个问题：能不能实现单向跟踪路由的功能，类似 ping -R一样，从A端tracert B端，同时显示B端到A端的路径？">
+<meta property="og:type" content="article">
+<meta property="og:title" content="ping, 回来后,请告诉我你经过的路由器地址">
+<meta property="og:url" content="https://colobu.com/2023/05/07/ping-and-record-route/index.html">
+<meta property="og:site_name" content="鸟窝">
+<meta property="og:description" content="在使用Go实现ping工具那一篇文章中，我们自己实现了ping工具的基本功能，我们也了解了ping底层实现的原理。读者@ZerOne提出一个问题：能不能实现单向跟踪路由的功能，类似 ping -R一样，从A端tracert B端，同时显示B端到A端的路径？">
+<meta property="og:locale" content="zh_CN">
+<meta property="og:image" content="https://colobu.com/2023/05/07/ping-and-record-route/ipv4-header.png">
+<meta property="og:image" content="https://colobu.com/2023/05/07/ping-and-record-route/ipv4-option.jpg">
+<meta property="og:image" content="https://colobu.com/2023/05/07/ping-and-record-route/ip-options.png">
+<meta property="og:image" content="https://colobu.com/2023/05/07/ping-and-record-route/ping-R.png">
+<meta property="og:image" content="https://colobu.com/2023/05/07/ping-and-record-route/ping-rr.png">
+<meta property="article:published_time" content="2023-05-07T01:22:22.000Z">
+<meta property="article:modified_time" content="2026-06-21T09:09:12.187Z">
+<meta property="article:author" content="smallnest">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:image" content="https://colobu.com/2023/05/07/ping-and-record-route/ipv4-header.png">
+  
+  <link rel="alternative" href="/atom.xml" title="鸟窝" type="application/atom+xml">
+  
+  
+  <link rel="icon" href="/favicon.png">
+  
+  
+<link rel="stylesheet" href="/css/style.css">
+
+  <link href="//cdn.bootcdn.net/ajax/libs/font-awesome/6.6.0/css/all.min.css" rel="stylesheet">
+  
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/fancybox/3.2.5/jquery.fancybox.min.css"
+    media="screen" type="text/css">
+  
+  <link rel="stylesheet" href="//cdnjs.cloudflare.com/ajax/libs/animate.css/3.1.1/animate.min.css" media="screen"
+    type="text/css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/tonsky/FiraCode@1.207/distr/fira_code.css">
+<meta name="generator" content="Hexo 8.1.2"></head>
+<body>
+  <div id="container">
+    <div id="wrap">
+      <header id="header">
+  <div id="banner"></div>
+  <div id="header-outer" class="outer">
+    <div id="header-title" class="inner">
+      <h1 id="logo-wrap" class="animated bounceInLeft">
+        <a href="/" id="logo">鸟窝</a>
+      </h1>
+      
+    </div>
+    <div id="header-inner" class="inner">
+      <nav id="main-nav">
+        <a id="main-nav-toggle" class="nav-icon"></a>
+        
+          
+            <a class="main-nav-link" href="/"><i class="fa fa-home">&nbsp;</i>首页</a>
+          
+          
+          
+            <a class="main-nav-link" href="/archives"><i class="fa fa-regular fa-folder-open">&nbsp;</i>归档</a>
+          
+          
+          
+            <a class="main-nav-link" href="https://github.com/smallnest"><i class="fa fa-brands fa-github-alt">&nbsp;</i>github</a>
+          
+          
+          
+            <div class="dropdown main-nav-link"><a class="main-nav-link" href="#"><i class="fa fa-brands fa-golang">&nbsp;</i>Go学习资源</a>
+              <div class="dropdown-content">
+          
+            
+              <a href="/goasm"><i class="fa fa-brands fa-golang"></i>&nbsp;Go汇编示例</a>
+            
+                
+          
+            
+              <a href="https://gowebexamples.com"><i class="fa fa-brands fa-golang"></i>&nbsp;Go Web开发示例</a>
+            
+                
+          
+            
+              <a href="http://go-database-sql.org"><i class="fa fa-brands fa-golang"></i>&nbsp;Go 数据库开发教程</a>
+            
+                
+          
+            
+              <a href="https://colobu.com/gotips/"><i class="fa fa-brands fa-golang"></i>&nbsp;Go 语言编程技巧</a>
+            
+                
+          
+            
+              <hr>
+            
+                
+          
+            
+              <a href="http://rpcx.io"><i class="fa "></i>&nbsp;RPCX官网</a>
+            
+                
+          
+            
+              <a href="http://cn.doc.rpcx.io"><i class="fa "></i>&nbsp;RPC开发指南</a>
+            
+                
+          
+          </div>
+        </div>
+          
+          
+          
+            <div class="dropdown main-nav-link"><a class="main-nav-link" href="#"><i class="fa fa-brands fa-rust">&nbsp;</i>Rust学习资源</a>
+              <div class="dropdown-content">
+          
+            
+              <a href="/perf-book"><i class="fa fa-brands fa-rust"></i>&nbsp;Rust高性能编程指南</a>
+            
+                
+          
+            
+              <a href="/rust100"><i class="fa fa-brands fa-rust"></i>&nbsp;100个练习题学习Rust</a>
+            
+                
+          
+            
+              <a href="/atomics"><i class="fa fa-brands fa-rust"></i>&nbsp;Rust原子操作和锁</a>
+            
+                
+          
+            
+              <a href="/effective-rust"><i class="fa fa-brands fa-rust"></i>&nbsp;高效Rust编程</a>
+            
+                
+          
+            
+              <a href="/thebook"><i class="fa fa-brands fa-rust"></i>&nbsp;Rust程序设计语言</a>
+            
+                
+          
+            
+              <a href="/nomicon"><i class="fa fa-brands fa-rust"></i>&nbsp;Rust死灵书</a>
+            
+                
+          
+            
+              <a href="/rust-reference"><i class="fa fa-brands fa-rust"></i>&nbsp;Rust参考手册</a>
+            
+                
+          
+            
+              <a href="/tlborm"><i class="fa fa-brands fa-rust"></i>&nbsp;Rust宏小册</a>
+            
+                
+          
+            
+              <a href="/async-book"><i class="fa fa-brands fa-rust"></i>&nbsp;Rust异步编程书</a>
+            
+                
+          
+            
+              <a href="/rust-by-example"><i class="fa fa-brands fa-rust"></i>&nbsp;通过例子学Rust</a>
+            
+                
+          
+            
+              <a href="/api-guidelines"><i class="fa fa-brands fa-rust"></i>&nbsp;Rust API 编写指南</a>
+            
+                
+          
+            
+              <a href="/comprehensive-rust"><i class="fa fa-brands fa-rust"></i>&nbsp;全面Rust课程</a>
+            
+                
+          
+            
+              <a href="/easy-rust"><i class="fa fa-brands fa-rust"></i>&nbsp;简单英语学Rust</a>
+            
+                
+          
+            
+              <a href="/rust-patterns"><i class="fa fa-brands fa-rust"></i>&nbsp;Rust设计模式</a>
+            
+                
+          
+            
+              <a href="/2020/03/05/A-half-hour-to-learn-Rust/"><i class="fa fa-brands fa-rust"></i>&nbsp;半小时学会Rust</a>
+            
+                
+          
+            
+              <a href="/rust-cookbook"><i class="fa fa-brands fa-rust"></i>&nbsp;Rust实用指南(cookbook)</a>
+            
+                
+          
+            
+              <a href="/rust-rand"><i class="fa fa-brands fa-rust"></i>&nbsp;Rust随机库</a>
+            
+                
+          
+            
+              <hr>
+            
+                
+          
+            
+              <a href="https://rpcx.io/r/E6v8U"><i class="fa "></i>&nbsp;Rust for the Polyglot Programmer</a>
+            
+                
+          
+            
+              <a href="https://rpcx.io/r/oC5ii"><i class="fa "></i>&nbsp;LifetimeKata</a>
+            
+                
+          
+            
+              <a href="https://tfpk.github.io/macrokata/"><i class="fa "></i>&nbsp;macrokata</a>
+            
+                
+          
+          </div>
+        </div>
+          
+          
+          
+            <div class="dropdown main-nav-link"><a class="main-nav-link" href="#"><i class="fa ">&nbsp;</i>出版书籍</a>
+              <div class="dropdown-content">
+          
+            
+              <a href="/ScalaCollectionsCookbook"><i class="fa "></i>&nbsp;Scala集合技术手册（简/繁）</a>
+            
+                
+          
+            
+              <a href="https://cpgo.colobu.com/"><i class="fa "></i>&nbsp;深入理解Go并发编程（简/繁）</a>
+            
+                
+          
+            
+              <a href="https://item.jd.com/14347716.html"><i class="fa "></i>&nbsp;100个Go语言典型错误</a>
+            
+                
+          
+          </div>
+        </div>
+          
+          
+          
+            <a class="main-nav-link" href="/ScalaCollectionsCookbook"><i class="fa fa-solid fa-book">&nbsp;</i>Scala集合技术手册</a>
+          
+          
+          
+            <a class="main-nav-link" href="/about"><i class="fa fa-regular fa-address-card">&nbsp;</i>关于</a>
+          
+          
+
+
+      </nav>
+      <nav id="sub-nav">
+        
+          <a id="nav-rss-link" class="nav-icon" href="/atom.xml" title="RSS Feed"></a>
+        
+        <a id="nav-search-btn" class="nav-icon" title="Search"></a>
+      </nav>
+      <div id="search-form-wrap">
+        <form action="https://www.google.com/search" method="get" accept-charset="utf-8" class="search-form">
+          <input type="search" id="search-word" name="q" maxlength="20" class="search-form-input" placeholder="Search">
+          <input type=hidden name=ie value="utf-8">
+          <input type=hidden name=oe value="utf-8">
+          <input type=hidden name=hl value="zh-CN">
+          <input type="submit" id="search-submit" value="" class="search-form-submit">
+        </form>
+      </div>
+    </div>
+  </div>
+</header>
+      <div class="outer">
+        <section id="main"><article id="post-ping-and-record-route" class="article article-type-post" itemscope
+  itemprop="blogPost">
+  <div class="article-meta">
+    <a href="/2023/05/07/ping-and-record-route/" class="article-date">
+  <time datetime="2023-05-07T01:22:22.000Z" itemprop="datePublished">2023年05月07日</time>
+</a>
+    
+  <div class="article-category">
+    <a class="article-category-link" href="/categories/Go/">Go</a>
+  </div>
+
+    
+  <div class="article-author"> by smallnest</div>
+
+  </div>
+  <div class="article-inner">
+    
+    
+    <header class="article-header">
+      
+  
+    <h1 class="article-title" itemprop="name">
+      ping, 回来后,请告诉我你经过的路由器地址
+	  
+    </h1>
+  
+
+    </header>
+    
+    <div class="article-entry" itemprop="articleBody">
+      
+      
+      
+      <script>function show_answer(btn, x) { if (btn.value === "显示答案") { btn.value = "隐藏答案" } else { btn.value = "显示答案" } var as = document.getElementById(x); if (as.style.display === "none") { as.style.display = "block" } else { as.style.display = "none" } }</script>
+      <p>在<a href="https://colobu.com/2023/04/26/write-the-ping-tool-in-Go/">使用Go实现ping工具</a>那一篇文章中，我们自己实现了ping工具的基本功能，我们也了解了ping底层实现的原理。读者@ZerOne提出一个问题：能不能实现单向跟踪路由的功能，类似 <code>ping -R</code>一样，从A端tracert B端，同时显示B端到A端的路径？</p>
+<span id="more"></span>
+
+<h2 id="Record-Route-背景知识"><a href="#Record-Route-背景知识" class="headerlink" title="Record Route 背景知识"></a>Record Route 背景知识</h2><p>我先前没有用过ping的<code>-R</code>参数，ZerOne这么一问，我感觉很有趣。因为最近两年我一直在做网络相关的工作，特别是网络监控的能力，如果如ZerOne说的，ping如果有这个能力，可以很好的用在我们网络监控上，所以我迅速在网上搜索这相关的信息，并使用Go实现类似的功能,最终形成了这一篇文章，太长不看的话：这个问题的答案是，行，但不现实。</p>
+<p>这也算是Go高级网络编程系列中插播的一篇吧，另外一个读者评论批量发送包的时候提出了sendmmsg和sendv(应该是想说writv)的区别，我会在下一篇文章介绍，这两篇算是插播的知识点。欢迎大家一起探讨高级网络编程的知识，私信我或者加入Go高级编程研讨群进行交流。</p>
+<p>首先<code>man ping</code>看它的帮助文档中对<code>-R</code>参数的介绍:</p>
+<blockquote>
+<p>-R    Record route.  Includes the RECORD_ROUTE option in the ECHO_REQUEST packet and displays the route buffer on returned packets.  Note that the IP header is only large enough for nine such routes. Many hosts ignore or discard this option.</p>
+<p>-R    记录路由。在 Echo请求包中包含 <code>RECORD_ROUTE</code>选项，在返回的包中显示缓存的路由。注意IPV4的头部只能最多存9个这样的路由地址。很多节点会忽略或者丢弃这个选项。</p>
+</blockquote>
+<p>Mac OS的ping工具已经把这个选项标记为弃用了，即使你添加了这个参数，也相当于一个no-op操作。</p>
+<p>RR的功能是利用ipv4 header的option实现的。</p>
+<img src="/2023/05/07/ping-and-record-route/ipv4-header.png" class="">
+
+<p>普通的ipv4 header是20个字节(图中每一行是4个字节,32bit),但是协议还设置了Option,可以扩展它的基本功能。</p>
+<p>IHL是4个bit,代表IP头的长度(行数)，因为4个bit最大也就是15，所以ipv4的header最大也就是 15 * 4byte &#x3D; 60 byte，留给option的也只有40 byte (60 byte - 40 byte)。</p>
+<p>Option的格式采用TLV格式定义，第一个byte是Type, 第二个byte是此Option的长度Length，剩余的字节包含Option的值Value:</p>
+<img src="/2023/05/07/ping-and-record-route/ipv4-option.jpg" class="">
+
+<p><a href="https://www.rfc-editor.org/rfc/rfc791">rfc791</a>中定义了IPv4的几个选项：</p>
+<img src="/2023/05/07/ping-and-record-route/ip-options.png" class="">
+
+<p>其中 record route(RR)就是本文要讨论的对象。</p>
+<p>IPv4 record route（RR）选项指示路由器在数据包中要记录它们的IP地址。 RR是Internet协议的标准部分，可以在任何数据包上启用。与traceroute类似，RR记录和报告从源到目的地沿着Internet路径的IP地址，但它比traceroute具有几个优点。例如，RR可以逐跳地拼接回到目的地的反向路径，这对于traceroute和其他传统技术来说是不可见的；并且它可以发现一些不响应traceroute探测的跳数。</p>
+<p>但是这也带来了安全问题，尤其是云服务当道的今天。如果从云机房的IP包开启了这个选项，那么它经过的云机房路由就会到云机房外，就会把云服务商的网络架构暴露出来，甚至黑客还可以利用其它选项，让流走特定的设备实现攻击，同时每个数据包还额外增加了一些数据多占带宽，吃力不讨好，所以你的机器是购买的云虚机的我话，<code>ping -R</code>大概率都被丢弃掉了，可能在源机房，也可能在目的机房。</p>
+<p>特别是，RFC 1704强调了在互联网协议中的选项字段可能被滥用的风险。RFC 1704认为，记录路由选项可能会被用于追踪信息的来源和目的地，因此需要采取一些措施，以确保该选项不被滥用。该文档建议对记录路由选项进行限制和过滤，同时提高对它的安全意识和理解。</p>
+<p>比如我在腾讯云的云虚机做测试，<code>8.8.8.8</code>忽略了这个选项,<code>1.1.1.1</code>和<code>github.com</code>丢弃了请求，<code>127.0.0.1</code>返回了这个选项:</p>
+<img src="/2023/05/07/ping-and-record-route/ping-R.png" class="">
+
+<p>但是论文<a href="https://dl.acm.org/doi/10.1145/3131365.3131392">The record route option is an option!</a>却提出一个新的观点，认为RR非常具有网络测量的潜力，并且可以与traceroute结合使用来增强对网络拓扑结构的理解。这篇论文呼吁重新评估RR选项潜力，并探索新的使用方式。</p>
+<p>以上就是<code>Record Route</code>选项的背景知识。接下来我们就在原来我们实现的ping程序上加上RR的功能</p>
+<h2 id="使用-Go实现-RR-功能"><a href="#使用-Go实现-RR-功能" class="headerlink" title="使用 Go实现 RR 功能"></a>使用 Go实现 RR 功能</h2><h3 id="解析-RR-选项"><a href="#解析-RR-选项" class="headerlink" title="解析 RR 选项"></a>解析 RR 选项</h3><p>首先我们先做一个准备工作，如果我们收到一个IPv4包，我们需要解析出它的选项。可能包括多个选项，我们需要按照TLV的格式把它们都解析出来。</p>
+<p>解析选项我们还是使用的gopacket包,首先解析T, 根据T的类型决定解析L和V：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br><span class="line">25</span><br><span class="line">26</span><br><span class="line">27</span><br><span class="line">28</span><br><span class="line">29</span><br><span class="line">30</span><br><span class="line">31</span><br><span class="line">32</span><br></pre></td><td class="code"><pre><span class="line"><span class="function"><span class="keyword">func</span> <span class="title">parseOptions</span><span class="params">(data []<span class="type">byte</span>)</span></span> ([]layers.IPv4Option, <span class="type">error</span>) &#123;</span><br><span class="line">	options := <span class="built_in">make</span>([]layers.IPv4Option, <span class="number">0</span>, <span class="number">4</span>)</span><br><span class="line"></span><br><span class="line">	<span class="keyword">for</span> <span class="built_in">len</span>(data) &gt; <span class="number">0</span> &#123;</span><br><span class="line">		opt := layers.IPv4Option&#123;OptionType: data[<span class="number">0</span>]&#125;</span><br><span class="line">		<span class="keyword">switch</span> opt.OptionType &#123;</span><br><span class="line">		<span class="keyword">case</span> <span class="number">0</span>: <span class="comment">// End of options</span></span><br><span class="line">			opt.OptionLength = <span class="number">1</span></span><br><span class="line">			options = <span class="built_in">append</span>(options, opt)</span><br><span class="line">			<span class="keyword">return</span> options, <span class="literal">nil</span></span><br><span class="line">		<span class="keyword">case</span> <span class="number">1</span>: <span class="comment">// 1 byte padding, no-op</span></span><br><span class="line">			opt.OptionLength = <span class="number">1</span></span><br><span class="line">			data = data[<span class="number">1</span>:]</span><br><span class="line">		<span class="keyword">default</span>:</span><br><span class="line">			<span class="keyword">if</span> <span class="built_in">len</span>(data) &lt; <span class="number">2</span> &#123;</span><br><span class="line">				<span class="keyword">return</span> options, fmt.Errorf(<span class="string">&quot;invalid ip4 option length. Length %d less than 2&quot;</span>, <span class="built_in">len</span>(data))</span><br><span class="line">			&#125;</span><br><span class="line">			opt.OptionLength = data[<span class="number">1</span>]</span><br><span class="line">			<span class="keyword">if</span> <span class="built_in">len</span>(data) &lt; <span class="type">int</span>(opt.OptionLength) &#123;</span><br><span class="line">				<span class="keyword">return</span> options, fmt.Errorf(<span class="string">&quot;IP option length exceeds remaining IP header size, option type %v length %v&quot;</span>, opt.OptionType, opt.OptionLength)</span><br><span class="line">			&#125;</span><br><span class="line">			<span class="keyword">if</span> opt.OptionLength &lt;= <span class="number">2</span> &#123;</span><br><span class="line">				<span class="keyword">return</span> options, fmt.Errorf(<span class="string">&quot;invalid IP option type %v length %d. Must be greater than 2&quot;</span>, opt.OptionType, opt.OptionLength)</span><br><span class="line">			&#125;</span><br><span class="line">			opt.OptionData = data[<span class="number">2</span>:opt.OptionLength]</span><br><span class="line">			data = data[opt.OptionLength:]</span><br><span class="line">			options = <span class="built_in">append</span>(options, opt)</span><br><span class="line">		&#125;</span><br><span class="line">	&#125;</span><br><span class="line"></span><br><span class="line">	<span class="keyword">return</span> options, <span class="literal">nil</span></span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+<p>我们只关注RR选项，它的T是<code>0x07</code>,它的第三个byte是一个从1开始的指针，指向存放路由IP地址的下一个字节，初始是4，也就是它后面的那个字节，我们需要解析出它已存放的IP地址:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br><span class="line">25</span><br><span class="line">26</span><br><span class="line">27</span><br><span class="line">28</span><br><span class="line">29</span><br><span class="line">30</span><br><span class="line">31</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">type</span> RecordRouteOption <span class="keyword">struct</span> &#123;</span><br><span class="line">	layers.IPv4Option</span><br><span class="line">	IPs []net.IP</span><br><span class="line">&#125;</span><br><span class="line"></span><br><span class="line"><span class="function"><span class="keyword">func</span> <span class="title">parseRecordRouteOption</span><span class="params">(rr layers.IPv4Option)</span></span> *RecordRouteOption &#123;</span><br><span class="line">	<span class="keyword">if</span> rr.OptionType != <span class="number">0x07</span> &#123;</span><br><span class="line">		<span class="keyword">return</span> <span class="literal">nil</span></span><br><span class="line">	&#125;</span><br><span class="line"></span><br><span class="line">	ptr := <span class="type">int</span>(rr.OptionData[<span class="number">0</span>] - <span class="number">3</span>)</span><br><span class="line"></span><br><span class="line">	<span class="keyword">var</span> ips []net.IP</span><br><span class="line">	<span class="keyword">for</span> i := <span class="number">1</span>; i+<span class="number">4</span> &lt;= ptr; i += <span class="number">4</span> &#123;</span><br><span class="line">		ips = <span class="built_in">append</span>(ips, net.IP(rr.OptionData[i:i+<span class="number">4</span>]))</span><br><span class="line">	&#125;</span><br><span class="line"></span><br><span class="line">	<span class="keyword">return</span> &amp;RecordRouteOption&#123;</span><br><span class="line">		IPv4Option: rr,</span><br><span class="line">		IPs:        ips,</span><br><span class="line">	&#125;</span><br><span class="line">&#125;</span><br><span class="line"></span><br><span class="line"><span class="function"><span class="keyword">func</span> <span class="params">(rr RecordRouteOption)</span></span> IPString(prefix, suffix <span class="type">string</span>) <span class="type">string</span> &#123;</span><br><span class="line">	<span class="keyword">var</span> ips []<span class="type">string</span></span><br><span class="line">	<span class="keyword">for</span> _, ip := <span class="keyword">range</span> rr.IPs &#123;</span><br><span class="line">		ips = <span class="built_in">append</span>(ips, prefix+ip.String()+suffix)</span><br><span class="line">	&#125;</span><br><span class="line"></span><br><span class="line">	<span class="keyword">return</span> strings.Join(ips, <span class="string">&quot;&quot;</span>)</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+<p>解析option的代码已经完成，接下来的工作就是在发送icmp Echo请求的时候，把RR设置上。并且有幸收到回包的话，你需要把RR中的路由列表打印出来。</p>
+<h3 id="实现带RR功能的ping"><a href="#实现带RR功能的ping" class="headerlink" title="实现带RR功能的ping"></a>实现带RR功能的ping</h3><p>和先前我们实现的ping工具不同，我们需要再深入一下。因为先前的ping实现我们直接发送ICMP的包，不需要IPv4这一层，现在既然我们需要设置IPv4的option,我们就得手工构造IPv4的包，发送IPv4的包有多重途径，我本来在这个系列中就要讲如何发送IPv4的包，因为插入了这一篇介绍RR的文章，所以在这篇文章我就介绍其中一种方式，其他方式请关注<strong>鸟窝聊技术</strong>微信公众号。</p>
+<p>我们可以使用<code>pc, err := ipv4.NewRawConn(conn)</code>，把<code>net.PacketConn</code>转换成 <code>*ipvr.RawConn</code> ，就可以发送和接收带IPv4 header的包了。</p>
+<p>重点是构造IP header, 设置RR选项最多支持9个路由(32 byte + ptr), ptr的初始值设置为4：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br></pre></td><td class="code"><pre><span class="line">ip := layers.IPv4&#123;</span><br><span class="line">	Version:  <span class="number">4</span>,</span><br><span class="line">	SrcIP:    net.ParseIP(local),</span><br><span class="line">	DstIP:    dst.IP,</span><br><span class="line">	Protocol: layers.IPProtocolICMPv4,</span><br><span class="line">	TTL:      <span class="number">64</span>,</span><br><span class="line">	Flags:    layers.IPv4DontFragment,</span><br><span class="line">&#125;</span><br><span class="line"></span><br><span class="line"><span class="comment">// 准备 Record Route 选项</span></span><br><span class="line">recordRouteOption := layers.IPv4Option&#123;</span><br><span class="line">	OptionType:   <span class="number">0x07</span>,</span><br><span class="line">	OptionLength: <span class="number">39</span>,</span><br><span class="line">	OptionData:   <span class="built_in">make</span>([]<span class="type">byte</span>, <span class="number">37</span>),</span><br><span class="line">&#125;</span><br><span class="line">recordRouteOption.OptionData[<span class="number">0</span>] = <span class="number">4</span></span><br><span class="line"></span><br><span class="line"><span class="comment">// 添加选项</span></span><br><span class="line">ip.Options = <span class="built_in">append</span>(ip.Options, layers.IPv4Option&#123;OptionType: <span class="number">0x01</span>&#125;, recordRouteOption)</span><br></pre></td></tr></table></figure>
+
+<p>我们使用下面的语句收取回包数据:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">iph, payload, _, err := pc.ReadFrom(reply)</span><br></pre></td></tr></table></figure>
+<p>它可以读取ip header以及payload数据(ICMP回包)。</p>
+<p>如果检查收到的数据是对应的icmp回包，我们就可以使用一开始我们准备的解析数据，解析出option：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br></pre></td><td class="code"><pre><span class="line">            opts, _ := parseOptions(iph.Options)</span><br><span class="line"></span><br><span class="line"><span class="keyword">for</span> _, opt := <span class="keyword">range</span> opts &#123;</span><br><span class="line">	<span class="keyword">if</span> opt.OptionType != <span class="number">0x07</span> &#123;</span><br><span class="line">		<span class="keyword">continue</span></span><br><span class="line">	&#125;</span><br><span class="line"></span><br><span class="line">	rr := parseRecordRouteOption(opt)</span><br><span class="line">	<span class="keyword">if</span> rr != <span class="literal">nil</span> &#123;</span><br><span class="line">		fmt.Println(<span class="string">&quot;\nRR:&quot;</span> + rr.IPString(<span class="string">&quot;\t&quot;</span>, <span class="string">&quot;\n&quot;</span>))</span><br><span class="line">	&#125;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+<p>完整的代码如下:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br><span class="line">25</span><br><span class="line">26</span><br><span class="line">27</span><br><span class="line">28</span><br><span class="line">29</span><br><span class="line">30</span><br><span class="line">31</span><br><span class="line">32</span><br><span class="line">33</span><br><span class="line">34</span><br><span class="line">35</span><br><span class="line">36</span><br><span class="line">37</span><br><span class="line">38</span><br><span class="line">39</span><br><span class="line">40</span><br><span class="line">41</span><br><span class="line">42</span><br><span class="line">43</span><br><span class="line">44</span><br><span class="line">45</span><br><span class="line">46</span><br><span class="line">47</span><br><span class="line">48</span><br><span class="line">49</span><br><span class="line">50</span><br><span class="line">51</span><br><span class="line">52</span><br><span class="line">53</span><br><span class="line">54</span><br><span class="line">55</span><br><span class="line">56</span><br><span class="line">57</span><br><span class="line">58</span><br><span class="line">59</span><br><span class="line">60</span><br><span class="line">61</span><br><span class="line">62</span><br><span class="line">63</span><br><span class="line">64</span><br><span class="line">65</span><br><span class="line">66</span><br><span class="line">67</span><br><span class="line">68</span><br><span class="line">69</span><br><span class="line">70</span><br><span class="line">71</span><br><span class="line">72</span><br><span class="line">73</span><br><span class="line">74</span><br><span class="line">75</span><br><span class="line">76</span><br><span class="line">77</span><br><span class="line">78</span><br><span class="line">79</span><br><span class="line">80</span><br><span class="line">81</span><br><span class="line">82</span><br><span class="line">83</span><br><span class="line">84</span><br><span class="line">85</span><br><span class="line">86</span><br><span class="line">87</span><br><span class="line">88</span><br><span class="line">89</span><br><span class="line">90</span><br><span class="line">91</span><br><span class="line">92</span><br><span class="line">93</span><br><span class="line">94</span><br><span class="line">95</span><br><span class="line">96</span><br><span class="line">97</span><br><span class="line">98</span><br><span class="line">99</span><br><span class="line">100</span><br><span class="line">101</span><br><span class="line">102</span><br><span class="line">103</span><br><span class="line">104</span><br><span class="line">105</span><br><span class="line">106</span><br><span class="line">107</span><br><span class="line">108</span><br><span class="line">109</span><br><span class="line">110</span><br><span class="line">111</span><br><span class="line">112</span><br><span class="line">113</span><br><span class="line">114</span><br><span class="line">115</span><br><span class="line">116</span><br><span class="line">117</span><br><span class="line">118</span><br><span class="line">119</span><br><span class="line">120</span><br><span class="line">121</span><br><span class="line">122</span><br><span class="line">123</span><br><span class="line">124</span><br><span class="line">125</span><br><span class="line">126</span><br><span class="line">127</span><br><span class="line">128</span><br><span class="line">129</span><br><span class="line">130</span><br><span class="line">131</span><br><span class="line">132</span><br><span class="line">133</span><br><span class="line">134</span><br><span class="line">135</span><br><span class="line">136</span><br><span class="line">137</span><br><span class="line">138</span><br><span class="line">139</span><br><span class="line">140</span><br><span class="line">141</span><br><span class="line">142</span><br><span class="line">143</span><br><span class="line">144</span><br><span class="line">145</span><br><span class="line">146</span><br><span class="line">147</span><br><span class="line">148</span><br><span class="line">149</span><br><span class="line">150</span><br><span class="line">151</span><br><span class="line">152</span><br><span class="line">153</span><br><span class="line">154</span><br><span class="line">155</span><br><span class="line">156</span><br><span class="line">157</span><br><span class="line">158</span><br><span class="line">159</span><br><span class="line">160</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">package</span> main</span><br><span class="line"></span><br><span class="line"><span class="keyword">import</span> (</span><br><span class="line">	<span class="string">&quot;fmt&quot;</span></span><br><span class="line">	<span class="string">&quot;log&quot;</span></span><br><span class="line">	<span class="string">&quot;net&quot;</span></span><br><span class="line">	<span class="string">&quot;os&quot;</span></span><br><span class="line">	<span class="string">&quot;time&quot;</span></span><br><span class="line"></span><br><span class="line">	<span class="string">&quot;github.com/google/gopacket&quot;</span></span><br><span class="line">	<span class="string">&quot;github.com/google/gopacket/layers&quot;</span></span><br><span class="line">	<span class="string">&quot;golang.org/x/net/icmp&quot;</span></span><br><span class="line">	<span class="string">&quot;golang.org/x/net/ipv4&quot;</span></span><br><span class="line">)</span><br><span class="line"></span><br><span class="line"><span class="keyword">const</span> (</span><br><span class="line">	protocolICMP = <span class="number">1</span></span><br><span class="line">)</span><br><span class="line"></span><br><span class="line"><span class="function"><span class="keyword">func</span> <span class="title">main</span><span class="params">()</span></span> &#123;</span><br><span class="line">	<span class="keyword">if</span> <span class="built_in">len</span>(os.Args) != <span class="number">2</span> &#123;</span><br><span class="line">		fmt.Fprintf(os.Stderr, <span class="string">&quot;usage: %s host\n&quot;</span>, os.Args[<span class="number">0</span>])</span><br><span class="line">		os.Exit(<span class="number">1</span>)</span><br><span class="line">	&#125;</span><br><span class="line">	host := os.Args[<span class="number">1</span>]</span><br><span class="line"></span><br><span class="line">	<span class="comment">// 解析目标主机的 IP 地址</span></span><br><span class="line">	dst, err := net.ResolveIPAddr(<span class="string">&quot;ip&quot;</span>, host)</span><br><span class="line">	<span class="keyword">if</span> err != <span class="literal">nil</span> &#123;</span><br><span class="line">		log.Fatal(err)</span><br><span class="line">	&#125;</span><br><span class="line"></span><br><span class="line">	local := localAddr()</span><br><span class="line"></span><br><span class="line">	<span class="comment">// 创建 ICMP 连接</span></span><br><span class="line">	conn, err := net.ListenPacket(<span class="string">&quot;ip4:icmp&quot;</span>, local)</span><br><span class="line">	<span class="keyword">if</span> err != <span class="literal">nil</span> &#123;</span><br><span class="line">		log.Fatal(err)</span><br><span class="line">	&#125;</span><br><span class="line">	<span class="keyword">defer</span> conn.Close()</span><br><span class="line"></span><br><span class="line">	pc, err := ipv4.NewRawConn(conn)</span><br><span class="line">	<span class="keyword">if</span> err != <span class="literal">nil</span> &#123;</span><br><span class="line">		log.Fatal(err)</span><br><span class="line">	&#125;</span><br><span class="line"></span><br><span class="line">	<span class="comment">// 构造 IP 层</span></span><br><span class="line">	ip := layers.IPv4&#123;</span><br><span class="line">		Version:  <span class="number">4</span>,</span><br><span class="line">		SrcIP:    net.ParseIP(local),</span><br><span class="line">		DstIP:    dst.IP,</span><br><span class="line">		Protocol: layers.IPProtocolICMPv4,</span><br><span class="line">		TTL:      <span class="number">64</span>,</span><br><span class="line">		Flags:    layers.IPv4DontFragment,</span><br><span class="line">	&#125;</span><br><span class="line"></span><br><span class="line">	<span class="comment">// 准备 Record Route 选项</span></span><br><span class="line">	recordRouteOption := layers.IPv4Option&#123;</span><br><span class="line">		OptionType:   <span class="number">0x07</span>,</span><br><span class="line">		OptionLength: <span class="number">39</span>,</span><br><span class="line">		OptionData:   <span class="built_in">make</span>([]<span class="type">byte</span>, <span class="number">37</span>),</span><br><span class="line">	&#125;</span><br><span class="line">	recordRouteOption.OptionData[<span class="number">0</span>] = <span class="number">4</span></span><br><span class="line"></span><br><span class="line">	<span class="comment">// 添加选项</span></span><br><span class="line">	ip.Options = <span class="built_in">append</span>(ip.Options, layers.IPv4Option&#123;OptionType: <span class="number">0x01</span>&#125;, recordRouteOption)</span><br><span class="line"></span><br><span class="line">	<span class="comment">// 构造 ICMP 层</span></span><br><span class="line">	icmpLayer := layers.ICMPv4&#123;</span><br><span class="line">		TypeCode: layers.CreateICMPv4TypeCode(layers.ICMPv4TypeEchoRequest, <span class="number">0</span>),</span><br><span class="line">		Id:       <span class="type">uint16</span>(os.Getpid() &amp; <span class="number">0xffff</span>),</span><br><span class="line">		Seq:      <span class="number">1</span>,</span><br><span class="line">	&#125;</span><br><span class="line">	<span class="comment">// 添加 ICMP 数据</span></span><br><span class="line">	payload := []<span class="type">byte</span>(<span class="string">&quot;ping!&quot;</span>)</span><br><span class="line"></span><br><span class="line">	<span class="comment">// 封装到 gopacket.Packet</span></span><br><span class="line">	buf := gopacket.NewSerializeBuffer()</span><br><span class="line">	opts := gopacket.SerializeOptions&#123;</span><br><span class="line">		ComputeChecksums: <span class="literal">true</span>,</span><br><span class="line">		FixLengths:       <span class="literal">true</span>,</span><br><span class="line">	&#125;</span><br><span class="line">	err = gopacket.SerializeLayers(buf, opts, &amp;ip, &amp;icmpLayer, gopacket.Payload(payload))</span><br><span class="line">	<span class="keyword">if</span> err != <span class="literal">nil</span> &#123;</span><br><span class="line">		<span class="built_in">panic</span>(err)</span><br><span class="line">	&#125;</span><br><span class="line"></span><br><span class="line">	<span class="comment">// 发送 ICMP 报文</span></span><br><span class="line">	start := time.Now()</span><br><span class="line">	_, err = pc.WriteToIP(buf.Bytes(), dst)</span><br><span class="line">	<span class="keyword">if</span> err != <span class="literal">nil</span> &#123;</span><br><span class="line">		log.Fatal(err)</span><br><span class="line">	&#125;</span><br><span class="line"></span><br><span class="line">	<span class="comment">// 接收 ICMP 报文</span></span><br><span class="line">	reply := <span class="built_in">make</span>([]<span class="type">byte</span>, <span class="number">1500</span>)</span><br><span class="line">	<span class="keyword">for</span> i := <span class="number">0</span>; i &lt; <span class="number">3</span>; i++ &#123;</span><br><span class="line">		err = conn.SetReadDeadline(time.Now().Add(<span class="number">5</span> * time.Second))</span><br><span class="line">		<span class="keyword">if</span> err != <span class="literal">nil</span> &#123;</span><br><span class="line">			log.Fatal(err)</span><br><span class="line">		&#125;</span><br><span class="line">		iph, payload, _, err := pc.ReadFrom(reply)</span><br><span class="line">		<span class="keyword">if</span> err != <span class="literal">nil</span> &#123;</span><br><span class="line">			log.Fatal(err)</span><br><span class="line">		&#125;</span><br><span class="line">		duration := time.Since(start)</span><br><span class="line"></span><br><span class="line">		<span class="comment">// 解析 ICMP 报文</span></span><br><span class="line">		msg, err := icmp.ParseMessage(protocolICMP, payload)</span><br><span class="line">		<span class="keyword">if</span> err != <span class="literal">nil</span> &#123;</span><br><span class="line">			log.Fatal(err)</span><br><span class="line">		&#125;</span><br><span class="line"></span><br><span class="line">		<span class="comment">// 打印结果</span></span><br><span class="line">		<span class="keyword">switch</span> msg.Type &#123;</span><br><span class="line">		<span class="keyword">case</span> ipv4.ICMPTypeEchoReply:</span><br><span class="line">			echoReply, ok := msg.Body.(*icmp.Echo)</span><br><span class="line">			<span class="keyword">if</span> !ok &#123;</span><br><span class="line">				log.Fatal(<span class="string">&quot;invalid ICMP Echo Reply message&quot;</span>)</span><br><span class="line">				<span class="keyword">return</span></span><br><span class="line">			&#125;</span><br><span class="line">			<span class="keyword">if</span> iph.Src.String() == host &amp;&amp; echoReply.ID == os.Getpid()&amp;<span class="number">0xffff</span> &amp;&amp; echoReply.Seq == <span class="number">1</span> &#123;</span><br><span class="line">				fmt.Printf(<span class="string">&quot;reply from %s: seq=%d time=%v\n&quot;</span>, dst.String(), msg.Body.(*icmp.Echo).Seq, duration)</span><br><span class="line"></span><br><span class="line">				opts, _ := parseOptions(iph.Options)</span><br><span class="line"></span><br><span class="line">				<span class="keyword">for</span> _, opt := <span class="keyword">range</span> opts &#123;</span><br><span class="line">					<span class="keyword">if</span> opt.OptionType != <span class="number">0x07</span> &#123;</span><br><span class="line">						<span class="keyword">continue</span></span><br><span class="line">					&#125;</span><br><span class="line"></span><br><span class="line">					rr := parseRecordRouteOption(opt)</span><br><span class="line">					<span class="keyword">if</span> rr != <span class="literal">nil</span> &#123;</span><br><span class="line">						fmt.Println(<span class="string">&quot;\nRR:&quot;</span> + rr.IPString(<span class="string">&quot;\t&quot;</span>, <span class="string">&quot;\n&quot;</span>))</span><br><span class="line">					&#125;</span><br><span class="line">				&#125;</span><br><span class="line"></span><br><span class="line">				<span class="keyword">return</span></span><br><span class="line">			&#125;</span><br><span class="line">		<span class="keyword">default</span>:</span><br><span class="line">			fmt.Printf(<span class="string">&quot;unexpected ICMP message type: %v\n&quot;</span>, msg.Type)</span><br><span class="line">		&#125;</span><br><span class="line">	&#125;</span><br><span class="line">&#125;</span><br><span class="line"></span><br><span class="line"><span class="function"><span class="keyword">func</span> <span class="title">localAddr</span><span class="params">()</span></span> <span class="type">string</span> &#123;</span><br><span class="line">	addrs, err := net.InterfaceAddrs()</span><br><span class="line">	<span class="keyword">if</span> err != <span class="literal">nil</span> &#123;</span><br><span class="line">		<span class="built_in">panic</span>(err)</span><br><span class="line">	&#125;</span><br><span class="line">	<span class="keyword">for</span> _, addr := <span class="keyword">range</span> addrs &#123;</span><br><span class="line">		<span class="keyword">if</span> ipNet, ok := addr.(*net.IPNet); ok &amp;&amp; !ipNet.IP.IsLoopback() &#123;</span><br><span class="line">			<span class="keyword">if</span> ipNet.IP.To4() != <span class="literal">nil</span> &amp;&amp; ipNet.IP.To4()[<span class="number">0</span>] != <span class="number">192</span> &#123;</span><br><span class="line">				<span class="keyword">return</span> ipNet.IP.String()</span><br><span class="line">			&#125;</span><br><span class="line">		&#125;</span><br><span class="line">	&#125;</span><br><span class="line"></span><br><span class="line">	<span class="built_in">panic</span>(<span class="string">&quot;no local IP address found&quot;</span>)</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+<p>测试一下,可以从回包中收到RR信息：</p>
+<img src="/2023/05/07/ping-and-record-route/ping-rr.png" class="">
+      
+    </div>
+    <footer class="article-footer">
+      
+
+      
+      <!-- <link rel="stylesheet" href="https://unpkg.com/gitalk/dist/gitalk.css">
+      <script src="https://unpkg.com/gitalk/dist/gitalk.min.js"></script> -->
+      <section id="comments">
+        <script src="https://utteranc.es/client.js"
+                repo="smallnest/gitalk"
+                issue-term="title"
+                theme="github-light"
+                crossorigin="anonymous"
+                async>
+        </script>
+        <!-- <div id="gitalk-container"></div>
+        <script type="text/javascript">
+          var gitalkOpts = {
+            id: '2023/05/07/ping-and-record-route/',
+            owner: 'smallnest',
+            repo: 'gitalk',
+            title: 'ping, 回来后,请告诉我你经过的路由器地址',
+            body: 'https://colobu.com/2023/05/07/ping-and-record-route/index.html',
+            clientID: 'bc02724130ed5b7ee275',
+            clientSecret: '68cb0bae2f93a8b88b09e0eb9b08c844b06a9047',
+            admin: ['smallnest'],
+            distractionFreeMode: false
+          };
+
+          const gitalk = new Gitalk(gitalkOpts)
+          gitalk.render('gitalk-container')
+        </script> -->
+        <noscript> 为正常使用评论功能请激活JavaScript</noscript>
+      </section>
+
+      
+
+    </footer>
+  </div>
+  
+  
+<nav id="article-nav">
+  
+    <a href="/2023/05/13/send-IP-packets-in-Go/" id="article-nav-newer" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">Newer</strong>
+      <div class="article-nav-title">
+        
+          几种使用Go发送IP包的方法
+        
+      </div>
+    </a>
+  
+  
+    <a href="/2023/05/03/write-the-traceroute-tool-in-Go/" id="article-nav-older" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">Older</strong>
+      <div class="article-nav-title">使用Go实现traceroute工具</div>
+    </a>
+  
+</nav>
+
+  
+</article></section>
+        
+          <aside id="sidebar">
+  
+    <div class="widget-wrap">
+  <h3 class="widget-title">访问者来源</h3>
+  <div class="widget">
+    <script type="text/javascript" id="mmvst_globe" src="//mapmyvisitors.com/globe.js?d=33a_ORm-dIXRKRAG9KqfzawkYSIwGkaxOK0nA3Ha9Us"></script>
+  </div>
+</div>
+
+<div class="widget-wrap">
+  <h3 class="widget-title">微信公众号</h3>
+  <div class="widget">
+    <img width="100%" src="/images/widgets/gopatterns.jpg">
+  </div>
+</div>
+
+<div class="widget-wrap">
+  <h3 class="widget-title">极客时间专栏</h3>
+  <div class="widget">
+    <a href="https://time.geekbang.org/column/intro/100061801">
+      <img width="100%" src="/images/widgets/geekbang.png">
+    </a>
+    <a href="https://time.geekbang.org/column/intro/100953201">
+      <img width="100%" src="/images/widgets/geekbang2.png">
+    </a>
+  </div>
+</div>
+
+<div class="widget-wrap">
+    <h3 class="widget-title">出版图书</h3>
+    <div class="widget">
+      <a href="https://cpgo.colobu.com/">
+        <img width="100%" src="/cpgolang/cpgo.png">
+      </a>
+    </div>
+    <div class="widget">
+      <a href="https://www.books.com.tw/products/0010991366">
+        <img width="100%" src="/cpgolang/cpgo2.jpg">
+      </a>
+    </div>
+    <div class="widget">
+      <a href="https://item.jd.com/14347716.html">
+        <img width="100%" src="/100gomistakes/cover.png">
+      </a>
+    </div>
+    <div class="widget">
+      <a href="/ScalaCollectionsCookbook/">
+        <img width="100%" src="/ScalaCollectionsCookbook/scala_collections_cookbook.jpg">
+        <img width="100%" src="/ScalaCollectionsCookbook/scala_collections_cookbook_tw.png">
+      </a>
+    </div>
+</div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">分类</h3>
+    <div class="widget">
+      <ul class="category-list"><li class="category-list-item"><a class="category-list-link" href="/categories/Android/">Android</a><span class="category-list-count">12</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/C/">C++</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/DOTNET/">DOTNET</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Docker/">Docker</a><span class="category-list-count">5</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Go/">Go</a><span class="category-list-count">301</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Java/">Java</a><span class="category-list-count">64</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Linux/">Linux</a><span class="category-list-count">8</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Rust/">Rust</a><span class="category-list-count">16</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Scala/">Scala</a><span class="category-list-count">18</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/go/">go</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/k8s/">k8s</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/rust/">rust</a><span class="category-list-count">10</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E5%88%86%E4%BA%AB/">分享</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E5%89%8D%E7%AB%AF%E5%BC%80%E5%8F%91/">前端开发</a><span class="category-list-count">18</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E5%8C%BA%E5%9D%97%E9%93%BE/">区块链</a><span class="category-list-count">8</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E5%A4%A7%E6%95%B0%E6%8D%AE/">大数据</a><span class="category-list-count">60</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E5%B7%A5%E5%85%B7/">工具</a><span class="category-list-count">28</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E6%95%B0%E6%8D%AE%E5%BA%93/">数据库</a><span class="category-list-count">3</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E6%9E%B6%E6%9E%84/">架构</a><span class="category-list-count">27</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E7%AE%97%E6%B3%95/">算法</a><span class="category-list-count">4</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E7%AE%A1%E7%90%86/">管理</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E7%BD%91%E7%BB%9C%E7%BC%96%E7%A8%8B/">网络编程</a><span class="category-list-count">13</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E8%AE%BE%E8%AE%A1%E6%A8%A1%E5%BC%8F/">设计模式</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E8%AF%BB%E4%B9%A6%E7%AC%94%E8%AE%B0/">读书笔记</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E8%BF%90%E7%BB%B4/">运维</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E9%AB%98%E5%B9%B6%E5%8F%91%E7%BC%96%E7%A8%8B/">高并发编程</a><span class="category-list-count">20</span></li></ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">标签云</h3>
+    <div class="widget tagcloud">
+      <a href="/tags/AI/" style="font-size: 20px;">AI</a> <a href="/tags/Android/" style="font-size: 13.64px;">Android</a> <a href="/tags/ApacheBench/" style="font-size: 10.91px;">ApacheBench</a> <a href="/tags/Bower/" style="font-size: 10px;">Bower</a> <a href="/tags/C/" style="font-size: 10px;">C#</a> <a href="/tags/CDN/" style="font-size: 10px;">CDN</a> <a href="/tags/CQRS/" style="font-size: 10px;">CQRS</a> <a href="/tags/CRC/" style="font-size: 10px;">CRC</a> <a href="/tags/CSS/" style="font-size: 10.91px;">CSS</a> <a href="/tags/CompletableFuture/" style="font-size: 10px;">CompletableFuture</a> <a href="/tags/Comsat/" style="font-size: 10px;">Comsat</a> <a href="/tags/Curator/" style="font-size: 17.27px;">Curator</a> <a href="/tags/DSL/" style="font-size: 10px;">DSL</a> <a href="/tags/Disruptor/" style="font-size: 10px;">Disruptor</a> <a href="/tags/Docker/" style="font-size: 10.91px;">Docker</a> <a href="/tags/Ember/" style="font-size: 10.91px;">Ember</a> <a href="/tags/FastJson/" style="font-size: 10px;">FastJson</a> <a href="/tags/Fiber/" style="font-size: 10px;">Fiber</a> <a href="/tags/GAE/" style="font-size: 10px;">GAE</a> <a href="/tags/GC/" style="font-size: 11.82px;">GC</a> <a href="/tags/Gnuplot/" style="font-size: 10px;">Gnuplot</a> <a href="/tags/Go/" style="font-size: 15.45px;">Go</a> <a href="/tags/Gradle/" style="font-size: 10px;">Gradle</a> <a href="/tags/Grunt/" style="font-size: 10px;">Grunt</a> <a href="/tags/Gulp/" style="font-size: 10px;">Gulp</a> <a href="/tags/Hadoop/" style="font-size: 10px;">Hadoop</a> <a href="/tags/Hazelcast/" style="font-size: 10px;">Hazelcast</a> <a href="/tags/IPFS/" style="font-size: 10px;">IPFS</a> <a href="/tags/Ignite/" style="font-size: 10px;">Ignite</a> <a href="/tags/JVM/" style="font-size: 10px;">JVM</a> <a href="/tags/Java/" style="font-size: 14.55px;">Java</a> <a href="/tags/Kafka/" style="font-size: 18.18px;">Kafka</a> <a href="/tags/Lambda/" style="font-size: 12.73px;">Lambda</a> <a href="/tags/Linux/" style="font-size: 11.82px;">Linux</a> <a href="/tags/LongAdder/" style="font-size: 10px;">LongAdder</a> <a href="/tags/MathJax/" style="font-size: 10px;">MathJax</a> <a href="/tags/Maven/" style="font-size: 10.91px;">Maven</a> <a href="/tags/Memcached/" style="font-size: 10px;">Memcached</a> <a href="/tags/Metrics/" style="font-size: 10px;">Metrics</a> <a href="/tags/Mongo/" style="font-size: 11.82px;">Mongo</a> <a href="/tags/Netty/" style="font-size: 13.64px;">Netty</a> <a href="/tags/Nginx/" style="font-size: 10px;">Nginx</a> <a href="/tags/Node/" style="font-size: 10px;">Node</a> <a href="/tags/OAuth/" style="font-size: 10px;">OAuth</a> <a href="/tags/Performance/" style="font-size: 10px;">Performance</a> <a href="/tags/Quartz/" style="font-size: 10px;">Quartz</a> <a href="/tags/Quasar/" style="font-size: 10px;">Quasar</a> <a href="/tags/RPC/" style="font-size: 10px;">RPC</a> <a href="/tags/RTMP/" style="font-size: 10px;">RTMP</a> <a href="/tags/Regexp/" style="font-size: 10px;">Regexp</a> <a href="/tags/Round-Robin/" style="font-size: 10px;">Round-Robin</a> <a href="/tags/Rust/" style="font-size: 10.91px;">Rust</a> <a href="/tags/Sass/" style="font-size: 10px;">Sass</a> <a href="/tags/Scala/" style="font-size: 15.45px;">Scala</a> <a href="/tags/Spark/" style="font-size: 16.36px;">Spark</a> <a href="/tags/Spring/" style="font-size: 13.64px;">Spring</a> <a href="/tags/StampedLock/" style="font-size: 10px;">StampedLock</a> <a href="/tags/TCP-IP/" style="font-size: 10.91px;">TCP/IP</a> <a href="/tags/WebSocket/" style="font-size: 10px;">WebSocket</a> <a href="/tags/Yeoman/" style="font-size: 10px;">Yeoman</a> <a href="/tags/ZooKeeper/" style="font-size: 19.09px;">ZooKeeper</a> <a href="/tags/aio/" style="font-size: 10px;">aio</a> <a href="/tags/akka/" style="font-size: 10.91px;">akka</a> <a href="/tags/android/" style="font-size: 10px;">android</a> <a href="/tags/bbc/" style="font-size: 10px;">bbc</a> <a href="/tags/benchmark/" style="font-size: 10px;">benchmark</a> <a href="/tags/bloom-filter/" style="font-size: 10px;">bloom filter</a> <a href="/tags/bootstrap/" style="font-size: 10px;">bootstrap</a> <a href="/tags/buffer/" style="font-size: 10px;">buffer</a> <a href="/tags/cache/" style="font-size: 10px;">cache</a> <a href="/tags/cgroups/" style="font-size: 10px;">cgroups</a> <a href="/tags/css/" style="font-size: 10.91px;">css</a> <a href="/tags/d3-js/" style="font-size: 10px;">d3.js</a> <a href="/tags/design-pattern/" style="font-size: 10px;">design pattern</a> <a href="/tags/disruptor/" style="font-size: 10.91px;">disruptor</a> <a href="/tags/dns/" style="font-size: 10px;">dns</a> <a href="/tags/ebpf/" style="font-size: 10px;">ebpf</a> <a href="/tags/elasticsearch/" style="font-size: 10.91px;">elasticsearch</a> <a href="/tags/epoll/" style="font-size: 10px;">epoll</a> <a href="/tags/gRPC/" style="font-size: 11.82px;">gRPC</a> <a href="/tags/gitbook/" style="font-size: 10px;">gitbook</a> <a href="/tags/go/" style="font-size: 12.73px;">go</a> <a href="/tags/gulp/" style="font-size: 10px;">gulp</a> <a href="/tags/hexo/" style="font-size: 10.91px;">hexo</a> <a href="/tags/html5/" style="font-size: 10px;">html5</a> <a href="/tags/javascript/" style="font-size: 11.82px;">javascript</a> <a href="/tags/kafka/" style="font-size: 10px;">kafka</a> <a href="/tags/kernel/" style="font-size: 10px;">kernel</a> <a href="/tags/keytool/" style="font-size: 10px;">keytool</a> <a href="/tags/libra/" style="font-size: 11.82px;">libra</a> <a href="/tags/linux/" style="font-size: 10px;">linux</a> <a href="/tags/maven/" style="font-size: 10px;">maven</a> <a href="/tags/memcached/" style="font-size: 10px;">memcached</a> <a href="/tags/mllib/" style="font-size: 10px;">mllib</a> <a href="/tags/mongo/" style="font-size: 11.82px;">mongo</a> <a href="/tags/multicast/" style="font-size: 10px;">multicast</a> <a href="/tags/mysql/" style="font-size: 10px;">mysql</a> <a href="/tags/netty/" style="font-size: 11.82px;">netty</a> <a href="/tags/nginx/" style="font-size: 10.91px;">nginx</a> <a href="/tags/node-js/" style="font-size: 10px;">node.js</a> <a href="/tags/npm/" style="font-size: 10px;">npm</a> <a href="/tags/nsq/" style="font-size: 10px;">nsq</a> <a href="/tags/p2p/" style="font-size: 10px;">p2p</a> <a href="/tags/protobuf/" style="font-size: 10.91px;">protobuf</a> <a href="/tags/quasar/" style="font-size: 10px;">quasar</a> <a href="/tags/rate-limiting/" style="font-size: 10px;">rate limiting</a> <a href="/tags/recommendation/" style="font-size: 10px;">recommendation</a> <a href="/tags/rust/" style="font-size: 10px;">rust</a> <a href="/tags/rxjava/" style="font-size: 10px;">rxjava</a> <a href="/tags/slack/" style="font-size: 10px;">slack</a> <a href="/tags/sortpom/" style="font-size: 10px;">sortpom</a> <a href="/tags/spark/" style="font-size: 10px;">spark</a> <a href="/tags/spray/" style="font-size: 10px;">spray</a> <a href="/tags/sysctl/" style="font-size: 10px;">sysctl</a> <a href="/tags/trace/" style="font-size: 10px;">trace</a> <a href="/tags/undertow/" style="font-size: 10px;">undertow</a> <a href="/tags/validation/" style="font-size: 10px;">validation</a> <a href="/tags/virtualbox/" style="font-size: 10px;">virtualbox</a> <a href="/tags/vscode/" style="font-size: 11.82px;">vscode</a> <a href="/tags/%E4%B8%80%E8%87%B4%E6%80%A7%E5%93%88%E5%B8%8C/" style="font-size: 10px;">一致性哈希</a> <a href="/tags/%E5%8D%8F%E5%90%8C%E8%BF%87%E6%BB%A4%EF%BC%8Cmahout/" style="font-size: 10.91px;">协同过滤，mahout</a> <a href="/tags/%E5%9F%BA%E6%95%B0%E4%BC%B0%E8%AE%A1/" style="font-size: 10px;">基数估计</a> <a href="/tags/%E5%BA%8F%E5%88%97%E5%8C%96/" style="font-size: 10px;">序列化</a> <a href="/tags/%E5%BC%82%E6%AD%A5/" style="font-size: 10px;">异步</a> <a href="/tags/%E5%BE%AE%E6%9C%8D%E5%8A%A1/" style="font-size: 10.91px;">微服务</a> <a href="/tags/%E6%8E%A7%E4%BB%B6/" style="font-size: 10px;">控件</a> <a href="/tags/%E6%8E%A8%E8%8D%90%E7%B3%BB%E7%BB%9F/" style="font-size: 11.82px;">推荐系统</a> <a href="/tags/%E6%9E%B6%E6%9E%84/" style="font-size: 11.82px;">架构</a> <a href="/tags/%E7%AE%97%E6%B3%95/" style="font-size: 10px;">算法</a> <a href="/tags/%E7%BB%84%E4%BB%B6/" style="font-size: 10px;">组件</a> <a href="/tags/%E7%BB%9F%E8%AE%A1%E6%8C%87%E6%A0%87/" style="font-size: 10px;">统计指标</a> <a href="/tags/%E7%BD%91%E7%BB%9C/" style="font-size: 12.73px;">网络</a> <a href="/tags/%E8%BD%AE%E8%AF%A2/" style="font-size: 10px;">轮询</a>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">归档</h3>
+    <div class="widget">
+      <ul class="archive-list"><li class="archive-list-item"><a class="archive-list-link" href="/archives/2026/06/">六月 2026</a><span class="archive-list-count">14</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2026/05/">五月 2026</a><span class="archive-list-count">18</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2026/04/">四月 2026</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2026/01/">一月 2026</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2025/12/">十二月 2025</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2025/11/">十一月 2025</a><span class="archive-list-count">9</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2025/10/">十月 2025</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2025/09/">九月 2025</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2025/08/">八月 2025</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2025/07/">七月 2025</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2025/06/">六月 2025</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2025/05/">五月 2025</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2025/02/">二月 2025</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2025/01/">一月 2025</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2024/11/">十一月 2024</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2024/10/">十月 2024</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2024/08/">八月 2024</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2024/06/">六月 2024</a><span class="archive-list-count">11</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2024/05/">五月 2024</a><span class="archive-list-count">9</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2024/04/">四月 2024</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2024/03/">三月 2024</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2024/02/">二月 2024</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2024/01/">一月 2024</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/12/">十二月 2023</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/11/">十一月 2023</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/10/">十月 2023</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/09/">九月 2023</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/08/">八月 2023</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/07/">七月 2023</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/06/">六月 2023</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/05/">五月 2023</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/04/">四月 2023</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/03/">三月 2023</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/01/">一月 2023</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/12/">十二月 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/11/">十一月 2022</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/10/">十月 2022</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/09/">九月 2022</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/08/">八月 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/07/">七月 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/06/">六月 2022</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/05/">五月 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/04/">四月 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/03/">三月 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/02/">二月 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/01/">一月 2022</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/12/">十二月 2021</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/11/">十一月 2021</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/10/">十月 2021</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/08/">八月 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/07/">七月 2021</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/06/">六月 2021</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/05/">五月 2021</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/04/">四月 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/03/">三月 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/02/">二月 2021</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/01/">一月 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/12/">十二月 2020</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/11/">十一月 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/09/">九月 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/08/">八月 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/07/">七月 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/06/">六月 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/05/">五月 2020</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/04/">四月 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/03/">三月 2020</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/02/">二月 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/01/">一月 2020</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/12/">十二月 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/11/">十一月 2019</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/10/">十月 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/09/">九月 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/08/">八月 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/07/">七月 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/06/">六月 2019</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/05/">五月 2019</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/04/">四月 2019</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/03/">三月 2019</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/02/">二月 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/01/">一月 2019</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/12/">十二月 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/11/">十一月 2018</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/10/">十月 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/09/">九月 2018</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/08/">八月 2018</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/07/">七月 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/06/">六月 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/05/">五月 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/04/">四月 2018</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/03/">三月 2018</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/02/">二月 2018</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/01/">一月 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/12/">十二月 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/11/">十一月 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/10/">十月 2017</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/09/">九月 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/08/">八月 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/07/">七月 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/06/">六月 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/05/">五月 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/04/">四月 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/03/">三月 2017</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/02/">二月 2017</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/01/">一月 2017</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/12/">十二月 2016</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/11/">十一月 2016</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/10/">十月 2016</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/09/">九月 2016</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/08/">八月 2016</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/07/">七月 2016</a><span class="archive-list-count">11</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/06/">六月 2016</a><span class="archive-list-count">14</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/05/">五月 2016</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/04/">四月 2016</a><span class="archive-list-count">14</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/03/">三月 2016</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/02/">二月 2016</a><span class="archive-list-count">8</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/01/">一月 2016</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/12/">十二月 2015</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/11/">十一月 2015</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/10/">十月 2015</a><span class="archive-list-count">9</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/09/">九月 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/08/">八月 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/07/">七月 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/06/">六月 2015</a><span class="archive-list-count">8</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/05/">五月 2015</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/04/">四月 2015</a><span class="archive-list-count">15</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/03/">三月 2015</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/02/">二月 2015</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/01/">一月 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/12/">十二月 2014</a><span class="archive-list-count">28</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/11/">十一月 2014</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/10/">十月 2014</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/09/">九月 2014</a><span class="archive-list-count">28</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/08/">八月 2014</a><span class="archive-list-count">19</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/07/">七月 2014</a><span class="archive-list-count">1</span></li></ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">近期文章</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+            <a href="/2026/06/21/how-llm-actually-works/">LLM 究竟是如何工作的？</a>
+          </li>
+        
+          <li>
+            <a href="/2026/06/21/go-experimental-features-explained/">Go 实验特性详解</a>
+          </li>
+        
+          <li>
+            <a href="/2026/06/21/amd64-microarchitecture-level-go-performance/">amd64 微架构级别对 Go 程序性能提升多少？</a>
+          </li>
+        
+          <li>
+            <a href="/2026/06/17/loop-engineering-batch-8-issues-kuiniu-tool/">Loop Engineering 实践：一次批量实现 8 个 issue，完成夔牛工具的开发</a>
+          </li>
+        
+          <li>
+            <a href="/2026/06/17/loop-engineering-rdma-port-to-go-239-yuan/">Loop Engineering 实践：我把 RDMA 开发库移植到 Go 语言，花费 239 块钱</a>
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">友情链接</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+			 
+            <a href="http://stackshare.io" target="_blank">技术栈</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://toutiao.io/" target="_blank">开发者头条</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://weekly.manong.io/issues/" target="_blank">码农周刊</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.tuicool.com/mags" target="_blank">编程狂人周刊</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.importnew.com/" target="_blank">importnew</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://ifeve.com/" target="_blank">并发编程网</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://github.com" target="_blank">github</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://stackoverflow.com/" target="_blank">stackoverflow</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.javacodegeeks.com/" target="_blank">javacodegeeks</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.infoq.com/" target="_blank">infoq</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.dzone.com/links/index.html" target="_blank">dzone</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://oj.leetcode.com/problems/" target="_blank">leetcode</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://tutorials.jenkov.com" target="_blank">jenkov</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://howtodoinjava.com" target="_blank">HowToDoInJava</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://java-design-patterns.com/patterns/" target="_blank">java design patterns</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://medium.com/netflix-techblog" target="_blank">Netflix技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://www.techiedelight.com" target="_blank">Techie Delight</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://engineering.linkedin.com/blog" target="_blank">Linkedin技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://blogs.dropbox.com/tech/" target="_blank">Dropbox技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://code.fb.com" target="_blank">Facebook技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://jm.taobao.org" target="_blank">淘宝中间件团队</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://tech.meituan.com" target="_blank">美团技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://blogs.360.cn" target="_blank">360技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://xiaomi-info.github.io" target="_blank">小米信息部技术团队</a>
+			
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+      
+
+  
+</aside>
+        
+      </div>
+      <footer id="footer">
+  
+  <div class="outer">
+    <div id="footer-info" class="inner">
+      &copy; 2026 smallnest<br>
+	  Powered by <a href="http://hexo.io/" target="_blank">Hexo</a>
+    </div>
+  </div>
+</footer>
+    </div>
+    <nav id="mobile-nav">
+  
+    
+      <a href="/" class="mobile-nav-link"><i class="fa fa-home">&nbsp;</i>首页</a>
+    
+  
+    
+      <a href="/archives" class="mobile-nav-link"><i class="fa fa-regular fa-folder-open">&nbsp;</i>归档</a>
+    
+  
+    
+      <a href="https://github.com/smallnest" class="mobile-nav-link"><i class="fa fa-brands fa-github-alt">&nbsp;</i>github</a>
+    
+  
+    
+      <a class="mobile-nav-link" href="#"><i class="fa fa-brands fa-golang">&nbsp;</i>Go学习资源</a>
+    
+      
+            <a class="mobile-nav-link" href="/goasm">&nbsp;&nbsp;<i class="fa fa-brands fa-golang">&nbsp;</i>Go汇编示例</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="https://gowebexamples.com">&nbsp;&nbsp;<i class="fa fa-brands fa-golang">&nbsp;</i>Go Web开发示例</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://go-database-sql.org">&nbsp;&nbsp;<i class="fa fa-brands fa-golang">&nbsp;</i>Go 数据库开发教程</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="https://colobu.com/gotips/">&nbsp;&nbsp;<i class="fa fa-brands fa-golang">&nbsp;</i>Go 语言编程技巧</a>
+          
+          
+    
+      
+            
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://rpcx.io">&nbsp;&nbsp;<i class="fa ">&nbsp;</i>RPCX官网</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://cn.doc.rpcx.io">&nbsp;&nbsp;<i class="fa ">&nbsp;</i>RPC开发指南</a>
+          
+          
+    
+    
+  
+    
+      <a class="mobile-nav-link" href="#"><i class="fa fa-brands fa-rust">&nbsp;</i>Rust学习资源</a>
+    
+      
+            <a class="mobile-nav-link" href="/perf-book">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>Rust高性能编程指南</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/rust100">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>100个练习题学习Rust</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/atomics">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>Rust原子操作和锁</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/effective-rust">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>高效Rust编程</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/thebook">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>Rust程序设计语言</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/nomicon">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>Rust死灵书</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/rust-reference">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>Rust参考手册</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/tlborm">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>Rust宏小册</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/async-book">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>Rust异步编程书</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/rust-by-example">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>通过例子学Rust</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/api-guidelines">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>Rust API 编写指南</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/comprehensive-rust">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>全面Rust课程</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/easy-rust">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>简单英语学Rust</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/rust-patterns">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>Rust设计模式</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/2020/03/05/A-half-hour-to-learn-Rust/">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>半小时学会Rust</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/rust-cookbook">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>Rust实用指南(cookbook)</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/rust-rand">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>Rust随机库</a>
+          
+          
+    
+      
+            
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="https://rpcx.io/r/E6v8U">&nbsp;&nbsp;<i class="fa ">&nbsp;</i>Rust for the Polyglot Programmer</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="https://rpcx.io/r/oC5ii">&nbsp;&nbsp;<i class="fa ">&nbsp;</i>LifetimeKata</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="https://tfpk.github.io/macrokata/">&nbsp;&nbsp;<i class="fa ">&nbsp;</i>macrokata</a>
+          
+          
+    
+    
+  
+    
+      <a class="mobile-nav-link" href="#"><i class="fa ">&nbsp;</i>出版书籍</a>
+    
+      
+            <a class="mobile-nav-link" href="/ScalaCollectionsCookbook">&nbsp;&nbsp;<i class="fa ">&nbsp;</i>Scala集合技术手册（简/繁）</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="https://cpgo.colobu.com/">&nbsp;&nbsp;<i class="fa ">&nbsp;</i>深入理解Go并发编程（简/繁）</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="https://item.jd.com/14347716.html">&nbsp;&nbsp;<i class="fa ">&nbsp;</i>100个Go语言典型错误</a>
+          
+          
+    
+    
+  
+    
+      <a href="/ScalaCollectionsCookbook" class="mobile-nav-link"><i class="fa fa-solid fa-book">&nbsp;</i>Scala集合技术手册</a>
+    
+  
+    
+      <a href="/about" class="mobile-nav-link"><i class="fa fa-regular fa-address-card">&nbsp;</i>关于</a>
+    
+  
+</nav>
+    
+<script src="//cdn.staticfile.org/jquery/1.11.1/jquery.min.js"></script>
+<script src="//cdn.bootcss.com/jquery.lazyload/1.9.1/jquery.lazyload.min.js"></script>
+
+<script src="//cdnjs.cloudflare.com/ajax/libs/fancybox/3.2.5/jquery.fancybox.min.js"></script>
+
+
+
+<script src="/js/script.js"></script>
+
+<!-- mathjax config similar to math.stackexchange -->
+<script type="text/x-mathjax-config">
+  MathJax.Hub.Config({
+    tex2jax: {
+      inlineMath: [ ['$','$'], ["\\(","\\)"] ],
+      processEscapes: true,
+      skipTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code']
+    }
+  });
+  MathJax.Hub.Queue(function() {
+      var all = MathJax.Hub.getAllJax(), i;
+      for(i=0; i < all.length; i += 1) {
+        all[i].SourceElement().parentNode.className += ' has-jax';
+      }
+  });
+</script>
+<script type="text/javascript" src="//cdn.bootcss.com/mathjax/2.6.0-beta.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML">
+</script>
+
+<div id="totop" style="position:fixed;bottom:150px;right:10px;cursor: pointer;z-index: 2000;">
+	<a title="返回顶部"><img src="/images/scrollup.png"/></a>
+</div>
+
+<script src="/js/totop.js"></script>
+
+
+
+
+<script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "//hm.baidu.com/hm.js?e085d87993250aab11f3e0c15f1c2785";
+  var s = document.getElementsByTagName("script")[0]; 
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+
+
+  </div>
+</body>
+</html>

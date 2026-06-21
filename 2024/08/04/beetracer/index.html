@@ -1,0 +1,1006 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset="utf-8">
+  
+  <title>使用eBPF编写系统调用跟踪器</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+  <meta name="description" content="先决条件系统调用、eBPF、C语言、底层编程基础。 简介eBPF(扩展的伯克利数据包过滤器)是一项允许用户在内核中运行自定义程序的技术。BPF或cBPF(经典BPF)是eBPF的前身,它提供了一种简单高效的方法来基于预定义规则过滤数据包。与内核模块相比,eBPF程序提供了更高的安全性、可移植性和可维护性。现有多种高级方法可用于处理eBPF程序,如Cilium的Go语言库、bpftrace、libb">
+<meta property="og:type" content="article">
+<meta property="og:title" content="使用eBPF编写系统调用跟踪器">
+<meta property="og:url" content="https://colobu.com/2024/08/04/beetracer/index.html">
+<meta property="og:site_name" content="鸟窝">
+<meta property="og:description" content="先决条件系统调用、eBPF、C语言、底层编程基础。 简介eBPF(扩展的伯克利数据包过滤器)是一项允许用户在内核中运行自定义程序的技术。BPF或cBPF(经典BPF)是eBPF的前身,它提供了一种简单高效的方法来基于预定义规则过滤数据包。与内核模块相比,eBPF程序提供了更高的安全性、可移植性和可维护性。现有多种高级方法可用于处理eBPF程序,如Cilium的Go语言库、bpftrace、libb">
+<meta property="og:locale" content="zh_CN">
+<meta property="og:image" content="https://colobu.com/2024/08/04/beetracer/beetracer.png">
+<meta property="article:published_time" content="2024-08-04T09:27:25.000Z">
+<meta property="article:modified_time" content="2026-06-21T09:09:10.511Z">
+<meta property="article:author" content="smallnest">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:image" content="https://colobu.com/2024/08/04/beetracer/beetracer.png">
+  
+  <link rel="alternative" href="/atom.xml" title="鸟窝" type="application/atom+xml">
+  
+  
+  <link rel="icon" href="/favicon.png">
+  
+  
+<link rel="stylesheet" href="/css/style.css">
+
+  <link href="//cdn.bootcdn.net/ajax/libs/font-awesome/6.6.0/css/all.min.css" rel="stylesheet">
+  
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/fancybox/3.2.5/jquery.fancybox.min.css"
+    media="screen" type="text/css">
+  
+  <link rel="stylesheet" href="//cdnjs.cloudflare.com/ajax/libs/animate.css/3.1.1/animate.min.css" media="screen"
+    type="text/css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/tonsky/FiraCode@1.207/distr/fira_code.css">
+<meta name="generator" content="Hexo 8.1.2"></head>
+<body>
+  <div id="container">
+    <div id="wrap">
+      <header id="header">
+  <div id="banner"></div>
+  <div id="header-outer" class="outer">
+    <div id="header-title" class="inner">
+      <h1 id="logo-wrap" class="animated bounceInLeft">
+        <a href="/" id="logo">鸟窝</a>
+      </h1>
+      
+    </div>
+    <div id="header-inner" class="inner">
+      <nav id="main-nav">
+        <a id="main-nav-toggle" class="nav-icon"></a>
+        
+          
+            <a class="main-nav-link" href="/"><i class="fa fa-home">&nbsp;</i>首页</a>
+          
+          
+          
+            <a class="main-nav-link" href="/archives"><i class="fa fa-regular fa-folder-open">&nbsp;</i>归档</a>
+          
+          
+          
+            <a class="main-nav-link" href="https://github.com/smallnest"><i class="fa fa-brands fa-github-alt">&nbsp;</i>github</a>
+          
+          
+          
+            <div class="dropdown main-nav-link"><a class="main-nav-link" href="#"><i class="fa fa-brands fa-golang">&nbsp;</i>Go学习资源</a>
+              <div class="dropdown-content">
+          
+            
+              <a href="/goasm"><i class="fa fa-brands fa-golang"></i>&nbsp;Go汇编示例</a>
+            
+                
+          
+            
+              <a href="https://gowebexamples.com"><i class="fa fa-brands fa-golang"></i>&nbsp;Go Web开发示例</a>
+            
+                
+          
+            
+              <a href="http://go-database-sql.org"><i class="fa fa-brands fa-golang"></i>&nbsp;Go 数据库开发教程</a>
+            
+                
+          
+            
+              <a href="https://colobu.com/gotips/"><i class="fa fa-brands fa-golang"></i>&nbsp;Go 语言编程技巧</a>
+            
+                
+          
+            
+              <hr>
+            
+                
+          
+            
+              <a href="http://rpcx.io"><i class="fa "></i>&nbsp;RPCX官网</a>
+            
+                
+          
+            
+              <a href="http://cn.doc.rpcx.io"><i class="fa "></i>&nbsp;RPC开发指南</a>
+            
+                
+          
+          </div>
+        </div>
+          
+          
+          
+            <div class="dropdown main-nav-link"><a class="main-nav-link" href="#"><i class="fa fa-brands fa-rust">&nbsp;</i>Rust学习资源</a>
+              <div class="dropdown-content">
+          
+            
+              <a href="/perf-book"><i class="fa fa-brands fa-rust"></i>&nbsp;Rust高性能编程指南</a>
+            
+                
+          
+            
+              <a href="/rust100"><i class="fa fa-brands fa-rust"></i>&nbsp;100个练习题学习Rust</a>
+            
+                
+          
+            
+              <a href="/atomics"><i class="fa fa-brands fa-rust"></i>&nbsp;Rust原子操作和锁</a>
+            
+                
+          
+            
+              <a href="/effective-rust"><i class="fa fa-brands fa-rust"></i>&nbsp;高效Rust编程</a>
+            
+                
+          
+            
+              <a href="/thebook"><i class="fa fa-brands fa-rust"></i>&nbsp;Rust程序设计语言</a>
+            
+                
+          
+            
+              <a href="/nomicon"><i class="fa fa-brands fa-rust"></i>&nbsp;Rust死灵书</a>
+            
+                
+          
+            
+              <a href="/rust-reference"><i class="fa fa-brands fa-rust"></i>&nbsp;Rust参考手册</a>
+            
+                
+          
+            
+              <a href="/tlborm"><i class="fa fa-brands fa-rust"></i>&nbsp;Rust宏小册</a>
+            
+                
+          
+            
+              <a href="/async-book"><i class="fa fa-brands fa-rust"></i>&nbsp;Rust异步编程书</a>
+            
+                
+          
+            
+              <a href="/rust-by-example"><i class="fa fa-brands fa-rust"></i>&nbsp;通过例子学Rust</a>
+            
+                
+          
+            
+              <a href="/api-guidelines"><i class="fa fa-brands fa-rust"></i>&nbsp;Rust API 编写指南</a>
+            
+                
+          
+            
+              <a href="/comprehensive-rust"><i class="fa fa-brands fa-rust"></i>&nbsp;全面Rust课程</a>
+            
+                
+          
+            
+              <a href="/easy-rust"><i class="fa fa-brands fa-rust"></i>&nbsp;简单英语学Rust</a>
+            
+                
+          
+            
+              <a href="/rust-patterns"><i class="fa fa-brands fa-rust"></i>&nbsp;Rust设计模式</a>
+            
+                
+          
+            
+              <a href="/2020/03/05/A-half-hour-to-learn-Rust/"><i class="fa fa-brands fa-rust"></i>&nbsp;半小时学会Rust</a>
+            
+                
+          
+            
+              <a href="/rust-cookbook"><i class="fa fa-brands fa-rust"></i>&nbsp;Rust实用指南(cookbook)</a>
+            
+                
+          
+            
+              <a href="/rust-rand"><i class="fa fa-brands fa-rust"></i>&nbsp;Rust随机库</a>
+            
+                
+          
+            
+              <hr>
+            
+                
+          
+            
+              <a href="https://rpcx.io/r/E6v8U"><i class="fa "></i>&nbsp;Rust for the Polyglot Programmer</a>
+            
+                
+          
+            
+              <a href="https://rpcx.io/r/oC5ii"><i class="fa "></i>&nbsp;LifetimeKata</a>
+            
+                
+          
+            
+              <a href="https://tfpk.github.io/macrokata/"><i class="fa "></i>&nbsp;macrokata</a>
+            
+                
+          
+          </div>
+        </div>
+          
+          
+          
+            <div class="dropdown main-nav-link"><a class="main-nav-link" href="#"><i class="fa ">&nbsp;</i>出版书籍</a>
+              <div class="dropdown-content">
+          
+            
+              <a href="/ScalaCollectionsCookbook"><i class="fa "></i>&nbsp;Scala集合技术手册（简/繁）</a>
+            
+                
+          
+            
+              <a href="https://cpgo.colobu.com/"><i class="fa "></i>&nbsp;深入理解Go并发编程（简/繁）</a>
+            
+                
+          
+            
+              <a href="https://item.jd.com/14347716.html"><i class="fa "></i>&nbsp;100个Go语言典型错误</a>
+            
+                
+          
+          </div>
+        </div>
+          
+          
+          
+            <a class="main-nav-link" href="/ScalaCollectionsCookbook"><i class="fa fa-solid fa-book">&nbsp;</i>Scala集合技术手册</a>
+          
+          
+          
+            <a class="main-nav-link" href="/about"><i class="fa fa-regular fa-address-card">&nbsp;</i>关于</a>
+          
+          
+
+
+      </nav>
+      <nav id="sub-nav">
+        
+          <a id="nav-rss-link" class="nav-icon" href="/atom.xml" title="RSS Feed"></a>
+        
+        <a id="nav-search-btn" class="nav-icon" title="Search"></a>
+      </nav>
+      <div id="search-form-wrap">
+        <form action="https://www.google.com/search" method="get" accept-charset="utf-8" class="search-form">
+          <input type="search" id="search-word" name="q" maxlength="20" class="search-form-input" placeholder="Search">
+          <input type=hidden name=ie value="utf-8">
+          <input type=hidden name=oe value="utf-8">
+          <input type=hidden name=hl value="zh-CN">
+          <input type="submit" id="search-submit" value="" class="search-form-submit">
+        </form>
+      </div>
+    </div>
+  </div>
+</header>
+      <div class="outer">
+        <section id="main"><article id="post-beetracer" class="article article-type-post" itemscope
+  itemprop="blogPost">
+  <div class="article-meta">
+    <a href="/2024/08/04/beetracer/" class="article-date">
+  <time datetime="2024-08-04T09:27:25.000Z" itemprop="datePublished">2024年08月04日</time>
+</a>
+    
+  <div class="article-category">
+    <a class="article-category-link" href="/categories/Go/">Go</a>
+  </div>
+
+    
+  <div class="article-author"> by smallnest</div>
+
+  </div>
+  <div class="article-inner">
+    
+    
+    <header class="article-header">
+      
+  
+    <h1 class="article-title" itemprop="name">
+      使用eBPF编写系统调用跟踪器
+	  
+    </h1>
+  
+
+    </header>
+    
+    <div class="article-entry" itemprop="articleBody">
+      
+      
+      
+      <script>function show_answer(btn, x) { if (btn.value === "显示答案") { btn.value = "隐藏答案" } else { btn.value = "显示答案" } var as = document.getElementById(x); if (as.style.display === "none") { as.style.display = "block" } else { as.style.display = "none" } }</script>
+      <h2 id="先决条件"><a href="#先决条件" class="headerlink" title="先决条件"></a>先决条件</h2><p>系统调用、eBPF、C语言、底层编程基础。</p>
+<h2 id="简介"><a href="#简介" class="headerlink" title="简介"></a>简介</h2><p>eBPF(扩展的伯克利数据包过滤器)是一项允许用户在内核中运行自定义程序的技术。BPF或cBPF(经典BPF)是eBPF的前身,它提供了一种简单高效的方法来基于预定义规则过滤数据包。与内核模块相比,eBPF程序提供了更高的安全性、可移植性和可维护性。现有多种高级方法可用于处理eBPF程序,如Cilium的Go语言库、bpftrace、libbpf等。</p>
+<ul>
+<li><code>注意</code>: 本文要求读者对<code>eBPF</code>有基本了解。如果你不熟悉它,<code>ebpf.io</code>上的这篇文章是很好的参考资料。</li>
+</ul>
+<span id="more"></span>
+
+<h2 id="目标"><a href="#目标" class="headerlink" title="目标"></a>目标</h2><p>你应该已经熟悉著名的工具 <code>strace</code>。我们将使用eBPF开发类似的工具。例如:</p>
+<figure class="highlight sh"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">./beetrace /bin/ls</span><br></pre></td></tr></table></figure>
+
+<p>以下是该文本的地道中文翻译：</p>
+<h2 id="概念"><a href="#概念" class="headerlink" title="概念"></a>概念</h2><p>在开始编写我们的工具之前，我们需要熟悉一些关键概念。</p>
+<ol>
+<li><code>跟踪点（Tracepoints）</code>：这些是放置在 Linux 内核代码各个部分的检测点。它们提供了一种方法，可以在不修改内核源代码的情况下，钩入内核中的特定事件或代码路径。可用于跟踪的事件可以在 <code>/sys/kernel/debug/tracing/events</code> 中找到。</li>
+<li><code>SEC</code> 宏：它在目标 ELF 文件中创建一个新的段，段名与跟踪点的名称相同。例如，<code>SEC(tracepoint/raw_syscalls/sys_enter)</code> 创建了一个具有这个名称的新段。可以使用 readelf 命令查看这些段。</li>
+</ol>
+<figure class="highlight sh"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">readelf -s --wide somefile.o</span><br></pre></td></tr></table></figure>
+<ol start="3">
+<li><code>映射（Maps）</code>：这些是可以从 eBPF 程序和用户空间运行的应用程序中访问的共享数据结构。</li>
+</ol>
+<h2 id="编写-eBPF-程序"><a href="#编写-eBPF-程序" class="headerlink" title="编写 eBPF 程序"></a>编写 eBPF 程序</h2><p>由于 Linux 内核中存在大量的系统调用，我们不会编写一个全面的工具来跟踪所有系统调用。相反，我们将专注于跟踪几个常见的系统调用。为了实现这一目标，我们将编写两类程序：eBPF 程序和加载器（用于将 BPF 对象加载到内核并将其附加进来）。</p>
+<p>让我们首先创建一些数据结构来进行初始设置:</p>
+<figure class="highlight c"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br><span class="line">25</span><br><span class="line">26</span><br><span class="line">27</span><br><span class="line">28</span><br><span class="line">29</span><br><span class="line">30</span><br><span class="line">31</span><br><span class="line">32</span><br><span class="line">33</span><br><span class="line">34</span><br><span class="line">35</span><br><span class="line">36</span><br><span class="line">37</span><br><span class="line">38</span><br><span class="line">39</span><br><span class="line">40</span><br><span class="line">41</span><br><span class="line">42</span><br><span class="line">43</span><br><span class="line">44</span><br><span class="line">45</span><br><span class="line">46</span><br><span class="line">47</span><br><span class="line">48</span><br><span class="line">49</span><br><span class="line">50</span><br><span class="line">51</span><br><span class="line">52</span><br><span class="line">53</span><br><span class="line">54</span><br><span class="line">55</span><br><span class="line">56</span><br><span class="line">57</span><br><span class="line">58</span><br><span class="line">59</span><br><span class="line">60</span><br><span class="line">61</span><br><span class="line">62</span><br><span class="line">63</span><br><span class="line">64</span><br><span class="line">65</span><br><span class="line">66</span><br><span class="line">67</span><br><span class="line">68</span><br><span class="line">69</span><br><span class="line">70</span><br><span class="line">71</span><br><span class="line">72</span><br><span class="line">73</span><br><span class="line">74</span><br></pre></td><td class="code"><pre><span class="line"><span class="comment">// controller.h</span></span><br><span class="line"></span><br><span class="line"><span class="comment">// SYS_ENTER : for retrieving system call arguments</span></span><br><span class="line"><span class="comment">// SYS_EXIT : for retrieving the return values of syscalls</span></span><br><span class="line"></span><br><span class="line"><span class="keyword">typedef</span> <span class="class"><span class="keyword">enum</span></span></span><br><span class="line"><span class="class">&#123;</span></span><br><span class="line">    SYS_ENTER,</span><br><span class="line">    SYS_EXIT</span><br><span class="line">&#125; event_mode;</span><br><span class="line"></span><br><span class="line"><span class="class"><span class="keyword">struct</span> <span class="title">inner_syscall_info</span></span></span><br><span class="line"><span class="class">&#123;</span></span><br><span class="line">    <span class="class"><span class="keyword">union</span></span></span><br><span class="line"><span class="class">    &#123;</span></span><br><span class="line">        <span class="class"><span class="keyword">struct</span></span></span><br><span class="line"><span class="class">        &#123;</span></span><br><span class="line">            <span class="comment">// For SYS_ENTER mode</span></span><br><span class="line">            <span class="type">char</span> name[<span class="number">32</span>];</span><br><span class="line">            <span class="type">int</span> num_args;</span><br><span class="line">            <span class="type">long</span> syscall_nr;</span><br><span class="line">            <span class="type">void</span> *args[MAX_ARGS];</span><br><span class="line">        &#125;;</span><br><span class="line">        <span class="type">long</span> retval; <span class="comment">// For SYS_EXIT mode</span></span><br><span class="line">    &#125;;</span><br><span class="line">    event_mode mode;</span><br><span class="line">&#125;;</span><br><span class="line"></span><br><span class="line"><span class="class"><span class="keyword">struct</span> <span class="title">default_syscall_info</span>&#123;</span></span><br><span class="line">    <span class="type">char</span> name[<span class="number">32</span>];</span><br><span class="line">    <span class="type">int</span> num_args;</span><br><span class="line">&#125;;</span><br><span class="line"></span><br><span class="line"><span class="comment">// Array for storing the name and argument count of system calls</span></span><br><span class="line"><span class="type">const</span> <span class="class"><span class="keyword">struct</span> <span class="title">default_syscall_info</span> <span class="title">syscalls</span>[<span class="title">MAX_SYSCALL_NR</span>] =</span> &#123;</span><br><span class="line">    [SYS_fork] = &#123;<span class="string">&quot;fork&quot;</span>, <span class="number">0</span>&#125;,</span><br><span class="line">    [SYS_alarm] = &#123;<span class="string">&quot;alarm&quot;</span>, <span class="number">1</span>&#125;,</span><br><span class="line">    [SYS_brk] = &#123;<span class="string">&quot;brk&quot;</span>, <span class="number">1</span>&#125;,</span><br><span class="line">    [SYS_close] = &#123;<span class="string">&quot;close&quot;</span>, <span class="number">1</span>&#125;,</span><br><span class="line">    [SYS_exit] = &#123;<span class="string">&quot;exit&quot;</span>, <span class="number">1</span>&#125;,</span><br><span class="line">    [SYS_exit_group] = &#123;<span class="string">&quot;exit_group&quot;</span>, <span class="number">1</span>&#125;,</span><br><span class="line">    [SYS_set_tid_address] = &#123;<span class="string">&quot;set_tid_address&quot;</span>, <span class="number">1</span>&#125;,</span><br><span class="line">    [SYS_set_robust_list] = &#123;<span class="string">&quot;set_robust_list&quot;</span>, <span class="number">1</span>&#125;,</span><br><span class="line">    [SYS_access] = &#123;<span class="string">&quot;access&quot;</span>, <span class="number">2</span>&#125;,</span><br><span class="line">    [SYS_arch_prctl] = &#123;<span class="string">&quot;arch_prctl&quot;</span>, <span class="number">2</span>&#125;,</span><br><span class="line">    [SYS_kill] = &#123;<span class="string">&quot;kill&quot;</span>, <span class="number">2</span>&#125;,</span><br><span class="line">    [SYS_listen] = &#123;<span class="string">&quot;listen&quot;</span>, <span class="number">2</span>&#125;,</span><br><span class="line">    [SYS_munmap] = &#123;<span class="string">&quot;sys_munmap&quot;</span>, <span class="number">2</span>&#125;,</span><br><span class="line">    [SYS_open] = &#123;<span class="string">&quot;open&quot;</span>, <span class="number">2</span>&#125;,</span><br><span class="line">    [SYS_stat] = &#123;<span class="string">&quot;stat&quot;</span>, <span class="number">2</span>&#125;,</span><br><span class="line">    [SYS_fstat] = &#123;<span class="string">&quot;fstat&quot;</span>, <span class="number">2</span>&#125;,</span><br><span class="line">    [SYS_lstat] = &#123;<span class="string">&quot;lstat&quot;</span>, <span class="number">2</span>&#125;,</span><br><span class="line">    [SYS_accept] = &#123;<span class="string">&quot;accept&quot;</span>, <span class="number">3</span>&#125;,</span><br><span class="line">    [SYS_connect] = &#123;<span class="string">&quot;connect&quot;</span>, <span class="number">3</span>&#125;,</span><br><span class="line">    [SYS_execve] = &#123;<span class="string">&quot;execve&quot;</span>, <span class="number">3</span>&#125;,</span><br><span class="line">    [SYS_ioctl] = &#123;<span class="string">&quot;ioctl&quot;</span>, <span class="number">3</span>&#125;,</span><br><span class="line">    [SYS_getrandom] = &#123;<span class="string">&quot;getrandom&quot;</span>, <span class="number">3</span>&#125;,</span><br><span class="line">    [SYS_lseek] = &#123;<span class="string">&quot;lseek&quot;</span>, <span class="number">3</span>&#125;,</span><br><span class="line">    [SYS_poll] = &#123;<span class="string">&quot;poll&quot;</span>, <span class="number">3</span>&#125;,</span><br><span class="line">    [SYS_read] = &#123;<span class="string">&quot;read&quot;</span>, <span class="number">3</span>&#125;,</span><br><span class="line">    [SYS_write] = &#123;<span class="string">&quot;write&quot;</span>, <span class="number">3</span>&#125;,</span><br><span class="line">    [SYS_mprotect] = &#123;<span class="string">&quot;mprotect&quot;</span>, <span class="number">3</span>&#125;,</span><br><span class="line">    [SYS_openat] = &#123;<span class="string">&quot;openat&quot;</span>, <span class="number">3</span>&#125;,</span><br><span class="line">    [SYS_socket] = &#123;<span class="string">&quot;socket&quot;</span>, <span class="number">3</span>&#125;,</span><br><span class="line">    [SYS_newfstatat] = &#123;<span class="string">&quot;newfstatat&quot;</span>, <span class="number">4</span>&#125;,</span><br><span class="line">    [SYS_pread64] = &#123;<span class="string">&quot;pread64&quot;</span>, <span class="number">4</span>&#125;,</span><br><span class="line">    [SYS_prlimit64] = &#123;<span class="string">&quot;prlimit64&quot;</span>, <span class="number">4</span>&#125;,</span><br><span class="line">    [SYS_rseq] = &#123;<span class="string">&quot;rseq&quot;</span>, <span class="number">4</span>&#125;,</span><br><span class="line">    [SYS_sendfile] = &#123;<span class="string">&quot;sendfile&quot;</span>, <span class="number">4</span>&#125;,</span><br><span class="line">    [SYS_socketpair] = &#123;<span class="string">&quot;socketpair&quot;</span>, <span class="number">4</span>&#125;,</span><br><span class="line">    [SYS_mmap] = &#123;<span class="string">&quot;mmap&quot;</span>, <span class="number">6</span>&#125;,</span><br><span class="line">    [SYS_recvfrom] = &#123;<span class="string">&quot;recvfrom&quot;</span>, <span class="number">6</span>&#125;,</span><br><span class="line">    [SYS_sendto] = &#123;<span class="string">&quot;sendto&quot;</span>, <span class="number">6</span>&#125;,</span><br><span class="line">&#125;;</span><br></pre></td></tr></table></figure>
+
+<p>加载器将读取用户通过命令行参数提供的待追踪 ELF 文件的路径。然后，加载器会创建一个子进程，并使用 <code>execve</code> 来运行命令行参数中指定的程序。</p>
+<p>父进程将处理加载和附加 eBPF 程序所需的所有设置。它还执行一项关键任务：通过 BPF 哈希映射将子进程的 ID 发送给 eBPF 程序。</p>
+<figure class="highlight c"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br><span class="line">25</span><br><span class="line">26</span><br><span class="line">27</span><br></pre></td><td class="code"><pre><span class="line"><span class="comment">// loader.c</span></span><br><span class="line"></span><br><span class="line"><span class="type">int</span> <span class="title function_">main</span><span class="params">(<span class="type">int</span> argc, <span class="type">char</span> **argv)</span></span><br><span class="line">&#123;</span><br><span class="line">  <span class="keyword">if</span> (argc &lt; <span class="number">2</span>)</span><br><span class="line">  &#123;</span><br><span class="line">    fatal_error(<span class="string">&quot;Usage: ./beetrace &lt;path_to_program&gt;&quot;</span>);</span><br><span class="line">  &#125;</span><br><span class="line"></span><br><span class="line">  <span class="type">const</span> <span class="type">char</span> *file_path = argv[<span class="number">1</span>];</span><br><span class="line"></span><br><span class="line">  <span class="type">pid_t</span> pid = fork();</span><br><span class="line">  <span class="keyword">if</span> (pid == <span class="number">0</span>)</span><br><span class="line">  &#123;</span><br><span class="line">    <span class="comment">// Child process</span></span><br><span class="line">    <span class="type">int</span> fd = open(<span class="string">&quot;/dev/null&quot;</span>, O_WRONLY);</span><br><span class="line">    <span class="keyword">if</span>(fd==<span class="number">-1</span>)&#123;</span><br><span class="line">        <span class="comment">// error</span></span><br><span class="line">    &#125;</span><br><span class="line">    dup2(fd, <span class="number">1</span>); <span class="comment">// disable stdout for the child process</span></span><br><span class="line">    sleep(<span class="number">2</span>); <span class="comment">// wait for the parent process to do the required setup for tracing</span></span><br><span class="line">    execve(file_path, <span class="literal">NULL</span>, <span class="literal">NULL</span>);</span><br><span class="line">  &#125;</span><br><span class="line">  <span class="keyword">else</span>&#123;</span><br><span class="line">    <span class="comment">// Parent process</span></span><br><span class="line">  &#125;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+<p>要追踪系统调用，我们需要编写由 <code>tracepoint/raw_syscalls/sys_enter</code> 和 <code>tracepoint/raw_syscalls/sys_exit</code> 跟踪点触发的 eBPF 程序。这些跟踪点提供了对系统调用号和参数的访问。对于给定的系统调用，<code>tracepoint/raw_syscalls/sys_enter</code> 跟踪点总是在 <code>tracepoint/raw_syscalls/sys_exit</code> 跟踪点之前触发。我们可以使用前者获取系统调用参数，使用后者获取返回值。</p>
+<p>此外，我们将使用 eBPF 映射在用户空间程序和我们的 eBPF 程序之间共享信息。具体来说，我们将使用两种类型的 eBPF 映射：哈希映射和环形缓冲区。</p>
+<figure class="highlight c"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br></pre></td><td class="code"><pre><span class="line"><span class="comment">// controller.c</span></span><br><span class="line"></span><br><span class="line"><span class="comment">// Hashmap</span></span><br><span class="line"><span class="class"><span class="keyword">struct</span></span></span><br><span class="line"><span class="class">&#123;</span></span><br><span class="line">  __uint(type, BPF_MAP_TYPE_HASH);</span><br><span class="line">  __uint(key_size, <span class="number">10</span>);</span><br><span class="line">  __uint(value_size, <span class="number">4</span>);</span><br><span class="line">  __uint(max_entries, <span class="number">256</span> * <span class="number">1024</span>);</span><br><span class="line">&#125; pid_hashmap <span class="title function_">SEC</span><span class="params">(<span class="string">&quot;.maps&quot;</span>)</span>;</span><br><span class="line"></span><br><span class="line"><span class="comment">// Ring buffer</span></span><br><span class="line"><span class="class"><span class="keyword">struct</span></span></span><br><span class="line"><span class="class">&#123;</span></span><br><span class="line">  __uint(type, BPF_MAP_TYPE_RINGBUF);</span><br><span class="line">  __uint(max_entries, <span class="number">256</span> * <span class="number">1024</span>);</span><br><span class="line">&#125; syscall_info_buffer <span class="title function_">SEC</span><span class="params">(<span class="string">&quot;.maps&quot;</span>)</span>;</span><br></pre></td></tr></table></figure>
+
+<p>确定了映射关系之后，我们就可以动手写代码了。首先，让我们来编写针对追踪点 tracepoint&#x2F;raw_syscalls&#x2F;sys_enter 的程序代码。</p>
+<figure class="highlight c"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br><span class="line">25</span><br><span class="line">26</span><br><span class="line">27</span><br><span class="line">28</span><br><span class="line">29</span><br><span class="line">30</span><br><span class="line">31</span><br><span class="line">32</span><br><span class="line">33</span><br><span class="line">34</span><br><span class="line">35</span><br><span class="line">36</span><br><span class="line">37</span><br><span class="line">38</span><br><span class="line">39</span><br><span class="line">40</span><br><span class="line">41</span><br><span class="line">42</span><br><span class="line">43</span><br><span class="line">44</span><br><span class="line">45</span><br><span class="line">46</span><br><span class="line">47</span><br></pre></td><td class="code"><pre><span class="line"><span class="comment">// loader.c</span></span><br><span class="line"></span><br><span class="line">SEC(<span class="string">&quot;tracepoint/raw_syscalls/sys_enter&quot;</span>)</span><br><span class="line"><span class="type">int</span> <span class="title function_">detect_syscall_enter</span><span class="params">(<span class="keyword">struct</span> trace_event_raw_sys_enter *ctx)</span></span><br><span class="line">&#123;</span><br><span class="line">  <span class="comment">// Retrieve the system call number</span></span><br><span class="line">  <span class="type">long</span> syscall_nr = ctx-&gt;id;</span><br><span class="line">  <span class="type">const</span> <span class="type">char</span> *key = <span class="string">&quot;child_pid&quot;</span>;</span><br><span class="line">  <span class="type">int</span> target_pid;</span><br><span class="line"></span><br><span class="line">  <span class="comment">// Reading the process id of the child process in userland</span></span><br><span class="line">  <span class="type">void</span> *value = bpf_map_lookup_elem(&amp;pid_hashmap, key);</span><br><span class="line">  <span class="type">void</span> *args[MAX_ARGS];</span><br><span class="line"></span><br><span class="line">  <span class="keyword">if</span> (value)</span><br><span class="line">  &#123;</span><br><span class="line">    target_pid = *(<span class="type">int</span> *)value;</span><br><span class="line"></span><br><span class="line">    <span class="comment">// PID of the process that executed the current system call</span></span><br><span class="line">    <span class="type">pid_t</span> pid = bpf_get_current_pid_tgid() &amp; <span class="number">0xffffffff</span>;</span><br><span class="line">    <span class="keyword">if</span> (pid == target_pid &amp;&amp; syscall_nr &gt;= <span class="number">0</span> &amp;&amp; syscall_nr &lt; MAX_SYSCALL_NR)</span><br><span class="line">    &#123;</span><br><span class="line"></span><br><span class="line">      <span class="type">int</span> idx = syscall_nr;</span><br><span class="line">      <span class="comment">// Reserve space in the ring buffer</span></span><br><span class="line">      <span class="class"><span class="keyword">struct</span> <span class="title">inner_syscall_info</span> *<span class="title">info</span> =</span> bpf_ringbuf_reserve(&amp;syscall_info_buffer, <span class="keyword">sizeof</span>(<span class="keyword">struct</span> inner_syscall_info), <span class="number">0</span>);</span><br><span class="line">      <span class="keyword">if</span> (!info)</span><br><span class="line">      &#123;</span><br><span class="line">        bpf_printk(<span class="string">&quot;bpf_ringbuf_reserve failed&quot;</span>);</span><br><span class="line">        <span class="keyword">return</span> <span class="number">1</span>;</span><br><span class="line">      &#125;</span><br><span class="line"></span><br><span class="line">      <span class="comment">// Copy the syscall name into info-&gt;name</span></span><br><span class="line">      bpf_probe_read_kernel_str(info-&gt;name, <span class="keyword">sizeof</span>(syscalls[syscall_nr].name), syscalls[syscall_nr].name);</span><br><span class="line">      <span class="keyword">for</span> (<span class="type">int</span> i = <span class="number">0</span>; i &lt; MAX_ARGS; i++)</span><br><span class="line">      &#123;</span><br><span class="line">        info-&gt;args[i] = (<span class="type">void</span> *)BPF_CORE_READ(ctx, args[i]);</span><br><span class="line">      &#125;</span><br><span class="line">      info-&gt;num_args = syscalls[syscall_nr].num_args;</span><br><span class="line">      info-&gt;syscall_nr = syscall_nr;</span><br><span class="line">      info-&gt;mode = SYS_ENTER;</span><br><span class="line">      <span class="comment">// Insert into ring buffer</span></span><br><span class="line">      bpf_ringbuf_submit(info, <span class="number">0</span>);</span><br><span class="line">    &#125;</span><br><span class="line">  &#125;</span><br><span class="line">  <span class="keyword">return</span> <span class="number">0</span>;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+<p>同理，我们也能编写用于读取返回值并将其传递给用户态空间的程序代码。</p>
+<figure class="highlight c"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br><span class="line">25</span><br><span class="line">26</span><br><span class="line">27</span><br><span class="line">28</span><br></pre></td><td class="code"><pre><span class="line"><span class="comment">// controller.c</span></span><br><span class="line"></span><br><span class="line">SEC(<span class="string">&quot;tracepoint/raw_syscalls/sys_exit&quot;</span>)</span><br><span class="line"><span class="type">int</span> <span class="title function_">detect_syscall_exit</span><span class="params">(<span class="keyword">struct</span> trace_event_raw_sys_exit *ctx)</span></span><br><span class="line">&#123;</span><br><span class="line">  <span class="type">const</span> <span class="type">char</span> *key = <span class="string">&quot;child_pid&quot;</span>;</span><br><span class="line">  <span class="type">void</span> *value = bpf_map_lookup_elem(&amp;pid_hashmap, key);</span><br><span class="line">  <span class="type">pid_t</span> pid, target_pid;</span><br><span class="line"></span><br><span class="line">  <span class="keyword">if</span> (value)</span><br><span class="line">  &#123;</span><br><span class="line">    pid = bpf_get_current_pid_tgid() &amp; <span class="number">0xffffffff</span>;</span><br><span class="line">    target_pid = *(<span class="type">pid_t</span> *)value;</span><br><span class="line">    <span class="keyword">if</span> (pid == target_pid)</span><br><span class="line">    &#123;</span><br><span class="line">      <span class="class"><span class="keyword">struct</span> <span class="title">inner_syscall_info</span> *<span class="title">info</span> =</span> bpf_ringbuf_reserve(&amp;syscall_info_buffer, <span class="keyword">sizeof</span>(<span class="keyword">struct</span> inner_syscall_info), <span class="number">0</span>);</span><br><span class="line">      <span class="keyword">if</span> (!info)</span><br><span class="line">      &#123;</span><br><span class="line">        bpf_printk(<span class="string">&quot;bpf_ringbuf_reserve failed&quot;</span>);</span><br><span class="line">        <span class="keyword">return</span> <span class="number">1</span>;</span><br><span class="line">      &#125;</span><br><span class="line">      info-&gt;mode = SYS_EXIT;</span><br><span class="line">      info-&gt;retval = ctx-&gt;ret;</span><br><span class="line">      bpf_ringbuf_submit(info, <span class="number">0</span>);</span><br><span class="line">    &#125;</span><br><span class="line">  &#125;</span><br><span class="line">  <span class="keyword">return</span> <span class="number">0</span>;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+<p>现在，让我们来完善加载器程序中父进程的功能部分。但在进行之前，我们需要理解几个关键函数的工作原理。<br>1、<code>bpf_object__open</code>: 通过打开由传递路径指向的 BPF ELF 对象文件并在内存中加载它，创建一个 <code>bpf_object</code> 结构体实例。</p>
+<figure class="highlight c"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">LIBBPF_API <span class="keyword">struct</span> bpf_object *<span class="title function_">bpf_object__open</span><span class="params">(<span class="type">const</span> <span class="type">char</span> *path)</span>;</span><br></pre></td></tr></table></figure>
+
+<p>2、<code>bpf_object__load</code>: 将 BPF 对象加载到内核中。</p>
+<figure class="highlight c"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">LIBBPF_API <span class="type">int</span> <span class="title function_">bpf_object__load</span><span class="params">(<span class="keyword">struct</span> bpf_object *obj)</span>;</span><br></pre></td></tr></table></figure>
+
+<p>3、<code>bpf_object__find_program_by_name</code>: 返回指向有效 BPF 程序的指针。</p>
+<figure class="highlight c"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">LIBBPF_API <span class="keyword">struct</span> bpf_program *<span class="title function_">bpf_object__find_program_by_name</span><span class="params">(<span class="type">const</span> <span class="keyword">struct</span> bpf_object *obj, <span class="type">const</span> <span class="type">char</span> *name)</span>;</span><br></pre></td></tr></table></figure>
+
+<p>4、<code>bpf_program__attach</code>: 根据自动检测的程序类型、附加类型和适用的额外参数，将 BPF 程序附加到内核。</p>
+<figure class="highlight c"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">LIBBPF_API <span class="keyword">struct</span> bpf_link *<span class="title function_">bpf_program__attach</span><span class="params">(<span class="type">const</span> <span class="keyword">struct</span> bpf_program *prog)</span>;</span><br></pre></td></tr></table></figure>
+
+<p>5、<code>bpf_map__update_elem</code>: 允许在与提供的键对应的 BPF 映射中插入或更新值。</p>
+<figure class="highlight c"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">LIBBPF_API <span class="type">int</span> <span class="title function_">bpf_map__update_elem</span><span class="params">(<span class="type">const</span> <span class="keyword">struct</span> bpf_map *<span class="built_in">map</span>, <span class="type">const</span> <span class="type">void</span> *key, <span class="type">size_t</span> key_sz, <span class="type">const</span> <span class="type">void</span> *value, <span class="type">size_t</span> value_sz, __u64 flags)</span>;</span><br></pre></td></tr></table></figure>
+
+<p>6、<code>bpf_object__find_map_fd_by_name</code>: 给定一个 BPF 映射名称，返回该映射的文件描述符。</p>
+<figure class="highlight c"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">LIBBPF_API <span class="type">int</span> <span class="title function_">bpf_object__find_map_fd_by_name</span><span class="params">(<span class="type">const</span> <span class="keyword">struct</span> bpf_object *obj, <span class="type">const</span> <span class="type">char</span> *name)</span>;</span><br></pre></td></tr></table></figure>
+
+<p>7、<code>ring_buffer__new</code>: 返回指向环形缓冲区的指针。</p>
+<figure class="highlight c"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">LIBBPF_API <span class="keyword">struct</span> ring_buffer *<span class="title function_">ring_buffer__new</span><span class="params">(<span class="type">int</span> map_fd, ring_buffer_sample_fn sample_cb, <span class="type">void</span> *ctx, <span class="type">const</span> <span class="keyword">struct</span> ring_buffer_opts *opts)</span>;</span><br></pre></td></tr></table></figure>
+
+<p>第二个参数必须是一个可用于处理从环形缓冲区接收的数据的回调函数。</p>
+<figure class="highlight c"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br><span class="line">25</span><br><span class="line">26</span><br><span class="line">27</span><br><span class="line">28</span><br><span class="line">29</span><br></pre></td><td class="code"><pre><span class="line"><span class="type">bool</span> initialized = <span class="literal">false</span>;</span><br><span class="line"></span><br><span class="line"><span class="type">static</span> <span class="type">int</span> <span class="title function_">syscall_logger</span><span class="params">(<span class="type">void</span> *ctx, <span class="type">void</span> *data, <span class="type">size_t</span> len)</span></span><br><span class="line">&#123;</span><br><span class="line">  <span class="class"><span class="keyword">struct</span> <span class="title">inner_syscall_info</span> *<span class="title">info</span> =</span> (<span class="keyword">struct</span> inner_syscall_info *)data;</span><br><span class="line">  <span class="keyword">if</span> (!info)</span><br><span class="line">  &#123;</span><br><span class="line">    <span class="keyword">return</span> <span class="number">-1</span>;</span><br><span class="line">  &#125;</span><br><span class="line"></span><br><span class="line">  <span class="keyword">if</span> (info-&gt;mode == SYS_ENTER)</span><br><span class="line">  &#123;</span><br><span class="line">    initialized = <span class="literal">true</span>;</span><br><span class="line">    <span class="built_in">printf</span>(<span class="string">&quot;%s(&quot;</span>, info-&gt;name);</span><br><span class="line">    <span class="keyword">for</span> (<span class="type">int</span> i = <span class="number">0</span>; i &lt; info-&gt;num_args; i++)</span><br><span class="line">    &#123;</span><br><span class="line">      <span class="built_in">printf</span>(<span class="string">&quot;%p,&quot;</span>, info-&gt;args[i]);</span><br><span class="line">    &#125;</span><br><span class="line">    <span class="built_in">printf</span>(<span class="string">&quot;\b) = &quot;</span>);</span><br><span class="line">  &#125;</span><br><span class="line">  <span class="keyword">else</span> <span class="keyword">if</span> (info-&gt;mode == SYS_EXIT)</span><br><span class="line">  &#123;</span><br><span class="line">    <span class="keyword">if</span> (initialized)</span><br><span class="line">    &#123;</span><br><span class="line">      <span class="built_in">printf</span>(<span class="string">&quot;0x%lx\n&quot;</span>, info-&gt;retval);</span><br><span class="line">    &#125;</span><br><span class="line">  &#125;</span><br><span class="line">  <span class="keyword">return</span> <span class="number">0</span>;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+<p>它会打印系统调用的名称和参数。</p>
+<p>8、<code>ring_buffer__consume</code>: 此函数处理环形缓冲区中可用的事件。</p>
+<figure class="highlight c"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">LIBBPF_API <span class="type">int</span> <span class="title function_">ring_buffer__consume</span><span class="params">(<span class="keyword">struct</span> ring_buffer *rb)</span>;</span><br></pre></td></tr></table></figure>
+
+<p>现在我们有了编写加载器所需的一切要素。</p>
+<figure class="highlight c"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br><span class="line">25</span><br><span class="line">26</span><br><span class="line">27</span><br><span class="line">28</span><br><span class="line">29</span><br><span class="line">30</span><br><span class="line">31</span><br><span class="line">32</span><br><span class="line">33</span><br><span class="line">34</span><br><span class="line">35</span><br><span class="line">36</span><br><span class="line">37</span><br><span class="line">38</span><br><span class="line">39</span><br><span class="line">40</span><br><span class="line">41</span><br><span class="line">42</span><br><span class="line">43</span><br><span class="line">44</span><br><span class="line">45</span><br><span class="line">46</span><br><span class="line">47</span><br><span class="line">48</span><br><span class="line">49</span><br><span class="line">50</span><br><span class="line">51</span><br><span class="line">52</span><br><span class="line">53</span><br><span class="line">54</span><br><span class="line">55</span><br><span class="line">56</span><br><span class="line">57</span><br><span class="line">58</span><br><span class="line">59</span><br><span class="line">60</span><br><span class="line">61</span><br><span class="line">62</span><br><span class="line">63</span><br><span class="line">64</span><br><span class="line">65</span><br><span class="line">66</span><br><span class="line">67</span><br><span class="line">68</span><br><span class="line">69</span><br><span class="line">70</span><br><span class="line">71</span><br><span class="line">72</span><br><span class="line">73</span><br><span class="line">74</span><br><span class="line">75</span><br><span class="line">76</span><br><span class="line">77</span><br><span class="line">78</span><br><span class="line">79</span><br><span class="line">80</span><br><span class="line">81</span><br><span class="line">82</span><br><span class="line">83</span><br><span class="line">84</span><br><span class="line">85</span><br><span class="line">86</span><br><span class="line">87</span><br><span class="line">88</span><br><span class="line">89</span><br><span class="line">90</span><br><span class="line">91</span><br><span class="line">92</span><br><span class="line">93</span><br><span class="line">94</span><br><span class="line">95</span><br><span class="line">96</span><br><span class="line">97</span><br><span class="line">98</span><br><span class="line">99</span><br><span class="line">100</span><br><span class="line">101</span><br><span class="line">102</span><br><span class="line">103</span><br><span class="line">104</span><br><span class="line">105</span><br><span class="line">106</span><br><span class="line">107</span><br><span class="line">108</span><br><span class="line">109</span><br><span class="line">110</span><br><span class="line">111</span><br><span class="line">112</span><br><span class="line">113</span><br><span class="line">114</span><br><span class="line">115</span><br><span class="line">116</span><br><span class="line">117</span><br><span class="line">118</span><br><span class="line">119</span><br><span class="line">120</span><br><span class="line">121</span><br><span class="line">122</span><br><span class="line">123</span><br><span class="line">124</span><br><span class="line">125</span><br><span class="line">126</span><br><span class="line">127</span><br><span class="line">128</span><br><span class="line">129</span><br><span class="line">130</span><br><span class="line">131</span><br><span class="line">132</span><br><span class="line">133</span><br><span class="line">134</span><br><span class="line">135</span><br><span class="line">136</span><br><span class="line">137</span><br></pre></td><td class="code"><pre><span class="line"><span class="comment">// loader.c</span></span><br><span class="line"><span class="meta">#<span class="keyword">include</span> <span class="string">&lt;bpf/libbpf.h&gt;</span></span></span><br><span class="line"><span class="meta">#<span class="keyword">include</span> <span class="string">&quot;controller.h&quot;</span></span></span><br><span class="line"><span class="meta">#<span class="keyword">include</span> <span class="string">&lt;fcntl.h&gt;</span></span></span><br><span class="line"><span class="meta">#<span class="keyword">include</span> <span class="string">&lt;stdio.h&gt;</span></span></span><br><span class="line"><span class="meta">#<span class="keyword">include</span> <span class="string">&lt;stdlib.h&gt;</span></span></span><br><span class="line"><span class="meta">#<span class="keyword">include</span> <span class="string">&lt;sys/wait.h&gt;</span></span></span><br><span class="line"><span class="meta">#<span class="keyword">include</span> <span class="string">&lt;unistd.h&gt;</span></span></span><br><span class="line"></span><br><span class="line"><span class="type">void</span> <span class="title function_">fatal_error</span><span class="params">(<span class="type">const</span> <span class="type">char</span> *message)</span></span><br><span class="line">&#123;</span><br><span class="line">  <span class="built_in">puts</span>(message);</span><br><span class="line">  <span class="built_in">exit</span>(<span class="number">1</span>);</span><br><span class="line">&#125;</span><br><span class="line"></span><br><span class="line"><span class="type">bool</span> initialized = <span class="literal">false</span>;</span><br><span class="line"></span><br><span class="line"><span class="type">static</span> <span class="type">int</span> <span class="title function_">syscall_logger</span><span class="params">(<span class="type">void</span> *ctx, <span class="type">void</span> *data, <span class="type">size_t</span> len)</span></span><br><span class="line">&#123;</span><br><span class="line">  <span class="class"><span class="keyword">struct</span> <span class="title">inner_syscall_info</span> *<span class="title">info</span> =</span> (<span class="keyword">struct</span> inner_syscall_info *)data;</span><br><span class="line">  <span class="keyword">if</span> (!info)</span><br><span class="line">  &#123;</span><br><span class="line">    <span class="keyword">return</span> <span class="number">-1</span>;</span><br><span class="line">  &#125;</span><br><span class="line"></span><br><span class="line">  <span class="keyword">if</span> (info-&gt;mode == SYS_ENTER)</span><br><span class="line">  &#123;</span><br><span class="line">    initialized = <span class="literal">true</span>;</span><br><span class="line">    <span class="built_in">printf</span>(<span class="string">&quot;%s(&quot;</span>, info-&gt;name);</span><br><span class="line">    <span class="keyword">for</span> (<span class="type">int</span> i = <span class="number">0</span>; i &lt; info-&gt;num_args; i++)</span><br><span class="line">    &#123;</span><br><span class="line">      <span class="built_in">printf</span>(<span class="string">&quot;%p,&quot;</span>, info-&gt;args[i]);</span><br><span class="line">    &#125;</span><br><span class="line">    <span class="built_in">printf</span>(<span class="string">&quot;\b) = &quot;</span>);</span><br><span class="line">  &#125;</span><br><span class="line">  <span class="keyword">else</span> <span class="keyword">if</span> (info-&gt;mode == SYS_EXIT)</span><br><span class="line">  &#123;</span><br><span class="line">    <span class="keyword">if</span> (initialized)</span><br><span class="line">    &#123;</span><br><span class="line">      <span class="built_in">printf</span>(<span class="string">&quot;0x%lx\n&quot;</span>, info-&gt;retval);</span><br><span class="line">    &#125;</span><br><span class="line">  &#125;</span><br><span class="line">  <span class="keyword">return</span> <span class="number">0</span>;</span><br><span class="line">&#125;</span><br><span class="line"></span><br><span class="line"><span class="type">int</span> <span class="title function_">main</span><span class="params">(<span class="type">int</span> argc, <span class="type">char</span> **argv)</span></span><br><span class="line">&#123;</span><br><span class="line">  <span class="type">int</span> status;</span><br><span class="line">  <span class="class"><span class="keyword">struct</span> <span class="title">bpf_object</span> *<span class="title">obj</span>;</span></span><br><span class="line">  <span class="class"><span class="keyword">struct</span> <span class="title">bpf_program</span> *<span class="title">enter_prog</span>, *<span class="title">exit_prog</span>;</span></span><br><span class="line">  <span class="class"><span class="keyword">struct</span> <span class="title">bpf_map</span> *<span class="title">syscall_map</span>;</span></span><br><span class="line">  <span class="type">const</span> <span class="type">char</span> *obj_name = <span class="string">&quot;controller.o&quot;</span>;</span><br><span class="line">  <span class="type">const</span> <span class="type">char</span> *map_name = <span class="string">&quot;pid_hashmap&quot;</span>;</span><br><span class="line">  <span class="type">const</span> <span class="type">char</span> *enter_prog_name = <span class="string">&quot;detect_syscall_enter&quot;</span>; </span><br><span class="line">  <span class="type">const</span> <span class="type">char</span> *exit_prog_name = <span class="string">&quot;detect_syscall_exit&quot;</span>;</span><br><span class="line">  <span class="type">const</span> <span class="type">char</span> *syscall_info_bufname = <span class="string">&quot;syscall_info_buffer&quot;</span>;</span><br><span class="line"></span><br><span class="line">  <span class="keyword">if</span> (argc &lt; <span class="number">2</span>)</span><br><span class="line">  &#123;</span><br><span class="line">    fatal_error(<span class="string">&quot;Usage: ./beetrace &lt;path_to_program&gt;&quot;</span>);</span><br><span class="line">  &#125;</span><br><span class="line">  <span class="type">const</span> <span class="type">char</span> *file_path = argv[<span class="number">1</span>];</span><br><span class="line"></span><br><span class="line">  <span class="type">pid_t</span> pid = fork();</span><br><span class="line">  <span class="keyword">if</span> (pid == <span class="number">0</span>)</span><br><span class="line">  &#123;</span><br><span class="line">    <span class="type">int</span> fd = open(<span class="string">&quot;/dev/null&quot;</span>, O_WRONLY);</span><br><span class="line">    <span class="keyword">if</span>(fd==<span class="number">-1</span>)&#123;</span><br><span class="line">      fatal_error(<span class="string">&quot;failed to open /dev/null&quot;</span>);</span><br><span class="line">    &#125;</span><br><span class="line">    dup2(fd, <span class="number">1</span>);</span><br><span class="line">    sleep(<span class="number">2</span>);</span><br><span class="line">    execve(file_path, <span class="literal">NULL</span>, <span class="literal">NULL</span>);</span><br><span class="line">  &#125;</span><br><span class="line">  <span class="keyword">else</span></span><br><span class="line">  &#123;</span><br><span class="line">    <span class="built_in">printf</span>(<span class="string">&quot;Spawned child process with a PID of %d\n&quot;</span>, pid);</span><br><span class="line">    obj = bpf_object__open(obj_name);</span><br><span class="line">    <span class="keyword">if</span> (!obj)</span><br><span class="line">    &#123;</span><br><span class="line">      fatal_error(<span class="string">&quot;failed to open the BPF object&quot;</span>);</span><br><span class="line">    &#125;</span><br><span class="line">    <span class="keyword">if</span> (bpf_object__load(obj))</span><br><span class="line">    &#123;</span><br><span class="line">      fatal_error(<span class="string">&quot;failed to load the BPF object into kernel&quot;</span>);</span><br><span class="line">    &#125;</span><br><span class="line"></span><br><span class="line">    enter_prog = bpf_object__find_program_by_name(obj, enter_prog_name);</span><br><span class="line">    exit_prog = bpf_object__find_program_by_name(obj, exit_prog_name);</span><br><span class="line"></span><br><span class="line">    <span class="keyword">if</span> (!enter_prog || !exit_prog)</span><br><span class="line">    &#123;</span><br><span class="line">      fatal_error(<span class="string">&quot;failed to find the BPF program&quot;</span>);</span><br><span class="line">    &#125;</span><br><span class="line">    <span class="keyword">if</span> (!bpf_program__attach(enter_prog) || !bpf_program__attach(exit_prog))</span><br><span class="line">    &#123;</span><br><span class="line">      fatal_error(<span class="string">&quot;failed to attach the BPF program&quot;</span>);</span><br><span class="line">    &#125;</span><br><span class="line">    syscall_map = bpf_object__find_map_by_name(obj, map_name);</span><br><span class="line">    <span class="keyword">if</span> (!syscall_map)</span><br><span class="line">    &#123;</span><br><span class="line">      fatal_error(<span class="string">&quot;failed to find the BPF map&quot;</span>);</span><br><span class="line">    &#125;</span><br><span class="line">    <span class="type">const</span> <span class="type">char</span> *key = <span class="string">&quot;child_pid&quot;</span>;</span><br><span class="line">    <span class="type">int</span> err = bpf_map__update_elem(syscall_map, key, <span class="number">10</span>, (<span class="type">void</span> *)&amp;pid, <span class="keyword">sizeof</span>(<span class="type">pid_t</span>), <span class="number">0</span>);</span><br><span class="line">    <span class="keyword">if</span> (err)</span><br><span class="line">    &#123;</span><br><span class="line">      <span class="built_in">printf</span>(<span class="string">&quot;%d&quot;</span>, err);</span><br><span class="line">      fatal_error(<span class="string">&quot;failed to insert child pid into the ring buffer&quot;</span>);</span><br><span class="line">    &#125;</span><br><span class="line"></span><br><span class="line">    <span class="type">int</span> rbFd = bpf_object__find_map_fd_by_name(obj, syscall_info_bufname);</span><br><span class="line"></span><br><span class="line">    <span class="class"><span class="keyword">struct</span> <span class="title">ring_buffer</span> *<span class="title">rbuffer</span> =</span> ring_buffer__new(rbFd, syscall_logger, <span class="literal">NULL</span>, <span class="literal">NULL</span>);</span><br><span class="line"></span><br><span class="line">    <span class="keyword">if</span> (!rbuffer)</span><br><span class="line">    &#123;</span><br><span class="line">      fatal_error(<span class="string">&quot;failed to allocate ring buffer&quot;</span>);</span><br><span class="line">    &#125;</span><br><span class="line"></span><br><span class="line">    <span class="keyword">if</span> (wait(&amp;status) == <span class="number">-1</span>)</span><br><span class="line">    &#123;</span><br><span class="line">      fatal_error(<span class="string">&quot;failed to wait for the child process&quot;</span>);</span><br><span class="line">    &#125;</span><br><span class="line"></span><br><span class="line">    <span class="keyword">while</span> (<span class="number">1</span>)</span><br><span class="line">    &#123;</span><br><span class="line">      <span class="type">int</span> e = ring_buffer__consume(rbuffer);</span><br><span class="line">      <span class="keyword">if</span> (!e)</span><br><span class="line">      &#123;</span><br><span class="line">        <span class="keyword">break</span>;</span><br><span class="line">      &#125;</span><br><span class="line">      sleep(<span class="number">1</span>);</span><br><span class="line">    &#125;</span><br><span class="line">  &#125;</span><br><span class="line">  <span class="keyword">return</span> <span class="number">0</span>;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+<p>以下便是 eBPF 程序的部分。所有的 C 语言源码最终会被编译整合成单一的对象文件。</p>
+<figure class="highlight c"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br><span class="line">25</span><br><span class="line">26</span><br><span class="line">27</span><br><span class="line">28</span><br><span class="line">29</span><br><span class="line">30</span><br><span class="line">31</span><br><span class="line">32</span><br><span class="line">33</span><br><span class="line">34</span><br><span class="line">35</span><br><span class="line">36</span><br><span class="line">37</span><br><span class="line">38</span><br><span class="line">39</span><br><span class="line">40</span><br><span class="line">41</span><br><span class="line">42</span><br><span class="line">43</span><br><span class="line">44</span><br><span class="line">45</span><br><span class="line">46</span><br><span class="line">47</span><br><span class="line">48</span><br><span class="line">49</span><br><span class="line">50</span><br><span class="line">51</span><br><span class="line">52</span><br><span class="line">53</span><br><span class="line">54</span><br><span class="line">55</span><br><span class="line">56</span><br><span class="line">57</span><br><span class="line">58</span><br><span class="line">59</span><br><span class="line">60</span><br><span class="line">61</span><br><span class="line">62</span><br><span class="line">63</span><br><span class="line">64</span><br><span class="line">65</span><br><span class="line">66</span><br><span class="line">67</span><br><span class="line">68</span><br><span class="line">69</span><br><span class="line">70</span><br><span class="line">71</span><br><span class="line">72</span><br><span class="line">73</span><br><span class="line">74</span><br><span class="line">75</span><br><span class="line">76</span><br><span class="line">77</span><br><span class="line">78</span><br><span class="line">79</span><br><span class="line">80</span><br><span class="line">81</span><br><span class="line">82</span><br><span class="line">83</span><br><span class="line">84</span><br><span class="line">85</span><br><span class="line">86</span><br><span class="line">87</span><br><span class="line">88</span><br><span class="line">89</span><br><span class="line">90</span><br><span class="line">91</span><br><span class="line">92</span><br><span class="line">93</span><br><span class="line">94</span><br><span class="line">95</span><br><span class="line">96</span><br><span class="line">97</span><br></pre></td><td class="code"><pre><span class="line"><span class="comment">// controller.c</span></span><br><span class="line"></span><br><span class="line"><span class="meta">#<span class="keyword">include</span> <span class="string">&quot;vmlinux.h&quot;</span></span></span><br><span class="line"><span class="meta">#<span class="keyword">include</span> <span class="string">&lt;bpf/bpf_helpers.h&gt;</span></span></span><br><span class="line"><span class="meta">#<span class="keyword">include</span> <span class="string">&lt;bpf/bpf_core_read.h&gt;</span></span></span><br><span class="line"><span class="meta">#<span class="keyword">include</span> <span class="string">&lt;sys/syscall.h&gt;</span></span></span><br><span class="line"><span class="meta">#<span class="keyword">include</span> <span class="string">&quot;controller.h&quot;</span></span></span><br><span class="line"></span><br><span class="line"><span class="class"><span class="keyword">struct</span></span></span><br><span class="line"><span class="class">&#123;</span></span><br><span class="line">  __uint(type, BPF_MAP_TYPE_HASH);</span><br><span class="line">  __uint(key_size, <span class="number">10</span>);</span><br><span class="line">  __uint(value_size, <span class="number">4</span>);</span><br><span class="line">  __uint(max_entries, <span class="number">256</span> * <span class="number">1024</span>);</span><br><span class="line">&#125; pid_hashmap <span class="title function_">SEC</span><span class="params">(<span class="string">&quot;.maps&quot;</span>)</span>;</span><br><span class="line"></span><br><span class="line"><span class="class"><span class="keyword">struct</span></span></span><br><span class="line"><span class="class">&#123;</span></span><br><span class="line">  __uint(type, BPF_MAP_TYPE_RINGBUF);</span><br><span class="line">  __uint(max_entries, <span class="number">256</span> * <span class="number">1024</span>);</span><br><span class="line">&#125; syscall_info_buffer <span class="title function_">SEC</span><span class="params">(<span class="string">&quot;.maps&quot;</span>)</span>;</span><br><span class="line"></span><br><span class="line"></span><br><span class="line">SEC(<span class="string">&quot;tracepoint/raw_syscalls/sys_enter&quot;</span>)</span><br><span class="line"><span class="type">int</span> <span class="title function_">detect_syscall_enter</span><span class="params">(<span class="keyword">struct</span> trace_event_raw_sys_enter *ctx)</span></span><br><span class="line">&#123;</span><br><span class="line">  <span class="comment">// Retrieve the system call number</span></span><br><span class="line">  <span class="type">long</span> syscall_nr = ctx-&gt;id;</span><br><span class="line">  <span class="type">const</span> <span class="type">char</span> *key = <span class="string">&quot;child_pid&quot;</span>;</span><br><span class="line">  <span class="type">int</span> target_pid;</span><br><span class="line"></span><br><span class="line">  <span class="comment">// Reading the process id of the child process in userland</span></span><br><span class="line">  <span class="type">void</span> *value = bpf_map_lookup_elem(&amp;pid_hashmap, key);</span><br><span class="line">  <span class="type">void</span> *args[MAX_ARGS];</span><br><span class="line"></span><br><span class="line">  <span class="keyword">if</span> (value)</span><br><span class="line">  &#123;</span><br><span class="line">    target_pid = *(<span class="type">int</span> *)value;</span><br><span class="line"></span><br><span class="line">    <span class="comment">// PID of the process that executed the current system call</span></span><br><span class="line">    <span class="type">pid_t</span> pid = bpf_get_current_pid_tgid() &amp; <span class="number">0xffffffff</span>;</span><br><span class="line">    <span class="keyword">if</span> (pid == target_pid &amp;&amp; syscall_nr &gt;= <span class="number">0</span> &amp;&amp; syscall_nr &lt; MAX_SYSCALL_NR)</span><br><span class="line">    &#123;</span><br><span class="line"></span><br><span class="line">      <span class="type">int</span> idx = syscall_nr;</span><br><span class="line">      <span class="comment">// Reserve space in the ring buffer</span></span><br><span class="line">      <span class="class"><span class="keyword">struct</span> <span class="title">inner_syscall_info</span> *<span class="title">info</span> =</span> bpf_ringbuf_reserve(&amp;syscall_info_buffer, <span class="keyword">sizeof</span>(<span class="keyword">struct</span> inner_syscall_info), <span class="number">0</span>);</span><br><span class="line">      <span class="keyword">if</span> (!info)</span><br><span class="line">      &#123;</span><br><span class="line">        bpf_printk(<span class="string">&quot;bpf_ringbuf_reserve failed&quot;</span>);</span><br><span class="line">        <span class="keyword">return</span> <span class="number">1</span>;</span><br><span class="line">      &#125;</span><br><span class="line"></span><br><span class="line">      <span class="comment">// Copy the syscall name into info-&gt;name</span></span><br><span class="line">      bpf_probe_read_kernel_str(info-&gt;name, <span class="keyword">sizeof</span>(syscalls[syscall_nr].name), syscalls[syscall_nr].name);</span><br><span class="line">      <span class="keyword">for</span> (<span class="type">int</span> i = <span class="number">0</span>; i &lt; MAX_ARGS; i++)</span><br><span class="line">      &#123;</span><br><span class="line">        info-&gt;args[i] = (<span class="type">void</span> *)BPF_CORE_READ(ctx, args[i]);</span><br><span class="line">      &#125;</span><br><span class="line">      info-&gt;num_args = syscalls[syscall_nr].num_args;</span><br><span class="line">      info-&gt;syscall_nr = syscall_nr;</span><br><span class="line">      info-&gt;mode = SYS_ENTER;</span><br><span class="line">      <span class="comment">// Insert into ring buffer</span></span><br><span class="line">      bpf_ringbuf_submit(info, <span class="number">0</span>);</span><br><span class="line">    &#125;</span><br><span class="line">  &#125;</span><br><span class="line">  <span class="keyword">return</span> <span class="number">0</span>;</span><br><span class="line">&#125;</span><br><span class="line"></span><br><span class="line">SEC(<span class="string">&quot;tracepoint/raw_syscalls/sys_exit&quot;</span>)</span><br><span class="line"><span class="type">int</span> <span class="title function_">detect_syscall_exit</span><span class="params">(<span class="keyword">struct</span> trace_event_raw_sys_exit *ctx)</span></span><br><span class="line">&#123;</span><br><span class="line">  <span class="type">const</span> <span class="type">char</span> *key = <span class="string">&quot;child_pid&quot;</span>;</span><br><span class="line">  <span class="type">void</span> *value = bpf_map_lookup_elem(&amp;pid_hashmap, key);</span><br><span class="line">  <span class="type">pid_t</span> pid, target_pid;</span><br><span class="line"></span><br><span class="line">  <span class="keyword">if</span> (value)</span><br><span class="line">  &#123;</span><br><span class="line">    pid = bpf_get_current_pid_tgid() &amp; <span class="number">0xffffffff</span>;</span><br><span class="line">    target_pid = *(<span class="type">pid_t</span> *)value;</span><br><span class="line">    <span class="keyword">if</span> (pid == target_pid)</span><br><span class="line">    &#123;</span><br><span class="line">      <span class="class"><span class="keyword">struct</span> <span class="title">inner_syscall_info</span> *<span class="title">info</span> =</span> bpf_ringbuf_reserve(&amp;syscall_info_buffer, <span class="keyword">sizeof</span>(<span class="keyword">struct</span> inner_syscall_info), <span class="number">0</span>);</span><br><span class="line">      <span class="keyword">if</span> (!info)</span><br><span class="line">      &#123;</span><br><span class="line">        bpf_printk(<span class="string">&quot;bpf_ringbuf_reserve failed&quot;</span>);</span><br><span class="line">        <span class="keyword">return</span> <span class="number">1</span>;</span><br><span class="line">      &#125;</span><br><span class="line">      info-&gt;mode = SYS_EXIT;</span><br><span class="line">      info-&gt;retval = ctx-&gt;ret;</span><br><span class="line">      bpf_ringbuf_submit(info, <span class="number">0</span>);</span><br><span class="line">    &#125;</span><br><span class="line">  &#125;</span><br><span class="line">  <span class="keyword">return</span> <span class="number">0</span>;</span><br><span class="line">&#125;</span><br><span class="line"></span><br><span class="line"><span class="type">char</span> LICENSE[] SEC(<span class="string">&quot;license&quot;</span>) = <span class="string">&quot;GPL&quot;</span>;</span><br></pre></td></tr></table></figure>
+
+<p>编译之前，我们不妨先构建一个测试程序，以便后续使用我们的工具对其进行追踪分析。</p>
+<figure class="highlight c"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br></pre></td><td class="code"><pre><span class="line"><span class="meta">#<span class="keyword">include</span><span class="string">&lt;stdio.h&gt;</span></span></span><br><span class="line"><span class="type">int</span> <span class="title function_">main</span><span class="params">()</span>&#123;</span><br><span class="line">    <span class="built_in">puts</span>(<span class="string">&quot;tracer in action&quot;</span>);</span><br><span class="line">    <span class="keyword">return</span> <span class="number">0</span>;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+<p>可以利用下面提供的 Makefile 来完成所有相关组件的编译工作。</p>
+<figure class="highlight sh"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br></pre></td><td class="code"><pre><span class="line">compile:</span><br><span class="line">	clang -O2 -g -Wall -I/usr/include -I/usr/include/bpf -o beetrace loader.c -lbpf</span><br><span class="line">	clang -O2 -g -target bpf -c controller.c -o controller.o</span><br></pre></td></tr></table></figure>
+
+<img src="/2024/08/04/beetracer/beetracer.png" class="">
+
+<p>整个代码可以在以下的GitHub仓库中找到：<br><a href="https://github.com/0xSh4dy/bee_tracer">https://github.com/0xSh4dy/bee_tracer</a></p>
+<p>参考链接：</p>
+<ul>
+<li><a href="https://ebpf.io/">https://ebpf.io/</a></li>
+<li><a href="https://github.com/libbpf/libbpf">https://github.com/libbpf/libbpf</a></li>
+</ul>
+
+      
+    </div>
+    <footer class="article-footer">
+      
+
+      
+      <!-- <link rel="stylesheet" href="https://unpkg.com/gitalk/dist/gitalk.css">
+      <script src="https://unpkg.com/gitalk/dist/gitalk.min.js"></script> -->
+      <section id="comments">
+        <script src="https://utteranc.es/client.js"
+                repo="smallnest/gitalk"
+                issue-term="title"
+                theme="github-light"
+                crossorigin="anonymous"
+                async>
+        </script>
+        <!-- <div id="gitalk-container"></div>
+        <script type="text/javascript">
+          var gitalkOpts = {
+            id: '2024/08/04/beetracer/',
+            owner: 'smallnest',
+            repo: 'gitalk',
+            title: '使用eBPF编写系统调用跟踪器',
+            body: 'https://colobu.com/2024/08/04/beetracer/index.html',
+            clientID: 'bc02724130ed5b7ee275',
+            clientSecret: '68cb0bae2f93a8b88b09e0eb9b08c844b06a9047',
+            admin: ['smallnest'],
+            distractionFreeMode: false
+          };
+
+          const gitalk = new Gitalk(gitalkOpts)
+          gitalk.render('gitalk-container')
+        </script> -->
+        <noscript> 为正常使用评论功能请激活JavaScript</noscript>
+      </section>
+
+      
+
+    </footer>
+  </div>
+  
+  
+<nav id="article-nav">
+  
+    <a href="/2024/08/08/access-the-unexported-fields/" id="article-nav-newer" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">Newer</strong>
+      <div class="article-nav-title">
+        
+          没有什么不可能：修改 Go 结构体的私有字段
+        
+      </div>
+    </a>
+  
+  
+    <a href="/2024/08/02/Russ-Cox-and-his-Oscar/" id="article-nav-older" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">Older</strong>
+      <div class="article-nav-title">Russ Cox 引退以及他的新项目 Oscar</div>
+    </a>
+  
+</nav>
+
+  
+</article></section>
+        
+          <aside id="sidebar">
+  
+    <div class="widget-wrap">
+  <h3 class="widget-title">访问者来源</h3>
+  <div class="widget">
+    <script type="text/javascript" id="mmvst_globe" src="//mapmyvisitors.com/globe.js?d=33a_ORm-dIXRKRAG9KqfzawkYSIwGkaxOK0nA3Ha9Us"></script>
+  </div>
+</div>
+
+<div class="widget-wrap">
+  <h3 class="widget-title">微信公众号</h3>
+  <div class="widget">
+    <img width="100%" src="/images/widgets/gopatterns.jpg">
+  </div>
+</div>
+
+<div class="widget-wrap">
+  <h3 class="widget-title">极客时间专栏</h3>
+  <div class="widget">
+    <a href="https://time.geekbang.org/column/intro/100061801">
+      <img width="100%" src="/images/widgets/geekbang.png">
+    </a>
+    <a href="https://time.geekbang.org/column/intro/100953201">
+      <img width="100%" src="/images/widgets/geekbang2.png">
+    </a>
+  </div>
+</div>
+
+<div class="widget-wrap">
+    <h3 class="widget-title">出版图书</h3>
+    <div class="widget">
+      <a href="https://cpgo.colobu.com/">
+        <img width="100%" src="/cpgolang/cpgo.png">
+      </a>
+    </div>
+    <div class="widget">
+      <a href="https://www.books.com.tw/products/0010991366">
+        <img width="100%" src="/cpgolang/cpgo2.jpg">
+      </a>
+    </div>
+    <div class="widget">
+      <a href="https://item.jd.com/14347716.html">
+        <img width="100%" src="/100gomistakes/cover.png">
+      </a>
+    </div>
+    <div class="widget">
+      <a href="/ScalaCollectionsCookbook/">
+        <img width="100%" src="/ScalaCollectionsCookbook/scala_collections_cookbook.jpg">
+        <img width="100%" src="/ScalaCollectionsCookbook/scala_collections_cookbook_tw.png">
+      </a>
+    </div>
+</div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">分类</h3>
+    <div class="widget">
+      <ul class="category-list"><li class="category-list-item"><a class="category-list-link" href="/categories/Android/">Android</a><span class="category-list-count">12</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/C/">C++</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/DOTNET/">DOTNET</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Docker/">Docker</a><span class="category-list-count">5</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Go/">Go</a><span class="category-list-count">301</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Java/">Java</a><span class="category-list-count">64</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Linux/">Linux</a><span class="category-list-count">8</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Rust/">Rust</a><span class="category-list-count">16</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Scala/">Scala</a><span class="category-list-count">18</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/go/">go</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/k8s/">k8s</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/rust/">rust</a><span class="category-list-count">10</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E5%88%86%E4%BA%AB/">分享</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E5%89%8D%E7%AB%AF%E5%BC%80%E5%8F%91/">前端开发</a><span class="category-list-count">18</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E5%8C%BA%E5%9D%97%E9%93%BE/">区块链</a><span class="category-list-count">8</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E5%A4%A7%E6%95%B0%E6%8D%AE/">大数据</a><span class="category-list-count">60</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E5%B7%A5%E5%85%B7/">工具</a><span class="category-list-count">28</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E6%95%B0%E6%8D%AE%E5%BA%93/">数据库</a><span class="category-list-count">3</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E6%9E%B6%E6%9E%84/">架构</a><span class="category-list-count">27</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E7%AE%97%E6%B3%95/">算法</a><span class="category-list-count">4</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E7%AE%A1%E7%90%86/">管理</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E7%BD%91%E7%BB%9C%E7%BC%96%E7%A8%8B/">网络编程</a><span class="category-list-count">13</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E8%AE%BE%E8%AE%A1%E6%A8%A1%E5%BC%8F/">设计模式</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E8%AF%BB%E4%B9%A6%E7%AC%94%E8%AE%B0/">读书笔记</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E8%BF%90%E7%BB%B4/">运维</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E9%AB%98%E5%B9%B6%E5%8F%91%E7%BC%96%E7%A8%8B/">高并发编程</a><span class="category-list-count">20</span></li></ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">标签云</h3>
+    <div class="widget tagcloud">
+      <a href="/tags/AI/" style="font-size: 20px;">AI</a> <a href="/tags/Android/" style="font-size: 13.64px;">Android</a> <a href="/tags/ApacheBench/" style="font-size: 10.91px;">ApacheBench</a> <a href="/tags/Bower/" style="font-size: 10px;">Bower</a> <a href="/tags/C/" style="font-size: 10px;">C#</a> <a href="/tags/CDN/" style="font-size: 10px;">CDN</a> <a href="/tags/CQRS/" style="font-size: 10px;">CQRS</a> <a href="/tags/CRC/" style="font-size: 10px;">CRC</a> <a href="/tags/CSS/" style="font-size: 10.91px;">CSS</a> <a href="/tags/CompletableFuture/" style="font-size: 10px;">CompletableFuture</a> <a href="/tags/Comsat/" style="font-size: 10px;">Comsat</a> <a href="/tags/Curator/" style="font-size: 17.27px;">Curator</a> <a href="/tags/DSL/" style="font-size: 10px;">DSL</a> <a href="/tags/Disruptor/" style="font-size: 10px;">Disruptor</a> <a href="/tags/Docker/" style="font-size: 10.91px;">Docker</a> <a href="/tags/Ember/" style="font-size: 10.91px;">Ember</a> <a href="/tags/FastJson/" style="font-size: 10px;">FastJson</a> <a href="/tags/Fiber/" style="font-size: 10px;">Fiber</a> <a href="/tags/GAE/" style="font-size: 10px;">GAE</a> <a href="/tags/GC/" style="font-size: 11.82px;">GC</a> <a href="/tags/Gnuplot/" style="font-size: 10px;">Gnuplot</a> <a href="/tags/Go/" style="font-size: 15.45px;">Go</a> <a href="/tags/Gradle/" style="font-size: 10px;">Gradle</a> <a href="/tags/Grunt/" style="font-size: 10px;">Grunt</a> <a href="/tags/Gulp/" style="font-size: 10px;">Gulp</a> <a href="/tags/Hadoop/" style="font-size: 10px;">Hadoop</a> <a href="/tags/Hazelcast/" style="font-size: 10px;">Hazelcast</a> <a href="/tags/IPFS/" style="font-size: 10px;">IPFS</a> <a href="/tags/Ignite/" style="font-size: 10px;">Ignite</a> <a href="/tags/JVM/" style="font-size: 10px;">JVM</a> <a href="/tags/Java/" style="font-size: 14.55px;">Java</a> <a href="/tags/Kafka/" style="font-size: 18.18px;">Kafka</a> <a href="/tags/Lambda/" style="font-size: 12.73px;">Lambda</a> <a href="/tags/Linux/" style="font-size: 11.82px;">Linux</a> <a href="/tags/LongAdder/" style="font-size: 10px;">LongAdder</a> <a href="/tags/MathJax/" style="font-size: 10px;">MathJax</a> <a href="/tags/Maven/" style="font-size: 10.91px;">Maven</a> <a href="/tags/Memcached/" style="font-size: 10px;">Memcached</a> <a href="/tags/Metrics/" style="font-size: 10px;">Metrics</a> <a href="/tags/Mongo/" style="font-size: 11.82px;">Mongo</a> <a href="/tags/Netty/" style="font-size: 13.64px;">Netty</a> <a href="/tags/Nginx/" style="font-size: 10px;">Nginx</a> <a href="/tags/Node/" style="font-size: 10px;">Node</a> <a href="/tags/OAuth/" style="font-size: 10px;">OAuth</a> <a href="/tags/Performance/" style="font-size: 10px;">Performance</a> <a href="/tags/Quartz/" style="font-size: 10px;">Quartz</a> <a href="/tags/Quasar/" style="font-size: 10px;">Quasar</a> <a href="/tags/RPC/" style="font-size: 10px;">RPC</a> <a href="/tags/RTMP/" style="font-size: 10px;">RTMP</a> <a href="/tags/Regexp/" style="font-size: 10px;">Regexp</a> <a href="/tags/Round-Robin/" style="font-size: 10px;">Round-Robin</a> <a href="/tags/Rust/" style="font-size: 10.91px;">Rust</a> <a href="/tags/Sass/" style="font-size: 10px;">Sass</a> <a href="/tags/Scala/" style="font-size: 15.45px;">Scala</a> <a href="/tags/Spark/" style="font-size: 16.36px;">Spark</a> <a href="/tags/Spring/" style="font-size: 13.64px;">Spring</a> <a href="/tags/StampedLock/" style="font-size: 10px;">StampedLock</a> <a href="/tags/TCP-IP/" style="font-size: 10.91px;">TCP/IP</a> <a href="/tags/WebSocket/" style="font-size: 10px;">WebSocket</a> <a href="/tags/Yeoman/" style="font-size: 10px;">Yeoman</a> <a href="/tags/ZooKeeper/" style="font-size: 19.09px;">ZooKeeper</a> <a href="/tags/aio/" style="font-size: 10px;">aio</a> <a href="/tags/akka/" style="font-size: 10.91px;">akka</a> <a href="/tags/android/" style="font-size: 10px;">android</a> <a href="/tags/bbc/" style="font-size: 10px;">bbc</a> <a href="/tags/benchmark/" style="font-size: 10px;">benchmark</a> <a href="/tags/bloom-filter/" style="font-size: 10px;">bloom filter</a> <a href="/tags/bootstrap/" style="font-size: 10px;">bootstrap</a> <a href="/tags/buffer/" style="font-size: 10px;">buffer</a> <a href="/tags/cache/" style="font-size: 10px;">cache</a> <a href="/tags/cgroups/" style="font-size: 10px;">cgroups</a> <a href="/tags/css/" style="font-size: 10.91px;">css</a> <a href="/tags/d3-js/" style="font-size: 10px;">d3.js</a> <a href="/tags/design-pattern/" style="font-size: 10px;">design pattern</a> <a href="/tags/disruptor/" style="font-size: 10.91px;">disruptor</a> <a href="/tags/dns/" style="font-size: 10px;">dns</a> <a href="/tags/ebpf/" style="font-size: 10px;">ebpf</a> <a href="/tags/elasticsearch/" style="font-size: 10.91px;">elasticsearch</a> <a href="/tags/epoll/" style="font-size: 10px;">epoll</a> <a href="/tags/gRPC/" style="font-size: 11.82px;">gRPC</a> <a href="/tags/gitbook/" style="font-size: 10px;">gitbook</a> <a href="/tags/go/" style="font-size: 12.73px;">go</a> <a href="/tags/gulp/" style="font-size: 10px;">gulp</a> <a href="/tags/hexo/" style="font-size: 10.91px;">hexo</a> <a href="/tags/html5/" style="font-size: 10px;">html5</a> <a href="/tags/javascript/" style="font-size: 11.82px;">javascript</a> <a href="/tags/kafka/" style="font-size: 10px;">kafka</a> <a href="/tags/kernel/" style="font-size: 10px;">kernel</a> <a href="/tags/keytool/" style="font-size: 10px;">keytool</a> <a href="/tags/libra/" style="font-size: 11.82px;">libra</a> <a href="/tags/linux/" style="font-size: 10px;">linux</a> <a href="/tags/maven/" style="font-size: 10px;">maven</a> <a href="/tags/memcached/" style="font-size: 10px;">memcached</a> <a href="/tags/mllib/" style="font-size: 10px;">mllib</a> <a href="/tags/mongo/" style="font-size: 11.82px;">mongo</a> <a href="/tags/multicast/" style="font-size: 10px;">multicast</a> <a href="/tags/mysql/" style="font-size: 10px;">mysql</a> <a href="/tags/netty/" style="font-size: 11.82px;">netty</a> <a href="/tags/nginx/" style="font-size: 10.91px;">nginx</a> <a href="/tags/node-js/" style="font-size: 10px;">node.js</a> <a href="/tags/npm/" style="font-size: 10px;">npm</a> <a href="/tags/nsq/" style="font-size: 10px;">nsq</a> <a href="/tags/p2p/" style="font-size: 10px;">p2p</a> <a href="/tags/protobuf/" style="font-size: 10.91px;">protobuf</a> <a href="/tags/quasar/" style="font-size: 10px;">quasar</a> <a href="/tags/rate-limiting/" style="font-size: 10px;">rate limiting</a> <a href="/tags/recommendation/" style="font-size: 10px;">recommendation</a> <a href="/tags/rust/" style="font-size: 10px;">rust</a> <a href="/tags/rxjava/" style="font-size: 10px;">rxjava</a> <a href="/tags/slack/" style="font-size: 10px;">slack</a> <a href="/tags/sortpom/" style="font-size: 10px;">sortpom</a> <a href="/tags/spark/" style="font-size: 10px;">spark</a> <a href="/tags/spray/" style="font-size: 10px;">spray</a> <a href="/tags/sysctl/" style="font-size: 10px;">sysctl</a> <a href="/tags/trace/" style="font-size: 10px;">trace</a> <a href="/tags/undertow/" style="font-size: 10px;">undertow</a> <a href="/tags/validation/" style="font-size: 10px;">validation</a> <a href="/tags/virtualbox/" style="font-size: 10px;">virtualbox</a> <a href="/tags/vscode/" style="font-size: 11.82px;">vscode</a> <a href="/tags/%E4%B8%80%E8%87%B4%E6%80%A7%E5%93%88%E5%B8%8C/" style="font-size: 10px;">一致性哈希</a> <a href="/tags/%E5%8D%8F%E5%90%8C%E8%BF%87%E6%BB%A4%EF%BC%8Cmahout/" style="font-size: 10.91px;">协同过滤，mahout</a> <a href="/tags/%E5%9F%BA%E6%95%B0%E4%BC%B0%E8%AE%A1/" style="font-size: 10px;">基数估计</a> <a href="/tags/%E5%BA%8F%E5%88%97%E5%8C%96/" style="font-size: 10px;">序列化</a> <a href="/tags/%E5%BC%82%E6%AD%A5/" style="font-size: 10px;">异步</a> <a href="/tags/%E5%BE%AE%E6%9C%8D%E5%8A%A1/" style="font-size: 10.91px;">微服务</a> <a href="/tags/%E6%8E%A7%E4%BB%B6/" style="font-size: 10px;">控件</a> <a href="/tags/%E6%8E%A8%E8%8D%90%E7%B3%BB%E7%BB%9F/" style="font-size: 11.82px;">推荐系统</a> <a href="/tags/%E6%9E%B6%E6%9E%84/" style="font-size: 11.82px;">架构</a> <a href="/tags/%E7%AE%97%E6%B3%95/" style="font-size: 10px;">算法</a> <a href="/tags/%E7%BB%84%E4%BB%B6/" style="font-size: 10px;">组件</a> <a href="/tags/%E7%BB%9F%E8%AE%A1%E6%8C%87%E6%A0%87/" style="font-size: 10px;">统计指标</a> <a href="/tags/%E7%BD%91%E7%BB%9C/" style="font-size: 12.73px;">网络</a> <a href="/tags/%E8%BD%AE%E8%AF%A2/" style="font-size: 10px;">轮询</a>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">归档</h3>
+    <div class="widget">
+      <ul class="archive-list"><li class="archive-list-item"><a class="archive-list-link" href="/archives/2026/06/">六月 2026</a><span class="archive-list-count">14</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2026/05/">五月 2026</a><span class="archive-list-count">18</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2026/04/">四月 2026</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2026/01/">一月 2026</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2025/12/">十二月 2025</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2025/11/">十一月 2025</a><span class="archive-list-count">9</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2025/10/">十月 2025</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2025/09/">九月 2025</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2025/08/">八月 2025</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2025/07/">七月 2025</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2025/06/">六月 2025</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2025/05/">五月 2025</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2025/02/">二月 2025</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2025/01/">一月 2025</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2024/11/">十一月 2024</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2024/10/">十月 2024</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2024/08/">八月 2024</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2024/06/">六月 2024</a><span class="archive-list-count">11</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2024/05/">五月 2024</a><span class="archive-list-count">9</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2024/04/">四月 2024</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2024/03/">三月 2024</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2024/02/">二月 2024</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2024/01/">一月 2024</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/12/">十二月 2023</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/11/">十一月 2023</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/10/">十月 2023</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/09/">九月 2023</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/08/">八月 2023</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/07/">七月 2023</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/06/">六月 2023</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/05/">五月 2023</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/04/">四月 2023</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/03/">三月 2023</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/01/">一月 2023</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/12/">十二月 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/11/">十一月 2022</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/10/">十月 2022</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/09/">九月 2022</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/08/">八月 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/07/">七月 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/06/">六月 2022</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/05/">五月 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/04/">四月 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/03/">三月 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/02/">二月 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/01/">一月 2022</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/12/">十二月 2021</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/11/">十一月 2021</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/10/">十月 2021</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/08/">八月 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/07/">七月 2021</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/06/">六月 2021</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/05/">五月 2021</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/04/">四月 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/03/">三月 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/02/">二月 2021</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/01/">一月 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/12/">十二月 2020</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/11/">十一月 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/09/">九月 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/08/">八月 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/07/">七月 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/06/">六月 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/05/">五月 2020</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/04/">四月 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/03/">三月 2020</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/02/">二月 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/01/">一月 2020</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/12/">十二月 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/11/">十一月 2019</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/10/">十月 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/09/">九月 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/08/">八月 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/07/">七月 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/06/">六月 2019</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/05/">五月 2019</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/04/">四月 2019</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/03/">三月 2019</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/02/">二月 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/01/">一月 2019</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/12/">十二月 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/11/">十一月 2018</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/10/">十月 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/09/">九月 2018</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/08/">八月 2018</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/07/">七月 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/06/">六月 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/05/">五月 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/04/">四月 2018</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/03/">三月 2018</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/02/">二月 2018</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/01/">一月 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/12/">十二月 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/11/">十一月 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/10/">十月 2017</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/09/">九月 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/08/">八月 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/07/">七月 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/06/">六月 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/05/">五月 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/04/">四月 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/03/">三月 2017</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/02/">二月 2017</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/01/">一月 2017</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/12/">十二月 2016</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/11/">十一月 2016</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/10/">十月 2016</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/09/">九月 2016</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/08/">八月 2016</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/07/">七月 2016</a><span class="archive-list-count">11</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/06/">六月 2016</a><span class="archive-list-count">14</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/05/">五月 2016</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/04/">四月 2016</a><span class="archive-list-count">14</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/03/">三月 2016</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/02/">二月 2016</a><span class="archive-list-count">8</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/01/">一月 2016</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/12/">十二月 2015</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/11/">十一月 2015</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/10/">十月 2015</a><span class="archive-list-count">9</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/09/">九月 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/08/">八月 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/07/">七月 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/06/">六月 2015</a><span class="archive-list-count">8</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/05/">五月 2015</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/04/">四月 2015</a><span class="archive-list-count">15</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/03/">三月 2015</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/02/">二月 2015</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/01/">一月 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/12/">十二月 2014</a><span class="archive-list-count">28</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/11/">十一月 2014</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/10/">十月 2014</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/09/">九月 2014</a><span class="archive-list-count">28</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/08/">八月 2014</a><span class="archive-list-count">19</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/07/">七月 2014</a><span class="archive-list-count">1</span></li></ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">近期文章</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+            <a href="/2026/06/21/how-llm-actually-works/">LLM 究竟是如何工作的？</a>
+          </li>
+        
+          <li>
+            <a href="/2026/06/21/go-experimental-features-explained/">Go 实验特性详解</a>
+          </li>
+        
+          <li>
+            <a href="/2026/06/21/amd64-microarchitecture-level-go-performance/">amd64 微架构级别对 Go 程序性能提升多少？</a>
+          </li>
+        
+          <li>
+            <a href="/2026/06/17/loop-engineering-batch-8-issues-kuiniu-tool/">Loop Engineering 实践：一次批量实现 8 个 issue，完成夔牛工具的开发</a>
+          </li>
+        
+          <li>
+            <a href="/2026/06/17/loop-engineering-rdma-port-to-go-239-yuan/">Loop Engineering 实践：我把 RDMA 开发库移植到 Go 语言，花费 239 块钱</a>
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">友情链接</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+			 
+            <a href="http://stackshare.io" target="_blank">技术栈</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://toutiao.io/" target="_blank">开发者头条</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://weekly.manong.io/issues/" target="_blank">码农周刊</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.tuicool.com/mags" target="_blank">编程狂人周刊</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.importnew.com/" target="_blank">importnew</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://ifeve.com/" target="_blank">并发编程网</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://github.com" target="_blank">github</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://stackoverflow.com/" target="_blank">stackoverflow</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.javacodegeeks.com/" target="_blank">javacodegeeks</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.infoq.com/" target="_blank">infoq</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.dzone.com/links/index.html" target="_blank">dzone</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://oj.leetcode.com/problems/" target="_blank">leetcode</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://tutorials.jenkov.com" target="_blank">jenkov</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://howtodoinjava.com" target="_blank">HowToDoInJava</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://java-design-patterns.com/patterns/" target="_blank">java design patterns</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://medium.com/netflix-techblog" target="_blank">Netflix技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://www.techiedelight.com" target="_blank">Techie Delight</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://engineering.linkedin.com/blog" target="_blank">Linkedin技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://blogs.dropbox.com/tech/" target="_blank">Dropbox技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://code.fb.com" target="_blank">Facebook技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://jm.taobao.org" target="_blank">淘宝中间件团队</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://tech.meituan.com" target="_blank">美团技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://blogs.360.cn" target="_blank">360技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://xiaomi-info.github.io" target="_blank">小米信息部技术团队</a>
+			
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+      
+
+  
+</aside>
+        
+      </div>
+      <footer id="footer">
+  
+  <div class="outer">
+    <div id="footer-info" class="inner">
+      &copy; 2026 smallnest<br>
+	  Powered by <a href="http://hexo.io/" target="_blank">Hexo</a>
+    </div>
+  </div>
+</footer>
+    </div>
+    <nav id="mobile-nav">
+  
+    
+      <a href="/" class="mobile-nav-link"><i class="fa fa-home">&nbsp;</i>首页</a>
+    
+  
+    
+      <a href="/archives" class="mobile-nav-link"><i class="fa fa-regular fa-folder-open">&nbsp;</i>归档</a>
+    
+  
+    
+      <a href="https://github.com/smallnest" class="mobile-nav-link"><i class="fa fa-brands fa-github-alt">&nbsp;</i>github</a>
+    
+  
+    
+      <a class="mobile-nav-link" href="#"><i class="fa fa-brands fa-golang">&nbsp;</i>Go学习资源</a>
+    
+      
+            <a class="mobile-nav-link" href="/goasm">&nbsp;&nbsp;<i class="fa fa-brands fa-golang">&nbsp;</i>Go汇编示例</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="https://gowebexamples.com">&nbsp;&nbsp;<i class="fa fa-brands fa-golang">&nbsp;</i>Go Web开发示例</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://go-database-sql.org">&nbsp;&nbsp;<i class="fa fa-brands fa-golang">&nbsp;</i>Go 数据库开发教程</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="https://colobu.com/gotips/">&nbsp;&nbsp;<i class="fa fa-brands fa-golang">&nbsp;</i>Go 语言编程技巧</a>
+          
+          
+    
+      
+            
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://rpcx.io">&nbsp;&nbsp;<i class="fa ">&nbsp;</i>RPCX官网</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://cn.doc.rpcx.io">&nbsp;&nbsp;<i class="fa ">&nbsp;</i>RPC开发指南</a>
+          
+          
+    
+    
+  
+    
+      <a class="mobile-nav-link" href="#"><i class="fa fa-brands fa-rust">&nbsp;</i>Rust学习资源</a>
+    
+      
+            <a class="mobile-nav-link" href="/perf-book">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>Rust高性能编程指南</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/rust100">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>100个练习题学习Rust</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/atomics">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>Rust原子操作和锁</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/effective-rust">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>高效Rust编程</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/thebook">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>Rust程序设计语言</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/nomicon">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>Rust死灵书</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/rust-reference">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>Rust参考手册</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/tlborm">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>Rust宏小册</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/async-book">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>Rust异步编程书</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/rust-by-example">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>通过例子学Rust</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/api-guidelines">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>Rust API 编写指南</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/comprehensive-rust">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>全面Rust课程</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/easy-rust">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>简单英语学Rust</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/rust-patterns">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>Rust设计模式</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/2020/03/05/A-half-hour-to-learn-Rust/">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>半小时学会Rust</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/rust-cookbook">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>Rust实用指南(cookbook)</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/rust-rand">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>Rust随机库</a>
+          
+          
+    
+      
+            
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="https://rpcx.io/r/E6v8U">&nbsp;&nbsp;<i class="fa ">&nbsp;</i>Rust for the Polyglot Programmer</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="https://rpcx.io/r/oC5ii">&nbsp;&nbsp;<i class="fa ">&nbsp;</i>LifetimeKata</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="https://tfpk.github.io/macrokata/">&nbsp;&nbsp;<i class="fa ">&nbsp;</i>macrokata</a>
+          
+          
+    
+    
+  
+    
+      <a class="mobile-nav-link" href="#"><i class="fa ">&nbsp;</i>出版书籍</a>
+    
+      
+            <a class="mobile-nav-link" href="/ScalaCollectionsCookbook">&nbsp;&nbsp;<i class="fa ">&nbsp;</i>Scala集合技术手册（简/繁）</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="https://cpgo.colobu.com/">&nbsp;&nbsp;<i class="fa ">&nbsp;</i>深入理解Go并发编程（简/繁）</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="https://item.jd.com/14347716.html">&nbsp;&nbsp;<i class="fa ">&nbsp;</i>100个Go语言典型错误</a>
+          
+          
+    
+    
+  
+    
+      <a href="/ScalaCollectionsCookbook" class="mobile-nav-link"><i class="fa fa-solid fa-book">&nbsp;</i>Scala集合技术手册</a>
+    
+  
+    
+      <a href="/about" class="mobile-nav-link"><i class="fa fa-regular fa-address-card">&nbsp;</i>关于</a>
+    
+  
+</nav>
+    
+<script src="//cdn.staticfile.org/jquery/1.11.1/jquery.min.js"></script>
+<script src="//cdn.bootcss.com/jquery.lazyload/1.9.1/jquery.lazyload.min.js"></script>
+
+<script src="//cdnjs.cloudflare.com/ajax/libs/fancybox/3.2.5/jquery.fancybox.min.js"></script>
+
+
+
+<script src="/js/script.js"></script>
+
+<!-- mathjax config similar to math.stackexchange -->
+<script type="text/x-mathjax-config">
+  MathJax.Hub.Config({
+    tex2jax: {
+      inlineMath: [ ['$','$'], ["\\(","\\)"] ],
+      processEscapes: true,
+      skipTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code']
+    }
+  });
+  MathJax.Hub.Queue(function() {
+      var all = MathJax.Hub.getAllJax(), i;
+      for(i=0; i < all.length; i += 1) {
+        all[i].SourceElement().parentNode.className += ' has-jax';
+      }
+  });
+</script>
+<script type="text/javascript" src="//cdn.bootcss.com/mathjax/2.6.0-beta.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML">
+</script>
+
+<div id="totop" style="position:fixed;bottom:150px;right:10px;cursor: pointer;z-index: 2000;">
+	<a title="返回顶部"><img src="/images/scrollup.png"/></a>
+</div>
+
+<script src="/js/totop.js"></script>
+
+
+
+
+<script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "//hm.baidu.com/hm.js?e085d87993250aab11f3e0c15f1c2785";
+  var s = document.getElementsByTagName("script")[0]; 
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+
+
+  </div>
+</body>
+</html>

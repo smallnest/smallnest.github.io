@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>Go Assembly 示例: AES</title>
+    <link rel=stylesheet href="site.css">
+  </head>
+  <body>
+    <div class="example" id="aes">
+      <h2><a href="./">Go Assembly 示例</a>: AES</h2>
+      
+      <table>
+        
+        <tr>
+          <td class="docs">
+            <p>本例摘自标准库 <a href="https://golang.org/pkg/crypto/aes/">AES package</a>，它使用汇编充分利用Intel的对AES的硬件支持，通过调用 AES-NI CPU 指令来实现。
+它可以执行 AES算法的&rdquo;循环&rdquo;(round)加密和解密。</p>
+
+          </td>
+          <td class="code empty leading">
+	        
+            
+          </td>
+        </tr>
+        
+        <tr>
+          <td class="docs">
+            
+          </td>
+          <td class="code leading">
+	        
+            <div class="highlight"><pre><span class="kn">package</span> <span class="nx">aes</span>
+</pre></div>
+
+          </td>
+        </tr>
+        
+        <tr>
+          <td class="docs">
+            <p><code>nr</code> 是 <code>src</code> 文本循环加密的次数， <code>xk</code> 指向包含<code>[]uint32</code>的第一个元素， 包含从主密钥派生出的128位循环key。<code>dst</code>指向加密结果的 <code>[]byte</code> slice。</p>
+
+          </td>
+          <td class="code">
+	        
+            <div class="highlight"><pre><span class="kd">func</span> <span class="nx">encryptBlockAsm</span><span class="p">(</span><span class="nx">nr</span> <span class="kt">int</span><span class="p">,</span> <span class="nx">xk</span> <span class="o">*</span><span class="kt">uint32</span><span class="p">,</span> <span class="nx">dst</span><span class="p">,</span> <span class="nx">src</span> <span class="o">*</span><span class="kt">byte</span><span class="p">)</span>
+</pre></div>
+
+          </td>
+        </tr>
+        
+      </table>
+      
+      <table>
+        
+        <tr>
+          <td class="docs">
+            
+          </td>
+          <td class="code leading">
+	        
+            <div class="highlight"><pre><span class="gp">#</span>include <span class="s2">&quot;textflag.h&quot;</span>
+</pre></div>
+
+          </td>
+        </tr>
+        
+        <tr>
+          <td class="docs">
+            <p>本例设计AES算法的一些术语，翻译的比较勉强，如有错误，欢迎指正。
+如你所见， 参数和返回结果的整体长度被忽略了，<code>TEXT</code>的最后的参数可以是<code>$0-20</code>。这个信息是可选的, 但是推荐写， 因为它可以通过 <code>go vet</code>很容的检查。</p>
+
+          </td>
+          <td class="code leading">
+	        
+            <div class="highlight"><pre><span class="go">TEXT ·encryptBlockAsm(SB),NOSPLIT,$0</span>
+<span class="go">	MOVQ nr+0(FP), CX</span>
+<span class="go">	MOVQ xk+8(FP), AX</span>
+<span class="go">	MOVQ dst+16(FP), DX</span>
+<span class="go">	MOVQ src+24(FP), BX</span>
+</pre></div>
+
+          </td>
+        </tr>
+        
+        <tr>
+          <td class="docs">
+            <p><code>X0</code>, <code>X1</code>, &hellip;是 SSE 寄存器， 允许你通过 SIMD 指令操作大数 (128位)。幸运地是，AES的输入输出和状态都是128位的。<code>MOVUPS</code> 用来加载由<code>xk</code>指向的第一个128位的 round  key，还有状态<code>src</code>都加载到特殊的寄存器中。在开始加密之前， AES 使用<code>XOR</code>和第一轮的key <code>whiten</code> 输入的文本， 这通过128位的寄存器<code>PXOR</code>完成。</p>
+
+          </td>
+          <td class="code leading">
+	        
+            <div class="highlight"><pre><span class="go">	MOVUPS 0(AX), X1</span>
+<span class="go">	MOVUPS 0(BX), X0</span>
+<span class="go">	ADDQ $16, AX // next round key</span>
+<span class="go">	PXOR X1, X0</span>
+</pre></div>
+
+          </td>
+        </tr>
+        
+        <tr>
+          <td class="docs">
+            <p>AES 接受各种变长的key：128位、192位、256位。这三种变长都接受一个不同数量的round。我们通过比较<code>nr</code>和AES-192的round数值，就可以知道我们处理的那种变长的算法。如果<code>nr</code>等于 12，我们就会跳到标签<code>Lenc196</code>处的代码，如果小于我们就跳到<code>Lenc128</code>，如果大于则继续处理。</p>
+
+          </td>
+          <td class="code leading">
+	        
+            <div class="highlight"><pre><span class="go">	SUBQ $12, CX</span>
+<span class="go">	JE Lenc196</span>
+<span class="go">	JB Lenc128</span>
+<span class="go">Lenc256:</span>
+</pre></div>
+
+          </td>
+        </tr>
+        
+        <tr>
+          <td class="docs">
+            <p>一轮的处理总是使用相同的方式。相应的128位round key被加载到128位 SSE 寄存器中(<code>X1</code>)，然后<code>AESENC</code>指令被调用处理状态<code>X0</code>和subkey。</p>
+
+          </td>
+          <td class="code leading">
+	        
+            <div class="highlight"><pre><span class="go">	MOVUPS 0(AX), X1</span>
+<span class="go">	AESENC X1, X0</span>
+<span class="go">	MOVUPS 16(AX), X1</span>
+<span class="go">	AESENC X1, X0</span>
+<span class="go">	ADDQ $32, AX // next round keys</span>
+</pre></div>
+
+          </td>
+        </tr>
+        
+        <tr>
+          <td class="docs">
+            <p>AES-256 比 AES-196 要多两轮，所以当前两个操作做完后，很自然继续 AES-192的分支。</p>
+
+          </td>
+          <td class="code leading">
+	        
+            <div class="highlight"><pre><span class="go">Lenc196:</span>
+<span class="go">	MOVUPS 0(AX), X1</span>
+<span class="go">	AESENC X1, X0</span>
+<span class="go">	MOVUPS 16(AX), X1</span>
+<span class="go">	AESENC X1, X0</span>
+<span class="go">	ADDQ $32, AX</span>
+</pre></div>
+
+          </td>
+        </tr>
+        
+        <tr>
+          <td class="docs">
+            <p>同样的道理前面两个case还要执行这个分支。</p>
+
+          </td>
+          <td class="code">
+	        
+            <div class="highlight"><pre><span class="go">Lenc128:</span>
+<span class="go">	MOVUPS 0(AX), X1</span>
+<span class="go">	AESENC X1, X0</span>
+<span class="go">	MOVUPS 16(AX), X1</span>
+<span class="go">	AESENC X1, X0</span>
+<span class="go">	MOVUPS 32(AX), X1</span>
+<span class="go">	AESENC X1, X0</span>
+<span class="go">	MOVUPS 48(AX), X1</span>
+<span class="go">	AESENC X1, X0</span>
+<span class="go">	MOVUPS 64(AX), X1</span>
+<span class="go">	AESENC X1, X0</span>
+<span class="go">	MOVUPS 80(AX), X1</span>
+<span class="go">	AESENC X1, X0</span>
+<span class="go">	MOVUPS 96(AX), X1</span>
+<span class="go">	AESENC X1, X0</span>
+<span class="go">	MOVUPS 112(AX), X1</span>
+<span class="go">	AESENC X1, X0</span>
+<span class="go">	MOVUPS 128(AX), X1</span>
+<span class="go">	AESENC X1, X0</span>
+<span class="go">	MOVUPS 144(AX), X1</span>
+<span class="go">	AESENCLAST X1, X0</span>
+<span class="go">	MOVUPS X0, 0(DX)</span>
+<span class="go">	RET</span>
+</pre></div>
+
+          </td>
+        </tr>
+        
+      </table>
+      
+      
+      <p class="next">
+         下一个例子: <a href="sqrt.html">Sqrt</a>.
+      </p>
+      
+      <p class="footer">
+        by <a href="https://www.davidwong.fr/goasm/">@lyon01_david</a> | based on <a href="https://gobyexample.com/">Go by Example</a> by <a href="https://twitter.com/mmcgrana">@mmcgrana</a>
+
+        <br>
+        翻译 by <a href="http://colobu.com/">smallnest</a>
+      </p>
+    </div>
+  </body>
+  <script>
+    var _hmt = _hmt || [];
+    (function() {
+      var hm = document.createElement("script");
+      hm.src = "https://hm.baidu.com/hm.js?e085d87993250aab11f3e0c15f1c2785";
+      var s = document.getElementsByTagName("script")[0]; 
+      s.parentNode.insertBefore(hm, s);
+    })();
+    </script>
+</html>

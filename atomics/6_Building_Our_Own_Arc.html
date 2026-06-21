@@ -1,0 +1,938 @@
+<!doctype html>
+<html>
+   <head>
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+      <meta name="generator" content="pandoc">
+      
+      
+      
+      <!-- Bootstrap -->
+      <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.5.0/css/bootstrap.min.css" integrity="sha384-9aIt2nRpC12Uk9gS9baDl411NQApFmC26EwAOH8WgZl5MYYxFfc+NcPb1dKGj7Sk" crossorigin="anonymous">
+      <!-- Font-awesome -->
+      <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css">
+      <!-- Styles -->
+      <link rel="stylesheet" href="https://ashki23.github.io/styles.css">
+         </head>
+   <body>
+            <div class="container">
+         
+         <h1
+id="第六章构建我们自己的arc">第六章：构建我们自己的“Arc”</h1>
+<p>（<a href="https://marabos.nl/atomics/building-arc.html" target="_blank">英文版本</a>）</p>
+<p><a class="indexterm" id="index-buildingourown-Arc"></a> 在<a
+href="./1_Basic_of_Rust_Concurrency.md#引用计数">第一章“引用计数”</a>中，我们了解了
+<code>std::sync::Arc&lt;T&gt;</code>
+类型允许通过引用计数共享所有权。<code>Arc::new</code>
+函数创建一个新的内存分配，就像 <code>Box::new</code>。然而，与 Box
+不同的是，克隆 Arc 将共享原始的内存分配，而不是创建一个新的。只有当 Arc
+和所有其他的克隆被丢弃，共享的内存分配才会被丢弃。</p>
+<p>这种类型的实现所涉及的内存排序可能是非常有趣的。在本章中，我们将通过实现我们自己的
+<code>Arc&lt;T&gt;</code>
+将更多理论付诸实践。我们将开始一个基础的版本，然后将其扩展到支持循环结构的
+<em>weak
+指针</em>，并且最终将其优化为一个与标准库差不多的实现结束本章。</p>
+<h2 id="基础的引用计数">基础的引用计数</h2>
+<p>（<a href="https://marabos.nl/atomics/building-arc.html#basic-reference-counting" target="_blank">英文版本</a>）</p>
+<p>我们的第一个版本将使用单个 <code>AtomicUsize</code> 去计数 Arc
+对象共享分配的数量。让我们开始使用一个持有计数器和 T 对象的结构体：</p>
+<div class="sourceCode" id="cb1"><pre
+class="sourceCode rust"><code class="sourceCode rust"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="kw">struct</span> ArcData<span class="op">&lt;</span>T<span class="op">&gt;</span> <span class="op">{</span></span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a>    ref_count<span class="op">:</span> AtomicUsize<span class="op">,</span></span>
+<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a>    data<span class="op">:</span> T<span class="op">,</span></span>
+<span id="cb1-4"><a href="#cb1-4" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p>注意，该结构体不是公共的。它是我们 Arc 实现的内部实现细节。</p>
+<p>接下来是 <code>Arc&lt;T&gt;</code>
+结构体本身，它实际上仅是一个指向（共享的）<code>ArcData&lt;T&gt;</code>
+的指针。</p>
+<p>使用 <code>Box&lt;ArcData&lt;T&gt;&gt;</code>
+作为包装器，并使用标准的 Box 来处理 <code>ArcData&lt;T&gt;</code>
+的内存分配可能很诱人。然而，Box
+表示独占所有权，并不是共享所有权。我们不能使用引用，因为我们不仅要借用其他所有权的数据，并且它的生命周期（“直到此
+Arc 的最后一个克隆被丢弃”）无法直接表示为 Rust 的生命周期。</p>
+<p>相反，我们将不得不使用指针，并手动处理内存分配以及所有权的概念。我们将使用
+<code>std::ptr::NonNull&lt;T&gt;</code>，而不是 <code>*mut T</code> 或
+<code>*const T</code>，它表示一个永远不会为空的指向 T 的指针。这样，使用
+None 的空指针表示 <code>Option&lt;Arc&lt;T&gt;&gt;</code> 与
+<code>Arc&lt;T&gt;</code> 的大小相同。</p>
+<div class="sourceCode" id="cb2"><pre
+class="sourceCode rust"><code class="sourceCode rust"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="kw">use</span> <span class="pp">std::ptr::</span>NonNull<span class="op">;</span></span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a><span class="kw">pub</span> <span class="kw">struct</span> Arc<span class="op">&lt;</span>T<span class="op">&gt;</span> <span class="op">{</span></span>
+<span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a>    ptr<span class="op">:</span> NonNull<span class="op">&lt;</span>ArcData<span class="op">&lt;</span>T<span class="op">&gt;&gt;,</span></span>
+<span id="cb2-5"><a href="#cb2-5" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p>使用一个引用或者 Box，编译器会自动地理解它会为哪个 T 实现 Send 和
+Sync。然而，当使用原始指针或者
+<code>NonNull</code>，除非我们明确告知，否则它会保守地认为它永远不会
+Send 或 Sync。</p>
+<p>发送 <code>Arc&lt;T&gt;</code> 跨线程会导致 T 对象被共享，这时要求 T
+实现 Sync。类似地，将 <code>Arc&lt;T&gt;</code>
+跨线程发送可能导致另一个线程丢弃该对象，从而将它转移到其他线程，这里要求
+T 实现 Send。换句话说，如果 T 既是 Send 又是 Sync，那么
+<code>Arc&lt;T&gt;</code> 应该是 Send。对于 Sync
+来说也是完全相同的，因为一个共享的 <code>&amp;Arc&lt;T&gt;</code>
+可以克隆为一个新的 <code>Arc&lt;T&gt;</code>。</p>
+<div class="sourceCode" id="cb3"><pre
+class="sourceCode rust"><code class="sourceCode rust"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="kw">unsafe</span> <span class="kw">impl</span><span class="op">&lt;</span>T<span class="op">:</span> <span class="bu">Send</span> <span class="op">+</span> <span class="bu">Sync</span><span class="op">&gt;</span> <span class="bu">Send</span> <span class="cf">for</span> Arc<span class="op">&lt;</span>T<span class="op">&gt;</span> <span class="op">{}</span></span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a><span class="kw">unsafe</span> <span class="kw">impl</span><span class="op">&lt;</span>T<span class="op">:</span> <span class="bu">Send</span> <span class="op">+</span> <span class="bu">Sync</span><span class="op">&gt;</span> <span class="bu">Sync</span> <span class="cf">for</span> Arc<span class="op">&lt;</span>T<span class="op">&gt;</span> <span class="op">{}</span></span></code></pre></div>
+<p>对于 <code>Arc&lt;T&gt;::new</code>，我们必须使用引用计数为 1 的
+<code>ArcData&lt;T&gt;</code> 创建一个新的内存分配。我们将使用
+<code>Box::new</code> 创建新的内存分配，使用 <code>Box::leak</code>
+放弃我们对此内存分配的独占所有权，以及使用 <code>NonNull::from</code>
+将其转换为指针：</p>
+<div class="sourceCode" id="cb4"><pre
+class="sourceCode rust"><code class="sourceCode rust"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="kw">impl</span><span class="op">&lt;</span>T<span class="op">&gt;</span> Arc<span class="op">&lt;</span>T<span class="op">&gt;</span> <span class="op">{</span></span>
+<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> <span class="kw">fn</span> new(data<span class="op">:</span> T) <span class="op">-&gt;</span> Arc<span class="op">&lt;</span>T<span class="op">&gt;</span> <span class="op">{</span></span>
+<span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a>        Arc <span class="op">{</span></span>
+<span id="cb4-4"><a href="#cb4-4" aria-hidden="true" tabindex="-1"></a>            ptr<span class="op">:</span> <span class="pp">NonNull::</span>from(<span class="dt">Box</span><span class="pp">::</span>leak(<span class="dt">Box</span><span class="pp">::</span>new(ArcData <span class="op">{</span></span>
+<span id="cb4-5"><a href="#cb4-5" aria-hidden="true" tabindex="-1"></a>                ref_count<span class="op">:</span> <span class="pp">AtomicUsize::</span>new(<span class="dv">1</span>)<span class="op">,</span></span>
+<span id="cb4-6"><a href="#cb4-6" aria-hidden="true" tabindex="-1"></a>                data<span class="op">,</span></span>
+<span id="cb4-7"><a href="#cb4-7" aria-hidden="true" tabindex="-1"></a>            <span class="op">}</span>)))<span class="op">,</span></span>
+<span id="cb4-8"><a href="#cb4-8" aria-hidden="true" tabindex="-1"></a>        <span class="op">}</span></span>
+<span id="cb4-9"><a href="#cb4-9" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb4-10"><a href="#cb4-10" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-11"><a href="#cb4-11" aria-hidden="true" tabindex="-1"></a>    <span class="co">// …</span></span>
+<span id="cb4-12"><a href="#cb4-12" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p>我们知道只要 Arc 对象存在，指针将总是指向一个有效的
+<code>ArcData&lt;T&gt;</code>。然而，这不是编译器知道的或为我们检查的内容，所以通过指针访问
+<code>ArcData</code> 需要不安全的代码。我们将添加一个私有的辅助函数去从
+Arc 获取<code>ArcData</code>，因为这是我们将执行多次的操作：</p>
+<div class="sourceCode" id="cb5"><pre
+class="sourceCode rust"><code class="sourceCode rust"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a>    <span class="kw">fn</span> data(<span class="op">&amp;</span><span class="kw">self</span>) <span class="op">-&gt;</span> <span class="op">&amp;</span>ArcData<span class="op">&lt;</span>T<span class="op">&gt;</span> <span class="op">{</span></span>
+<span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a>        <span class="kw">unsafe</span> <span class="op">{</span> <span class="kw">self</span><span class="op">.</span>ptr<span class="op">.</span>as_ref() <span class="op">}</span></span>
+<span id="cb5-3"><a href="#cb5-3" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span></code></pre></div>
+<p>使用它，我们现在可以实现 <code>Deref</code> trait 以使得我们的
+<code>Arc&lt;T&gt;</code> 能够像 T 的引用一样透明地操作：</p>
+<div class="sourceCode" id="cb6"><pre
+class="sourceCode rust"><code class="sourceCode rust"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a><span class="kw">impl</span><span class="op">&lt;</span>T<span class="op">&gt;</span> <span class="bu">Deref</span> <span class="cf">for</span> Arc<span class="op">&lt;</span>T<span class="op">&gt;</span> <span class="op">{</span></span>
+<span id="cb6-2"><a href="#cb6-2" aria-hidden="true" tabindex="-1"></a>    <span class="kw">type</span> Target <span class="op">=</span> T<span class="op">;</span></span>
+<span id="cb6-3"><a href="#cb6-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-4"><a href="#cb6-4" aria-hidden="true" tabindex="-1"></a>    <span class="kw">fn</span> deref(<span class="op">&amp;</span><span class="kw">self</span>) <span class="op">-&gt;</span> <span class="op">&amp;</span>T <span class="op">{</span></span>
+<span id="cb6-5"><a href="#cb6-5" aria-hidden="true" tabindex="-1"></a>        <span class="op">&amp;</span><span class="kw">self</span><span class="op">.</span>data()<span class="op">.</span>data</span>
+<span id="cb6-6"><a href="#cb6-6" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb6-7"><a href="#cb6-7" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p>注意，我们并没有实现 <code>DerefMut</code>。因为
+<code>Arc&lt;T&gt;</code> 表示共享所有权，我们不能无条件地提供
+<code>&amp;mut T</code>。</p>
+<p>接下来：实现 Clone。在<strong>增加</strong>引用计数后，克隆的 Arc
+将使用相同的指针：</p>
+<div class="sourceCode" id="cb7"><pre
+class="sourceCode rust"><code class="sourceCode rust"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="kw">impl</span><span class="op">&lt;</span>T<span class="op">&gt;</span> <span class="bu">Deref</span> <span class="cf">for</span> Arc<span class="op">&lt;</span>T<span class="op">&gt;</span> <span class="op">{</span></span>
+<span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a>    <span class="kw">type</span> Target <span class="op">=</span> T<span class="op">;</span></span>
+<span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb7-4"><a href="#cb7-4" aria-hidden="true" tabindex="-1"></a>    <span class="kw">fn</span> deref(<span class="op">&amp;</span><span class="kw">self</span>) <span class="op">-&gt;</span> <span class="op">&amp;</span>T <span class="op">{</span></span>
+<span id="cb7-5"><a href="#cb7-5" aria-hidden="true" tabindex="-1"></a>        <span class="op">&amp;</span><span class="kw">self</span><span class="op">.</span>data()<span class="op">.</span>data</span>
+<span id="cb7-6"><a href="#cb7-6" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb7-7"><a href="#cb7-7" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p>我们可以使用 Relaxed
+内存排序去递增引用计数，因为没有对其他变量的操作在此原子操作之前或者之后严格地发生。在此操作之前，我们已经可以访问
+Arc 包含的 T（通过原始的
+Arc），在此操作之后，访问仍然没有改变（但现在至少有两个相同 Arc
+对象可以访问数据）。</p>
+<p>一个 Arc 需要被克隆多次才有可能导致引用计数溢出，但是在循环中运行
+<code>std::men::forget()</code> 可以实现这一点。我们可以使用在<a
+href="./2_Atomics.md#示例id-分配">第二章的“示例：ID 分配”</a>和<a
+href="./2_Atomics.md#示例没有溢出的-id-分配">“示例：没有溢出的 ID
+分配”</a>中讨论的任意技术来处理这个问题。</p>
+<p>为了在正常（非溢出）情况下保持尽可能高效，我们将保留原始的
+<code>fetch_add</code>，并在接近溢出时简单地中止整个过程：</p>
+<div class="sourceCode" id="cb8"><pre
+class="sourceCode rust"><code class="sourceCode rust"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> <span class="kw">self</span><span class="op">.</span>data()<span class="op">.</span>ref_count<span class="op">.</span>fetch_add(<span class="dv">1</span><span class="op">,</span> Relaxed) <span class="op">&gt;</span> <span class="dt">usize</span><span class="pp">::</span><span class="cn">MAX</span> <span class="op">/</span> <span class="dv">2</span> <span class="op">{</span></span>
+<span id="cb8-2"><a href="#cb8-2" aria-hidden="true" tabindex="-1"></a>            <span class="pp">std::process::</span>abort()<span class="op">;</span></span>
+<span id="cb8-3"><a href="#cb8-3" aria-hidden="true" tabindex="-1"></a>        <span class="op">}</span></span></code></pre></div>
+<blockquote>
+<p>并不会立刻中止进程，在一段时间内，另一个线程也可以调用
+<code>Arc::clone</code>，进一步<strong>增加</strong>引用计数器。因此，仅仅检查
+<code>usize::MAX - 1</code> 将是不够的。然而，使用
+<code>usize::MAX / 2</code>
+限制工作是好的：假设每个线程在内存中至少需要几字节的空间，那么并发存在
+<code>usize::MAX / 2</code> 数量的线程是不可能的。</p>
+</blockquote>
+<p>就像我们在克隆时递增计数器一样，我们在丢弃 Arc
+时需要递减计数器。线程看到计数器从 1 到 0，这意味着该线程丢弃了最后一个
+<code>Arc&lt;T&gt;</code>，并负责丢弃和释放
+<code>ArcData&lt;T&gt;</code>。</p>
+<p>我们将使用 <code>Box::from_raw</code>
+去重新获得内存的独占所有权，然后立即使用 <code>drop()</code>
+将其丢弃：</p>
+<div class="sourceCode" id="cb9"><pre
+class="sourceCode rust"><code class="sourceCode rust"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a><span class="kw">impl</span><span class="op">&lt;</span>T<span class="op">&gt;</span> <span class="bu">Drop</span> <span class="cf">for</span> Arc<span class="op">&lt;</span>T<span class="op">&gt;</span> <span class="op">{</span></span>
+<span id="cb9-2"><a href="#cb9-2" aria-hidden="true" tabindex="-1"></a>    <span class="kw">fn</span> drop(<span class="op">&amp;</span><span class="kw">mut</span> <span class="kw">self</span>) <span class="op">{</span></span>
+<span id="cb9-3"><a href="#cb9-3" aria-hidden="true" tabindex="-1"></a>        <span class="co">// TODO：内存排序</span></span>
+<span id="cb9-4"><a href="#cb9-4" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> <span class="kw">self</span><span class="op">.</span>data()<span class="op">.</span>ref_count<span class="op">.</span>fetch_sub(<span class="dv">1</span><span class="op">,</span> …) <span class="op">==</span> <span class="dv">1</span> <span class="op">{</span></span>
+<span id="cb9-5"><a href="#cb9-5" aria-hidden="true" tabindex="-1"></a>            <span class="kw">unsafe</span> <span class="op">{</span></span>
+<span id="cb9-6"><a href="#cb9-6" aria-hidden="true" tabindex="-1"></a>                drop(<span class="dt">Box</span><span class="pp">::</span>from_raw(<span class="kw">self</span><span class="op">.</span>ptr<span class="op">.</span>as_ptr()))<span class="op">;</span></span>
+<span id="cb9-7"><a href="#cb9-7" aria-hidden="true" tabindex="-1"></a>            <span class="op">}</span></span>
+<span id="cb9-8"><a href="#cb9-8" aria-hidden="true" tabindex="-1"></a>        <span class="op">}</span></span>
+<span id="cb9-9"><a href="#cb9-9" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb9-10"><a href="#cb9-10" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p><a class="indexterm" id="index-Arc-memoryordering"></a>
+对于这个操作，我们不能使用 Relaxed
+排序，因为我们需要确保当我们丢弃它时，没有任何东西仍然在访问数据。换句话说，每个之前的
+Arc 丢弃操作都必须发生在最终丢弃之前。因此，最后的
+<code>fetch_sub</code> 必须与之前的 <code>fetch_sub</code> 操作建立一个
+happens-before 关系，我们可以使用 release 和 acquire
+排序来实现这一点：例如，从 2 递减到 1 可以有效地“释放”数据，而从 1
+递减到 0 则“获取”了对它的所有权。</p>
+<p>我们可以使用 <code>AcqRel</code>
+内存排序来覆盖这两种情况，但只有最后一个递减到 0 才需要
+<code>Acquire</code>，而其他情况只需要
+<code>Release</code>。为了提高效率，我们将在 <code>Release</code> 用于
+<code>fetch_sub</code> 操作，并且仅在必要时使用单独的
+<code>Acquire</code> 屏障：</p>
+<div class="sourceCode" id="cb10"><pre
+class="sourceCode rust"><code class="sourceCode rust"><span id="cb10-1"><a href="#cb10-1" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> <span class="kw">self</span><span class="op">.</span>data()<span class="op">.</span>ref_count<span class="op">.</span>fetch_sub(<span class="dv">1</span><span class="op">,</span> Release) <span class="op">==</span> <span class="dv">1</span> <span class="op">{</span></span>
+<span id="cb10-2"><a href="#cb10-2" aria-hidden="true" tabindex="-1"></a>            fence(Acquire)<span class="op">;</span></span>
+<span id="cb10-3"><a href="#cb10-3" aria-hidden="true" tabindex="-1"></a>            <span class="kw">unsafe</span> <span class="op">{</span></span>
+<span id="cb10-4"><a href="#cb10-4" aria-hidden="true" tabindex="-1"></a>                drop(<span class="dt">Box</span><span class="pp">::</span>from_raw(<span class="kw">self</span><span class="op">.</span>ptr<span class="op">.</span>as_ptr()))<span class="op">;</span></span>
+<span id="cb10-5"><a href="#cb10-5" aria-hidden="true" tabindex="-1"></a>            <span class="op">}</span></span>
+<span id="cb10-6"><a href="#cb10-6" aria-hidden="true" tabindex="-1"></a>        <span class="op">}</span></span></code></pre></div>
+<h3 id="测试它">测试它</h3>
+<p>（<a href="https://marabos.nl/atomics/building-arc.html#testing-it" target="_blank">英文版本</a>）</p>
+<p>为了测试我们的 Arc
+是否按预期运行，我们可以编写一个单元测试，创建一个包含特殊对象的
+<code>Arc</code>，让我们知道何时它被丢弃时：</p>
+<div class="sourceCode" id="cb11"><pre
+class="sourceCode rust"><code class="sourceCode rust"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true" tabindex="-1"></a><span class="at">#[</span>test<span class="at">]</span></span>
+<span id="cb11-2"><a href="#cb11-2" aria-hidden="true" tabindex="-1"></a><span class="kw">fn</span> test() <span class="op">{</span></span>
+<span id="cb11-3"><a href="#cb11-3" aria-hidden="true" tabindex="-1"></a>    <span class="kw">static</span> NUM_DROPS<span class="op">:</span> AtomicUsize <span class="op">=</span> <span class="pp">AtomicUsize::</span>new(<span class="dv">0</span>)<span class="op">;</span></span>
+<span id="cb11-4"><a href="#cb11-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-5"><a href="#cb11-5" aria-hidden="true" tabindex="-1"></a>    <span class="kw">struct</span> DetectDrop<span class="op">;</span></span>
+<span id="cb11-6"><a href="#cb11-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-7"><a href="#cb11-7" aria-hidden="true" tabindex="-1"></a>    <span class="kw">impl</span> <span class="bu">Drop</span> <span class="cf">for</span> DetectDrop <span class="op">{</span></span>
+<span id="cb11-8"><a href="#cb11-8" aria-hidden="true" tabindex="-1"></a>        <span class="kw">fn</span> drop(<span class="op">&amp;</span><span class="kw">mut</span> <span class="kw">self</span>) <span class="op">{</span></span>
+<span id="cb11-9"><a href="#cb11-9" aria-hidden="true" tabindex="-1"></a>            NUM_DROPS<span class="op">.</span>fetch_add(<span class="dv">1</span><span class="op">,</span> Relaxed)<span class="op">;</span></span>
+<span id="cb11-10"><a href="#cb11-10" aria-hidden="true" tabindex="-1"></a>        <span class="op">}</span></span>
+<span id="cb11-11"><a href="#cb11-11" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb11-12"><a href="#cb11-12" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-13"><a href="#cb11-13" aria-hidden="true" tabindex="-1"></a>    <span class="co">// 创建两个 Arc，共享一个对象，包含一个字符串</span></span>
+<span id="cb11-14"><a href="#cb11-14" aria-hidden="true" tabindex="-1"></a>    <span class="co">// 和一个 DetectDrop，以当它被丢弃时去检测。</span></span>
+<span id="cb11-15"><a href="#cb11-15" aria-hidden="true" tabindex="-1"></a>    <span class="kw">let</span> x <span class="op">=</span> <span class="pp">Arc::</span>new((<span class="st">&quot;hello&quot;</span><span class="op">,</span> DetectDrop))<span class="op">;</span></span>
+<span id="cb11-16"><a href="#cb11-16" aria-hidden="true" tabindex="-1"></a>    <span class="kw">let</span> y <span class="op">=</span> x<span class="op">.</span>clone()<span class="op">;</span></span>
+<span id="cb11-17"><a href="#cb11-17" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-18"><a href="#cb11-18" aria-hidden="true" tabindex="-1"></a>    <span class="co">// 发送 x 到另一个线程，并在那里使用它。</span></span>
+<span id="cb11-19"><a href="#cb11-19" aria-hidden="true" tabindex="-1"></a>    <span class="kw">let</span> t <span class="op">=</span> <span class="pp">std::thread::</span>spawn(<span class="kw">move</span> <span class="op">||</span> <span class="op">{</span></span>
+<span id="cb11-20"><a href="#cb11-20" aria-hidden="true" tabindex="-1"></a>        <span class="pp">assert_eq!</span>(x<span class="op">.</span><span class="dv">0</span><span class="op">,</span> <span class="st">&quot;hello&quot;</span>)<span class="op">;</span></span>
+<span id="cb11-21"><a href="#cb11-21" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span>)<span class="op">;</span></span>
+<span id="cb11-22"><a href="#cb11-22" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-23"><a href="#cb11-23" aria-hidden="true" tabindex="-1"></a>    <span class="co">// 这是并行的，y 应该仍然在这里可用。</span></span>
+<span id="cb11-24"><a href="#cb11-24" aria-hidden="true" tabindex="-1"></a>    <span class="pp">assert_eq!</span>(y<span class="op">.</span><span class="dv">0</span><span class="op">,</span> <span class="st">&quot;hello&quot;</span>)<span class="op">;</span></span>
+<span id="cb11-25"><a href="#cb11-25" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-26"><a href="#cb11-26" aria-hidden="true" tabindex="-1"></a>    <span class="co">// 等待线程完成。</span></span>
+<span id="cb11-27"><a href="#cb11-27" aria-hidden="true" tabindex="-1"></a>    t<span class="op">.</span>join()<span class="op">.</span>unwrap()<span class="op">;</span></span>
+<span id="cb11-28"><a href="#cb11-28" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-29"><a href="#cb11-29" aria-hidden="true" tabindex="-1"></a>    <span class="co">// Arc，x 现在应该被丢弃。</span></span>
+<span id="cb11-30"><a href="#cb11-30" aria-hidden="true" tabindex="-1"></a>    <span class="co">// 我们仍然有 y，因此对象仍然还没有被丢弃。</span></span>
+<span id="cb11-31"><a href="#cb11-31" aria-hidden="true" tabindex="-1"></a>    <span class="pp">assert_eq!</span>(NUM_DROPS<span class="op">.</span>load(Relaxed)<span class="op">,</span> <span class="dv">0</span>)<span class="op">;</span></span>
+<span id="cb11-32"><a href="#cb11-32" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-33"><a href="#cb11-33" aria-hidden="true" tabindex="-1"></a>    <span class="co">// 丢弃剩余的 `Arc`。</span></span>
+<span id="cb11-34"><a href="#cb11-34" aria-hidden="true" tabindex="-1"></a>    drop(y)<span class="op">;</span></span>
+<span id="cb11-35"><a href="#cb11-35" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-36"><a href="#cb11-36" aria-hidden="true" tabindex="-1"></a>    <span class="co">// 现在，`y` 也被丢弃，</span></span>
+<span id="cb11-37"><a href="#cb11-37" aria-hidden="true" tabindex="-1"></a>    <span class="co">// 对象应该也被丢弃。</span></span>
+<span id="cb11-38"><a href="#cb11-38" aria-hidden="true" tabindex="-1"></a>    <span class="pp">assert_eq!</span>(NUM_DROPS<span class="op">.</span>load(Relaxed)<span class="op">,</span> <span class="dv">1</span>)<span class="op">;</span></span>
+<span id="cb11-39"><a href="#cb11-39" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p>编译并运行良好，因此我们的 Arc
+似乎按预期运行！虽然这令人兴奋，但并不能证明实现是完全正确的。建议使用涉及多个线程的长压力测试，以获得更多的信心。</p>
+<div class="box">
+<h2 style="text-align: center;">
+Miri
+</h2>
+<p>
+使用 Miri 运行测试是非常有用的。Miri
+是一个实验性，但非常有用并且强力的工具，用于检查各种未定义形式的不安全代码。
+</p>
+<p>
+Miri 是 Rust
+编译器中间级别中间表示的解释器。这意味着它不会将你的代码编译成本机处理器指令，而是通过当像类型和生命周期是仍然可用时进行解释。因此，Miri
+运行程序的速度比正常运行速度慢很多，但能够检测许多导致未定义行为的错误。
+</p>
+<p>
+它包括检测数据竞争的实验性支持，这允许它检测内存排序问题。
+</p>
+<p>
+有关更多使用 Miri
+的细节和指导，请参见<a href="https://github.com/rust-lang/miri">它的
+GitHub 页面</a>
+</p>
+</div>
+<h3 id="可变性">可变性</h3>
+<p>（<a href="https://marabos.nl/atomics/building-arc.html#mutation" target="_blank">英文版本</a>）</p>
+<p>正如之前提及的，我们不能为我们的 Arc 实现
+DerefMut。我们不能无条件地承诺对数据的独占访问（<code>&amp;mut T</code>），因为它能够通过其他
+Arc 对象访问。</p>
+<p>然而，我们可以有条件地允许独占访问。我们可以创建一个方法，如果引用计数为
+1，则提供 <code>&amp;mut T</code>，这证明没有其他 Arc
+对象可以用来访问相同的数据。</p>
+<p><a class="indexterm" id="index-Arc-getmut"></a> 该函数我们将称它为
+<code>get_mut</code>，它必须接受一个 <code>&amp;mut Self</code>
+以确保没有其他的相同的东西使用 Arc 获取 T。如果这个 Arc
+仍然可以共享，知道只有一个 Arc 对象是没有意义的。</p>
+<p><a class="indexterm" id="index-happens-beforerelationships-inArc-2"></a>
+我们需要使用 acquire 内存排序去确保之前拥有 Arc
+克隆的线程不再访问数据。我们需要与导致引用计数为 1 的每个单独的
+<code>drop</code> 建立一个 happens-before 关系。</p>
+<p>这仅在引用计数实际为 1 时才重要：如果引用计数高，我们将不再提供一个
+<code>&amp;mut T</code>，并且内存排序是无关紧要。因此，我们可以使用
+relaxed load 操作，随后跟条件行的 acquire 屏障，如下所示：</p>
+<div class="sourceCode" id="cb12"><pre
+class="sourceCode rust"><code class="sourceCode rust"><span id="cb12-1"><a href="#cb12-1" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> <span class="kw">fn</span> get_mut(arc<span class="op">:</span> <span class="op">&amp;</span><span class="kw">mut</span> <span class="dt">Self</span>) <span class="op">-&gt;</span> <span class="dt">Option</span><span class="op">&lt;&amp;</span><span class="kw">mut</span> T<span class="op">&gt;</span> <span class="op">{</span></span>
+<span id="cb12-2"><a href="#cb12-2" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> arc<span class="op">.</span>data()<span class="op">.</span>ref_count<span class="op">.</span>load(Relaxed) <span class="op">==</span> <span class="dv">1</span> <span class="op">{</span></span>
+<span id="cb12-3"><a href="#cb12-3" aria-hidden="true" tabindex="-1"></a>            fence(Acquire)<span class="op">;</span></span>
+<span id="cb12-4"><a href="#cb12-4" aria-hidden="true" tabindex="-1"></a>            <span class="co">// 安全性：没有任何其他东西可以访问 data，因为</span></span>
+<span id="cb12-5"><a href="#cb12-5" aria-hidden="true" tabindex="-1"></a>            <span class="co">// 只有一个 Arc，我们拥有独占访问的权限。</span></span>
+<span id="cb12-6"><a href="#cb12-6" aria-hidden="true" tabindex="-1"></a>            <span class="kw">unsafe</span> <span class="op">{</span> <span class="cn">Some</span>(<span class="op">&amp;</span><span class="kw">mut</span> arc<span class="op">.</span>ptr<span class="op">.</span>as_mut()<span class="op">.</span>data) <span class="op">}</span></span>
+<span id="cb12-7"><a href="#cb12-7" aria-hidden="true" tabindex="-1"></a>        <span class="op">}</span> <span class="cf">else</span> <span class="op">{</span></span>
+<span id="cb12-8"><a href="#cb12-8" aria-hidden="true" tabindex="-1"></a>            <span class="cn">None</span></span>
+<span id="cb12-9"><a href="#cb12-9" aria-hidden="true" tabindex="-1"></a>        <span class="op">}</span></span>
+<span id="cb12-10"><a href="#cb12-10" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span></code></pre></div>
+<p>该函数并不接收 <code>self</code> 参数，而是接受一个常规的参数（名称
+<code>arc</code>）。这意味着，它仅可以
+<code>Arc::get_mut(&amp;mut a)</code> 这样的方式调用，而不以
+<code>a.get_mut()</code> 方式调用。对于实现了 <code>Deref</code>
+的类型来说，这是可取的，以避免与底层类型 <code>T</code>
+上的同名方法产生歧义。</p>
+<p>返回的可以引用会隐式地从参数重借用生命周期，这意味着只要返回
+<code>&amp;mut T</code> 仍然存在，原始的 Arc
+就不能被其他代码使用，从而允许安全的可变性操作。</p>
+<p>当 <code>&amp;mut T</code> 的生命周期过期后，Arc
+可以在此被使用以及与其他线程共享。也许有人可能会想知道，在之后访问数据的线程是否需要关注内存排序。然而，这是用于与其他线程共享
+Arc（或着新克隆）的机制负责的。（例如 mutex、channel
+或者产生的新线程。）</p>
+<h2 id="weak-指针">Weak 指针</h2>
+<p>（<a href="https://marabos.nl/atomics/building-arc.html#weak-pointers" target="_blank">英文版本</a>）</p>
+<p>当表示在内存中多个对象组成的结构时，引用计数非常有用。例如，在树结构中的每个节点可以包含对其子节点的
+Arc
+引用。这样，当我们丢弃一个节点时，不再使用的孩子节点也会被（递归地）丢弃。</p>
+<p><a class="indexterm" id="index-Arc-cyclicstructures"></a>
+然而，对于<em>循环结构</em>来说，这会失效。如果一个子节点也包含对它父节点的
+Arc 引用，那么当所有 Arc
+引用都不存在时，两者都不会被丢弃，因为始终存至少有一个 Arc
+引用仍然指向它们。</p>
+<p>标准库的 Arc
+提供了解决这个问题的办法：<code>Weak&lt;T&gt;</code>。<code>Weak&lt;T&gt;</code>（也被称为
+<em>weak 指针</em>），行为有点像
+<code>Arc&lt;T&gt;</code>，但是并不会阻止对象被丢弃。T 可以在多个
+<code>Arc&lt;T&gt;</code> 和 <code>Weak&lt;T&gt;</code>
+对象之间共享，但是当所有 <code>Arc&lt;T&gt;</code>
+对象都消失时，不管是否还有 <code>Weak&lt;T&gt;</code> 对象，T
+都会被丢弃。</p>
+<p>这意味着 <code>Weak&lt;T&gt;</code> 可以没有 T 而存在，因此无法像 Arc
+那样无条件地提供 <code>&amp;T</code>。然而，为了获取给定
+<code>Weak&lt;T&gt;</code> 中的 T，可以通过 <code>Arc&lt;T&gt;</code> 的
+<code>upgrade()</code> 方法来升级。这个方法返回一个
+<code>Option&lt;Arc&lt;T&gt;&gt;</code>，如果 T 已经被丢弃，则返回
+None。</p>
+<p>在基于 Arc 的结构中，可以使用 Weak
+打破循环引用。例如，在树结构中的子节点使用 Weak，而不是使用 Arc
+来引用它们的父节点。然后，尽管子节点存在，也不会阻止父节点被丢弃。</p>
+<p>让我们来实现这个功能。</p>
+<p>与之前一样，当 Arc 对象的数量到达 0 时，我们可以丢弃包含 T
+的对象。然而，我们仍然不能丢弃和释放 ArcData，因为可能仍然有 weak
+指针指向它。只有当最后一个 Weak 指针也不存在时，我们才能丢弃和释放
+ArcData。</p>
+<p>因此，我们将使用两个计数器：一个计算“引用 T
+对象的数量”，另一个计算“引用 <code>ArcData&lt;T&gt;</code>
+对象的数量”。换句话说，第一个计数器与之前相同：它计算 Arc
+对象的数量，而第二个计数器计算 Arc 和 Weak 对象的数量。</p>
+<p>我们还需要一种在 <code>ArcData&lt;T&gt;</code> 被 weak
+指针使用时，允许我们丢弃包含的对象（T）的机制。我们将使用
+<code>Option&lt;T&gt;</code>，这样当数据被丢弃时可以使用
+None，并将其包装在 UnsafeCell 中进行内部可变性（<a
+href="./1_Basic_of_Rust_Concurrency.md#内部可变性">在第一章“内部可变性”中</a>），以允许在
+<code>ArcData&lt;T&gt;</code> 不是独占所有权时发生这种情况：</p>
+<div class="sourceCode" id="cb13"><pre
+class="sourceCode rust"><code class="sourceCode rust"><span id="cb13-1"><a href="#cb13-1" aria-hidden="true" tabindex="-1"></a><span class="kw">struct</span> ArcData<span class="op">&lt;</span>T<span class="op">&gt;</span> <span class="op">{</span></span>
+<span id="cb13-2"><a href="#cb13-2" aria-hidden="true" tabindex="-1"></a>    <span class="co">/// `Arc` 的数量</span></span>
+<span id="cb13-3"><a href="#cb13-3" aria-hidden="true" tabindex="-1"></a>    data_ref_count<span class="op">:</span> AtomicUsize<span class="op">,</span></span>
+<span id="cb13-4"><a href="#cb13-4" aria-hidden="true" tabindex="-1"></a>    <span class="co">/// `Arc` 和 `Weak` 总共的数量。</span></span>
+<span id="cb13-5"><a href="#cb13-5" aria-hidden="true" tabindex="-1"></a>    alloc_ref_count<span class="op">:</span> AtomicUsize<span class="op">,</span></span>
+<span id="cb13-6"><a href="#cb13-6" aria-hidden="true" tabindex="-1"></a>    <span class="co">/// 持有的数据。如果仅剩下 weak 指针，则是 `None`。</span></span>
+<span id="cb13-7"><a href="#cb13-7" aria-hidden="true" tabindex="-1"></a>    data<span class="op">:</span> UnsafeCell<span class="op">&lt;</span><span class="dt">Option</span><span class="op">&lt;</span>T<span class="op">&gt;&gt;,</span></span>
+<span id="cb13-8"><a href="#cb13-8" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p>如果我们认为 <code>Weak&lt;T&gt;</code> 是保持
+<code>ArcData&lt;T&gt;</code> 存活的对象，那么将
+<code>Arc&lt;T&gt;</code> 实现为包含 <code>Weak&lt;T&gt;</code>
+的结构体可能是有意义的，因为 <code>Arc&lt;T&gt;</code>
+需要做相同的事情，而且还有更多的功能。</p>
+<div class="sourceCode" id="cb14"><pre
+class="sourceCode rust"><code class="sourceCode rust"><span id="cb14-1"><a href="#cb14-1" aria-hidden="true" tabindex="-1"></a><span class="kw">pub</span> <span class="kw">struct</span> Arc<span class="op">&lt;</span>T<span class="op">&gt;</span> <span class="op">{</span></span>
+<span id="cb14-2"><a href="#cb14-2" aria-hidden="true" tabindex="-1"></a>    weak<span class="op">:</span> Weak<span class="op">&lt;</span>T<span class="op">&gt;,</span></span>
+<span id="cb14-3"><a href="#cb14-3" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span>
+<span id="cb14-4"><a href="#cb14-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb14-5"><a href="#cb14-5" aria-hidden="true" tabindex="-1"></a><span class="kw">pub</span> <span class="kw">struct</span> Weak<span class="op">&lt;</span>T<span class="op">&gt;</span> <span class="op">{</span></span>
+<span id="cb14-6"><a href="#cb14-6" aria-hidden="true" tabindex="-1"></a>    ptr<span class="op">:</span> NonNull<span class="op">&lt;</span>ArcData<span class="op">&lt;</span>T<span class="op">&gt;&gt;,</span></span>
+<span id="cb14-7"><a href="#cb14-7" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span>
+<span id="cb14-8"><a href="#cb14-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb14-9"><a href="#cb14-9" aria-hidden="true" tabindex="-1"></a><span class="kw">unsafe</span> <span class="kw">impl</span><span class="op">&lt;</span>T<span class="op">:</span> <span class="bu">Sync</span> <span class="op">+</span> <span class="bu">Send</span><span class="op">&gt;</span> <span class="bu">Send</span> <span class="cf">for</span> Weak<span class="op">&lt;</span>T<span class="op">&gt;</span> <span class="op">{}</span></span>
+<span id="cb14-10"><a href="#cb14-10" aria-hidden="true" tabindex="-1"></a><span class="kw">unsafe</span> <span class="kw">impl</span><span class="op">&lt;</span>T<span class="op">:</span> <span class="bu">Sync</span> <span class="op">+</span> <span class="bu">Send</span><span class="op">&gt;</span> <span class="bu">Sync</span> <span class="cf">for</span> Weak<span class="op">&lt;</span>T<span class="op">&gt;</span> <span class="op">{}</span></span></code></pre></div>
+<p>新函数与之前的基本相同，除了它现在有两个计数器可以同时初始化：</p>
+<div class="sourceCode" id="cb15"><pre
+class="sourceCode rust"><code class="sourceCode rust"><span id="cb15-1"><a href="#cb15-1" aria-hidden="true" tabindex="-1"></a><span class="kw">impl</span><span class="op">&lt;</span>T<span class="op">&gt;</span> Arc<span class="op">&lt;</span>T<span class="op">&gt;</span> <span class="op">{</span></span>
+<span id="cb15-2"><a href="#cb15-2" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> <span class="kw">fn</span> new(data<span class="op">:</span> T) <span class="op">-&gt;</span> Arc<span class="op">&lt;</span>T<span class="op">&gt;</span> <span class="op">{</span></span>
+<span id="cb15-3"><a href="#cb15-3" aria-hidden="true" tabindex="-1"></a>        Arc <span class="op">{</span></span>
+<span id="cb15-4"><a href="#cb15-4" aria-hidden="true" tabindex="-1"></a>            weak<span class="op">:</span> Weak <span class="op">{</span></span>
+<span id="cb15-5"><a href="#cb15-5" aria-hidden="true" tabindex="-1"></a>                ptr<span class="op">:</span> <span class="pp">NonNull::</span>from(<span class="dt">Box</span><span class="pp">::</span>leak(<span class="dt">Box</span><span class="pp">::</span>new(ArcData <span class="op">{</span></span>
+<span id="cb15-6"><a href="#cb15-6" aria-hidden="true" tabindex="-1"></a>                    alloc_ref_count<span class="op">:</span> <span class="pp">AtomicUsize::</span>new(<span class="dv">1</span>)<span class="op">,</span></span>
+<span id="cb15-7"><a href="#cb15-7" aria-hidden="true" tabindex="-1"></a>                    data_ref_count<span class="op">:</span> <span class="pp">AtomicUsize::</span>new(<span class="dv">1</span>)<span class="op">,</span></span>
+<span id="cb15-8"><a href="#cb15-8" aria-hidden="true" tabindex="-1"></a>                    data<span class="op">:</span> <span class="pp">UnsafeCell::</span>new(<span class="cn">Some</span>(data))<span class="op">,</span></span>
+<span id="cb15-9"><a href="#cb15-9" aria-hidden="true" tabindex="-1"></a>                <span class="op">}</span>)))<span class="op">,</span></span>
+<span id="cb15-10"><a href="#cb15-10" aria-hidden="true" tabindex="-1"></a>            <span class="op">},</span></span>
+<span id="cb15-11"><a href="#cb15-11" aria-hidden="true" tabindex="-1"></a>        <span class="op">}</span></span>
+<span id="cb15-12"><a href="#cb15-12" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb15-13"><a href="#cb15-13" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb15-14"><a href="#cb15-14" aria-hidden="true" tabindex="-1"></a>    <span class="co">//…</span></span>
+<span id="cb15-15"><a href="#cb15-15" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p>就像之前一样，我们假设 ptr 字段总是指向有效的
+<code>ArcData&lt;T&gt;</code>。这一次，我们将在
+<code>Weak&lt;T&gt;</code> 上将该假设编码为私有 <code>data()</code>
+辅助方法：</p>
+<div class="sourceCode" id="cb16"><pre
+class="sourceCode rust"><code class="sourceCode rust"><span id="cb16-1"><a href="#cb16-1" aria-hidden="true" tabindex="-1"></a><span class="kw">impl</span><span class="op">&lt;</span>T<span class="op">&gt;</span> Weak<span class="op">&lt;</span>T<span class="op">&gt;</span> <span class="op">{</span></span>
+<span id="cb16-2"><a href="#cb16-2" aria-hidden="true" tabindex="-1"></a>    <span class="kw">fn</span> data(<span class="op">&amp;</span><span class="kw">self</span>) <span class="op">-&gt;</span> <span class="op">&amp;</span>ArcData<span class="op">&lt;</span>T<span class="op">&gt;</span> <span class="op">{</span></span>
+<span id="cb16-3"><a href="#cb16-3" aria-hidden="true" tabindex="-1"></a>        <span class="kw">unsafe</span> <span class="op">{</span> <span class="kw">self</span><span class="op">.</span>ptr<span class="op">.</span>as_ref() <span class="op">}</span></span>
+<span id="cb16-4"><a href="#cb16-4" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb16-5"><a href="#cb16-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb16-6"><a href="#cb16-6" aria-hidden="true" tabindex="-1"></a>    <span class="co">// …</span></span>
+<span id="cb16-7"><a href="#cb16-7" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p>在 <code>Arc&lt;T&gt;</code> 的 Deref 实现中，我们现在不得不使用
+<code>UnsafeCell::get()</code> 拉取得到 cell
+内容的指针，并使用不安全的代码去承诺它此时可以共享。我们也需要
+<code>as_ref().unwrap()</code> 去获取 <code>Option&lt;T&gt;</code>
+引用。我们不必担心引发 panic，因为只有在没有 Arc 对象时 Option 才会为
+None。</p>
+<div class="sourceCode" id="cb17"><pre
+class="sourceCode rust"><code class="sourceCode rust"><span id="cb17-1"><a href="#cb17-1" aria-hidden="true" tabindex="-1"></a><span class="kw">impl</span><span class="op">&lt;</span>T<span class="op">&gt;</span> <span class="bu">Deref</span> <span class="cf">for</span> Arc<span class="op">&lt;</span>T<span class="op">&gt;</span> <span class="op">{</span></span>
+<span id="cb17-2"><a href="#cb17-2" aria-hidden="true" tabindex="-1"></a>    <span class="kw">type</span> Target <span class="op">=</span> T<span class="op">;</span></span>
+<span id="cb17-3"><a href="#cb17-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb17-4"><a href="#cb17-4" aria-hidden="true" tabindex="-1"></a>    <span class="kw">fn</span> deref(<span class="op">&amp;</span><span class="kw">self</span>) <span class="op">-&gt;</span> <span class="op">&amp;</span>T <span class="op">{</span></span>
+<span id="cb17-5"><a href="#cb17-5" aria-hidden="true" tabindex="-1"></a>        <span class="kw">let</span> ptr <span class="op">=</span> <span class="kw">self</span><span class="op">.</span>weak<span class="op">.</span>data()<span class="op">.</span>data<span class="op">.</span>get()<span class="op">;</span></span>
+<span id="cb17-6"><a href="#cb17-6" aria-hidden="true" tabindex="-1"></a>        <span class="co">// 安全性：由于 Arc 包装 data，</span></span>
+<span id="cb17-7"><a href="#cb17-7" aria-hidden="true" tabindex="-1"></a>        <span class="co">// data 存在并可以共享。</span></span>
+<span id="cb17-8"><a href="#cb17-8" aria-hidden="true" tabindex="-1"></a>        <span class="kw">unsafe</span> <span class="op">{</span> (<span class="op">*</span>ptr)<span class="op">.</span>as_ref()<span class="op">.</span>unwrap() <span class="op">}</span></span>
+<span id="cb17-9"><a href="#cb17-9" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb17-10"><a href="#cb17-10" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p><code>Weak&lt;T&gt;</code> 的克隆实现非常简单；它与我们之前
+<code>Arc&lt;T&gt;</code> 的克隆实现几乎相同：</p>
+<div class="sourceCode" id="cb18"><pre
+class="sourceCode rust"><code class="sourceCode rust"><span id="cb18-1"><a href="#cb18-1" aria-hidden="true" tabindex="-1"></a><span class="kw">impl</span><span class="op">&lt;</span>T<span class="op">&gt;</span> <span class="bu">Clone</span> <span class="cf">for</span> Weak<span class="op">&lt;</span>T<span class="op">&gt;</span> <span class="op">{</span></span>
+<span id="cb18-2"><a href="#cb18-2" aria-hidden="true" tabindex="-1"></a>    <span class="kw">fn</span> clone(<span class="op">&amp;</span><span class="kw">self</span>) <span class="op">-&gt;</span> <span class="dt">Self</span> <span class="op">{</span></span>
+<span id="cb18-3"><a href="#cb18-3" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> <span class="kw">self</span><span class="op">.</span>data()<span class="op">.</span>alloc_ref_count<span class="op">.</span>fetch_add(<span class="dv">1</span><span class="op">,</span> Relaxed) <span class="op">&gt;</span> <span class="dt">usize</span><span class="pp">::</span><span class="cn">MAX</span> <span class="op">/</span> <span class="dv">2</span> <span class="op">{</span></span>
+<span id="cb18-4"><a href="#cb18-4" aria-hidden="true" tabindex="-1"></a>            <span class="pp">std::process::</span>abort()<span class="op">;</span></span>
+<span id="cb18-5"><a href="#cb18-5" aria-hidden="true" tabindex="-1"></a>        <span class="op">}</span></span>
+<span id="cb18-6"><a href="#cb18-6" aria-hidden="true" tabindex="-1"></a>        Weak <span class="op">{</span> ptr<span class="op">:</span> <span class="kw">self</span><span class="op">.</span>ptr <span class="op">}</span></span>
+<span id="cb18-7"><a href="#cb18-7" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb18-8"><a href="#cb18-8" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p>在我们新 <code>Arc&lt;T&gt;</code>
+的克隆实现中，我们需要同时递增两个计数器。我们将简单地使用
+<code>self.weak.clone()</code>
+为第一个计数器重用上面的代码，因此我们只需要手动递增第二个计数器：</p>
+<div class="sourceCode" id="cb19"><pre
+class="sourceCode rust"><code class="sourceCode rust"><span id="cb19-1"><a href="#cb19-1" aria-hidden="true" tabindex="-1"></a><span class="kw">impl</span><span class="op">&lt;</span>T<span class="op">&gt;</span> <span class="bu">Clone</span> <span class="cf">for</span> Arc<span class="op">&lt;</span>T<span class="op">&gt;</span> <span class="op">{</span></span>
+<span id="cb19-2"><a href="#cb19-2" aria-hidden="true" tabindex="-1"></a>    <span class="kw">fn</span> clone(<span class="op">&amp;</span><span class="kw">self</span>) <span class="op">-&gt;</span> <span class="dt">Self</span> <span class="op">{</span></span>
+<span id="cb19-3"><a href="#cb19-3" aria-hidden="true" tabindex="-1"></a>        <span class="kw">let</span> weak <span class="op">=</span> <span class="kw">self</span><span class="op">.</span>weak<span class="op">.</span>clone()<span class="op">;</span></span>
+<span id="cb19-4"><a href="#cb19-4" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> weak<span class="op">.</span>data()<span class="op">.</span>data_ref_count<span class="op">.</span>fetch_add(<span class="dv">1</span><span class="op">,</span> Relaxed) <span class="op">&gt;</span> <span class="dt">usize</span><span class="pp">::</span><span class="cn">MAX</span> <span class="op">/</span> <span class="dv">2</span> <span class="op">{</span></span>
+<span id="cb19-5"><a href="#cb19-5" aria-hidden="true" tabindex="-1"></a>            <span class="pp">std::process::</span>abort()<span class="op">;</span></span>
+<span id="cb19-6"><a href="#cb19-6" aria-hidden="true" tabindex="-1"></a>        <span class="op">}</span></span>
+<span id="cb19-7"><a href="#cb19-7" aria-hidden="true" tabindex="-1"></a>        Arc <span class="op">{</span> weak <span class="op">}</span></span>
+<span id="cb19-8"><a href="#cb19-8" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb19-9"><a href="#cb19-9" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p>当计数器从 1 到 0 时，丢弃 Weak 应该递减它的计数，以及丢弃和释放
+ArcData。这与我们之前 Arc 的 Drop 实现相同。</p>
+<div class="sourceCode" id="cb20"><pre
+class="sourceCode rust"><code class="sourceCode rust"><span id="cb20-1"><a href="#cb20-1" aria-hidden="true" tabindex="-1"></a><span class="kw">impl</span><span class="op">&lt;</span>T<span class="op">&gt;</span> <span class="bu">Drop</span> <span class="cf">for</span> Weak<span class="op">&lt;</span>T<span class="op">&gt;</span> <span class="op">{</span></span>
+<span id="cb20-2"><a href="#cb20-2" aria-hidden="true" tabindex="-1"></a>    <span class="kw">fn</span> drop(<span class="op">&amp;</span><span class="kw">mut</span> <span class="kw">self</span>) <span class="op">{</span></span>
+<span id="cb20-3"><a href="#cb20-3" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> <span class="kw">self</span><span class="op">.</span>data()<span class="op">.</span>alloc_ref_count<span class="op">.</span>fetch_sub(<span class="dv">1</span><span class="op">,</span> Release) <span class="op">==</span> <span class="dv">1</span> <span class="op">{</span></span>
+<span id="cb20-4"><a href="#cb20-4" aria-hidden="true" tabindex="-1"></a>            fence(Acquire)<span class="op">;</span></span>
+<span id="cb20-5"><a href="#cb20-5" aria-hidden="true" tabindex="-1"></a>            <span class="kw">unsafe</span> <span class="op">{</span></span>
+<span id="cb20-6"><a href="#cb20-6" aria-hidden="true" tabindex="-1"></a>                drop(<span class="dt">Box</span><span class="pp">::</span>from_raw(<span class="kw">self</span><span class="op">.</span>ptr<span class="op">.</span>as_ptr()))<span class="op">;</span></span>
+<span id="cb20-7"><a href="#cb20-7" aria-hidden="true" tabindex="-1"></a>            <span class="op">}</span></span>
+<span id="cb20-8"><a href="#cb20-8" aria-hidden="true" tabindex="-1"></a>        <span class="op">}</span></span>
+<span id="cb20-9"><a href="#cb20-9" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb20-10"><a href="#cb20-10" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p>丢弃 Arc
+应该同时递减两个计数器。注意，其中一个计数器已经被自动地处理，因为每个
+Arc 都包含一个 Weak，因此删除 Arc 也会删除一个
+Weak。我们仅需要处理另一个计数器：</p>
+<div class="sourceCode" id="cb21"><pre
+class="sourceCode rust"><code class="sourceCode rust"><span id="cb21-1"><a href="#cb21-1" aria-hidden="true" tabindex="-1"></a><span class="kw">impl</span><span class="op">&lt;</span>T<span class="op">&gt;</span> <span class="bu">Drop</span> <span class="cf">for</span> Arc<span class="op">&lt;</span>T<span class="op">&gt;</span> <span class="op">{</span></span>
+<span id="cb21-2"><a href="#cb21-2" aria-hidden="true" tabindex="-1"></a>    <span class="kw">fn</span> drop(<span class="op">&amp;</span><span class="kw">mut</span> <span class="kw">self</span>) <span class="op">{</span></span>
+<span id="cb21-3"><a href="#cb21-3" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> <span class="kw">self</span><span class="op">.</span>weak<span class="op">.</span>data()<span class="op">.</span>data_ref_count<span class="op">.</span>fetch_sub(<span class="dv">1</span><span class="op">,</span> Release) <span class="op">==</span> <span class="dv">1</span> <span class="op">{</span></span>
+<span id="cb21-4"><a href="#cb21-4" aria-hidden="true" tabindex="-1"></a>            fence(Acquire)<span class="op">;</span></span>
+<span id="cb21-5"><a href="#cb21-5" aria-hidden="true" tabindex="-1"></a>            <span class="kw">let</span> ptr <span class="op">=</span> <span class="kw">self</span><span class="op">.</span>weak<span class="op">.</span>data()<span class="op">.</span>data<span class="op">.</span>get()<span class="op">;</span></span>
+<span id="cb21-6"><a href="#cb21-6" aria-hidden="true" tabindex="-1"></a>            <span class="co">// 安全性：data 引用计数是 0，</span></span>
+<span id="cb21-7"><a href="#cb21-7" aria-hidden="true" tabindex="-1"></a>            <span class="co">// 因此没有任何东西可以访问它。</span></span>
+<span id="cb21-8"><a href="#cb21-8" aria-hidden="true" tabindex="-1"></a>            <span class="kw">unsafe</span> <span class="op">{</span></span>
+<span id="cb21-9"><a href="#cb21-9" aria-hidden="true" tabindex="-1"></a>                (<span class="op">*</span>ptr) <span class="op">=</span> <span class="cn">None</span><span class="op">;</span></span>
+<span id="cb21-10"><a href="#cb21-10" aria-hidden="true" tabindex="-1"></a>            <span class="op">}</span></span>
+<span id="cb21-11"><a href="#cb21-11" aria-hidden="true" tabindex="-1"></a>        <span class="op">}</span></span>
+<span id="cb21-12"><a href="#cb21-12" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb21-13"><a href="#cb21-13" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p>在 Rust 中丢弃一个对象将首先运行它的 <code>Drop::drop</code>
+函数（如果它实现了
+<code>Drop</code>），然后递归地逐个地丢弃它的所有字段。</p>
+<p><code>get_mut</code> 方法中的检查基本上保持不变，除了现在需要考虑
+weak 指针。看起来似乎可以在检查独占性时忽略 weak 指针，但是
+<code>Weak&lt;T&gt;</code> 可以随时升级为
+<code>Arc&lt;T&gt;</code>。因此，在给出 <code>&amp;mut T</code>
+之前，<code>get_mut</code> 必须检查是否还有其他
+<code>Arc&lt;T&gt;</code> 或者 <code>Weak&lt;T&gt;</code> 指针：</p>
+<div class="sourceCode" id="cb22"><pre
+class="sourceCode rust"><code class="sourceCode rust"><span id="cb22-1"><a href="#cb22-1" aria-hidden="true" tabindex="-1"></a><span class="kw">impl</span><span class="op">&lt;</span>T<span class="op">&gt;</span> Arc<span class="op">&lt;</span>T<span class="op">&gt;</span> <span class="op">{</span></span>
+<span id="cb22-2"><a href="#cb22-2" aria-hidden="true" tabindex="-1"></a>    <span class="co">// …</span></span>
+<span id="cb22-3"><a href="#cb22-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb22-4"><a href="#cb22-4" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> <span class="kw">fn</span> get_mut(arc<span class="op">:</span> <span class="op">&amp;</span><span class="kw">mut</span> <span class="dt">Self</span>) <span class="op">-&gt;</span> <span class="dt">Option</span><span class="op">&lt;&amp;</span><span class="kw">mut</span> T<span class="op">&gt;</span> <span class="op">{</span></span>
+<span id="cb22-5"><a href="#cb22-5" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> arc<span class="op">.</span>weak<span class="op">.</span>data()<span class="op">.</span>alloc_ref_count<span class="op">.</span>load(Relaxed) <span class="op">==</span> <span class="dv">1</span> <span class="op">{</span></span>
+<span id="cb22-6"><a href="#cb22-6" aria-hidden="true" tabindex="-1"></a>            fence(Acquire)<span class="op">;</span></span>
+<span id="cb22-7"><a href="#cb22-7" aria-hidden="true" tabindex="-1"></a>            <span class="co">// 安全性：没有任何东西可以访问 data，因为</span></span>
+<span id="cb22-8"><a href="#cb22-8" aria-hidden="true" tabindex="-1"></a>            <span class="co">// 仅有一个 Arc，并且我们拥有独占访问权限，</span></span>
+<span id="cb22-9"><a href="#cb22-9" aria-hidden="true" tabindex="-1"></a>            <span class="co">// 也没有 Weak 指针</span></span>
+<span id="cb22-10"><a href="#cb22-10" aria-hidden="true" tabindex="-1"></a>            <span class="kw">let</span> arcdata <span class="op">=</span> <span class="kw">unsafe</span> <span class="op">{</span> arc<span class="op">.</span>weak<span class="op">.</span>ptr<span class="op">.</span>as_mut() <span class="op">};</span></span>
+<span id="cb22-11"><a href="#cb22-11" aria-hidden="true" tabindex="-1"></a>            <span class="kw">let</span> option <span class="op">=</span> arcdata<span class="op">.</span>data<span class="op">.</span>get_mut()<span class="op">;</span></span>
+<span id="cb22-12"><a href="#cb22-12" aria-hidden="true" tabindex="-1"></a>            <span class="co">// 我们知道 data 是仍然可获得的，因为我们</span></span>
+<span id="cb22-13"><a href="#cb22-13" aria-hidden="true" tabindex="-1"></a>            <span class="co">// 有一个 Arc 去包裹它，因此不会 panic。</span></span>
+<span id="cb22-14"><a href="#cb22-14" aria-hidden="true" tabindex="-1"></a>            <span class="kw">let</span> data <span class="op">=</span> option<span class="op">.</span>as_mut()<span class="op">.</span>unwrap()<span class="op">;</span></span>
+<span id="cb22-15"><a href="#cb22-15" aria-hidden="true" tabindex="-1"></a>            <span class="cn">Some</span>(data)</span>
+<span id="cb22-16"><a href="#cb22-16" aria-hidden="true" tabindex="-1"></a>        <span class="op">}</span> <span class="cf">else</span> <span class="op">{</span></span>
+<span id="cb22-17"><a href="#cb22-17" aria-hidden="true" tabindex="-1"></a>            <span class="cn">None</span></span>
+<span id="cb22-18"><a href="#cb22-18" aria-hidden="true" tabindex="-1"></a>        <span class="op">}</span></span>
+<span id="cb22-19"><a href="#cb22-19" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb22-20"><a href="#cb22-20" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb22-21"><a href="#cb22-21" aria-hidden="true" tabindex="-1"></a>    <span class="co">// …</span></span>
+<span id="cb22-22"><a href="#cb22-22" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p>接下来：是升级 Weak 指针。当数据仍然存在时，才能升级 Weak 到
+Arc。如果仅剩下 Weak 指针，则没有数据通过 Arc 共享了。因此，我们需要递增
+Arc 的计数器，但只能在计数器不为 0
+时才能这样做。我们将使用「比较并交换」循环（<a
+href="./2_Atomics.md#比较并交换操作">第二章的“比较并交换操作”</a>）来做这些。</p>
+<p>与之前一样，对于递增引用计数，relaxed
+内存排序是好的。在这个原子操作之前或之后，没有其他变量的操作需要严格执行。</p>
+<div class="sourceCode" id="cb23"><pre
+class="sourceCode rust"><code class="sourceCode rust"><span id="cb23-1"><a href="#cb23-1" aria-hidden="true" tabindex="-1"></a><span class="kw">impl</span><span class="op">&lt;</span>T<span class="op">&gt;</span> Weak<span class="op">&lt;</span>T<span class="op">&gt;</span> <span class="op">{</span></span>
+<span id="cb23-2"><a href="#cb23-2" aria-hidden="true" tabindex="-1"></a>    <span class="co">//…</span></span>
+<span id="cb23-3"><a href="#cb23-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb23-4"><a href="#cb23-4" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> <span class="kw">fn</span> upgrade(<span class="op">&amp;</span><span class="kw">self</span>) <span class="op">-&gt;</span> <span class="dt">Option</span><span class="op">&lt;</span>Arc<span class="op">&lt;</span>T<span class="op">&gt;&gt;</span> <span class="op">{</span></span>
+<span id="cb23-5"><a href="#cb23-5" aria-hidden="true" tabindex="-1"></a>        <span class="kw">let</span> <span class="kw">mut</span> n <span class="op">=</span> <span class="kw">self</span><span class="op">.</span>data()<span class="op">.</span>data_ref_count<span class="op">.</span>load(Relaxed)<span class="op">;</span></span>
+<span id="cb23-6"><a href="#cb23-6" aria-hidden="true" tabindex="-1"></a>        <span class="cf">loop</span> <span class="op">{</span></span>
+<span id="cb23-7"><a href="#cb23-7" aria-hidden="true" tabindex="-1"></a>            <span class="cf">if</span> n <span class="op">==</span> <span class="dv">0</span> <span class="op">{</span></span>
+<span id="cb23-8"><a href="#cb23-8" aria-hidden="true" tabindex="-1"></a>                <span class="cf">return</span> <span class="cn">None</span><span class="op">;</span></span>
+<span id="cb23-9"><a href="#cb23-9" aria-hidden="true" tabindex="-1"></a>            <span class="op">}</span></span>
+<span id="cb23-10"><a href="#cb23-10" aria-hidden="true" tabindex="-1"></a>            <span class="pp">assert!</span>(n <span class="op">&lt;=</span> <span class="dt">usize</span><span class="pp">::</span><span class="cn">MAX</span> <span class="op">/</span> <span class="dv">2</span>)<span class="op">;</span></span>
+<span id="cb23-11"><a href="#cb23-11" aria-hidden="true" tabindex="-1"></a>            <span class="cf">if</span> <span class="kw">let</span> <span class="cn">Err</span>(e) <span class="op">=</span></span>
+<span id="cb23-12"><a href="#cb23-12" aria-hidden="true" tabindex="-1"></a>                <span class="kw">self</span><span class="op">.</span>data()</span>
+<span id="cb23-13"><a href="#cb23-13" aria-hidden="true" tabindex="-1"></a>                    <span class="op">.</span>data_ref_count</span>
+<span id="cb23-14"><a href="#cb23-14" aria-hidden="true" tabindex="-1"></a>                    <span class="op">.</span>compare_exchange_weak(n<span class="op">,</span> n <span class="op">+</span> <span class="dv">1</span><span class="op">,</span> Relaxed<span class="op">,</span> Relaxed)</span>
+<span id="cb23-15"><a href="#cb23-15" aria-hidden="true" tabindex="-1"></a>            <span class="op">{</span></span>
+<span id="cb23-16"><a href="#cb23-16" aria-hidden="true" tabindex="-1"></a>                n <span class="op">=</span> e<span class="op">;</span></span>
+<span id="cb23-17"><a href="#cb23-17" aria-hidden="true" tabindex="-1"></a>                <span class="cf">continue</span><span class="op">;</span></span>
+<span id="cb23-18"><a href="#cb23-18" aria-hidden="true" tabindex="-1"></a>            <span class="op">}</span></span>
+<span id="cb23-19"><a href="#cb23-19" aria-hidden="true" tabindex="-1"></a>            <span class="cf">return</span> <span class="cn">Some</span>(Arc <span class="op">{</span> weak<span class="op">:</span> <span class="kw">self</span><span class="op">.</span>clone() <span class="op">}</span>)<span class="op">;</span></span>
+<span id="cb23-20"><a href="#cb23-20" aria-hidden="true" tabindex="-1"></a>        <span class="op">}</span></span>
+<span id="cb23-21"><a href="#cb23-21" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb23-22"><a href="#cb23-22" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p>相反，从 <code>Arc&lt;T&gt;</code> 获得 <code>Weak&lt;T&gt;</code>
+要简单得多：</p>
+<div class="sourceCode" id="cb24"><pre
+class="sourceCode rust"><code class="sourceCode rust"><span id="cb24-1"><a href="#cb24-1" aria-hidden="true" tabindex="-1"></a><span class="kw">impl</span><span class="op">&lt;</span>T<span class="op">&gt;</span> Arc<span class="op">&lt;</span>T<span class="op">&gt;</span> <span class="op">{</span></span>
+<span id="cb24-2"><a href="#cb24-2" aria-hidden="true" tabindex="-1"></a>    <span class="co">// …</span></span>
+<span id="cb24-3"><a href="#cb24-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb24-4"><a href="#cb24-4" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> <span class="kw">fn</span> downgrade(arc<span class="op">:</span> <span class="op">&amp;</span><span class="dt">Self</span>) <span class="op">-&gt;</span> Weak<span class="op">&lt;</span>T<span class="op">&gt;</span> <span class="op">{</span></span>
+<span id="cb24-5"><a href="#cb24-5" aria-hidden="true" tabindex="-1"></a>        arc<span class="op">.</span>weak<span class="op">.</span>clone()</span>
+<span id="cb24-6"><a href="#cb24-6" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb24-7"><a href="#cb24-7" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<h3 id="测试它2">测试它2</h3>
+<p>（<a href="https://marabos.nl/atomics/building-arc.html#arc-weak-test" target="_blank">英文版本</a>）</p>
+<p>为了快速测试我们创建的内容，我们将修改之前的单元测试，以使用 weak
+指针，并验证它们是否可以在预期的情况下升级：</p>
+<div class="sourceCode" id="cb25"><pre
+class="sourceCode rust"><code class="sourceCode rust"><span id="cb25-1"><a href="#cb25-1" aria-hidden="true" tabindex="-1"></a><span class="at">#[</span>test<span class="at">]</span></span>
+<span id="cb25-2"><a href="#cb25-2" aria-hidden="true" tabindex="-1"></a><span class="kw">fn</span> test() <span class="op">{</span></span>
+<span id="cb25-3"><a href="#cb25-3" aria-hidden="true" tabindex="-1"></a>    <span class="kw">static</span> NUM_DROPS<span class="op">:</span> AtomicUsize <span class="op">=</span> <span class="pp">AtomicUsize::</span>new(<span class="dv">0</span>)<span class="op">;</span></span>
+<span id="cb25-4"><a href="#cb25-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb25-5"><a href="#cb25-5" aria-hidden="true" tabindex="-1"></a>    <span class="kw">struct</span> DetectDrop<span class="op">;</span></span>
+<span id="cb25-6"><a href="#cb25-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb25-7"><a href="#cb25-7" aria-hidden="true" tabindex="-1"></a>    <span class="kw">impl</span> <span class="bu">Drop</span> <span class="cf">for</span> DetectDrop <span class="op">{</span></span>
+<span id="cb25-8"><a href="#cb25-8" aria-hidden="true" tabindex="-1"></a>        <span class="kw">fn</span> drop(<span class="op">&amp;</span><span class="kw">mut</span> <span class="kw">self</span>) <span class="op">{</span></span>
+<span id="cb25-9"><a href="#cb25-9" aria-hidden="true" tabindex="-1"></a>            NUM_DROPS<span class="op">.</span>fetch_add(<span class="dv">1</span><span class="op">,</span> Relaxed)<span class="op">;</span></span>
+<span id="cb25-10"><a href="#cb25-10" aria-hidden="true" tabindex="-1"></a>        <span class="op">}</span></span>
+<span id="cb25-11"><a href="#cb25-11" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb25-12"><a href="#cb25-12" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb25-13"><a href="#cb25-13" aria-hidden="true" tabindex="-1"></a>    <span class="co">// 创建一个 Arc，同时也创建两个 weak 指针。</span></span>
+<span id="cb25-14"><a href="#cb25-14" aria-hidden="true" tabindex="-1"></a>    <span class="kw">let</span> x <span class="op">=</span> <span class="pp">Arc::</span>new((<span class="st">&quot;hello&quot;</span><span class="op">,</span> DetectDrop))<span class="op">;</span></span>
+<span id="cb25-15"><a href="#cb25-15" aria-hidden="true" tabindex="-1"></a>    <span class="kw">let</span> y <span class="op">=</span> <span class="pp">Arc::</span>downgrade(<span class="op">&amp;</span>x)<span class="op">;</span></span>
+<span id="cb25-16"><a href="#cb25-16" aria-hidden="true" tabindex="-1"></a>    <span class="kw">let</span> z <span class="op">=</span> <span class="pp">Arc::</span>downgrade(<span class="op">&amp;</span>x)<span class="op">;</span></span>
+<span id="cb25-17"><a href="#cb25-17" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb25-18"><a href="#cb25-18" aria-hidden="true" tabindex="-1"></a>    <span class="kw">let</span> t <span class="op">=</span> <span class="pp">std::thread::</span>spawn(<span class="kw">move</span> <span class="op">||</span> <span class="op">{</span></span>
+<span id="cb25-19"><a href="#cb25-19" aria-hidden="true" tabindex="-1"></a>        <span class="co">// 此刻，Weak 指针应该被升级。</span></span>
+<span id="cb25-20"><a href="#cb25-20" aria-hidden="true" tabindex="-1"></a>        <span class="kw">let</span> y <span class="op">=</span> y<span class="op">.</span>upgrade()<span class="op">.</span>unwrap()<span class="op">;</span></span>
+<span id="cb25-21"><a href="#cb25-21" aria-hidden="true" tabindex="-1"></a>        <span class="pp">assert_eq!</span>(y<span class="op">.</span><span class="dv">0</span><span class="op">,</span> <span class="st">&quot;hello&quot;</span>)<span class="op">;</span></span>
+<span id="cb25-22"><a href="#cb25-22" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span>)<span class="op">;</span></span>
+<span id="cb25-23"><a href="#cb25-23" aria-hidden="true" tabindex="-1"></a>    <span class="pp">assert_eq!</span>(x<span class="op">.</span><span class="dv">0</span><span class="op">,</span> <span class="st">&quot;hello&quot;</span>)<span class="op">;</span></span>
+<span id="cb25-24"><a href="#cb25-24" aria-hidden="true" tabindex="-1"></a>    t<span class="op">.</span>join()<span class="op">.</span>unwrap()<span class="op">;</span></span>
+<span id="cb25-25"><a href="#cb25-25" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb25-26"><a href="#cb25-26" aria-hidden="true" tabindex="-1"></a>    <span class="co">// data 仍然不应该被丢弃，</span></span>
+<span id="cb25-27"><a href="#cb25-27" aria-hidden="true" tabindex="-1"></a>    <span class="co">// 并且 weak 指针应该被升级。</span></span>
+<span id="cb25-28"><a href="#cb25-28" aria-hidden="true" tabindex="-1"></a>    <span class="pp">assert_eq!</span>(NUM_DROPS<span class="op">.</span>load(Relaxed)<span class="op">,</span> <span class="dv">0</span>)<span class="op">;</span></span>
+<span id="cb25-29"><a href="#cb25-29" aria-hidden="true" tabindex="-1"></a>    <span class="pp">assert!</span>(z<span class="op">.</span>upgrade()<span class="op">.</span>is_some())<span class="op">;</span></span>
+<span id="cb25-30"><a href="#cb25-30" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb25-31"><a href="#cb25-31" aria-hidden="true" tabindex="-1"></a>    drop(x)<span class="op">;</span></span>
+<span id="cb25-32"><a href="#cb25-32" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb25-33"><a href="#cb25-33" aria-hidden="true" tabindex="-1"></a>    <span class="co">// 现在，data 已经被丢弃，并且</span></span>
+<span id="cb25-34"><a href="#cb25-34" aria-hidden="true" tabindex="-1"></a>    <span class="co">// weak 指针应该不再被升级。</span></span>
+<span id="cb25-35"><a href="#cb25-35" aria-hidden="true" tabindex="-1"></a>    <span class="pp">assert_eq!</span>(NUM_DROPS<span class="op">.</span>load(Relaxed)<span class="op">,</span> <span class="dv">1</span>)<span class="op">;</span></span>
+<span id="cb25-36"><a href="#cb25-36" aria-hidden="true" tabindex="-1"></a>    <span class="pp">assert!</span>(z<span class="op">.</span>upgrade()<span class="op">.</span>is_none())<span class="op">;</span></span>
+<span id="cb25-37"><a href="#cb25-37" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p>这也毫无问题地编译和运行，这给我们留下了一个非常可用的手工 Arc
+实现。</p>
+<h3 id="优化">优化</h3>
+<p>（<a href="https://marabos.nl/atomics/building-arc.html#optimizing-arc" target="_blank">英文版本</a>）</p>
+<p><a class="indexterm" id="index-Arc-weakpointers-performancecost"></a>
+虽然 weak 指针是可用的，但 Arc 类型通常用于没有任何 weak
+的情况下。我们上次实现的缺点是，克隆和丢弃 Arc
+现在都需要两个原子操作，因为它们不得不递增或递减两个计数器。这使得 Arc
+用于丢弃 weak 指针的开销增大，即使它们没有使用 weak 指针。</p>
+<p>似乎解决的方案是分别计算 <code>Arc&lt;T&gt;</code> 和
+<code>Weak&lt;T&gt;</code>
+指针的计数，但那样我们将无法原子地检测这两个计数器是否为
+0。为了理解这个问题，想象我们有一个线程执行以下令人恼火的函数：</p>
+<div class="sourceCode" id="cb26"><pre
+class="sourceCode rust"><code class="sourceCode rust"><span id="cb26-1"><a href="#cb26-1" aria-hidden="true" tabindex="-1"></a><span class="kw">fn</span> annoying(<span class="kw">mut</span> arc<span class="op">:</span> Arc<span class="op">&lt;</span>Something<span class="op">&gt;</span>) <span class="op">{</span></span>
+<span id="cb26-2"><a href="#cb26-2" aria-hidden="true" tabindex="-1"></a>    <span class="cf">loop</span> <span class="op">{</span></span>
+<span id="cb26-3"><a href="#cb26-3" aria-hidden="true" tabindex="-1"></a>        <span class="kw">let</span> weak <span class="op">=</span> <span class="pp">Arc::</span>downgrade(<span class="op">&amp;</span>arc)<span class="op">;</span></span>
+<span id="cb26-4"><a href="#cb26-4" aria-hidden="true" tabindex="-1"></a>        drop(arc)<span class="op">;</span></span>
+<span id="cb26-5"><a href="#cb26-5" aria-hidden="true" tabindex="-1"></a>        <span class="pp">println!</span>(<span class="st">&quot;I have no Arc!&quot;</span>)<span class="op">;</span> <span class="co">// 1</span></span>
+<span id="cb26-6"><a href="#cb26-6" aria-hidden="true" tabindex="-1"></a>        arc <span class="op">=</span> weak<span class="op">.</span>upgrade()<span class="op">.</span>unwrap()<span class="op">;</span></span>
+<span id="cb26-7"><a href="#cb26-7" aria-hidden="true" tabindex="-1"></a>        drop(weak)<span class="op">;</span></span>
+<span id="cb26-8"><a href="#cb26-8" aria-hidden="true" tabindex="-1"></a>        <span class="pp">println!</span>(<span class="st">&quot;I have no Weak!&quot;</span>)<span class="op">;</span> <span class="co">// 2</span></span>
+<span id="cb26-9"><a href="#cb26-9" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb26-10"><a href="#cb26-10" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p>该线程不断降级和升级一个 Arc，以至于它反复地循环未持有
+Arc（1）和未持有
+Weak（2）的片刻。如果我们同时检查两个计数器，查看是否还有线程仍然使用的内存，如果我们不幸地在它的第一个输出语句（1）期间检查
+<code>Arc</code> 计数，但在第二个输出语句（2）期间检查 <code>Weak</code>
+计数器，该线程能够隐藏它的存在。</p>
+<p>在我们上次实现中，我们通过将每个 <code>Arc</code> 也计为
+<code>Weak</code> 来解决了这个问题。一种更微妙的解决是将所有的 Arc
+指针合并为一个单独的 Weak 指针进行计数。这样，只要周围仍然有一个 Arc
+对象，weak 指针计数器（<code>alloc_ref_count</code>）将从不会到达
+0，就像在我们上次实现中一样，但是克隆的 Arc
+不需要触及该计数器。只有当最后一个 Arc 被丢弃时，weak
+指针计数才会递减。</p>
+<p>让我们尝试它。</p>
+<p>这次，我们不能简单地将 <code>Arc&lt;T&gt;</code> 实现为对
+<code>Weak&lt;T&gt;</code>
+的包装，所以两者都将包装一个非空指针到内存分配中：</p>
+<div class="sourceCode" id="cb27"><pre
+class="sourceCode rust"><code class="sourceCode rust"><span id="cb27-1"><a href="#cb27-1" aria-hidden="true" tabindex="-1"></a><span class="kw">pub</span> <span class="kw">struct</span> Arc<span class="op">&lt;</span>T<span class="op">&gt;</span> <span class="op">{</span></span>
+<span id="cb27-2"><a href="#cb27-2" aria-hidden="true" tabindex="-1"></a>    ptr<span class="op">:</span> NonNull<span class="op">&lt;</span>ArcData<span class="op">&lt;</span>T<span class="op">&gt;&gt;,</span></span>
+<span id="cb27-3"><a href="#cb27-3" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span>
+<span id="cb27-4"><a href="#cb27-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb27-5"><a href="#cb27-5" aria-hidden="true" tabindex="-1"></a><span class="kw">unsafe</span> <span class="kw">impl</span><span class="op">&lt;</span>T<span class="op">:</span> <span class="bu">Sync</span> <span class="op">+</span> <span class="bu">Send</span><span class="op">&gt;</span> <span class="bu">Send</span> <span class="cf">for</span> Arc<span class="op">&lt;</span>T<span class="op">&gt;</span> <span class="op">{}</span></span>
+<span id="cb27-6"><a href="#cb27-6" aria-hidden="true" tabindex="-1"></a><span class="kw">unsafe</span> <span class="kw">impl</span><span class="op">&lt;</span>T<span class="op">:</span> <span class="bu">Sync</span> <span class="op">+</span> <span class="bu">Send</span><span class="op">&gt;</span> <span class="bu">Sync</span> <span class="cf">for</span> Arc<span class="op">&lt;</span>T<span class="op">&gt;</span> <span class="op">{}</span></span>
+<span id="cb27-7"><a href="#cb27-7" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb27-8"><a href="#cb27-8" aria-hidden="true" tabindex="-1"></a><span class="kw">pub</span> <span class="kw">struct</span> Weak<span class="op">&lt;</span>T<span class="op">&gt;</span> <span class="op">{</span></span>
+<span id="cb27-9"><a href="#cb27-9" aria-hidden="true" tabindex="-1"></a>    ptr<span class="op">:</span> NonNull<span class="op">&lt;</span>ArcData<span class="op">&lt;</span>T<span class="op">&gt;&gt;,</span></span>
+<span id="cb27-10"><a href="#cb27-10" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span>
+<span id="cb27-11"><a href="#cb27-11" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb27-12"><a href="#cb27-12" aria-hidden="true" tabindex="-1"></a><span class="kw">unsafe</span> <span class="kw">impl</span><span class="op">&lt;</span>T<span class="op">:</span> <span class="bu">Sync</span> <span class="op">+</span> <span class="bu">Send</span><span class="op">&gt;</span> <span class="bu">Send</span> <span class="cf">for</span> Weak<span class="op">&lt;</span>T<span class="op">&gt;</span> <span class="op">{}</span></span>
+<span id="cb27-13"><a href="#cb27-13" aria-hidden="true" tabindex="-1"></a><span class="kw">unsafe</span> <span class="kw">impl</span><span class="op">&lt;</span>T<span class="op">:</span> <span class="bu">Sync</span> <span class="op">+</span> <span class="bu">Send</span><span class="op">&gt;</span> <span class="bu">Sync</span> <span class="cf">for</span> Weak<span class="op">&lt;</span>T<span class="op">&gt;</span> <span class="op">{}</span></span></code></pre></div>
+<p>因为我们正在优化我们的实现，我们也能通过使用
+<code>std::mem::ManuallyDrop&lt;T&gt;</code> 来稍微减小
+<code>ArcData&lt;T&gt;</code> 的大小。我们使用
+<code>Option&lt;T&gt;</code> 是为了能够在丢弃数据时，将
+<code>Some(T)</code> 替换为 None，但实际上我们并不需要单独的 None
+状态去告诉我们数据消失了，因为 <code>Arc&lt;T&gt;</code>
+的存在或者缺失已经告诉我们这一点。<code>ManuallyDrop&lt;T&gt;</code>
+占用了与 T 相同的数量的空间，但是这允许我们任意时刻通过不安全地调用
+<code>ManuallyDrop::drop()</code> 来手动丢弃 T：</p>
+<div class="sourceCode" id="cb28"><pre
+class="sourceCode rust"><code class="sourceCode rust"><span id="cb28-1"><a href="#cb28-1" aria-hidden="true" tabindex="-1"></a><span class="kw">use</span> <span class="pp">std::mem::</span>ManuallyDrop<span class="op">;</span></span>
+<span id="cb28-2"><a href="#cb28-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb28-3"><a href="#cb28-3" aria-hidden="true" tabindex="-1"></a><span class="kw">struct</span> ArcData<span class="op">&lt;</span>T<span class="op">&gt;</span> <span class="op">{</span></span>
+<span id="cb28-4"><a href="#cb28-4" aria-hidden="true" tabindex="-1"></a>    <span class="co">/// `Arc` 的数量</span></span>
+<span id="cb28-5"><a href="#cb28-5" aria-hidden="true" tabindex="-1"></a>    data_ref_count<span class="op">:</span> AtomicUsize<span class="op">,</span></span>
+<span id="cb28-6"><a href="#cb28-6" aria-hidden="true" tabindex="-1"></a>    <span class="co">/// `Weak` 的数量，如果有任意的 `Arc` 的数量，加上 1。</span></span>
+<span id="cb28-7"><a href="#cb28-7" aria-hidden="true" tabindex="-1"></a>    alloc_ref_count<span class="op">:</span> AtomicUsize<span class="op">,</span></span>
+<span id="cb28-8"><a href="#cb28-8" aria-hidden="true" tabindex="-1"></a>    <span class="co">/// 持有的数据。如果仅剩下 weak 指针，就丢弃它。</span></span>
+<span id="cb28-9"><a href="#cb28-9" aria-hidden="true" tabindex="-1"></a>    data<span class="op">:</span> UnsafeCell<span class="op">&lt;</span>ManuallyDrop<span class="op">&lt;</span>T<span class="op">&gt;&gt;,</span></span>
+<span id="cb28-10"><a href="#cb28-10" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p><code>Arc::new()</code>
+函数几乎持不变，像之前一样初始化两个计数器，但是现在使用
+<code>ManuallyDrop::new()</code>，而不是 <code>Some()</code>：</p>
+<div class="sourceCode" id="cb29"><pre
+class="sourceCode rust"><code class="sourceCode rust"><span id="cb29-1"><a href="#cb29-1" aria-hidden="true" tabindex="-1"></a><span class="kw">impl</span><span class="op">&lt;</span>T<span class="op">&gt;</span> Arc<span class="op">&lt;</span>T<span class="op">&gt;</span> <span class="op">{</span></span>
+<span id="cb29-2"><a href="#cb29-2" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> <span class="kw">fn</span> new(data<span class="op">:</span> T) <span class="op">-&gt;</span> Arc<span class="op">&lt;</span>T<span class="op">&gt;</span> <span class="op">{</span></span>
+<span id="cb29-3"><a href="#cb29-3" aria-hidden="true" tabindex="-1"></a>        Arc <span class="op">{</span></span>
+<span id="cb29-4"><a href="#cb29-4" aria-hidden="true" tabindex="-1"></a>            ptr<span class="op">:</span> <span class="pp">NonNull::</span>from(<span class="dt">Box</span><span class="pp">::</span>leak(<span class="dt">Box</span><span class="pp">::</span>new(ArcData <span class="op">{</span></span>
+<span id="cb29-5"><a href="#cb29-5" aria-hidden="true" tabindex="-1"></a>                alloc_ref_count<span class="op">:</span> <span class="pp">AtomicUsize::</span>new(<span class="dv">1</span>)<span class="op">,</span></span>
+<span id="cb29-6"><a href="#cb29-6" aria-hidden="true" tabindex="-1"></a>                data_ref_count<span class="op">:</span> <span class="pp">AtomicUsize::</span>new(<span class="dv">1</span>)<span class="op">,</span></span>
+<span id="cb29-7"><a href="#cb29-7" aria-hidden="true" tabindex="-1"></a>                data<span class="op">:</span> <span class="pp">UnsafeCell::</span>new(<span class="pp">ManuallyDrop::</span>new(data))<span class="op">,</span></span>
+<span id="cb29-8"><a href="#cb29-8" aria-hidden="true" tabindex="-1"></a>            <span class="op">}</span>)))<span class="op">,</span></span>
+<span id="cb29-9"><a href="#cb29-9" aria-hidden="true" tabindex="-1"></a>        <span class="op">}</span></span>
+<span id="cb29-10"><a href="#cb29-10" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb29-11"><a href="#cb29-11" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb29-12"><a href="#cb29-12" aria-hidden="true" tabindex="-1"></a>    <span class="co">// …</span></span>
+<span id="cb29-13"><a href="#cb29-13" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p>Deref 的实现不能再在 Weak 类型上使用私有数据方法，因此我们将在
+<code>Arc&lt;T&gt;</code> 上添加相同的私有辅助函数：</p>
+<div class="sourceCode" id="cb30"><pre
+class="sourceCode rust"><code class="sourceCode rust"><span id="cb30-1"><a href="#cb30-1" aria-hidden="true" tabindex="-1"></a><span class="kw">impl</span><span class="op">&lt;</span>T<span class="op">&gt;</span> Arc<span class="op">&lt;</span>T<span class="op">&gt;</span> <span class="op">{</span></span>
+<span id="cb30-2"><a href="#cb30-2" aria-hidden="true" tabindex="-1"></a>    <span class="co">// …</span></span>
+<span id="cb30-3"><a href="#cb30-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb30-4"><a href="#cb30-4" aria-hidden="true" tabindex="-1"></a>    <span class="kw">fn</span> data(<span class="op">&amp;</span><span class="kw">self</span>) <span class="op">-&gt;</span> <span class="op">&amp;</span>ArcData<span class="op">&lt;</span>T<span class="op">&gt;</span> <span class="op">{</span></span>
+<span id="cb30-5"><a href="#cb30-5" aria-hidden="true" tabindex="-1"></a>        <span class="kw">unsafe</span> <span class="op">{</span> <span class="kw">self</span><span class="op">.</span>ptr<span class="op">.</span>as_ref() <span class="op">}</span></span>
+<span id="cb30-6"><a href="#cb30-6" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb30-7"><a href="#cb30-7" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb30-8"><a href="#cb30-8" aria-hidden="true" tabindex="-1"></a>    <span class="co">// …</span></span>
+<span id="cb30-9"><a href="#cb30-9" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span>
+<span id="cb30-10"><a href="#cb30-10" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb30-11"><a href="#cb30-11" aria-hidden="true" tabindex="-1"></a><span class="kw">impl</span><span class="op">&lt;</span>T<span class="op">&gt;</span> <span class="bu">Deref</span> <span class="cf">for</span> Arc<span class="op">&lt;</span>T<span class="op">&gt;</span> <span class="op">{</span></span>
+<span id="cb30-12"><a href="#cb30-12" aria-hidden="true" tabindex="-1"></a>    <span class="kw">type</span> Target <span class="op">=</span> T<span class="op">;</span></span>
+<span id="cb30-13"><a href="#cb30-13" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb30-14"><a href="#cb30-14" aria-hidden="true" tabindex="-1"></a>    <span class="kw">fn</span> deref(<span class="op">&amp;</span><span class="kw">self</span>) <span class="op">-&gt;</span> <span class="op">&amp;</span>T <span class="op">{</span></span>
+<span id="cb30-15"><a href="#cb30-15" aria-hidden="true" tabindex="-1"></a>        <span class="co">// 安全性：因为有一个 Arc 包裹 data，</span></span>
+<span id="cb30-16"><a href="#cb30-16" aria-hidden="true" tabindex="-1"></a>        <span class="co">// data 存在，并且可能被共享。</span></span>
+<span id="cb30-17"><a href="#cb30-17" aria-hidden="true" tabindex="-1"></a>        <span class="kw">unsafe</span> <span class="op">{</span> <span class="op">&amp;*</span><span class="kw">self</span><span class="op">.</span>data()<span class="op">.</span>data<span class="op">.</span>get() <span class="op">}</span></span>
+<span id="cb30-18"><a href="#cb30-18" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb30-19"><a href="#cb30-19" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p><code>Weak&lt;T&gt;</code> 的克隆和 <code>Drop</code>
+实现与我们上次实现完全相同。包括私有的 <code>Weak::data</code>
+辅助函数，这里是为了完整性：</p>
+<div class="sourceCode" id="cb31"><pre
+class="sourceCode rust"><code class="sourceCode rust"><span id="cb31-1"><a href="#cb31-1" aria-hidden="true" tabindex="-1"></a><span class="kw">impl</span><span class="op">&lt;</span>T<span class="op">&gt;</span> Weak<span class="op">&lt;</span>T<span class="op">&gt;</span> <span class="op">{</span></span>
+<span id="cb31-2"><a href="#cb31-2" aria-hidden="true" tabindex="-1"></a>    <span class="kw">fn</span> data(<span class="op">&amp;</span><span class="kw">self</span>) <span class="op">-&gt;</span> <span class="op">&amp;</span>ArcData<span class="op">&lt;</span>T<span class="op">&gt;</span> <span class="op">{</span></span>
+<span id="cb31-3"><a href="#cb31-3" aria-hidden="true" tabindex="-1"></a>        <span class="kw">unsafe</span> <span class="op">{</span> <span class="kw">self</span><span class="op">.</span>ptr<span class="op">.</span>as_ref() <span class="op">}</span></span>
+<span id="cb31-4"><a href="#cb31-4" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb31-5"><a href="#cb31-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb31-6"><a href="#cb31-6" aria-hidden="true" tabindex="-1"></a>    <span class="co">// …</span></span>
+<span id="cb31-7"><a href="#cb31-7" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span>
+<span id="cb31-8"><a href="#cb31-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb31-9"><a href="#cb31-9" aria-hidden="true" tabindex="-1"></a><span class="kw">impl</span><span class="op">&lt;</span>T<span class="op">&gt;</span> <span class="bu">Clone</span> <span class="cf">for</span> Weak<span class="op">&lt;</span>T<span class="op">&gt;</span> <span class="op">{</span></span>
+<span id="cb31-10"><a href="#cb31-10" aria-hidden="true" tabindex="-1"></a>    <span class="kw">fn</span> clone(<span class="op">&amp;</span><span class="kw">self</span>) <span class="op">-&gt;</span> <span class="dt">Self</span> <span class="op">{</span></span>
+<span id="cb31-11"><a href="#cb31-11" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> <span class="kw">self</span><span class="op">.</span>data()<span class="op">.</span>alloc_ref_count<span class="op">.</span>fetch_add(<span class="dv">1</span><span class="op">,</span> Relaxed) <span class="op">&gt;</span> <span class="dt">usize</span><span class="pp">::</span><span class="cn">MAX</span> <span class="op">/</span> <span class="dv">2</span> <span class="op">{</span></span>
+<span id="cb31-12"><a href="#cb31-12" aria-hidden="true" tabindex="-1"></a>            <span class="pp">std::process::</span>abort()<span class="op">;</span></span>
+<span id="cb31-13"><a href="#cb31-13" aria-hidden="true" tabindex="-1"></a>        <span class="op">}</span></span>
+<span id="cb31-14"><a href="#cb31-14" aria-hidden="true" tabindex="-1"></a>        Weak <span class="op">{</span> ptr<span class="op">:</span> <span class="kw">self</span><span class="op">.</span>ptr <span class="op">}</span></span>
+<span id="cb31-15"><a href="#cb31-15" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb31-16"><a href="#cb31-16" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span>
+<span id="cb31-17"><a href="#cb31-17" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb31-18"><a href="#cb31-18" aria-hidden="true" tabindex="-1"></a><span class="kw">impl</span><span class="op">&lt;</span>T<span class="op">&gt;</span> <span class="bu">Drop</span> <span class="cf">for</span> Weak<span class="op">&lt;</span>T<span class="op">&gt;</span> <span class="op">{</span></span>
+<span id="cb31-19"><a href="#cb31-19" aria-hidden="true" tabindex="-1"></a>    <span class="kw">fn</span> drop(<span class="op">&amp;</span><span class="kw">mut</span> <span class="kw">self</span>) <span class="op">{</span></span>
+<span id="cb31-20"><a href="#cb31-20" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> <span class="kw">self</span><span class="op">.</span>data()<span class="op">.</span>alloc_ref_count<span class="op">.</span>fetch_sub(<span class="dv">1</span><span class="op">,</span> Release) <span class="op">==</span> <span class="dv">1</span> <span class="op">{</span></span>
+<span id="cb31-21"><a href="#cb31-21" aria-hidden="true" tabindex="-1"></a>            fence(Acquire)<span class="op">;</span></span>
+<span id="cb31-22"><a href="#cb31-22" aria-hidden="true" tabindex="-1"></a>            <span class="kw">unsafe</span> <span class="op">{</span></span>
+<span id="cb31-23"><a href="#cb31-23" aria-hidden="true" tabindex="-1"></a>                drop(<span class="dt">Box</span><span class="pp">::</span>from_raw(<span class="kw">self</span><span class="op">.</span>ptr<span class="op">.</span>as_ptr()))<span class="op">;</span></span>
+<span id="cb31-24"><a href="#cb31-24" aria-hidden="true" tabindex="-1"></a>            <span class="op">}</span></span>
+<span id="cb31-25"><a href="#cb31-25" aria-hidden="true" tabindex="-1"></a>        <span class="op">}</span></span>
+<span id="cb31-26"><a href="#cb31-26" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb31-27"><a href="#cb31-27" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p>现在我终于来到这个新的优化实现的重点内容——克隆
+<code>Arc&lt;T&gt;</code> 现在只需要操作一个计数器：</p>
+<div class="sourceCode" id="cb32"><pre
+class="sourceCode rust"><code class="sourceCode rust"><span id="cb32-1"><a href="#cb32-1" aria-hidden="true" tabindex="-1"></a><span class="kw">impl</span><span class="op">&lt;</span>T<span class="op">&gt;</span> <span class="bu">Clone</span> <span class="cf">for</span> Arc<span class="op">&lt;</span>T<span class="op">&gt;</span> <span class="op">{</span></span>
+<span id="cb32-2"><a href="#cb32-2" aria-hidden="true" tabindex="-1"></a>    <span class="kw">fn</span> clone(<span class="op">&amp;</span><span class="kw">self</span>) <span class="op">-&gt;</span> <span class="dt">Self</span> <span class="op">{</span></span>
+<span id="cb32-3"><a href="#cb32-3" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> <span class="kw">self</span><span class="op">.</span>data()<span class="op">.</span>data_ref_count<span class="op">.</span>fetch_add(<span class="dv">1</span><span class="op">,</span> Relaxed) <span class="op">&gt;</span> <span class="dt">usize</span><span class="pp">::</span><span class="cn">MAX</span> <span class="op">/</span> <span class="dv">2</span> <span class="op">{</span></span>
+<span id="cb32-4"><a href="#cb32-4" aria-hidden="true" tabindex="-1"></a>            <span class="pp">std::process::</span>abort()<span class="op">;</span></span>
+<span id="cb32-5"><a href="#cb32-5" aria-hidden="true" tabindex="-1"></a>        <span class="op">}</span></span>
+<span id="cb32-6"><a href="#cb32-6" aria-hidden="true" tabindex="-1"></a>        Arc <span class="op">{</span> ptr<span class="op">:</span> <span class="kw">self</span><span class="op">.</span>ptr <span class="op">}</span></span>
+<span id="cb32-7"><a href="#cb32-7" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb32-8"><a href="#cb32-8" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p>类似地，丢弃 <code>Arc&lt;T&gt;</code>
+现在也只需要递减一个计数器，除了看到最后一个 <code>drop</code>
+操作会将计数器从 1 递减到 0。在这中情况下，weak
+指针计数也需要递减，以便在没有 weak 指针时到达
+0。我们通过简单地创建一个无关紧要的
+<code>Weak&lt;T&gt;</code>，然后立即丢弃它来实现这一点：</p>
+<div class="sourceCode" id="cb33"><pre
+class="sourceCode rust"><code class="sourceCode rust"><span id="cb33-1"><a href="#cb33-1" aria-hidden="true" tabindex="-1"></a><span class="kw">impl</span><span class="op">&lt;</span>T<span class="op">&gt;</span> <span class="bu">Drop</span> <span class="cf">for</span> Arc<span class="op">&lt;</span>T<span class="op">&gt;</span> <span class="op">{</span></span>
+<span id="cb33-2"><a href="#cb33-2" aria-hidden="true" tabindex="-1"></a>    <span class="kw">fn</span> drop(<span class="op">&amp;</span><span class="kw">mut</span> <span class="kw">self</span>) <span class="op">{</span></span>
+<span id="cb33-3"><a href="#cb33-3" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> <span class="kw">self</span><span class="op">.</span>data()<span class="op">.</span>data_ref_count<span class="op">.</span>fetch_sub(<span class="dv">1</span><span class="op">,</span> Release) <span class="op">==</span> <span class="dv">1</span> <span class="op">{</span></span>
+<span id="cb33-4"><a href="#cb33-4" aria-hidden="true" tabindex="-1"></a>            fence(Acquire)<span class="op">;</span></span>
+<span id="cb33-5"><a href="#cb33-5" aria-hidden="true" tabindex="-1"></a>            <span class="co">// 安全性：data 引用计数是 0，</span></span>
+<span id="cb33-6"><a href="#cb33-6" aria-hidden="true" tabindex="-1"></a>            <span class="co">// 所以没有东西再访问 data。</span></span>
+<span id="cb33-7"><a href="#cb33-7" aria-hidden="true" tabindex="-1"></a>            <span class="kw">unsafe</span> <span class="op">{</span></span>
+<span id="cb33-8"><a href="#cb33-8" aria-hidden="true" tabindex="-1"></a>                <span class="pp">ManuallyDrop::</span>drop(<span class="op">&amp;</span><span class="kw">mut</span> <span class="op">*</span><span class="kw">self</span><span class="op">.</span>data()<span class="op">.</span>data<span class="op">.</span>get())<span class="op">;</span></span>
+<span id="cb33-9"><a href="#cb33-9" aria-hidden="true" tabindex="-1"></a>            <span class="op">}</span></span>
+<span id="cb33-10"><a href="#cb33-10" aria-hidden="true" tabindex="-1"></a>            <span class="co">// 现在，没有 `Arc&lt;T&gt;` 了，</span></span>
+<span id="cb33-11"><a href="#cb33-11" aria-hidden="true" tabindex="-1"></a>            <span class="co">// 丢弃所有表示 `Arc&lt;T&gt;` 的隐式 weak 指针。</span></span>
+<span id="cb33-12"><a href="#cb33-12" aria-hidden="true" tabindex="-1"></a>            drop(Weak <span class="op">{</span> ptr<span class="op">:</span> <span class="kw">self</span><span class="op">.</span>ptr <span class="op">}</span>)<span class="op">;</span></span>
+<span id="cb33-13"><a href="#cb33-13" aria-hidden="true" tabindex="-1"></a>        <span class="op">}</span></span>
+<span id="cb33-14"><a href="#cb33-14" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb33-15"><a href="#cb33-15" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p><code>Weak&lt;T&gt;</code> 上的 upgrade
+方法基本保持不变，只是不再克隆 weak 指针，因为它不再需要递增 weak
+计数器。仅当内存分配中至少有一个 <code>Arc&lt;T&gt;</code>
+才会成功，这意味着 Arc 对象已经计入了 weak 计数器。</p>
+<div class="sourceCode" id="cb34"><pre
+class="sourceCode rust"><code class="sourceCode rust"><span id="cb34-1"><a href="#cb34-1" aria-hidden="true" tabindex="-1"></a><span class="kw">impl</span><span class="op">&lt;</span>T<span class="op">&gt;</span> Weak<span class="op">&lt;</span>T<span class="op">&gt;</span> <span class="op">{</span></span>
+<span id="cb34-2"><a href="#cb34-2" aria-hidden="true" tabindex="-1"></a>    <span class="co">// …</span></span>
+<span id="cb34-3"><a href="#cb34-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb34-4"><a href="#cb34-4" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> <span class="kw">fn</span> upgrade(<span class="op">&amp;</span><span class="kw">self</span>) <span class="op">-&gt;</span> <span class="dt">Option</span><span class="op">&lt;</span>Arc<span class="op">&lt;</span>T<span class="op">&gt;&gt;</span> <span class="op">{</span></span>
+<span id="cb34-5"><a href="#cb34-5" aria-hidden="true" tabindex="-1"></a>        <span class="kw">let</span> <span class="kw">mut</span> n <span class="op">=</span> <span class="kw">self</span><span class="op">.</span>data()<span class="op">.</span>data_ref_count<span class="op">.</span>load(Relaxed)<span class="op">;</span></span>
+<span id="cb34-6"><a href="#cb34-6" aria-hidden="true" tabindex="-1"></a>        <span class="cf">loop</span> <span class="op">{</span></span>
+<span id="cb34-7"><a href="#cb34-7" aria-hidden="true" tabindex="-1"></a>            <span class="cf">if</span> n <span class="op">==</span> <span class="dv">0</span> <span class="op">{</span></span>
+<span id="cb34-8"><a href="#cb34-8" aria-hidden="true" tabindex="-1"></a>                <span class="cf">return</span> <span class="cn">None</span><span class="op">;</span></span>
+<span id="cb34-9"><a href="#cb34-9" aria-hidden="true" tabindex="-1"></a>            <span class="op">}</span></span>
+<span id="cb34-10"><a href="#cb34-10" aria-hidden="true" tabindex="-1"></a>            <span class="pp">assert!</span>(n <span class="op">&lt;=</span> <span class="dt">usize</span><span class="pp">::</span><span class="cn">MAX</span> <span class="op">/</span> <span class="dv">2</span>)<span class="op">;</span></span>
+<span id="cb34-11"><a href="#cb34-11" aria-hidden="true" tabindex="-1"></a>            <span class="cf">if</span> <span class="kw">let</span> <span class="cn">Err</span>(e) <span class="op">=</span></span>
+<span id="cb34-12"><a href="#cb34-12" aria-hidden="true" tabindex="-1"></a>                <span class="kw">self</span><span class="op">.</span>data()</span>
+<span id="cb34-13"><a href="#cb34-13" aria-hidden="true" tabindex="-1"></a>                    <span class="op">.</span>data_ref_count</span>
+<span id="cb34-14"><a href="#cb34-14" aria-hidden="true" tabindex="-1"></a>                    <span class="op">.</span>compare_exchange_weak(n<span class="op">,</span> n <span class="op">+</span> <span class="dv">1</span><span class="op">,</span> Relaxed<span class="op">,</span> Relaxed)</span>
+<span id="cb34-15"><a href="#cb34-15" aria-hidden="true" tabindex="-1"></a>            <span class="op">{</span></span>
+<span id="cb34-16"><a href="#cb34-16" aria-hidden="true" tabindex="-1"></a>                n <span class="op">=</span> e<span class="op">;</span></span>
+<span id="cb34-17"><a href="#cb34-17" aria-hidden="true" tabindex="-1"></a>                <span class="cf">continue</span><span class="op">;</span></span>
+<span id="cb34-18"><a href="#cb34-18" aria-hidden="true" tabindex="-1"></a>            <span class="op">}</span></span>
+<span id="cb34-19"><a href="#cb34-19" aria-hidden="true" tabindex="-1"></a>            <span class="cf">return</span> <span class="cn">Some</span>(Arc <span class="op">{</span> ptr<span class="op">:</span> <span class="kw">self</span><span class="op">.</span>ptr <span class="op">}</span>)<span class="op">;</span></span>
+<span id="cb34-20"><a href="#cb34-20" aria-hidden="true" tabindex="-1"></a>        <span class="op">}</span></span>
+<span id="cb34-21"><a href="#cb34-21" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb34-22"><a href="#cb34-22" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p>到目前为止，这与我们之前的实现差距是非常小的。然而，问题出现在我们仍然要实现最后两个方法：<code>downgrade</code>
+和 <code>get_mut</code>。</p>
+<p>与之前不同，<code>get_mut</code> 方法现在需要检查是否都设置为
+1，以判断是否只存在一个 <code>Arc&lt;T&gt;</code>
+以及没有<code>Weak&lt;T&gt;</code>，因为一个 weak
+指针计数现在可以表示多个 <code>Arc&lt;T&gt;</code>
+指针。读取计数器是发生在（稍微）不同时间的两个分开的操作，所以我们不得不非常小心，以确保不会错过任何并发的
+downgrade，就像我们在<a href="#优化">“优化”</a>一节示例的开头所见。</p>
+<p>如果我们首先检查 <code>data_ref_count</code> 是
+1，那么我们在检查另一个计数器之前，可能错过随后的
+<code>upgrade()</code>。但是，如果我们首先检查
+<code>alloc_ref_count</code> 是
+1，那么在检查另一个计数器之前，可能错过随后的
+<code>downgrade()</code>。</p>
+<p>摆脱这个困境的方法是通过“锁定”weak 指针计数器来暂时阻塞
+<code>downgrade()</code> 操作。为此，我们不需要像 mutex
+那样的东西。我们可以使用一个特殊的值，如 <code>usize::MAX</code>，来表示
+weak
+指针计数器的特殊“锁定”状态。它只会在加载另一个计数器之前很短暂地被锁定，因此
+downgrade 方法只需在它解锁之前自旋，以防止在正好与 <code>get_mut</code>
+并发运行的极端情况下出现问题。</p>
+<p>因此，在 <code>get_mut</code> 方法中，我们首先需要检查
+<code>alloc_ref_count</code> 是否为 1，并在确实为 1 的情况下将其替换为
+<code>usize::MAX</code>。这是 compare_exchange 的任务。</p>
+<p>然后，我们需要检查其他计数器是否也为 1，之后我们可以立即解锁 weak
+指针计数器。如果第二个计数器也为
+1，我们就能知道我们有独占访问内存分配和数据的权限，可以返回一个
+<code>&amp;mut T</code>。</p>
+<div class="sourceCode" id="cb35"><pre
+class="sourceCode rust"><code class="sourceCode rust"><span id="cb35-1"><a href="#cb35-1" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> <span class="kw">fn</span> get_mut(arc<span class="op">:</span> <span class="op">&amp;</span><span class="kw">mut</span> <span class="dt">Self</span>) <span class="op">-&gt;</span> <span class="dt">Option</span><span class="op">&lt;&amp;</span><span class="kw">mut</span> T<span class="op">&gt;</span> <span class="op">{</span></span>
+<span id="cb35-2"><a href="#cb35-2" aria-hidden="true" tabindex="-1"></a>        <span class="co">// Acquire 与 Weak::drop 的 Release 递减操作匹配，以确保任意的</span></span>
+<span id="cb35-3"><a href="#cb35-3" aria-hidden="true" tabindex="-1"></a>        <span class="co">// 指针升级在下一个 data_ref_count.load 中可见。</span></span>
+<span id="cb35-4"><a href="#cb35-4" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> arc<span class="op">.</span>data()<span class="op">.</span>alloc_ref_count<span class="op">.</span>compare_exchange(</span>
+<span id="cb35-5"><a href="#cb35-5" aria-hidden="true" tabindex="-1"></a>            <span class="dv">1</span><span class="op">,</span> <span class="dt">usize</span><span class="pp">::</span><span class="cn">MAX</span><span class="op">,</span> Acquire<span class="op">,</span> Relaxed</span>
+<span id="cb35-6"><a href="#cb35-6" aria-hidden="true" tabindex="-1"></a>        )<span class="op">.</span>is_err() <span class="op">{</span></span>
+<span id="cb35-7"><a href="#cb35-7" aria-hidden="true" tabindex="-1"></a>            <span class="cf">return</span> <span class="cn">None</span><span class="op">;</span></span>
+<span id="cb35-8"><a href="#cb35-8" aria-hidden="true" tabindex="-1"></a>        <span class="op">}</span></span>
+<span id="cb35-9"><a href="#cb35-9" aria-hidden="true" tabindex="-1"></a>        <span class="kw">let</span> is_unique <span class="op">=</span> arc<span class="op">.</span>data()<span class="op">.</span>data_ref_count<span class="op">.</span>load(Relaxed) <span class="op">==</span> <span class="dv">1</span><span class="op">;</span></span>
+<span id="cb35-10"><a href="#cb35-10" aria-hidden="true" tabindex="-1"></a>        <span class="co">// Release 与 `downgrade` 中的 Acquire 操作匹配，以确保任意</span></span>
+<span id="cb35-11"><a href="#cb35-11" aria-hidden="true" tabindex="-1"></a>        <span class="co">// 在 `downgrade` 之后对 data_ref_count 的改变都不会</span></span>
+<span id="cb35-12"><a href="#cb35-12" aria-hidden="true" tabindex="-1"></a>        <span class="co">// 改变以上 is_unique 的结果。</span></span>
+<span id="cb35-13"><a href="#cb35-13" aria-hidden="true" tabindex="-1"></a>        arc<span class="op">.</span>data()<span class="op">.</span>alloc_ref_count<span class="op">.</span>store(<span class="dv">1</span><span class="op">,</span> Release)<span class="op">;</span></span>
+<span id="cb35-14"><a href="#cb35-14" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> <span class="op">!</span>is_unique <span class="op">{</span></span>
+<span id="cb35-15"><a href="#cb35-15" aria-hidden="true" tabindex="-1"></a>            <span class="cf">return</span> <span class="cn">None</span><span class="op">;</span></span>
+<span id="cb35-16"><a href="#cb35-16" aria-hidden="true" tabindex="-1"></a>        <span class="op">}</span></span>
+<span id="cb35-17"><a href="#cb35-17" aria-hidden="true" tabindex="-1"></a>        <span class="co">// Acquire 去匹配 Arc::drop 的 Release 递减操作，以确保没有</span></span>
+<span id="cb35-18"><a href="#cb35-18" aria-hidden="true" tabindex="-1"></a>        <span class="co">// 其他东西正在访问 data。</span></span>
+<span id="cb35-19"><a href="#cb35-19" aria-hidden="true" tabindex="-1"></a>        fence(Acquire)<span class="op">;</span></span>
+<span id="cb35-20"><a href="#cb35-20" aria-hidden="true" tabindex="-1"></a>        <span class="kw">unsafe</span> <span class="op">{</span> <span class="cn">Some</span>(<span class="op">&amp;</span><span class="kw">mut</span> <span class="op">*</span>arc<span class="op">.</span>data()<span class="op">.</span>data<span class="op">.</span>get()) <span class="op">}</span></span>
+<span id="cb35-21"><a href="#cb35-21" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span></code></pre></div>
+<p>正如你所预期的那样，锁定操作（compare_exchange）将使用
+<code>Acquire</code> 内存排序，而解锁操作（store）将使用
+<code>Release</code> 内存排序。
+<a class="indexterm" id="index-Arc-memoryordering-3"></a></p>
+<p>如果我们为 <code>compare_exchange</code> 操作使用
+<code>Relaxed</code> 内存排序，那么在从 <code>data_ref_count</code>
+加载时，可能无法看到新升级的 <code>Weak</code> 指针的新值，尽管
+<code>compare_exchange</code> 已经确认每个 <code>Weak</code>
+指针都已经被丢弃。</p>
+<p>如果我们为 store 操作使用 <code>Relaxed</code> 内存排序，那么之前的
+load 操作可能会观察到未来的 <code>Arc::drop</code> 结果，而该
+<code>Arc</code> 仍然可以降级。</p>
+<p><code>Acquire</code> 屏障与之前相同：它与 <code>Arc::Drop</code> 中的
+<code>release-decrement</code> 操作同步，以确保通过之前的 Arc
+克隆的每次访问都发生在新的独占访问之前。</p>
+<p>最后一部分是 <code>downgrade</code> 方法，它将检查特殊的
+<code>usize::MAX</code> 值，以查看 weak
+指针计数器是否被锁定，并在解锁之前自旋等待。就像在 upgrade
+实现中一样，我们将在递增之前使用「比较并交换」循环来检查特殊值和溢出：</p>
+<div class="sourceCode" id="cb36"><pre
+class="sourceCode rust"><code class="sourceCode rust"><span id="cb36-1"><a href="#cb36-1" aria-hidden="true" tabindex="-1"></a>    <span class="kw">pub</span> <span class="kw">fn</span> downgrade(arc<span class="op">:</span> <span class="op">&amp;</span><span class="dt">Self</span>) <span class="op">-&gt;</span> Weak<span class="op">&lt;</span>T<span class="op">&gt;</span> <span class="op">{</span></span>
+<span id="cb36-2"><a href="#cb36-2" aria-hidden="true" tabindex="-1"></a>        <span class="kw">let</span> <span class="kw">mut</span> n <span class="op">=</span> arc<span class="op">.</span>data()<span class="op">.</span>alloc_ref_count<span class="op">.</span>load(Relaxed)<span class="op">;</span></span>
+<span id="cb36-3"><a href="#cb36-3" aria-hidden="true" tabindex="-1"></a>        <span class="cf">loop</span> <span class="op">{</span></span>
+<span id="cb36-4"><a href="#cb36-4" aria-hidden="true" tabindex="-1"></a>            <span class="cf">if</span> n <span class="op">==</span> <span class="dt">usize</span><span class="pp">::</span><span class="cn">MAX</span> <span class="op">{</span></span>
+<span id="cb36-5"><a href="#cb36-5" aria-hidden="true" tabindex="-1"></a>                <span class="pp">std::hint::</span>spin_loop()<span class="op">;</span></span>
+<span id="cb36-6"><a href="#cb36-6" aria-hidden="true" tabindex="-1"></a>                n <span class="op">=</span> arc<span class="op">.</span>data()<span class="op">.</span>alloc_ref_count<span class="op">.</span>load(Relaxed)<span class="op">;</span></span>
+<span id="cb36-7"><a href="#cb36-7" aria-hidden="true" tabindex="-1"></a>                <span class="cf">continue</span><span class="op">;</span></span>
+<span id="cb36-8"><a href="#cb36-8" aria-hidden="true" tabindex="-1"></a>            <span class="op">}</span></span>
+<span id="cb36-9"><a href="#cb36-9" aria-hidden="true" tabindex="-1"></a>            <span class="pp">assert!</span>(n <span class="op">&lt;=</span> <span class="dt">usize</span><span class="pp">::</span><span class="cn">MAX</span> <span class="op">/</span> <span class="dv">2</span>)<span class="op">;</span></span>
+<span id="cb36-10"><a href="#cb36-10" aria-hidden="true" tabindex="-1"></a>            <span class="co">// Acquire 与 get_mut 的 release-store 操作同步。</span></span>
+<span id="cb36-11"><a href="#cb36-11" aria-hidden="true" tabindex="-1"></a>            <span class="cf">if</span> <span class="kw">let</span> <span class="cn">Err</span>(e) <span class="op">=</span></span>
+<span id="cb36-12"><a href="#cb36-12" aria-hidden="true" tabindex="-1"></a>                arc<span class="op">.</span>data()</span>
+<span id="cb36-13"><a href="#cb36-13" aria-hidden="true" tabindex="-1"></a>                    <span class="op">.</span>alloc_ref_count</span>
+<span id="cb36-14"><a href="#cb36-14" aria-hidden="true" tabindex="-1"></a>                    <span class="op">.</span>compare_exchange_weak(n<span class="op">,</span> n <span class="op">+</span> <span class="dv">1</span><span class="op">,</span> Acquire<span class="op">,</span> Relaxed)</span>
+<span id="cb36-15"><a href="#cb36-15" aria-hidden="true" tabindex="-1"></a>            <span class="op">{</span></span>
+<span id="cb36-16"><a href="#cb36-16" aria-hidden="true" tabindex="-1"></a>                n <span class="op">=</span> e<span class="op">;</span></span>
+<span id="cb36-17"><a href="#cb36-17" aria-hidden="true" tabindex="-1"></a>                <span class="cf">continue</span><span class="op">;</span></span>
+<span id="cb36-18"><a href="#cb36-18" aria-hidden="true" tabindex="-1"></a>            <span class="op">}</span></span>
+<span id="cb36-19"><a href="#cb36-19" aria-hidden="true" tabindex="-1"></a>            <span class="cf">return</span> Weak <span class="op">{</span> ptr<span class="op">:</span> arc<span class="op">.</span>ptr <span class="op">};</span></span>
+<span id="cb36-20"><a href="#cb36-20" aria-hidden="true" tabindex="-1"></a>        <span class="op">}</span></span>
+<span id="cb36-21"><a href="#cb36-21" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span></code></pre></div>
+<p><a class="indexterm" id="index-Arc-memoryordering-4"></a> 我们为
+<code>compare_exchange_weak</code> 操作使用 <code>acquire</code>
+内存排序，它与 <code>get_mut</code> 函数中的 <code>release-store</code>
+同步。否则，可能会出现在 <code>get_mut</code> 函数解锁计数器之前，后续的
+<code>Arc::drop</code> 操作的效果对正在运行 <code>get_mut</code>
+的线程可见。</p>
+<p>换句话说，在这里，acquire 的「比较并交换」操作有效地“锁定”了
+get_mut，阻止其成功。后续的 <code>Weak::drop</code> 操作可以使用
+<code>release</code> 内存排序将计数器递减回 1，从而有效地“解锁”。</p>
+<blockquote>
+<p>我们刚刚制作的 <code>Arc&lt;T&gt;</code> 和
+<code>Weak&lt;T&gt;</code> 的优化实现与 Rust
+标准库中包含的实现几乎相同。</p>
+</blockquote>
+<p>如果我们运行与以前完全相同的测试（<a
+href="#测试它2">“测试它”</a>），我们看到这个优化的实现也会编译并通过我们的测试。</p>
+<blockquote>
+<p>如果你觉得为这个优化的实现做出正确的内存排序决定很困难，请不要担心。许多并发数据结构比这个更容易正确地实现。本章的
+Arc 实现，特别是因为它在内存排序方面具有棘手的微妙之处。</p>
+</blockquote>
+<h2 id="总结">总结</h2>
+<p>（<a href="https://marabos.nl/atomics/building-arc.html#summary" target="_blank">英文版本</a>）</p>
+<ul>
+<li><code>Arc&lt;T&gt;</code> 提供一个引用计数分配的共享所有权。</li>
+<li>通过检查引用计数是否确实是一个
+<code>Arc&lt;T&gt;</code>，可以有条件地提供独占访问（<code>&amp;mut T</code>）。</li>
+<li>递增原子引用计数可以使用 relaxed
+操作，但是最终的递减必须与之前的递减同步。</li>
+<li><em>weak
+指针</em>（<code>Weak&lt;T&gt;</code>）可以用于避免循环。</li>
+<li><code>NonNull&lt;T&gt;</code> 类型表示一个指向 T
+的指针，但是从不为空。</li>
+<li><code>ManuallyDrop&lt;T&gt;</code>
+类型可以用于使用不安全代码时，手动决定何时丢弃 T。</li>
+<li>一旦涉及一个以上的原子变量，事情就会变得更加复杂。</li>
+<li>实现特定的（自旋）锁有时可能是同时对多个原子变量进行操作的有效策略。</li>
+</ul>
+<p style="text-align: center; padding-block-start: 5rem;">
+<a href="./7_Understanding_the_Processor.html">下一篇，第七章：理解处理器</a>
+</p>      </div>
+            <!-- JS, Popper.js, and jQuery -->
+      <script src="https://code.jquery.com/jquery-3.5.1.slim.min.js" integrity="sha384-DfXdz2htPH0lsSSs5nCTpuj/zy4C+OGpamoFVy38MVBnE+IbbVYUew+OrCXaRkfj" crossorigin="anonymous"></script>
+      <script src="https://cdn.jsdelivr.net/npm/popper.js@1.16.0/dist/umd/popper.min.js" integrity="sha384-Q6E9RHvbIyZFJoft+2mJbHaEWldlvI9IOYy5n3zV9zzTtmI3UksdQRVvoxMfooAo" crossorigin="anonymous"></script>
+      <script src="https://stackpath.bootstrapcdn.com/bootstrap/4.5.0/js/bootstrap.min.js" integrity="sha384-OgVRvuATP1z7JjHLkuOU7Xw704+h835Lr+6QL9UvYjZE3Ipu6Tp75j7Bh/kR0JKI" crossorigin="anonymous"></script>
+      <!-- Mathjax -->
+      <script src="https://polyfill.io/v3/polyfill.min.js?features=es6"></script>
+      <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+      <script>
+         /* Bootstrap styles to tables */
+         function bootstrapStylePandocTables() {
+         $('tr.header').parent('thead').parent('table').addClass('table table-condensed'); }
+         $(document).ready(function () { bootstrapStylePandocTables(); });
+         /* Adjust the height when click the toc */
+         var shiftWindow = function() { scrollBy(0, -60) };
+         window.addEventListener("hashchange", shiftWindow);
+         function load() { if (window.location.hash) shiftWindow(); }
+      </script>
+   </body>
+</html>

@@ -1,0 +1,989 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset="utf-8">
+  
+  <title>Go CPU profiler 内幕</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+  <meta name="description" content="原文: Inside the Go CPU profiler,作者 Sümer Cip。我猜测 Felix Geisendörfer 肯定会进行评论，果不其然。 Go 是那种自带 profiler (分析器)的语言之一。它的运行时包含强大的自成一派的各种 profiler。其它语言，比如 Ruby、Python 和 Node.js, 它们也包含 profiler或者一些用来编写profiler的A">
+<meta property="og:type" content="article">
+<meta property="og:title" content="Go CPU profiler 内幕">
+<meta property="og:url" content="https://colobu.com/2022/09/29/Inside-the-Go-CPU-profiler/index.html">
+<meta property="og:site_name" content="鸟窝">
+<meta property="og:description" content="原文: Inside the Go CPU profiler,作者 Sümer Cip。我猜测 Felix Geisendörfer 肯定会进行评论，果不其然。 Go 是那种自带 profiler (分析器)的语言之一。它的运行时包含强大的自成一派的各种 profiler。其它语言，比如 Ruby、Python 和 Node.js, 它们也包含 profiler或者一些用来编写profiler的A">
+<meta property="og:locale" content="zh_CN">
+<meta property="og:image" content="https://colobu.com/2022/09/29/Inside-the-Go-CPU-profiler/sigprof.png">
+<meta property="og:image" content="https://colobu.com/2022/09/29/Inside-the-Go-CPU-profiler/sigprof_handler.png">
+<meta property="article:published_time" content="2022-09-29T12:06:41.000Z">
+<meta property="article:modified_time" content="2026-06-21T09:09:09.643Z">
+<meta property="article:author" content="smallnest">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:image" content="https://colobu.com/2022/09/29/Inside-the-Go-CPU-profiler/sigprof.png">
+  
+  <link rel="alternative" href="/atom.xml" title="鸟窝" type="application/atom+xml">
+  
+  
+  <link rel="icon" href="/favicon.png">
+  
+  
+<link rel="stylesheet" href="/css/style.css">
+
+  <link href="//cdn.bootcdn.net/ajax/libs/font-awesome/6.6.0/css/all.min.css" rel="stylesheet">
+  
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/fancybox/3.2.5/jquery.fancybox.min.css"
+    media="screen" type="text/css">
+  
+  <link rel="stylesheet" href="//cdnjs.cloudflare.com/ajax/libs/animate.css/3.1.1/animate.min.css" media="screen"
+    type="text/css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/tonsky/FiraCode@1.207/distr/fira_code.css">
+<meta name="generator" content="Hexo 8.1.2"></head>
+<body>
+  <div id="container">
+    <div id="wrap">
+      <header id="header">
+  <div id="banner"></div>
+  <div id="header-outer" class="outer">
+    <div id="header-title" class="inner">
+      <h1 id="logo-wrap" class="animated bounceInLeft">
+        <a href="/" id="logo">鸟窝</a>
+      </h1>
+      
+    </div>
+    <div id="header-inner" class="inner">
+      <nav id="main-nav">
+        <a id="main-nav-toggle" class="nav-icon"></a>
+        
+          
+            <a class="main-nav-link" href="/"><i class="fa fa-home">&nbsp;</i>首页</a>
+          
+          
+          
+            <a class="main-nav-link" href="/archives"><i class="fa fa-regular fa-folder-open">&nbsp;</i>归档</a>
+          
+          
+          
+            <a class="main-nav-link" href="https://github.com/smallnest"><i class="fa fa-brands fa-github-alt">&nbsp;</i>github</a>
+          
+          
+          
+            <div class="dropdown main-nav-link"><a class="main-nav-link" href="#"><i class="fa fa-brands fa-golang">&nbsp;</i>Go学习资源</a>
+              <div class="dropdown-content">
+          
+            
+              <a href="/goasm"><i class="fa fa-brands fa-golang"></i>&nbsp;Go汇编示例</a>
+            
+                
+          
+            
+              <a href="https://gowebexamples.com"><i class="fa fa-brands fa-golang"></i>&nbsp;Go Web开发示例</a>
+            
+                
+          
+            
+              <a href="http://go-database-sql.org"><i class="fa fa-brands fa-golang"></i>&nbsp;Go 数据库开发教程</a>
+            
+                
+          
+            
+              <a href="https://colobu.com/gotips/"><i class="fa fa-brands fa-golang"></i>&nbsp;Go 语言编程技巧</a>
+            
+                
+          
+            
+              <hr>
+            
+                
+          
+            
+              <a href="http://rpcx.io"><i class="fa "></i>&nbsp;RPCX官网</a>
+            
+                
+          
+            
+              <a href="http://cn.doc.rpcx.io"><i class="fa "></i>&nbsp;RPC开发指南</a>
+            
+                
+          
+          </div>
+        </div>
+          
+          
+          
+            <div class="dropdown main-nav-link"><a class="main-nav-link" href="#"><i class="fa fa-brands fa-rust">&nbsp;</i>Rust学习资源</a>
+              <div class="dropdown-content">
+          
+            
+              <a href="/perf-book"><i class="fa fa-brands fa-rust"></i>&nbsp;Rust高性能编程指南</a>
+            
+                
+          
+            
+              <a href="/rust100"><i class="fa fa-brands fa-rust"></i>&nbsp;100个练习题学习Rust</a>
+            
+                
+          
+            
+              <a href="/atomics"><i class="fa fa-brands fa-rust"></i>&nbsp;Rust原子操作和锁</a>
+            
+                
+          
+            
+              <a href="/effective-rust"><i class="fa fa-brands fa-rust"></i>&nbsp;高效Rust编程</a>
+            
+                
+          
+            
+              <a href="/thebook"><i class="fa fa-brands fa-rust"></i>&nbsp;Rust程序设计语言</a>
+            
+                
+          
+            
+              <a href="/nomicon"><i class="fa fa-brands fa-rust"></i>&nbsp;Rust死灵书</a>
+            
+                
+          
+            
+              <a href="/rust-reference"><i class="fa fa-brands fa-rust"></i>&nbsp;Rust参考手册</a>
+            
+                
+          
+            
+              <a href="/tlborm"><i class="fa fa-brands fa-rust"></i>&nbsp;Rust宏小册</a>
+            
+                
+          
+            
+              <a href="/async-book"><i class="fa fa-brands fa-rust"></i>&nbsp;Rust异步编程书</a>
+            
+                
+          
+            
+              <a href="/rust-by-example"><i class="fa fa-brands fa-rust"></i>&nbsp;通过例子学Rust</a>
+            
+                
+          
+            
+              <a href="/api-guidelines"><i class="fa fa-brands fa-rust"></i>&nbsp;Rust API 编写指南</a>
+            
+                
+          
+            
+              <a href="/comprehensive-rust"><i class="fa fa-brands fa-rust"></i>&nbsp;全面Rust课程</a>
+            
+                
+          
+            
+              <a href="/easy-rust"><i class="fa fa-brands fa-rust"></i>&nbsp;简单英语学Rust</a>
+            
+                
+          
+            
+              <a href="/rust-patterns"><i class="fa fa-brands fa-rust"></i>&nbsp;Rust设计模式</a>
+            
+                
+          
+            
+              <a href="/2020/03/05/A-half-hour-to-learn-Rust/"><i class="fa fa-brands fa-rust"></i>&nbsp;半小时学会Rust</a>
+            
+                
+          
+            
+              <a href="/rust-cookbook"><i class="fa fa-brands fa-rust"></i>&nbsp;Rust实用指南(cookbook)</a>
+            
+                
+          
+            
+              <a href="/rust-rand"><i class="fa fa-brands fa-rust"></i>&nbsp;Rust随机库</a>
+            
+                
+          
+            
+              <hr>
+            
+                
+          
+            
+              <a href="https://rpcx.io/r/E6v8U"><i class="fa "></i>&nbsp;Rust for the Polyglot Programmer</a>
+            
+                
+          
+            
+              <a href="https://rpcx.io/r/oC5ii"><i class="fa "></i>&nbsp;LifetimeKata</a>
+            
+                
+          
+            
+              <a href="https://tfpk.github.io/macrokata/"><i class="fa "></i>&nbsp;macrokata</a>
+            
+                
+          
+          </div>
+        </div>
+          
+          
+          
+            <div class="dropdown main-nav-link"><a class="main-nav-link" href="#"><i class="fa ">&nbsp;</i>出版书籍</a>
+              <div class="dropdown-content">
+          
+            
+              <a href="/ScalaCollectionsCookbook"><i class="fa "></i>&nbsp;Scala集合技术手册（简/繁）</a>
+            
+                
+          
+            
+              <a href="https://cpgo.colobu.com/"><i class="fa "></i>&nbsp;深入理解Go并发编程（简/繁）</a>
+            
+                
+          
+            
+              <a href="https://item.jd.com/14347716.html"><i class="fa "></i>&nbsp;100个Go语言典型错误</a>
+            
+                
+          
+          </div>
+        </div>
+          
+          
+          
+            <a class="main-nav-link" href="/ScalaCollectionsCookbook"><i class="fa fa-solid fa-book">&nbsp;</i>Scala集合技术手册</a>
+          
+          
+          
+            <a class="main-nav-link" href="/about"><i class="fa fa-regular fa-address-card">&nbsp;</i>关于</a>
+          
+          
+
+
+      </nav>
+      <nav id="sub-nav">
+        
+          <a id="nav-rss-link" class="nav-icon" href="/atom.xml" title="RSS Feed"></a>
+        
+        <a id="nav-search-btn" class="nav-icon" title="Search"></a>
+      </nav>
+      <div id="search-form-wrap">
+        <form action="https://www.google.com/search" method="get" accept-charset="utf-8" class="search-form">
+          <input type="search" id="search-word" name="q" maxlength="20" class="search-form-input" placeholder="Search">
+          <input type=hidden name=ie value="utf-8">
+          <input type=hidden name=oe value="utf-8">
+          <input type=hidden name=hl value="zh-CN">
+          <input type="submit" id="search-submit" value="" class="search-form-submit">
+        </form>
+      </div>
+    </div>
+  </div>
+</header>
+      <div class="outer">
+        <section id="main"><article id="post-Inside-the-Go-CPU-profiler" class="article article-type-post" itemscope
+  itemprop="blogPost">
+  <div class="article-meta">
+    <a href="/2022/09/29/Inside-the-Go-CPU-profiler/" class="article-date">
+  <time datetime="2022-09-29T12:06:41.000Z" itemprop="datePublished">2022年09月29日</time>
+</a>
+    
+  <div class="article-category">
+    <a class="article-category-link" href="/categories/Go/">Go</a>
+  </div>
+
+    
+  <div class="article-author"> by smallnest</div>
+
+  </div>
+  <div class="article-inner">
+    
+    
+    <header class="article-header">
+      
+  
+    <h1 class="article-title" itemprop="name">
+      Go CPU profiler 内幕
+	  
+    </h1>
+  
+
+    </header>
+    
+    <div class="article-entry" itemprop="articleBody">
+      
+      
+      
+      <script>function show_answer(btn, x) { if (btn.value === "显示答案") { btn.value = "隐藏答案" } else { btn.value = "显示答案" } var as = document.getElementById(x); if (as.style.display === "none") { as.style.display = "block" } else { as.style.display = "none" } }</script>
+      <p>原文: <a href="https://sumercip.com/posts/inside-the-go-cpu-profiler/">Inside the Go CPU profiler</a>,作者 Sümer Cip。我猜测 Felix Geisendörfer 肯定会进行评论，果不其然。</p>
+<p>Go 是那种自带 profiler (分析器)的语言之一。它的运行时包含强大的自成一派的各种 profiler。其它语言，比如 Ruby、Python 和 Node.js, 它们也包含 profiler或者一些用来编写profiler的API，但是与Go的开箱即用的 profiler相比，它们提供的profiler功能有限。如果你想多了解Go提供的这些可观察工具的情况，我强烈推荐你阅读 Felix Geisendörfer的 <a href="https://github.com/DataDog/go-profiler-notes/blob/main/guide/README.md">The Busy Developer’s Guide to Go Profiling, Tracing and Observability</a>。</p>
+<p>作为一个好奇的工程师，我喜欢挖掘事物在底层上的工作方式，我一直想去学习Go CPU profiler底层·是怎么工作的。这篇文章就是此次探索的结果。每当我阅读Go运行时代码时，我总是学到到一些新东西，这次也不例外。</p>
+<span id="more"></span>
+
+<h2 id="基本知识"><a href="#基本知识" class="headerlink" title="基本知识"></a>基本知识</h2><p>当前市面上存在两种类型的profiler:</p>
+<ul>
+<li><strong>tracing</strong>(跟踪): 当预定义的事件发生时进行测量。例如，函数被调用，函数退出等等。</li>
+<li><strong>Sampling</strong>(采样): 定期进行测量。</li>
+</ul>
+<p>Go CPU profiler 是一个采样分析器。当然Go还有一个执行跟踪器（execution tracer），它是 tracing profiler, 跟踪某些事件，例如请求锁，GC相关事件等等。</p>
+<p>sampling profiler 通常由两个基本部分组成：</p>
+<ul>
+<li>采样器(sampler)：定期调用回调，并且通常分析数据收集堆栈跟踪(stack trace)。不同的profiler使用不同的策略来触发回调。</li>
+<li>数据收集：这是profiler收集其数据的地方：它可能会消耗内存或调用计数，基本上是与堆栈跟踪关联的一些指标。</li>
+</ul>
+<h2 id="关于其它profiler如何工作的小调查"><a href="#关于其它profiler如何工作的小调查" class="headerlink" title="关于其它profiler如何工作的小调查"></a>关于其它profiler如何工作的小调查</h2><p>Linux <strong>perf</strong> 使用 PMU(Performance Monitor Unit)计数器进行采样。你可以指示PMU 在某些事件发生 N 次后生成中断，例如，每 1000 个 CPU 时钟周期执行一次。<br>丹尼斯·巴赫瓦洛夫（Denis Bakhvalov）撰写的一篇<a href="https://easyperf.net/blog/2018/06/01/PMU-counters-and-profiling-basics">详细文章</a>解释了如何像 perf 和 VTune 工具使用PMU计数器来实现这一目标。一旦定期触发数据收集回调函数，剩下的工作就是收集堆栈跟踪并正确聚合它们。为了完整起见，Linux <strong>perf</strong> 使用 perf_event_open(PERF_SAMPLE_STACK_USER,...) 收集堆栈信息。捕获的堆栈跟踪通过 mmap 环形缓冲区写入用户空间。</p>
+<p><a href="https://github.com/benfred/py-spy">pyspy</a>和<a href="https://github.com/rbspy/rbspy">rbspy</a>是著名的Python和Ruby的sampling profiler。它们都作为外部进程运行，并定期读取目标应用程序内存以捕获正在运行的线程的堆栈跟踪。在Linux中，他们使用process_vm_readv方法收集数据，如果我没有记错的话，这个API在内存读取期间会将目标应用程序暂停几毫秒。然后，它们在读取的内存中跟踪指针，以查找当前正在运行的线程结构和堆栈跟踪信息。正如人们可能猜到的那样，这是一种容易出错且复杂的方法，但效果非常好。如果我没记错的话，<a href="https://github.com/uber-archive/pyflame">pyflame</a>也使用类似的方法。</p>
+<p>最近的profiler，如<a href="https://sumercip.com/posts/inside-the-go-cpu-profiler/parca.dev">Parca</a>（还有其它几个）使用 <a href="https://ebpf.io/">eBPF</a>。eBPF 是一项最新的技术，允许在内核 VM 中运行用户空间代码。这是一项出色的技术，用于安全、网络和可观察性等许多领域。我强烈建议阅读有关eBPF的一些信息，这是一个非常大的话题，远远超出了这篇文章的范围。</p>
+<h2 id="如何定期触发探查器？"><a href="#如何定期触发探查器？" class="headerlink" title="如何定期触发探查器？"></a>如何定期触发探查器？</h2><p>Go CPU profiler 是一个采样分析器。在 Linux 中，Go 运行时使用 <strong>setitimer&#x2F;timer_create&#x2F;timer_settime</strong> 来设置 <strong>SIGPROF</strong> 信号处理器。此处理器按<strong>runtime.SetCPUProfileRate</strong>设置的周期间隔触发，默认情况下是100Mz(10毫秒)。顺便说一句，在Go 1.18之前，Go CPU profiler的采样器存在一些严重的问题，你可以在<a href="https://www.datadoghq.com/blog/engineering/profiling-improvements-in-go-1-18/">这里</a>看到这些问题的细节。我们记错的话，<strong>settimer</strong> API 是Linux中每个线程触发基于时间的信号的推荐方法: 从技术上讲，它的工作原理就像你期望的进程信号处理机制一样。但它并不是多核分析的良好机制。</p>
+<p>让我们看看如何手动启用 Go CPU profiler：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br></pre></td><td class="code"><pre><span class="line">f, err := os.Create(<span class="string">&quot;profile.pb.gz&quot;</span>)</span><br><span class="line"><span class="keyword">if</span> err != <span class="literal">nil</span> &#123;</span><br><span class="line">    ...</span><br><span class="line">&#125;</span><br><span class="line"><span class="keyword">if</span> err := pprof.StartCPUProfile(f); err != <span class="literal">nil</span> &#123;</span><br><span class="line">    ...</span><br><span class="line">&#125;</span><br><span class="line"><span class="keyword">defer</span> pprof.StopCPUProfile()</span><br></pre></td></tr></table></figure>
+<p>一旦<strong>pprof.StartCPUProfile</strong>被调用，Go运行时就可以按照指定的时间间隔产生<strong>SIGPROF</strong>信号。Linux内核向应用程序中正在运行的线程之一发送<strong>SIGPROF</strong>信号。由于 Go 使用非阻塞 I&#x2F;O，等待I&#x2F;O的goroutine不会被统计为running的goroutine，Go CPU profiler 不会捕获这类goroutine的数据。顺便说一句：这是实现<a href="https://github.com/felixge/fgprof">fgprof</a>的基本原因。 fgprof使用<strong>runtime.GoroutineProfile</strong>获取 on-CPU 和 off-CPU的数据。</p>
+<p>A picture is worth a thousand words; below is how Go runtime handles SIGPROF signal:</p>
+<p>一图胜千言。以下是 Go 运行时处理SIGPROF信号的方式：</p>
+<img src="/2022/09/29/Inside-the-Go-CPU-profiler/sigprof.png" class="">
+
+<h2 id="profiler-如何收集数据？"><a href="#profiler-如何收集数据？" class="headerlink" title="profiler 如何收集数据？"></a>profiler 如何收集数据？</h2><p>一个一个随机的运行的goroutine收到<strong>SIGPROF</strong>信号，它会被中断并执行信号处理程序。中断的 goroutine 的堆栈跟踪在此信号处理程序的上下文中获取到，然后与当前<a href="https://rakyll.org/profiler-labels/">profiler标签</a>一起保存到<a href="https://preshing.com/20120612/an-introduction-to-lock-free-programming/">lock-free</a>日志结构中（每个捕获的堆栈跟踪都可以与自定义标签相关联，您可以稍后对其进行过滤）。这个特殊的lock-free结构被命名为<strong>profBuf</strong>，它在 <a href="https://github.com/golang/go/blob/master/src/runtime/profbuf.go">runtime&#x2F;profbuf.go</a> 定义，并详细解释了它是如何工作的。它是一个单写单读(single-writer,single-reader)的lock-free的ringbuffer，类似于此处<a href="http://www.cse.cuhk.edu.hk/~pclee/www/pubs/ancs09poster.pdf">介绍</a>的数据结构。Writer是信号处理器，而reader是 <strong>profileWriter</strong> goroutine，profileWriter goroutine定期的读取此缓冲区并将结果聚合到最终的hashmap。这个最终的hashmap被命名为<strong>profMap</strong>, 定义在<a href="https://github.com/golang/go/blob/master/src/runtime/pprof/map.go">runtime&#x2F;pprof&#x2F;map.go</a>。</p>
+<p>以下是把刚才介绍的组合在一起的一个可视化图：</p>
+<img src="/2022/09/29/Inside-the-Go-CPU-profiler/sigprof_handler.png" class="">
+
+<p>可以看到，最终的结构与常规的<strong>pprof.Profile</strong>对象非常相似：它是一个hashmap,其中的键是堆栈跟踪+标签，值是在应用程序中观察到此调用堆栈的次数。当<strong>pprof.StopCPUProfile()<strong>被调用时，分析就会停止，profileWriter goroutine调用<a href="https://github.com/golang/go/blob/aa4299735b78189eeac1e2c4edafb9d014cc62d7/src/runtime/pprof/proto.go#L348">build()</a>。这个函数负责写</strong>profMap</strong>结构到<strong>io.Writer</strong>，此Writer由pprof.StartCPUProfile初始调用的时候提供。基本上这就是最终的<a href="https://pkg.go.dev/runtime/pprof#Profile">pprof.Profile</a>产生的过程。</p>
+<p>profileWriter的伪代码可能对你理解这个过程更有帮助:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br></pre></td><td class="code"><pre><span class="line"><span class="function"><span class="keyword">func</span> <span class="title">profileWriter</span><span class="params">(w io.Writer)</span></span> &#123;</span><br><span class="line">    ...</span><br><span class="line">    <span class="keyword">for</span> &#123;</span><br><span class="line">        time.Sleep(<span class="number">100</span> * time.Millisecond)</span><br><span class="line"></span><br><span class="line">        data, tags := readProfile()</span><br><span class="line">        <span class="keyword">if</span> e := b.addCPUData(data, tags); e != <span class="literal">nil</span> &#123;</span><br><span class="line">            ...</span><br><span class="line">        &#125;</span><br><span class="line"></span><br><span class="line">        <span class="keyword">if</span> profilerStopped &#123;</span><br><span class="line">            <span class="keyword">break</span></span><br><span class="line">        &#125;</span><br><span class="line">    &#125;</span><br><span class="line">    ...</span><br><span class="line">    b.build() <span class="comment">// -&gt; generates final pprof.Profile</span></span><br><span class="line">    ...</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+<p>一旦我对设计有了高层次的了解，我就会问自己以下问题：<br><strong>为什么 Go 为了实现一个独特的lock-free结构而花费了那么大精力只为了保存临时分析数据？为什么不定期将所有内容写入hashmap？</strong></p>
+<p>答案就在设计本身。</p>
+<p>首先看的第一件事就是<strong>SIGPROF</strong>处理器就是禁用内存分派。此外，profiler代码不包含热门和锁，甚至堆栈的最大深度也是硬编码的。截止<strong>Go 1.19</strong>, 最大深度是<a href="https://github.com/golang/go/blob/54cf1b107d24e135990314b56b02264dba8620fc/src/runtime/cpuprof.go#L22">64</a>。所有这些细节都可以为profiler提供更高效、更可预测的开销。低且可预测的性能是生产就绪型profiler的关键。</p>
+<h2 id="开销"><a href="#开销" class="headerlink" title="开销"></a>开销</h2><p>根据设计，profiler开销是恒定的？嗯，这要视情况而定。让我解释一下原因：在单个profiler中断中，会发生以下情况：</p>
+<ul>
+<li>一个随机运行的goroutine执行上下文切换来运行SIGPROF处理器，</li>
+<li>执行堆栈遍历，并且 Go 运行时将堆栈跟踪保存到lock-free ring buffer中，</li>
+<li>goroutine 恢复。</li>
+</ul>
+<p>从理论上讲，似乎上述所有内容都应该在恒定时间内运行，因为没有发生内存分配和锁竞争。我记得所有的这是真的：以上所有事情都发生在大约1微秒（在典型的CPU上）。但是，在实践中，情况变得更糟。如果您搜索“Go CPU profiler的开销”，您将看到从 <strong>%0.5</strong> 到 <strong>%1-%5</strong> 的数字（没有发现关于这个数字的公开提及，也没有适当的证据）。这背后的原因主要与CPU的工作方式有关。现代CPU是复杂的怪兽。它们会积极地使用缓存。典型的单 CPU 内核具有三层缓存：L1、L2 和 L3。当特定的 CPU 密集型代码正在运行时，这些缓存将得到充分利用。对于某些应用程序而言，高缓存利用率尤其如此，在这些应用程序中，小（可以放入缓存中的数据）和顺序数据被大量读取。</p>
+<p>一个很好的例子是矩阵乘法：在矩阵乘法期间，CPU大量访问内存中顺序存储的独立单元格。这些缓存友好型应用程序可能会为采样profiler产生严重的开销。虽然很容易使用<strong>prof</strong>做一些基准测试来验证这一说法，但这超出了这篇文章的范围。</p>
+<p>综上所述，Go 运行时在保持profiler开销尽可能可预测和尽可能低方面做得很好。如果你不相信我，你有所质疑，也许下面引用的一个<a href="https://groups.google.com/g/golang-nuts/c/e6lB8ENbIw8/m/azeTCGj7AgAJ">讨论对话</a>可以说服你：</p>
+<blockquote>
+<p>在谷歌，我们持续分析Go生产服务，这样做是安全的。</p>
+</blockquote>
+<p>另一个来自datadog的持续profiler的<a href="https://github.com/DataDog/dd-trace-go/commit/54604a13335b9c5e4ac18a898e4d5971b6b6fc8c">代码提交</a>也可以印证这一点：</p>
+<blockquote>
+<p>在许多高容量内部工作负荷上测试此默认值后(默认开启profiler)，我们已确定此默认值对生产是安全的。</p>
+</blockquote>
+<p>最后，基于上述理论，我们可以进行以下观察结果：</p>
+<p><strong>在典型的 I&#x2F;O 密集型应用程序上，profiler的开销将非常小。</strong></p>
+<p>这是因为当有许多休眠&#x2F;空闲的 goroutine 时，CPU 缓存丢弃没有太大区别。在 Go CPU profiler基准测试期间，我们一遍又一遍地观察到这一点：在典型的 I&#x2F;O 密集型应用程序上，开销实际上为零（或统计上微不足道）。但是，同样，提供经验证据超出了这篇文章的范围，人们可以通过在profiler打开和关闭时，观察Go Web应用程序的负载测试期间的吞吐量来做到这一点。</p>
+<h2 id="结论"><a href="#结论" class="headerlink" title="结论"></a>结论</h2><p>我喜欢这种设计的一点是，它证明了你可以根据你对底层数据结构的访问模式的理解程度来优化代码。在这种情况下，Go 运行时使用lock-free结构，即使在大多数情况下这完全是矫枉过正。Go运行时充满了像这样的聪明优化，我强烈建议你花时间深入研究你觉得有趣的部分。</p>
+<p>我希望你喜欢它！</p>
+<h2 id="参考资料"><a href="#参考资料" class="headerlink" title="参考资料"></a>参考资料</h2><ol>
+<li><a href="https://github.com/DataDog/go-profiler-notes/blob/main/guide/README.md">https://github.com/DataDog/go-profiler-notes/blob/main/guide/README.md</a></li>
+<li><a href="https://easyperf.net/blog/2018/06/01/PMU-counters-and-profiling-basics">https://easyperf.net/blog/2018/06/01/PMU-counters-and-profiling-basics</a></li>
+<li><a href="https://www.instana.com/blog/go-profiler-internals/">https://www.instana.com/blog/go-profiler-internals/</a></li>
+<li><a href="https://www.datadoghq.com/blog/engineering/profiling-improvements-in-go-1-18/">https://www.datadoghq.com/blog/engineering/profiling-improvements-in-go-1-18/</a></li>
+<li><a href="http://www.cse.cuhk.edu.hk/~pclee/www/pubs/ancs09poster.pdf">http://www.cse.cuhk.edu.hk/~pclee/www/pubs/ancs09poster.pdf</a></li>
+<li><a href="https://easyperf.net/blog/2018/06/01/PMU-counters-and-profiling-basics">https://easyperf.net/blog/2018/06/01/PMU-counters-and-profiling-basics</a></li>
+</ol>
+
+      
+    </div>
+    <footer class="article-footer">
+      
+
+      
+      <!-- <link rel="stylesheet" href="https://unpkg.com/gitalk/dist/gitalk.css">
+      <script src="https://unpkg.com/gitalk/dist/gitalk.min.js"></script> -->
+      <section id="comments">
+        <script src="https://utteranc.es/client.js"
+                repo="smallnest/gitalk"
+                issue-term="title"
+                theme="github-light"
+                crossorigin="anonymous"
+                async>
+        </script>
+        <!-- <div id="gitalk-container"></div>
+        <script type="text/javascript">
+          var gitalkOpts = {
+            id: '2022/09/29/Inside-the-Go-CPU-profiler/',
+            owner: 'smallnest',
+            repo: 'gitalk',
+            title: 'Go CPU profiler 内幕',
+            body: 'https://colobu.com/2022/09/29/Inside-the-Go-CPU-profiler/index.html',
+            clientID: 'bc02724130ed5b7ee275',
+            clientSecret: '68cb0bae2f93a8b88b09e0eb9b08c844b06a9047',
+            admin: ['smallnest'],
+            distractionFreeMode: false
+          };
+
+          const gitalk = new Gitalk(gitalkOpts)
+          gitalk.render('gitalk-container')
+        </script> -->
+        <noscript> 为正常使用评论功能请激活JavaScript</noscript>
+      </section>
+
+      
+
+    </footer>
+  </div>
+  
+  
+<nav id="article-nav">
+  
+    <a href="/2022/10/04/redefining-for-loop-variable-semantics/" id="article-nav-newer" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">Newer</strong>
+      <div class="article-nav-title">
+        
+          十多年了，这个最容易犯错的Go语法终于要改了
+        
+      </div>
+    </a>
+  
+  
+    <a href="/2022/09/12/go-synchronization-is-hard/" id="article-nav-older" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">Older</strong>
+      <div class="article-nav-title">多年老司机，面对这些Go并发问题，也迟疑了</div>
+    </a>
+  
+</nav>
+
+  
+</article></section>
+        
+          <aside id="sidebar">
+  
+    <div class="widget-wrap">
+  <h3 class="widget-title">访问者来源</h3>
+  <div class="widget">
+    <script type="text/javascript" id="mmvst_globe" src="//mapmyvisitors.com/globe.js?d=33a_ORm-dIXRKRAG9KqfzawkYSIwGkaxOK0nA3Ha9Us"></script>
+  </div>
+</div>
+
+<div class="widget-wrap">
+  <h3 class="widget-title">微信公众号</h3>
+  <div class="widget">
+    <img width="100%" src="/images/widgets/gopatterns.jpg">
+  </div>
+</div>
+
+<div class="widget-wrap">
+  <h3 class="widget-title">极客时间专栏</h3>
+  <div class="widget">
+    <a href="https://time.geekbang.org/column/intro/100061801">
+      <img width="100%" src="/images/widgets/geekbang.png">
+    </a>
+    <a href="https://time.geekbang.org/column/intro/100953201">
+      <img width="100%" src="/images/widgets/geekbang2.png">
+    </a>
+  </div>
+</div>
+
+<div class="widget-wrap">
+    <h3 class="widget-title">出版图书</h3>
+    <div class="widget">
+      <a href="https://cpgo.colobu.com/">
+        <img width="100%" src="/cpgolang/cpgo.png">
+      </a>
+    </div>
+    <div class="widget">
+      <a href="https://www.books.com.tw/products/0010991366">
+        <img width="100%" src="/cpgolang/cpgo2.jpg">
+      </a>
+    </div>
+    <div class="widget">
+      <a href="https://item.jd.com/14347716.html">
+        <img width="100%" src="/100gomistakes/cover.png">
+      </a>
+    </div>
+    <div class="widget">
+      <a href="/ScalaCollectionsCookbook/">
+        <img width="100%" src="/ScalaCollectionsCookbook/scala_collections_cookbook.jpg">
+        <img width="100%" src="/ScalaCollectionsCookbook/scala_collections_cookbook_tw.png">
+      </a>
+    </div>
+</div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">分类</h3>
+    <div class="widget">
+      <ul class="category-list"><li class="category-list-item"><a class="category-list-link" href="/categories/Android/">Android</a><span class="category-list-count">12</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/C/">C++</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/DOTNET/">DOTNET</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Docker/">Docker</a><span class="category-list-count">5</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Go/">Go</a><span class="category-list-count">301</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Java/">Java</a><span class="category-list-count">64</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Linux/">Linux</a><span class="category-list-count">8</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Rust/">Rust</a><span class="category-list-count">16</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Scala/">Scala</a><span class="category-list-count">18</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/go/">go</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/k8s/">k8s</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/rust/">rust</a><span class="category-list-count">10</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E5%88%86%E4%BA%AB/">分享</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E5%89%8D%E7%AB%AF%E5%BC%80%E5%8F%91/">前端开发</a><span class="category-list-count">18</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E5%8C%BA%E5%9D%97%E9%93%BE/">区块链</a><span class="category-list-count">8</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E5%A4%A7%E6%95%B0%E6%8D%AE/">大数据</a><span class="category-list-count">60</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E5%B7%A5%E5%85%B7/">工具</a><span class="category-list-count">28</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E6%95%B0%E6%8D%AE%E5%BA%93/">数据库</a><span class="category-list-count">3</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E6%9E%B6%E6%9E%84/">架构</a><span class="category-list-count">27</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E7%AE%97%E6%B3%95/">算法</a><span class="category-list-count">4</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E7%AE%A1%E7%90%86/">管理</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E7%BD%91%E7%BB%9C%E7%BC%96%E7%A8%8B/">网络编程</a><span class="category-list-count">13</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E8%AE%BE%E8%AE%A1%E6%A8%A1%E5%BC%8F/">设计模式</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E8%AF%BB%E4%B9%A6%E7%AC%94%E8%AE%B0/">读书笔记</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E8%BF%90%E7%BB%B4/">运维</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E9%AB%98%E5%B9%B6%E5%8F%91%E7%BC%96%E7%A8%8B/">高并发编程</a><span class="category-list-count">20</span></li></ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">标签云</h3>
+    <div class="widget tagcloud">
+      <a href="/tags/AI/" style="font-size: 20px;">AI</a> <a href="/tags/Android/" style="font-size: 13.64px;">Android</a> <a href="/tags/ApacheBench/" style="font-size: 10.91px;">ApacheBench</a> <a href="/tags/Bower/" style="font-size: 10px;">Bower</a> <a href="/tags/C/" style="font-size: 10px;">C#</a> <a href="/tags/CDN/" style="font-size: 10px;">CDN</a> <a href="/tags/CQRS/" style="font-size: 10px;">CQRS</a> <a href="/tags/CRC/" style="font-size: 10px;">CRC</a> <a href="/tags/CSS/" style="font-size: 10.91px;">CSS</a> <a href="/tags/CompletableFuture/" style="font-size: 10px;">CompletableFuture</a> <a href="/tags/Comsat/" style="font-size: 10px;">Comsat</a> <a href="/tags/Curator/" style="font-size: 17.27px;">Curator</a> <a href="/tags/DSL/" style="font-size: 10px;">DSL</a> <a href="/tags/Disruptor/" style="font-size: 10px;">Disruptor</a> <a href="/tags/Docker/" style="font-size: 10.91px;">Docker</a> <a href="/tags/Ember/" style="font-size: 10.91px;">Ember</a> <a href="/tags/FastJson/" style="font-size: 10px;">FastJson</a> <a href="/tags/Fiber/" style="font-size: 10px;">Fiber</a> <a href="/tags/GAE/" style="font-size: 10px;">GAE</a> <a href="/tags/GC/" style="font-size: 11.82px;">GC</a> <a href="/tags/Gnuplot/" style="font-size: 10px;">Gnuplot</a> <a href="/tags/Go/" style="font-size: 15.45px;">Go</a> <a href="/tags/Gradle/" style="font-size: 10px;">Gradle</a> <a href="/tags/Grunt/" style="font-size: 10px;">Grunt</a> <a href="/tags/Gulp/" style="font-size: 10px;">Gulp</a> <a href="/tags/Hadoop/" style="font-size: 10px;">Hadoop</a> <a href="/tags/Hazelcast/" style="font-size: 10px;">Hazelcast</a> <a href="/tags/IPFS/" style="font-size: 10px;">IPFS</a> <a href="/tags/Ignite/" style="font-size: 10px;">Ignite</a> <a href="/tags/JVM/" style="font-size: 10px;">JVM</a> <a href="/tags/Java/" style="font-size: 14.55px;">Java</a> <a href="/tags/Kafka/" style="font-size: 18.18px;">Kafka</a> <a href="/tags/Lambda/" style="font-size: 12.73px;">Lambda</a> <a href="/tags/Linux/" style="font-size: 11.82px;">Linux</a> <a href="/tags/LongAdder/" style="font-size: 10px;">LongAdder</a> <a href="/tags/MathJax/" style="font-size: 10px;">MathJax</a> <a href="/tags/Maven/" style="font-size: 10.91px;">Maven</a> <a href="/tags/Memcached/" style="font-size: 10px;">Memcached</a> <a href="/tags/Metrics/" style="font-size: 10px;">Metrics</a> <a href="/tags/Mongo/" style="font-size: 11.82px;">Mongo</a> <a href="/tags/Netty/" style="font-size: 13.64px;">Netty</a> <a href="/tags/Nginx/" style="font-size: 10px;">Nginx</a> <a href="/tags/Node/" style="font-size: 10px;">Node</a> <a href="/tags/OAuth/" style="font-size: 10px;">OAuth</a> <a href="/tags/Performance/" style="font-size: 10px;">Performance</a> <a href="/tags/Quartz/" style="font-size: 10px;">Quartz</a> <a href="/tags/Quasar/" style="font-size: 10px;">Quasar</a> <a href="/tags/RPC/" style="font-size: 10px;">RPC</a> <a href="/tags/RTMP/" style="font-size: 10px;">RTMP</a> <a href="/tags/Regexp/" style="font-size: 10px;">Regexp</a> <a href="/tags/Round-Robin/" style="font-size: 10px;">Round-Robin</a> <a href="/tags/Rust/" style="font-size: 10.91px;">Rust</a> <a href="/tags/Sass/" style="font-size: 10px;">Sass</a> <a href="/tags/Scala/" style="font-size: 15.45px;">Scala</a> <a href="/tags/Spark/" style="font-size: 16.36px;">Spark</a> <a href="/tags/Spring/" style="font-size: 13.64px;">Spring</a> <a href="/tags/StampedLock/" style="font-size: 10px;">StampedLock</a> <a href="/tags/TCP-IP/" style="font-size: 10.91px;">TCP/IP</a> <a href="/tags/WebSocket/" style="font-size: 10px;">WebSocket</a> <a href="/tags/Yeoman/" style="font-size: 10px;">Yeoman</a> <a href="/tags/ZooKeeper/" style="font-size: 19.09px;">ZooKeeper</a> <a href="/tags/aio/" style="font-size: 10px;">aio</a> <a href="/tags/akka/" style="font-size: 10.91px;">akka</a> <a href="/tags/android/" style="font-size: 10px;">android</a> <a href="/tags/bbc/" style="font-size: 10px;">bbc</a> <a href="/tags/benchmark/" style="font-size: 10px;">benchmark</a> <a href="/tags/bloom-filter/" style="font-size: 10px;">bloom filter</a> <a href="/tags/bootstrap/" style="font-size: 10px;">bootstrap</a> <a href="/tags/buffer/" style="font-size: 10px;">buffer</a> <a href="/tags/cache/" style="font-size: 10px;">cache</a> <a href="/tags/cgroups/" style="font-size: 10px;">cgroups</a> <a href="/tags/css/" style="font-size: 10.91px;">css</a> <a href="/tags/d3-js/" style="font-size: 10px;">d3.js</a> <a href="/tags/design-pattern/" style="font-size: 10px;">design pattern</a> <a href="/tags/disruptor/" style="font-size: 10.91px;">disruptor</a> <a href="/tags/dns/" style="font-size: 10px;">dns</a> <a href="/tags/ebpf/" style="font-size: 10px;">ebpf</a> <a href="/tags/elasticsearch/" style="font-size: 10.91px;">elasticsearch</a> <a href="/tags/epoll/" style="font-size: 10px;">epoll</a> <a href="/tags/gRPC/" style="font-size: 11.82px;">gRPC</a> <a href="/tags/gitbook/" style="font-size: 10px;">gitbook</a> <a href="/tags/go/" style="font-size: 12.73px;">go</a> <a href="/tags/gulp/" style="font-size: 10px;">gulp</a> <a href="/tags/hexo/" style="font-size: 10.91px;">hexo</a> <a href="/tags/html5/" style="font-size: 10px;">html5</a> <a href="/tags/javascript/" style="font-size: 11.82px;">javascript</a> <a href="/tags/kafka/" style="font-size: 10px;">kafka</a> <a href="/tags/kernel/" style="font-size: 10px;">kernel</a> <a href="/tags/keytool/" style="font-size: 10px;">keytool</a> <a href="/tags/libra/" style="font-size: 11.82px;">libra</a> <a href="/tags/linux/" style="font-size: 10px;">linux</a> <a href="/tags/maven/" style="font-size: 10px;">maven</a> <a href="/tags/memcached/" style="font-size: 10px;">memcached</a> <a href="/tags/mllib/" style="font-size: 10px;">mllib</a> <a href="/tags/mongo/" style="font-size: 11.82px;">mongo</a> <a href="/tags/multicast/" style="font-size: 10px;">multicast</a> <a href="/tags/mysql/" style="font-size: 10px;">mysql</a> <a href="/tags/netty/" style="font-size: 11.82px;">netty</a> <a href="/tags/nginx/" style="font-size: 10.91px;">nginx</a> <a href="/tags/node-js/" style="font-size: 10px;">node.js</a> <a href="/tags/npm/" style="font-size: 10px;">npm</a> <a href="/tags/nsq/" style="font-size: 10px;">nsq</a> <a href="/tags/p2p/" style="font-size: 10px;">p2p</a> <a href="/tags/protobuf/" style="font-size: 10.91px;">protobuf</a> <a href="/tags/quasar/" style="font-size: 10px;">quasar</a> <a href="/tags/rate-limiting/" style="font-size: 10px;">rate limiting</a> <a href="/tags/recommendation/" style="font-size: 10px;">recommendation</a> <a href="/tags/rust/" style="font-size: 10px;">rust</a> <a href="/tags/rxjava/" style="font-size: 10px;">rxjava</a> <a href="/tags/slack/" style="font-size: 10px;">slack</a> <a href="/tags/sortpom/" style="font-size: 10px;">sortpom</a> <a href="/tags/spark/" style="font-size: 10px;">spark</a> <a href="/tags/spray/" style="font-size: 10px;">spray</a> <a href="/tags/sysctl/" style="font-size: 10px;">sysctl</a> <a href="/tags/trace/" style="font-size: 10px;">trace</a> <a href="/tags/undertow/" style="font-size: 10px;">undertow</a> <a href="/tags/validation/" style="font-size: 10px;">validation</a> <a href="/tags/virtualbox/" style="font-size: 10px;">virtualbox</a> <a href="/tags/vscode/" style="font-size: 11.82px;">vscode</a> <a href="/tags/%E4%B8%80%E8%87%B4%E6%80%A7%E5%93%88%E5%B8%8C/" style="font-size: 10px;">一致性哈希</a> <a href="/tags/%E5%8D%8F%E5%90%8C%E8%BF%87%E6%BB%A4%EF%BC%8Cmahout/" style="font-size: 10.91px;">协同过滤，mahout</a> <a href="/tags/%E5%9F%BA%E6%95%B0%E4%BC%B0%E8%AE%A1/" style="font-size: 10px;">基数估计</a> <a href="/tags/%E5%BA%8F%E5%88%97%E5%8C%96/" style="font-size: 10px;">序列化</a> <a href="/tags/%E5%BC%82%E6%AD%A5/" style="font-size: 10px;">异步</a> <a href="/tags/%E5%BE%AE%E6%9C%8D%E5%8A%A1/" style="font-size: 10.91px;">微服务</a> <a href="/tags/%E6%8E%A7%E4%BB%B6/" style="font-size: 10px;">控件</a> <a href="/tags/%E6%8E%A8%E8%8D%90%E7%B3%BB%E7%BB%9F/" style="font-size: 11.82px;">推荐系统</a> <a href="/tags/%E6%9E%B6%E6%9E%84/" style="font-size: 11.82px;">架构</a> <a href="/tags/%E7%AE%97%E6%B3%95/" style="font-size: 10px;">算法</a> <a href="/tags/%E7%BB%84%E4%BB%B6/" style="font-size: 10px;">组件</a> <a href="/tags/%E7%BB%9F%E8%AE%A1%E6%8C%87%E6%A0%87/" style="font-size: 10px;">统计指标</a> <a href="/tags/%E7%BD%91%E7%BB%9C/" style="font-size: 12.73px;">网络</a> <a href="/tags/%E8%BD%AE%E8%AF%A2/" style="font-size: 10px;">轮询</a>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">归档</h3>
+    <div class="widget">
+      <ul class="archive-list"><li class="archive-list-item"><a class="archive-list-link" href="/archives/2026/06/">六月 2026</a><span class="archive-list-count">14</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2026/05/">五月 2026</a><span class="archive-list-count">18</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2026/04/">四月 2026</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2026/01/">一月 2026</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2025/12/">十二月 2025</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2025/11/">十一月 2025</a><span class="archive-list-count">9</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2025/10/">十月 2025</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2025/09/">九月 2025</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2025/08/">八月 2025</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2025/07/">七月 2025</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2025/06/">六月 2025</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2025/05/">五月 2025</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2025/02/">二月 2025</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2025/01/">一月 2025</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2024/11/">十一月 2024</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2024/10/">十月 2024</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2024/08/">八月 2024</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2024/06/">六月 2024</a><span class="archive-list-count">11</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2024/05/">五月 2024</a><span class="archive-list-count">9</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2024/04/">四月 2024</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2024/03/">三月 2024</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2024/02/">二月 2024</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2024/01/">一月 2024</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/12/">十二月 2023</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/11/">十一月 2023</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/10/">十月 2023</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/09/">九月 2023</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/08/">八月 2023</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/07/">七月 2023</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/06/">六月 2023</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/05/">五月 2023</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/04/">四月 2023</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/03/">三月 2023</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/01/">一月 2023</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/12/">十二月 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/11/">十一月 2022</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/10/">十月 2022</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/09/">九月 2022</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/08/">八月 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/07/">七月 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/06/">六月 2022</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/05/">五月 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/04/">四月 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/03/">三月 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/02/">二月 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/01/">一月 2022</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/12/">十二月 2021</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/11/">十一月 2021</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/10/">十月 2021</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/08/">八月 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/07/">七月 2021</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/06/">六月 2021</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/05/">五月 2021</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/04/">四月 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/03/">三月 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/02/">二月 2021</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/01/">一月 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/12/">十二月 2020</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/11/">十一月 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/09/">九月 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/08/">八月 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/07/">七月 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/06/">六月 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/05/">五月 2020</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/04/">四月 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/03/">三月 2020</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/02/">二月 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/01/">一月 2020</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/12/">十二月 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/11/">十一月 2019</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/10/">十月 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/09/">九月 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/08/">八月 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/07/">七月 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/06/">六月 2019</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/05/">五月 2019</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/04/">四月 2019</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/03/">三月 2019</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/02/">二月 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/01/">一月 2019</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/12/">十二月 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/11/">十一月 2018</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/10/">十月 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/09/">九月 2018</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/08/">八月 2018</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/07/">七月 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/06/">六月 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/05/">五月 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/04/">四月 2018</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/03/">三月 2018</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/02/">二月 2018</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/01/">一月 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/12/">十二月 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/11/">十一月 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/10/">十月 2017</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/09/">九月 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/08/">八月 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/07/">七月 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/06/">六月 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/05/">五月 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/04/">四月 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/03/">三月 2017</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/02/">二月 2017</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/01/">一月 2017</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/12/">十二月 2016</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/11/">十一月 2016</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/10/">十月 2016</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/09/">九月 2016</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/08/">八月 2016</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/07/">七月 2016</a><span class="archive-list-count">11</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/06/">六月 2016</a><span class="archive-list-count">14</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/05/">五月 2016</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/04/">四月 2016</a><span class="archive-list-count">14</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/03/">三月 2016</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/02/">二月 2016</a><span class="archive-list-count">8</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/01/">一月 2016</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/12/">十二月 2015</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/11/">十一月 2015</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/10/">十月 2015</a><span class="archive-list-count">9</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/09/">九月 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/08/">八月 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/07/">七月 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/06/">六月 2015</a><span class="archive-list-count">8</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/05/">五月 2015</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/04/">四月 2015</a><span class="archive-list-count">15</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/03/">三月 2015</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/02/">二月 2015</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/01/">一月 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/12/">十二月 2014</a><span class="archive-list-count">28</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/11/">十一月 2014</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/10/">十月 2014</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/09/">九月 2014</a><span class="archive-list-count">28</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/08/">八月 2014</a><span class="archive-list-count">19</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/07/">七月 2014</a><span class="archive-list-count">1</span></li></ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">近期文章</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+            <a href="/2026/06/21/how-llm-actually-works/">LLM 究竟是如何工作的？</a>
+          </li>
+        
+          <li>
+            <a href="/2026/06/21/go-experimental-features-explained/">Go 实验特性详解</a>
+          </li>
+        
+          <li>
+            <a href="/2026/06/21/amd64-microarchitecture-level-go-performance/">amd64 微架构级别对 Go 程序性能提升多少？</a>
+          </li>
+        
+          <li>
+            <a href="/2026/06/17/loop-engineering-batch-8-issues-kuiniu-tool/">Loop Engineering 实践：一次批量实现 8 个 issue，完成夔牛工具的开发</a>
+          </li>
+        
+          <li>
+            <a href="/2026/06/17/loop-engineering-rdma-port-to-go-239-yuan/">Loop Engineering 实践：我把 RDMA 开发库移植到 Go 语言，花费 239 块钱</a>
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">友情链接</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+			 
+            <a href="http://stackshare.io" target="_blank">技术栈</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://toutiao.io/" target="_blank">开发者头条</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://weekly.manong.io/issues/" target="_blank">码农周刊</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.tuicool.com/mags" target="_blank">编程狂人周刊</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.importnew.com/" target="_blank">importnew</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://ifeve.com/" target="_blank">并发编程网</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://github.com" target="_blank">github</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://stackoverflow.com/" target="_blank">stackoverflow</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.javacodegeeks.com/" target="_blank">javacodegeeks</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.infoq.com/" target="_blank">infoq</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.dzone.com/links/index.html" target="_blank">dzone</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://oj.leetcode.com/problems/" target="_blank">leetcode</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://tutorials.jenkov.com" target="_blank">jenkov</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://howtodoinjava.com" target="_blank">HowToDoInJava</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://java-design-patterns.com/patterns/" target="_blank">java design patterns</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://medium.com/netflix-techblog" target="_blank">Netflix技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://www.techiedelight.com" target="_blank">Techie Delight</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://engineering.linkedin.com/blog" target="_blank">Linkedin技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://blogs.dropbox.com/tech/" target="_blank">Dropbox技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://code.fb.com" target="_blank">Facebook技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://jm.taobao.org" target="_blank">淘宝中间件团队</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://tech.meituan.com" target="_blank">美团技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://blogs.360.cn" target="_blank">360技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://xiaomi-info.github.io" target="_blank">小米信息部技术团队</a>
+			
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+      
+
+  
+</aside>
+        
+      </div>
+      <footer id="footer">
+  
+  <div class="outer">
+    <div id="footer-info" class="inner">
+      &copy; 2026 smallnest<br>
+	  Powered by <a href="http://hexo.io/" target="_blank">Hexo</a>
+    </div>
+  </div>
+</footer>
+    </div>
+    <nav id="mobile-nav">
+  
+    
+      <a href="/" class="mobile-nav-link"><i class="fa fa-home">&nbsp;</i>首页</a>
+    
+  
+    
+      <a href="/archives" class="mobile-nav-link"><i class="fa fa-regular fa-folder-open">&nbsp;</i>归档</a>
+    
+  
+    
+      <a href="https://github.com/smallnest" class="mobile-nav-link"><i class="fa fa-brands fa-github-alt">&nbsp;</i>github</a>
+    
+  
+    
+      <a class="mobile-nav-link" href="#"><i class="fa fa-brands fa-golang">&nbsp;</i>Go学习资源</a>
+    
+      
+            <a class="mobile-nav-link" href="/goasm">&nbsp;&nbsp;<i class="fa fa-brands fa-golang">&nbsp;</i>Go汇编示例</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="https://gowebexamples.com">&nbsp;&nbsp;<i class="fa fa-brands fa-golang">&nbsp;</i>Go Web开发示例</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://go-database-sql.org">&nbsp;&nbsp;<i class="fa fa-brands fa-golang">&nbsp;</i>Go 数据库开发教程</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="https://colobu.com/gotips/">&nbsp;&nbsp;<i class="fa fa-brands fa-golang">&nbsp;</i>Go 语言编程技巧</a>
+          
+          
+    
+      
+            
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://rpcx.io">&nbsp;&nbsp;<i class="fa ">&nbsp;</i>RPCX官网</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://cn.doc.rpcx.io">&nbsp;&nbsp;<i class="fa ">&nbsp;</i>RPC开发指南</a>
+          
+          
+    
+    
+  
+    
+      <a class="mobile-nav-link" href="#"><i class="fa fa-brands fa-rust">&nbsp;</i>Rust学习资源</a>
+    
+      
+            <a class="mobile-nav-link" href="/perf-book">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>Rust高性能编程指南</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/rust100">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>100个练习题学习Rust</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/atomics">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>Rust原子操作和锁</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/effective-rust">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>高效Rust编程</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/thebook">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>Rust程序设计语言</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/nomicon">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>Rust死灵书</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/rust-reference">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>Rust参考手册</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/tlborm">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>Rust宏小册</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/async-book">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>Rust异步编程书</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/rust-by-example">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>通过例子学Rust</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/api-guidelines">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>Rust API 编写指南</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/comprehensive-rust">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>全面Rust课程</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/easy-rust">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>简单英语学Rust</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/rust-patterns">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>Rust设计模式</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/2020/03/05/A-half-hour-to-learn-Rust/">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>半小时学会Rust</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/rust-cookbook">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>Rust实用指南(cookbook)</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/rust-rand">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>Rust随机库</a>
+          
+          
+    
+      
+            
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="https://rpcx.io/r/E6v8U">&nbsp;&nbsp;<i class="fa ">&nbsp;</i>Rust for the Polyglot Programmer</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="https://rpcx.io/r/oC5ii">&nbsp;&nbsp;<i class="fa ">&nbsp;</i>LifetimeKata</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="https://tfpk.github.io/macrokata/">&nbsp;&nbsp;<i class="fa ">&nbsp;</i>macrokata</a>
+          
+          
+    
+    
+  
+    
+      <a class="mobile-nav-link" href="#"><i class="fa ">&nbsp;</i>出版书籍</a>
+    
+      
+            <a class="mobile-nav-link" href="/ScalaCollectionsCookbook">&nbsp;&nbsp;<i class="fa ">&nbsp;</i>Scala集合技术手册（简/繁）</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="https://cpgo.colobu.com/">&nbsp;&nbsp;<i class="fa ">&nbsp;</i>深入理解Go并发编程（简/繁）</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="https://item.jd.com/14347716.html">&nbsp;&nbsp;<i class="fa ">&nbsp;</i>100个Go语言典型错误</a>
+          
+          
+    
+    
+  
+    
+      <a href="/ScalaCollectionsCookbook" class="mobile-nav-link"><i class="fa fa-solid fa-book">&nbsp;</i>Scala集合技术手册</a>
+    
+  
+    
+      <a href="/about" class="mobile-nav-link"><i class="fa fa-regular fa-address-card">&nbsp;</i>关于</a>
+    
+  
+</nav>
+    
+<script src="//cdn.staticfile.org/jquery/1.11.1/jquery.min.js"></script>
+<script src="//cdn.bootcss.com/jquery.lazyload/1.9.1/jquery.lazyload.min.js"></script>
+
+<script src="//cdnjs.cloudflare.com/ajax/libs/fancybox/3.2.5/jquery.fancybox.min.js"></script>
+
+
+
+<script src="/js/script.js"></script>
+
+<!-- mathjax config similar to math.stackexchange -->
+<script type="text/x-mathjax-config">
+  MathJax.Hub.Config({
+    tex2jax: {
+      inlineMath: [ ['$','$'], ["\\(","\\)"] ],
+      processEscapes: true,
+      skipTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code']
+    }
+  });
+  MathJax.Hub.Queue(function() {
+      var all = MathJax.Hub.getAllJax(), i;
+      for(i=0; i < all.length; i += 1) {
+        all[i].SourceElement().parentNode.className += ' has-jax';
+      }
+  });
+</script>
+<script type="text/javascript" src="//cdn.bootcss.com/mathjax/2.6.0-beta.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML">
+</script>
+
+<div id="totop" style="position:fixed;bottom:150px;right:10px;cursor: pointer;z-index: 2000;">
+	<a title="返回顶部"><img src="/images/scrollup.png"/></a>
+</div>
+
+<script src="/js/totop.js"></script>
+
+
+
+
+<script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "//hm.baidu.com/hm.js?e085d87993250aab11f3e0c15f1c2785";
+  var s = document.getElementsByTagName("script")[0]; 
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+
+
+  </div>
+</body>
+</html>

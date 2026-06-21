@@ -1,0 +1,1696 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset="utf-8">
+  
+  <title>Go 生态圈的 K/V 数据库 benchmark</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+  <meta name="description" content="Go生态圈有好几个K&#x2F;V数据库，我们经常用它来做我们的存储引擎，但是这些数据库引擎的性能如何呢？本文试图用性能而不是功能的数据考察这些数据库，我测试了几种场景： 并发写、并发读、单一写并发读、并发删除，得出了一些有趣的数据。 测试在两台机器上测试的，一台机械硬盘，一台固态硬盘，使用256字节作为value值的大小，9个字节作为key的大小，测试简单的读写删除操作，并没有测试批量读写操作。">
+<meta property="og:type" content="article">
+<meta property="og:title" content="Go 生态圈的 K&#x2F;V 数据库 benchmark">
+<meta property="og:url" content="https://colobu.com/2019/03/05/go-kv-databases-benchmark/index.html">
+<meta property="og:site_name" content="鸟窝">
+<meta property="og:description" content="Go生态圈有好几个K&#x2F;V数据库，我们经常用它来做我们的存储引擎，但是这些数据库引擎的性能如何呢？本文试图用性能而不是功能的数据考察这些数据库，我测试了几种场景： 并发写、并发读、单一写并发读、并发删除，得出了一些有趣的数据。 测试在两台机器上测试的，一台机械硬盘，一台固态硬盘，使用256字节作为value值的大小，9个字节作为key的大小，测试简单的读写删除操作，并没有测试批量读写操作。">
+<meta property="og:locale" content="zh_CN">
+<meta property="og:image" content="https://colobu.com/2019/03/05/go-kv-databases-benchmark/hdd-nofsync-throughputs.png">
+<meta property="og:image" content="https://colobu.com/2019/03/05/go-kv-databases-benchmark/hdd-nofsync-time.png">
+<meta property="og:image" content="https://colobu.com/2019/03/05/go-kv-databases-benchmark/hdd-fsync-throughputs.png">
+<meta property="og:image" content="https://colobu.com/2019/03/05/go-kv-databases-benchmark/hdd-nofsync-time.png">
+<meta property="og:image" content="https://colobu.com/2019/03/05/go-kv-databases-benchmark/ssd-nofsync-throughputs.png">
+<meta property="og:image" content="https://colobu.com/2019/03/05/go-kv-databases-benchmark/ssd-nofsync-time.png">
+<meta property="og:image" content="https://colobu.com/2019/03/05/go-kv-databases-benchmark/ssd-fsync-throughputs.png">
+<meta property="og:image" content="https://colobu.com/2019/03/05/go-kv-databases-benchmark/ssd-fsync-throughputs.png">
+<meta property="article:published_time" content="2019-03-05T08:14:10.000Z">
+<meta property="article:modified_time" content="2026-06-21T09:09:11.464Z">
+<meta property="article:author" content="smallnest">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:image" content="https://colobu.com/2019/03/05/go-kv-databases-benchmark/hdd-nofsync-throughputs.png">
+  
+  <link rel="alternative" href="/atom.xml" title="鸟窝" type="application/atom+xml">
+  
+  
+  <link rel="icon" href="/favicon.png">
+  
+  
+<link rel="stylesheet" href="/css/style.css">
+
+  <link href="//cdn.bootcdn.net/ajax/libs/font-awesome/6.6.0/css/all.min.css" rel="stylesheet">
+  
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/fancybox/3.2.5/jquery.fancybox.min.css"
+    media="screen" type="text/css">
+  
+  <link rel="stylesheet" href="//cdnjs.cloudflare.com/ajax/libs/animate.css/3.1.1/animate.min.css" media="screen"
+    type="text/css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/tonsky/FiraCode@1.207/distr/fira_code.css">
+<meta name="generator" content="Hexo 8.1.2"></head>
+<body>
+  <div id="container">
+    <div id="wrap">
+      <header id="header">
+  <div id="banner"></div>
+  <div id="header-outer" class="outer">
+    <div id="header-title" class="inner">
+      <h1 id="logo-wrap" class="animated bounceInLeft">
+        <a href="/" id="logo">鸟窝</a>
+      </h1>
+      
+    </div>
+    <div id="header-inner" class="inner">
+      <nav id="main-nav">
+        <a id="main-nav-toggle" class="nav-icon"></a>
+        
+          
+            <a class="main-nav-link" href="/"><i class="fa fa-home">&nbsp;</i>首页</a>
+          
+          
+          
+            <a class="main-nav-link" href="/archives"><i class="fa fa-regular fa-folder-open">&nbsp;</i>归档</a>
+          
+          
+          
+            <a class="main-nav-link" href="https://github.com/smallnest"><i class="fa fa-brands fa-github-alt">&nbsp;</i>github</a>
+          
+          
+          
+            <div class="dropdown main-nav-link"><a class="main-nav-link" href="#"><i class="fa fa-brands fa-golang">&nbsp;</i>Go学习资源</a>
+              <div class="dropdown-content">
+          
+            
+              <a href="/goasm"><i class="fa fa-brands fa-golang"></i>&nbsp;Go汇编示例</a>
+            
+                
+          
+            
+              <a href="https://gowebexamples.com"><i class="fa fa-brands fa-golang"></i>&nbsp;Go Web开发示例</a>
+            
+                
+          
+            
+              <a href="http://go-database-sql.org"><i class="fa fa-brands fa-golang"></i>&nbsp;Go 数据库开发教程</a>
+            
+                
+          
+            
+              <a href="https://colobu.com/gotips/"><i class="fa fa-brands fa-golang"></i>&nbsp;Go 语言编程技巧</a>
+            
+                
+          
+            
+              <hr>
+            
+                
+          
+            
+              <a href="http://rpcx.io"><i class="fa "></i>&nbsp;RPCX官网</a>
+            
+                
+          
+            
+              <a href="http://cn.doc.rpcx.io"><i class="fa "></i>&nbsp;RPC开发指南</a>
+            
+                
+          
+          </div>
+        </div>
+          
+          
+          
+            <div class="dropdown main-nav-link"><a class="main-nav-link" href="#"><i class="fa fa-brands fa-rust">&nbsp;</i>Rust学习资源</a>
+              <div class="dropdown-content">
+          
+            
+              <a href="/perf-book"><i class="fa fa-brands fa-rust"></i>&nbsp;Rust高性能编程指南</a>
+            
+                
+          
+            
+              <a href="/rust100"><i class="fa fa-brands fa-rust"></i>&nbsp;100个练习题学习Rust</a>
+            
+                
+          
+            
+              <a href="/atomics"><i class="fa fa-brands fa-rust"></i>&nbsp;Rust原子操作和锁</a>
+            
+                
+          
+            
+              <a href="/effective-rust"><i class="fa fa-brands fa-rust"></i>&nbsp;高效Rust编程</a>
+            
+                
+          
+            
+              <a href="/thebook"><i class="fa fa-brands fa-rust"></i>&nbsp;Rust程序设计语言</a>
+            
+                
+          
+            
+              <a href="/nomicon"><i class="fa fa-brands fa-rust"></i>&nbsp;Rust死灵书</a>
+            
+                
+          
+            
+              <a href="/rust-reference"><i class="fa fa-brands fa-rust"></i>&nbsp;Rust参考手册</a>
+            
+                
+          
+            
+              <a href="/tlborm"><i class="fa fa-brands fa-rust"></i>&nbsp;Rust宏小册</a>
+            
+                
+          
+            
+              <a href="/async-book"><i class="fa fa-brands fa-rust"></i>&nbsp;Rust异步编程书</a>
+            
+                
+          
+            
+              <a href="/rust-by-example"><i class="fa fa-brands fa-rust"></i>&nbsp;通过例子学Rust</a>
+            
+                
+          
+            
+              <a href="/api-guidelines"><i class="fa fa-brands fa-rust"></i>&nbsp;Rust API 编写指南</a>
+            
+                
+          
+            
+              <a href="/comprehensive-rust"><i class="fa fa-brands fa-rust"></i>&nbsp;全面Rust课程</a>
+            
+                
+          
+            
+              <a href="/easy-rust"><i class="fa fa-brands fa-rust"></i>&nbsp;简单英语学Rust</a>
+            
+                
+          
+            
+              <a href="/rust-patterns"><i class="fa fa-brands fa-rust"></i>&nbsp;Rust设计模式</a>
+            
+                
+          
+            
+              <a href="/2020/03/05/A-half-hour-to-learn-Rust/"><i class="fa fa-brands fa-rust"></i>&nbsp;半小时学会Rust</a>
+            
+                
+          
+            
+              <a href="/rust-cookbook"><i class="fa fa-brands fa-rust"></i>&nbsp;Rust实用指南(cookbook)</a>
+            
+                
+          
+            
+              <a href="/rust-rand"><i class="fa fa-brands fa-rust"></i>&nbsp;Rust随机库</a>
+            
+                
+          
+            
+              <hr>
+            
+                
+          
+            
+              <a href="https://rpcx.io/r/E6v8U"><i class="fa "></i>&nbsp;Rust for the Polyglot Programmer</a>
+            
+                
+          
+            
+              <a href="https://rpcx.io/r/oC5ii"><i class="fa "></i>&nbsp;LifetimeKata</a>
+            
+                
+          
+            
+              <a href="https://tfpk.github.io/macrokata/"><i class="fa "></i>&nbsp;macrokata</a>
+            
+                
+          
+          </div>
+        </div>
+          
+          
+          
+            <div class="dropdown main-nav-link"><a class="main-nav-link" href="#"><i class="fa ">&nbsp;</i>出版书籍</a>
+              <div class="dropdown-content">
+          
+            
+              <a href="/ScalaCollectionsCookbook"><i class="fa "></i>&nbsp;Scala集合技术手册（简/繁）</a>
+            
+                
+          
+            
+              <a href="https://cpgo.colobu.com/"><i class="fa "></i>&nbsp;深入理解Go并发编程（简/繁）</a>
+            
+                
+          
+            
+              <a href="https://item.jd.com/14347716.html"><i class="fa "></i>&nbsp;100个Go语言典型错误</a>
+            
+                
+          
+          </div>
+        </div>
+          
+          
+          
+            <a class="main-nav-link" href="/ScalaCollectionsCookbook"><i class="fa fa-solid fa-book">&nbsp;</i>Scala集合技术手册</a>
+          
+          
+          
+            <a class="main-nav-link" href="/about"><i class="fa fa-regular fa-address-card">&nbsp;</i>关于</a>
+          
+          
+
+
+      </nav>
+      <nav id="sub-nav">
+        
+          <a id="nav-rss-link" class="nav-icon" href="/atom.xml" title="RSS Feed"></a>
+        
+        <a id="nav-search-btn" class="nav-icon" title="Search"></a>
+      </nav>
+      <div id="search-form-wrap">
+        <form action="https://www.google.com/search" method="get" accept-charset="utf-8" class="search-form">
+          <input type="search" id="search-word" name="q" maxlength="20" class="search-form-input" placeholder="Search">
+          <input type=hidden name=ie value="utf-8">
+          <input type=hidden name=oe value="utf-8">
+          <input type=hidden name=hl value="zh-CN">
+          <input type="submit" id="search-submit" value="" class="search-form-submit">
+        </form>
+      </div>
+    </div>
+  </div>
+</header>
+      <div class="outer">
+        <section id="main"><article id="post-go-kv-databases-benchmark" class="article article-type-post" itemscope
+  itemprop="blogPost">
+  <div class="article-meta">
+    <a href="/2019/03/05/go-kv-databases-benchmark/" class="article-date">
+  <time datetime="2019-03-05T08:14:10.000Z" itemprop="datePublished">2019年03月05日</time>
+</a>
+    
+  <div class="article-category">
+    <a class="article-category-link" href="/categories/Go/">Go</a>
+  </div>
+
+    
+  <div class="article-author"> by smallnest</div>
+
+  </div>
+  <div class="article-inner">
+    
+    
+    <header class="article-header">
+      
+  
+    <h1 class="article-title" itemprop="name">
+      Go 生态圈的 K/V 数据库 benchmark
+	  
+    </h1>
+  
+
+    </header>
+    
+    <div class="article-entry" itemprop="articleBody">
+      
+      
+      
+      <script>function show_answer(btn, x) { if (btn.value === "显示答案") { btn.value = "隐藏答案" } else { btn.value = "显示答案" } var as = document.getElementById(x); if (as.style.display === "none") { as.style.display = "block" } else { as.style.display = "none" } }</script>
+      <p>Go生态圈有好几个K&#x2F;V数据库，我们经常用它来做我们的存储引擎，但是这些数据库引擎的性能如何呢？本文试图用性能而不是功能的数据考察这些数据库，我测试了几种场景： 并发写、并发读、单一写并发读、并发删除，得出了一些有趣的数据。</p>
+<p>测试在两台机器上测试的，一台机械硬盘，一台固态硬盘，使用256字节作为value值的大小，9个字节作为key的大小，测试简单的读写删除操作，并没有测试批量读写操作。 每个测试case测试1分钟。</p>
+<p>代码: <a href="https://github.com/smallnest/kvbench">kvbench</a></p>
+<span id="more"></span>
+
+<h2 id="K-V-数据库"><a href="#K-V-数据库" class="headerlink" title="K&#x2F;V 数据库"></a>K&#x2F;V 数据库</h2><ul>
+<li><a href="https://github.com/facebook/rocksdb">Rocksdb</a>: RocksDB是Facebook维护的高性能的嵌入式K&#x2F;V数据库。它是<a href="https://github.com/google/leveldb">LevelDB</a>的克隆版，针对多核、SSD做了很多优化。 LSM tree数据结构。</li>
+<li><a href="https://github.com/dgraph-io/badger">badger</a>: 一个纯Go实现的快速的嵌入式K&#x2F;V数据库，针对LSM tree做了优化，在某些情况下可以取得比较好的性能。</li>
+<li><a href="https://github.com/syndtr/goleveldb">goleveldb</a>: leveldb的纯Go实现，非Google的C++版本</li>
+<li><a href="https://github.com/boltdb/bolt">bolt</a>: 一个广泛使用的K&#x2F;V数据库，基本上不会有新的功能加入了。</li>
+<li><a href="https://github.com/etcd-io/bbolt">bbolt</a>: coreos的bolt克隆版，继续维护和扩展bolt的功能。</li>
+<li><a href="https://github.com/tidwall/buntdb">buntdb</a>: 一个基于内存的K&#x2F;V数据库，也可以落盘。</li>
+<li><a href="https://github.com/cznic/kv">cznic&#x2F;kv</a>： 基本上不维护了。</li>
+<li><a href="https://github.com/petermattis/pebble">pebble</a>: 一个性能优异的K&#x2F;V数据库。</li>
+<li>map (in-memory) with <a href="https://redis.io/topics/persistence">AOF persistence</a>: 基于map数据结构的数据库。</li>
+<li>btree (in-memory) with <a href="https://redis.io/topics/persistence">AOF persistence</a>: 基于btree数据结构的数据库。</li>
+</ul>
+<p><code>btree</code>使用btree的数据结构，如果文件路径为<code>:memory:</code>,则直接写内存，而不会存于硬盘文件中。<code>fsync</code>为true是会同步硬盘文件。<br><code>map</code>使用map的数据结构，如果文件路径为<code>:memory:</code>,则直接写内存，而不会存于硬盘文件中。<code>fsync</code>为true是会同步硬盘文件。</p>
+<p>当然，除了基本的K&#x2F;V操作外，有些数据库还加入了事务、bucket(Column Families)等额外的功能，这也是选型的时候要考虑的一个重要方面。</p>
+<h2 id="查看硬件环境"><a href="#查看硬件环境" class="headerlink" title="查看硬件环境"></a>查看硬件环境</h2><p>查看磁盘情况：<code>fdisk -l</code><br>查看磁盘型号：<code>smartctl -a /dev/sda</code></p>
+<p>下面两个命令不太准， 都显示1:<br><code>cat /sys/block/sda/queue/rotational</code><br><code>lsblk -d -o name,rota</code></p>
+<p>使用<code>MegaCli</code>工具:<br><code>/opt/MegaRAID/MegaCli/MegaCli64  -ldpdinfo -aall |grep &#39;Media Type&#39;</code></p>
+<h2 id="机械硬盘"><a href="#机械硬盘" class="headerlink" title="机械硬盘"></a>机械硬盘</h2><p>硬盘是希捷的机械硬盘：</p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br></pre></td><td class="code"><pre><span class="line">Vendor:               SEAGATE</span><br><span class="line">Product:              ST900MM0168</span><br><span class="line">User Capacity:        900,185,481,216 bytes [900 GB]</span><br><span class="line">Rotation Rate:        10500 rpm</span><br></pre></td></tr></table></figure>
+
+<p>2客CPU, 20个物理 CPU core， 开了超线程40个逻辑 CPU core。<br>32G内存。</p>
+<h3 id="不写盘-nofsync"><a href="#不写盘-nofsync" class="headerlink" title="不写盘(nofsync)"></a>不写盘(nofsync)</h3><p><strong>throughputs</strong></p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>badger</th>
+<th>bbolt</th>
+<th>bolt</th>
+<th>leveldb</th>
+<th>kv</th>
+<th>buntdb</th>
+<th>rocksdb</th>
+<th>btree</th>
+<th>btree&#x2F;memory</th>
+<th>map</th>
+<th>map&#x2F;memory</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>get</td>
+<td>474636</td>
+<td>428163</td>
+<td>467606</td>
+<td>338100</td>
+<td>17291</td>
+<td>3051031</td>
+<td>2433409</td>
+<td>4966106</td>
+<td>5485222</td>
+<td>6740588</td>
+<td>6555700</td>
+</tr>
+<tr>
+<td>setmixed</td>
+<td>1619</td>
+<td>9469</td>
+<td>7842</td>
+<td>17220</td>
+<td>309</td>
+<td>6001</td>
+<td>107852</td>
+<td>17673</td>
+<td>18513</td>
+<td>18249</td>
+<td>20234</td>
+</tr>
+<tr>
+<td>getmixed</td>
+<td>333540</td>
+<td>127328</td>
+<td>241168</td>
+<td>344907</td>
+<td>12359</td>
+<td>359620</td>
+<td>1976448</td>
+<td>1275432</td>
+<td>1519957</td>
+<td>2240288</td>
+<td>2597800</td>
+</tr>
+<tr>
+<td>del</td>
+<td>113590</td>
+<td>4054</td>
+<td>3523</td>
+<td>219681</td>
+<td>6379</td>
+<td>188057</td>
+<td>670461</td>
+<td>461692</td>
+<td>908052</td>
+<td>797977</td>
+<td>1405268</td>
+</tr>
+<tr>
+<td>set</td>
+<td>97441</td>
+<td>11922</td>
+<td>12414</td>
+<td>130572</td>
+<td>2267</td>
+<td>99370</td>
+<td>483053</td>
+<td>203632</td>
+<td>555432</td>
+<td>243506</td>
+<td>1120192</td>
+</tr>
+</tbody></table>
+<img src="/2019/03/05/go-kv-databases-benchmark/hdd-nofsync-throughputs.png" class="">
+
+<p><code>btree</code>和<code>map</code>相关的实现最好，因为都是直接的内存操作，而且操作也很简单。而且<code>map</code>更简单，通过hash直接找到对应对象。</p>
+<p>对于其它的K&#x2F;V数据库，相对来说rocksdb性能更好一些，而buntdb在只读的情况下性能不错。</p>
+<p><strong>time (latency)</strong></p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>badger</th>
+<th>bbolt</th>
+<th>bolt</th>
+<th>leveldb</th>
+<th>kv</th>
+<th>buntdb</th>
+<th>rocksdb</th>
+<th>btree</th>
+<th>btree&#x2F;memory</th>
+<th>map</th>
+<th>map&#x2F;memory</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>setmixed</td>
+<td>617409</td>
+<td>105605</td>
+<td>127517</td>
+<td>58071</td>
+<td>3235598</td>
+<td>166629</td>
+<td>9271</td>
+<td>56581</td>
+<td>54015</td>
+<td>54796</td>
+<td>49421</td>
+</tr>
+<tr>
+<td>del</td>
+<td>220</td>
+<td>6165</td>
+<td>7096</td>
+<td>113</td>
+<td>3918</td>
+<td>132</td>
+<td>37</td>
+<td>54</td>
+<td>27</td>
+<td>31</td>
+<td>17</td>
+</tr>
+<tr>
+<td>set</td>
+<td>256</td>
+<td>2096</td>
+<td>2013</td>
+<td>191</td>
+<td>11023</td>
+<td>251</td>
+<td>51</td>
+<td>122</td>
+<td>45</td>
+<td>102</td>
+<td>22</td>
+</tr>
+<tr>
+<td>get</td>
+<td>52</td>
+<td>58</td>
+<td>53</td>
+<td>73</td>
+<td>1445</td>
+<td>8</td>
+<td>10</td>
+<td>5</td>
+<td>4</td>
+<td>3</td>
+<td>3</td>
+</tr>
+<tr>
+<td>getmixed</td>
+<td>74</td>
+<td>196</td>
+<td>103</td>
+<td>72</td>
+<td>2022</td>
+<td>69</td>
+<td>12</td>
+<td>19</td>
+<td>16</td>
+<td>11</td>
+<td>9</td>
+</tr>
+</tbody></table>
+<img src="/2019/03/05/go-kv-databases-benchmark/hdd-nofsync-time.png" class="">
+
+<p>耗时基本和吞吐负相关，耗时越长，性能越差，唯一的例外是goleveldb,它的耗时也很短，但是吞吐率却没有足够优秀。</p>
+<h3 id="同步写盘-fsync"><a href="#同步写盘-fsync" class="headerlink" title="同步写盘(fsync)"></a>同步写盘(fsync)</h3><p><strong>throughputs</strong></p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>badger</th>
+<th>bbolt</th>
+<th>bolt</th>
+<th>leveldb</th>
+<th>kv</th>
+<th>buntdb</th>
+<th>rocksdb</th>
+<th>btree</th>
+<th>btree&#x2F;memory</th>
+<th>map</th>
+<th>map&#x2F;memory</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>set</td>
+<td>1071</td>
+<td>67</td>
+<td>70</td>
+<td>1466</td>
+<td>5084</td>
+<td>66</td>
+<td>1321</td>
+<td>66</td>
+<td>435274</td>
+<td>67</td>
+<td>660196</td>
+</tr>
+<tr>
+<td>del</td>
+<td>1309</td>
+<td>81</td>
+<td>73</td>
+<td>1490</td>
+<td>7287</td>
+<td>162</td>
+<td>1386</td>
+<td>164</td>
+<td>737082</td>
+<td>163</td>
+<td>802890</td>
+</tr>
+<tr>
+<td>get</td>
+<td>401010</td>
+<td>276105</td>
+<td>323697</td>
+<td>510568</td>
+<td>5664</td>
+<td>1728309</td>
+<td>1529519</td>
+<td>1973164</td>
+<td>2735229</td>
+<td>2673796</td>
+<td>3229974</td>
+</tr>
+<tr>
+<td>setmixed</td>
+<td>64</td>
+<td>60</td>
+<td>31</td>
+<td>54</td>
+<td>124</td>
+<td>66</td>
+<td>-1</td>
+<td>67</td>
+<td>20827</td>
+<td>66</td>
+<td>23213</td>
+</tr>
+<tr>
+<td>getmixed</td>
+<td>4201</td>
+<td>300291</td>
+<td>315338</td>
+<td>541976</td>
+<td>4938</td>
+<td>3082</td>
+<td>1961553</td>
+<td>2144</td>
+<td>890075</td>
+<td>2816</td>
+<td>1406865</td>
+</tr>
+</tbody></table>
+<img src="/2019/03/05/go-kv-databases-benchmark/hdd-fsync-throughputs.png" class="">
+
+<p>在数据落盘的情况下，写的性能急剧下降，因为每次写都需要同步到硬盘中，比较好的是rocksdb和badger，能达到1000+ op&#x2F;s, 其它基本都在100以内。</p>
+<p><strong>time (latency)</strong></p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>badger</th>
+<th>bbolt</th>
+<th>bolt</th>
+<th>leveldb</th>
+<th>kv</th>
+<th>buntdb</th>
+<th>rocksdb</th>
+<th>btree</th>
+<th>btree&#x2F;memory</th>
+<th>map</th>
+<th>map&#x2F;memory</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>getmixed</td>
+<td>5950</td>
+<td>83</td>
+<td>79</td>
+<td>46</td>
+<td>5062</td>
+<td>8110</td>
+<td>12</td>
+<td>11655</td>
+<td>28</td>
+<td>8874</td>
+<td>17</td>
+</tr>
+<tr>
+<td>del</td>
+<td>19089</td>
+<td>307542</td>
+<td>337844</td>
+<td>16776</td>
+<td>3430</td>
+<td>154249</td>
+<td>18037</td>
+<td>151850</td>
+<td>33</td>
+<td>152854</td>
+<td>31</td>
+</tr>
+<tr>
+<td>setmixed</td>
+<td>15557829</td>
+<td>16650544</td>
+<td>31712503</td>
+<td>18451317</td>
+<td>8035914</td>
+<td>14950086</td>
+<td>-1</td>
+<td>14848393</td>
+<td>48016</td>
+<td>14978524</td>
+<td>43080</td>
+</tr>
+<tr>
+<td>set</td>
+<td>23325</td>
+<td>373100</td>
+<td>352715</td>
+<td>17043</td>
+<td>4917</td>
+<td>373841</td>
+<td>18922</td>
+<td>373197</td>
+<td>57</td>
+<td>372896</td>
+<td>37</td>
+</tr>
+<tr>
+<td>get</td>
+<td>62</td>
+<td>90</td>
+<td>77</td>
+<td>48</td>
+<td>4413</td>
+<td>14</td>
+<td>16</td>
+<td>12</td>
+<td>9</td>
+<td>9</td>
+<td>7</td>
+</tr>
+</tbody></table>
+<img src="/2019/03/05/go-kv-databases-benchmark/hdd-nofsync-time.png" class="">
+
+<p>和吞吐率负相关，goleveldb例外。bbolt和kv删除的时候也很慢。</p>
+<h2 id="SSD-固态硬盘"><a href="#SSD-固态硬盘" class="headerlink" title="SSD 固态硬盘"></a>SSD 固态硬盘</h2><p>采用固态硬盘，我们期望写的性能能提升起来，看测试结果。</p>
+<p>10块 SSD, 型号:</p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br></pre></td><td class="code"><pre><span class="line">Vendor:               AVAGO</span><br><span class="line">Product:              AVAGO</span><br><span class="line">Revision:             4.66</span><br><span class="line">User Capacity:        298,999,349,248 bytes [298 GB]</span><br><span class="line"></span><br><span class="line">Device Speed: 6.0Gb/s</span><br><span class="line">Link Speed: 12.0Gb/s</span><br><span class="line">Media Type: Solid State Device</span><br></pre></td></tr></table></figure>
+
+<h3 id="不写盘-nofsync-1"><a href="#不写盘-nofsync-1" class="headerlink" title="不写盘(nofsync)"></a>不写盘(nofsync)</h3><p><strong>throughputs</strong></p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>badger</th>
+<th>bbolt</th>
+<th>bolt</th>
+<th>leveldb</th>
+<th>kv</th>
+<th>buntdb</th>
+<th>rocksdb</th>
+<th>btree</th>
+<th>btree&#x2F;memory</th>
+<th>map</th>
+<th>map&#x2F;memory</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>del</td>
+<td>83427</td>
+<td>3513</td>
+<td>2922</td>
+<td>164755</td>
+<td>7042</td>
+<td>187054</td>
+<td>611694</td>
+<td>359934</td>
+<td>787141</td>
+<td>617882</td>
+<td>1190171</td>
+</tr>
+<tr>
+<td>set</td>
+<td>76760</td>
+<td>12690</td>
+<td>13329</td>
+<td>128174</td>
+<td>3683</td>
+<td>109943</td>
+<td>463219</td>
+<td>185225</td>
+<td>633252</td>
+<td>215862</td>
+<td>833461</td>
+</tr>
+<tr>
+<td>get</td>
+<td>454835</td>
+<td>405501</td>
+<td>435838</td>
+<td>404430</td>
+<td>17736</td>
+<td>3054694</td>
+<td>1467525</td>
+<td>3555188</td>
+<td>4150152</td>
+<td>4706103</td>
+<td>4747594</td>
+</tr>
+<tr>
+<td>setmixed</td>
+<td>4566</td>
+<td>8324</td>
+<td>9083</td>
+<td>17123</td>
+<td>700</td>
+<td>14128</td>
+<td>145839</td>
+<td>29296</td>
+<td>40860</td>
+<td>50836</td>
+<td>49103</td>
+</tr>
+<tr>
+<td>getmixed</td>
+<td>395796</td>
+<td>72929</td>
+<td>234612</td>
+<td>264450</td>
+<td>13987</td>
+<td>282241</td>
+<td>1889387</td>
+<td>640031</td>
+<td>1014941</td>
+<td>1548680</td>
+<td>1973040</td>
+</tr>
+</tbody></table>
+<img src="/2019/03/05/go-kv-databases-benchmark/ssd-nofsync-throughputs.png" class="">
+
+<p>读写都很快，rocksdb表现依然很优秀。而buntdb的只读依然很快。因为没有同步落盘的操作。</p>
+<p>这个数据和前面的不写盘的数据不相同，是因为我换了一台有ssd的机器进行测试。</p>
+<p><strong>time (latency)</strong></p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>badger</th>
+<th>bbolt</th>
+<th>bolt</th>
+<th>leveldb</th>
+<th>kv</th>
+<th>buntdb</th>
+<th>rocksdb</th>
+<th>btree</th>
+<th>btree&#x2F;memory</th>
+<th>map</th>
+<th>map&#x2F;memory</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>set</td>
+<td>651</td>
+<td>3939</td>
+<td>3751</td>
+<td>390</td>
+<td>13573</td>
+<td>454</td>
+<td>107</td>
+<td>269</td>
+<td>78</td>
+<td>231</td>
+<td>59</td>
+</tr>
+<tr>
+<td>get</td>
+<td>109</td>
+<td>123</td>
+<td>114</td>
+<td>123</td>
+<td>2819</td>
+<td>16</td>
+<td>34</td>
+<td>14</td>
+<td>12</td>
+<td>10</td>
+<td>10</td>
+</tr>
+<tr>
+<td>setmixed</td>
+<td>218995</td>
+<td>120129</td>
+<td>110092</td>
+<td>58398</td>
+<td>1427908</td>
+<td>70777</td>
+<td>6856</td>
+<td>34134</td>
+<td>24473</td>
+<td>19670</td>
+<td>20365</td>
+</tr>
+<tr>
+<td>getmixed</td>
+<td>126</td>
+<td>685</td>
+<td>213</td>
+<td>189</td>
+<td>3574</td>
+<td>177</td>
+<td>26</td>
+<td>78</td>
+<td>49</td>
+<td>32</td>
+<td>25</td>
+</tr>
+<tr>
+<td>del</td>
+<td>599</td>
+<td>14232</td>
+<td>17107</td>
+<td>303</td>
+<td>7100</td>
+<td>267</td>
+<td>81</td>
+<td>138</td>
+<td>63</td>
+<td>80</td>
+<td>42</td>
+</tr>
+</tbody></table>
+<img src="/2019/03/05/go-kv-databases-benchmark/ssd-nofsync-time.png" class="">
+
+<h3 id="同步写盘-fsync-1"><a href="#同步写盘-fsync-1" class="headerlink" title="同步写盘(fsync)"></a>同步写盘(fsync)</h3><p><strong>throughputs</strong></p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>badger</th>
+<th>bbolt</th>
+<th>bolt</th>
+<th>leveldb</th>
+<th>kv</th>
+<th>buntdb</th>
+<th>rocksdb</th>
+<th>btree</th>
+<th>btree&#x2F;memory</th>
+<th>map</th>
+<th>map&#x2F;memory</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>set</td>
+<td>32124</td>
+<td>5413</td>
+<td>5623</td>
+<td>56968</td>
+<td>5123</td>
+<td>7052</td>
+<td>52700</td>
+<td>8065</td>
+<td>614477</td>
+<td>7841</td>
+<td>913575</td>
+</tr>
+<tr>
+<td>get</td>
+<td>439483</td>
+<td>336439</td>
+<td>291307</td>
+<td>635404</td>
+<td>5330</td>
+<td>1982160</td>
+<td>3246753</td>
+<td>3145643</td>
+<td>3512469</td>
+<td>3852080</td>
+<td>3629764</td>
+</tr>
+<tr>
+<td>getmixed</td>
+<td>129789</td>
+<td>222806</td>
+<td>252334</td>
+<td>609681</td>
+<td>4013</td>
+<td>86169</td>
+<td>3923107</td>
+<td>102087</td>
+<td>850051</td>
+<td>120716</td>
+<td>1495438</td>
+</tr>
+<tr>
+<td>setmixed</td>
+<td>4893</td>
+<td>4946</td>
+<td>4390</td>
+<td>5913</td>
+<td>203</td>
+<td>5083</td>
+<td>6276</td>
+<td>6033</td>
+<td>32896</td>
+<td>7291</td>
+<td>63406</td>
+</tr>
+<tr>
+<td>del</td>
+<td>38229</td>
+<td>6990</td>
+<td>5732</td>
+<td>66996</td>
+<td>7637</td>
+<td>18200</td>
+<td>65530</td>
+<td>17635</td>
+<td>868734</td>
+<td>17363</td>
+<td>956571</td>
+</tr>
+</tbody></table>
+<img src="/2019/03/05/go-kv-databases-benchmark/ssd-fsync-throughputs.png" class="">
+
+<p>在落盘的情况下，写操作有了大幅的提升。尤其是goleveldb和badger，但是rocksdb的读是远远领先于其它K&#x2F;V数据的(除了btree和map)。</p>
+<p><strong>time (latency)</strong></p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>badger</th>
+<th>bbolt</th>
+<th>bolt</th>
+<th>leveldb</th>
+<th>kv</th>
+<th>buntdb</th>
+<th>rocksdb</th>
+<th>btree</th>
+<th>btree&#x2F;memory</th>
+<th>map</th>
+<th>map&#x2F;memory</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>set</td>
+<td>1556</td>
+<td>9236</td>
+<td>8890</td>
+<td>877</td>
+<td>9758</td>
+<td>7089</td>
+<td>948</td>
+<td>6199</td>
+<td>81</td>
+<td>6376</td>
+<td>54</td>
+</tr>
+<tr>
+<td>get</td>
+<td>113</td>
+<td>148</td>
+<td>171</td>
+<td>78</td>
+<td>9379</td>
+<td>25</td>
+<td>15</td>
+<td>15</td>
+<td>14</td>
+<td>12</td>
+<td>13</td>
+</tr>
+<tr>
+<td>setmixed</td>
+<td>204372</td>
+<td>202173</td>
+<td>227763</td>
+<td>169098</td>
+<td>4914902</td>
+<td>196697</td>
+<td>159317</td>
+<td>165745</td>
+<td>30399</td>
+<td>137151</td>
+<td>15771</td>
+</tr>
+<tr>
+<td>getmixed</td>
+<td>385</td>
+<td>224</td>
+<td>198</td>
+<td>82</td>
+<td>12459</td>
+<td>580</td>
+<td>12</td>
+<td>489</td>
+<td>58</td>
+<td>414</td>
+<td>33</td>
+</tr>
+<tr>
+<td>del</td>
+<td>1307</td>
+<td>7152</td>
+<td>8721</td>
+<td>746</td>
+<td>6546</td>
+<td>2747</td>
+<td>763</td>
+<td>2835</td>
+<td>57</td>
+<td>2879</td>
+<td>52</td>
+</tr>
+</tbody></table>
+<img src="/2019/03/05/go-kv-databases-benchmark/ssd-fsync-throughputs.png" class="">
+
+
+<p>总的来说，rocksdb的表现不错。为了保证不丢数据，我们可能需要设置同步硬盘的参数，但是这可能影响写的性能，需要通过批量写和SSD来解决。<br>对badger有点小失望，当然它对SSD的优化还是很可以的，有可能测试大的数据的时候才能显示出来它的优势。<br>对于简单的场景，也可以采用btree、map这种简单的数据结构来实现，加上AOF,如果想减少AOF的大小，可以像redis一样合并AOF的操作，去掉无用的中间数据。</p>
+
+      
+    </div>
+    <footer class="article-footer">
+      
+
+      
+      <!-- <link rel="stylesheet" href="https://unpkg.com/gitalk/dist/gitalk.css">
+      <script src="https://unpkg.com/gitalk/dist/gitalk.min.js"></script> -->
+      <section id="comments">
+        <script src="https://utteranc.es/client.js"
+                repo="smallnest/gitalk"
+                issue-term="title"
+                theme="github-light"
+                crossorigin="anonymous"
+                async>
+        </script>
+        <!-- <div id="gitalk-container"></div>
+        <script type="text/javascript">
+          var gitalkOpts = {
+            id: '2019/03/05/go-kv-databases-benchmark/',
+            owner: 'smallnest',
+            repo: 'gitalk',
+            title: 'Go 生态圈的 K/V 数据库 benchmark',
+            body: 'https://colobu.com/2019/03/05/go-kv-databases-benchmark/index.html',
+            clientID: 'bc02724130ed5b7ee275',
+            clientSecret: '68cb0bae2f93a8b88b09e0eb9b08c844b06a9047',
+            admin: ['smallnest'],
+            distractionFreeMode: false
+          };
+
+          const gitalk = new Gitalk(gitalkOpts)
+          gitalk.render('gitalk-container')
+        </script> -->
+        <noscript> 为正常使用评论功能请激活JavaScript</noscript>
+      </section>
+
+      
+
+    </footer>
+  </div>
+  
+  
+<nav id="article-nav">
+  
+    <a href="/2019/04/16/Reading-and-Writing-Redis-Protocol-in-Go/" id="article-nav-newer" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">Newer</strong>
+      <div class="article-nav-title">
+        
+          [译]使用 Go 语言读写Redis协议
+        
+      </div>
+    </a>
+  
+  
+    <a href="/2019/02/28/1m-go-tcp-connection-3/" id="article-nav-older" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">Older</strong>
+      <div class="article-nav-title">百万 Go TCP 连接的思考3: 正常连接下的吞吐率和延迟</div>
+    </a>
+  
+</nav>
+
+  
+</article></section>
+        
+          <aside id="sidebar">
+  
+    <div class="widget-wrap">
+  <h3 class="widget-title">访问者来源</h3>
+  <div class="widget">
+    <script type="text/javascript" id="mmvst_globe" src="//mapmyvisitors.com/globe.js?d=33a_ORm-dIXRKRAG9KqfzawkYSIwGkaxOK0nA3Ha9Us"></script>
+  </div>
+</div>
+
+<div class="widget-wrap">
+  <h3 class="widget-title">微信公众号</h3>
+  <div class="widget">
+    <img width="100%" src="/images/widgets/gopatterns.jpg">
+  </div>
+</div>
+
+<div class="widget-wrap">
+  <h3 class="widget-title">极客时间专栏</h3>
+  <div class="widget">
+    <a href="https://time.geekbang.org/column/intro/100061801">
+      <img width="100%" src="/images/widgets/geekbang.png">
+    </a>
+    <a href="https://time.geekbang.org/column/intro/100953201">
+      <img width="100%" src="/images/widgets/geekbang2.png">
+    </a>
+  </div>
+</div>
+
+<div class="widget-wrap">
+    <h3 class="widget-title">出版图书</h3>
+    <div class="widget">
+      <a href="https://cpgo.colobu.com/">
+        <img width="100%" src="/cpgolang/cpgo.png">
+      </a>
+    </div>
+    <div class="widget">
+      <a href="https://www.books.com.tw/products/0010991366">
+        <img width="100%" src="/cpgolang/cpgo2.jpg">
+      </a>
+    </div>
+    <div class="widget">
+      <a href="https://item.jd.com/14347716.html">
+        <img width="100%" src="/100gomistakes/cover.png">
+      </a>
+    </div>
+    <div class="widget">
+      <a href="/ScalaCollectionsCookbook/">
+        <img width="100%" src="/ScalaCollectionsCookbook/scala_collections_cookbook.jpg">
+        <img width="100%" src="/ScalaCollectionsCookbook/scala_collections_cookbook_tw.png">
+      </a>
+    </div>
+</div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">分类</h3>
+    <div class="widget">
+      <ul class="category-list"><li class="category-list-item"><a class="category-list-link" href="/categories/Android/">Android</a><span class="category-list-count">12</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/C/">C++</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/DOTNET/">DOTNET</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Docker/">Docker</a><span class="category-list-count">5</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Go/">Go</a><span class="category-list-count">301</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Java/">Java</a><span class="category-list-count">64</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Linux/">Linux</a><span class="category-list-count">8</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Rust/">Rust</a><span class="category-list-count">16</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Scala/">Scala</a><span class="category-list-count">18</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/go/">go</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/k8s/">k8s</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/rust/">rust</a><span class="category-list-count">10</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E5%88%86%E4%BA%AB/">分享</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E5%89%8D%E7%AB%AF%E5%BC%80%E5%8F%91/">前端开发</a><span class="category-list-count">18</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E5%8C%BA%E5%9D%97%E9%93%BE/">区块链</a><span class="category-list-count">8</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E5%A4%A7%E6%95%B0%E6%8D%AE/">大数据</a><span class="category-list-count">60</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E5%B7%A5%E5%85%B7/">工具</a><span class="category-list-count">28</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E6%95%B0%E6%8D%AE%E5%BA%93/">数据库</a><span class="category-list-count">3</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E6%9E%B6%E6%9E%84/">架构</a><span class="category-list-count">27</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E7%AE%97%E6%B3%95/">算法</a><span class="category-list-count">4</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E7%AE%A1%E7%90%86/">管理</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E7%BD%91%E7%BB%9C%E7%BC%96%E7%A8%8B/">网络编程</a><span class="category-list-count">13</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E8%AE%BE%E8%AE%A1%E6%A8%A1%E5%BC%8F/">设计模式</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E8%AF%BB%E4%B9%A6%E7%AC%94%E8%AE%B0/">读书笔记</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E8%BF%90%E7%BB%B4/">运维</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E9%AB%98%E5%B9%B6%E5%8F%91%E7%BC%96%E7%A8%8B/">高并发编程</a><span class="category-list-count">20</span></li></ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">标签云</h3>
+    <div class="widget tagcloud">
+      <a href="/tags/AI/" style="font-size: 20px;">AI</a> <a href="/tags/Android/" style="font-size: 13.64px;">Android</a> <a href="/tags/ApacheBench/" style="font-size: 10.91px;">ApacheBench</a> <a href="/tags/Bower/" style="font-size: 10px;">Bower</a> <a href="/tags/C/" style="font-size: 10px;">C#</a> <a href="/tags/CDN/" style="font-size: 10px;">CDN</a> <a href="/tags/CQRS/" style="font-size: 10px;">CQRS</a> <a href="/tags/CRC/" style="font-size: 10px;">CRC</a> <a href="/tags/CSS/" style="font-size: 10.91px;">CSS</a> <a href="/tags/CompletableFuture/" style="font-size: 10px;">CompletableFuture</a> <a href="/tags/Comsat/" style="font-size: 10px;">Comsat</a> <a href="/tags/Curator/" style="font-size: 17.27px;">Curator</a> <a href="/tags/DSL/" style="font-size: 10px;">DSL</a> <a href="/tags/Disruptor/" style="font-size: 10px;">Disruptor</a> <a href="/tags/Docker/" style="font-size: 10.91px;">Docker</a> <a href="/tags/Ember/" style="font-size: 10.91px;">Ember</a> <a href="/tags/FastJson/" style="font-size: 10px;">FastJson</a> <a href="/tags/Fiber/" style="font-size: 10px;">Fiber</a> <a href="/tags/GAE/" style="font-size: 10px;">GAE</a> <a href="/tags/GC/" style="font-size: 11.82px;">GC</a> <a href="/tags/Gnuplot/" style="font-size: 10px;">Gnuplot</a> <a href="/tags/Go/" style="font-size: 15.45px;">Go</a> <a href="/tags/Gradle/" style="font-size: 10px;">Gradle</a> <a href="/tags/Grunt/" style="font-size: 10px;">Grunt</a> <a href="/tags/Gulp/" style="font-size: 10px;">Gulp</a> <a href="/tags/Hadoop/" style="font-size: 10px;">Hadoop</a> <a href="/tags/Hazelcast/" style="font-size: 10px;">Hazelcast</a> <a href="/tags/IPFS/" style="font-size: 10px;">IPFS</a> <a href="/tags/Ignite/" style="font-size: 10px;">Ignite</a> <a href="/tags/JVM/" style="font-size: 10px;">JVM</a> <a href="/tags/Java/" style="font-size: 14.55px;">Java</a> <a href="/tags/Kafka/" style="font-size: 18.18px;">Kafka</a> <a href="/tags/Lambda/" style="font-size: 12.73px;">Lambda</a> <a href="/tags/Linux/" style="font-size: 11.82px;">Linux</a> <a href="/tags/LongAdder/" style="font-size: 10px;">LongAdder</a> <a href="/tags/MathJax/" style="font-size: 10px;">MathJax</a> <a href="/tags/Maven/" style="font-size: 10.91px;">Maven</a> <a href="/tags/Memcached/" style="font-size: 10px;">Memcached</a> <a href="/tags/Metrics/" style="font-size: 10px;">Metrics</a> <a href="/tags/Mongo/" style="font-size: 11.82px;">Mongo</a> <a href="/tags/Netty/" style="font-size: 13.64px;">Netty</a> <a href="/tags/Nginx/" style="font-size: 10px;">Nginx</a> <a href="/tags/Node/" style="font-size: 10px;">Node</a> <a href="/tags/OAuth/" style="font-size: 10px;">OAuth</a> <a href="/tags/Performance/" style="font-size: 10px;">Performance</a> <a href="/tags/Quartz/" style="font-size: 10px;">Quartz</a> <a href="/tags/Quasar/" style="font-size: 10px;">Quasar</a> <a href="/tags/RPC/" style="font-size: 10px;">RPC</a> <a href="/tags/RTMP/" style="font-size: 10px;">RTMP</a> <a href="/tags/Regexp/" style="font-size: 10px;">Regexp</a> <a href="/tags/Round-Robin/" style="font-size: 10px;">Round-Robin</a> <a href="/tags/Rust/" style="font-size: 10.91px;">Rust</a> <a href="/tags/Sass/" style="font-size: 10px;">Sass</a> <a href="/tags/Scala/" style="font-size: 15.45px;">Scala</a> <a href="/tags/Spark/" style="font-size: 16.36px;">Spark</a> <a href="/tags/Spring/" style="font-size: 13.64px;">Spring</a> <a href="/tags/StampedLock/" style="font-size: 10px;">StampedLock</a> <a href="/tags/TCP-IP/" style="font-size: 10.91px;">TCP/IP</a> <a href="/tags/WebSocket/" style="font-size: 10px;">WebSocket</a> <a href="/tags/Yeoman/" style="font-size: 10px;">Yeoman</a> <a href="/tags/ZooKeeper/" style="font-size: 19.09px;">ZooKeeper</a> <a href="/tags/aio/" style="font-size: 10px;">aio</a> <a href="/tags/akka/" style="font-size: 10.91px;">akka</a> <a href="/tags/android/" style="font-size: 10px;">android</a> <a href="/tags/bbc/" style="font-size: 10px;">bbc</a> <a href="/tags/benchmark/" style="font-size: 10px;">benchmark</a> <a href="/tags/bloom-filter/" style="font-size: 10px;">bloom filter</a> <a href="/tags/bootstrap/" style="font-size: 10px;">bootstrap</a> <a href="/tags/buffer/" style="font-size: 10px;">buffer</a> <a href="/tags/cache/" style="font-size: 10px;">cache</a> <a href="/tags/cgroups/" style="font-size: 10px;">cgroups</a> <a href="/tags/css/" style="font-size: 10.91px;">css</a> <a href="/tags/d3-js/" style="font-size: 10px;">d3.js</a> <a href="/tags/design-pattern/" style="font-size: 10px;">design pattern</a> <a href="/tags/disruptor/" style="font-size: 10.91px;">disruptor</a> <a href="/tags/dns/" style="font-size: 10px;">dns</a> <a href="/tags/ebpf/" style="font-size: 10px;">ebpf</a> <a href="/tags/elasticsearch/" style="font-size: 10.91px;">elasticsearch</a> <a href="/tags/epoll/" style="font-size: 10px;">epoll</a> <a href="/tags/gRPC/" style="font-size: 11.82px;">gRPC</a> <a href="/tags/gitbook/" style="font-size: 10px;">gitbook</a> <a href="/tags/go/" style="font-size: 12.73px;">go</a> <a href="/tags/gulp/" style="font-size: 10px;">gulp</a> <a href="/tags/hexo/" style="font-size: 10.91px;">hexo</a> <a href="/tags/html5/" style="font-size: 10px;">html5</a> <a href="/tags/javascript/" style="font-size: 11.82px;">javascript</a> <a href="/tags/kafka/" style="font-size: 10px;">kafka</a> <a href="/tags/kernel/" style="font-size: 10px;">kernel</a> <a href="/tags/keytool/" style="font-size: 10px;">keytool</a> <a href="/tags/libra/" style="font-size: 11.82px;">libra</a> <a href="/tags/linux/" style="font-size: 10px;">linux</a> <a href="/tags/maven/" style="font-size: 10px;">maven</a> <a href="/tags/memcached/" style="font-size: 10px;">memcached</a> <a href="/tags/mllib/" style="font-size: 10px;">mllib</a> <a href="/tags/mongo/" style="font-size: 11.82px;">mongo</a> <a href="/tags/multicast/" style="font-size: 10px;">multicast</a> <a href="/tags/mysql/" style="font-size: 10px;">mysql</a> <a href="/tags/netty/" style="font-size: 11.82px;">netty</a> <a href="/tags/nginx/" style="font-size: 10.91px;">nginx</a> <a href="/tags/node-js/" style="font-size: 10px;">node.js</a> <a href="/tags/npm/" style="font-size: 10px;">npm</a> <a href="/tags/nsq/" style="font-size: 10px;">nsq</a> <a href="/tags/p2p/" style="font-size: 10px;">p2p</a> <a href="/tags/protobuf/" style="font-size: 10.91px;">protobuf</a> <a href="/tags/quasar/" style="font-size: 10px;">quasar</a> <a href="/tags/rate-limiting/" style="font-size: 10px;">rate limiting</a> <a href="/tags/recommendation/" style="font-size: 10px;">recommendation</a> <a href="/tags/rust/" style="font-size: 10px;">rust</a> <a href="/tags/rxjava/" style="font-size: 10px;">rxjava</a> <a href="/tags/slack/" style="font-size: 10px;">slack</a> <a href="/tags/sortpom/" style="font-size: 10px;">sortpom</a> <a href="/tags/spark/" style="font-size: 10px;">spark</a> <a href="/tags/spray/" style="font-size: 10px;">spray</a> <a href="/tags/sysctl/" style="font-size: 10px;">sysctl</a> <a href="/tags/trace/" style="font-size: 10px;">trace</a> <a href="/tags/undertow/" style="font-size: 10px;">undertow</a> <a href="/tags/validation/" style="font-size: 10px;">validation</a> <a href="/tags/virtualbox/" style="font-size: 10px;">virtualbox</a> <a href="/tags/vscode/" style="font-size: 11.82px;">vscode</a> <a href="/tags/%E4%B8%80%E8%87%B4%E6%80%A7%E5%93%88%E5%B8%8C/" style="font-size: 10px;">一致性哈希</a> <a href="/tags/%E5%8D%8F%E5%90%8C%E8%BF%87%E6%BB%A4%EF%BC%8Cmahout/" style="font-size: 10.91px;">协同过滤，mahout</a> <a href="/tags/%E5%9F%BA%E6%95%B0%E4%BC%B0%E8%AE%A1/" style="font-size: 10px;">基数估计</a> <a href="/tags/%E5%BA%8F%E5%88%97%E5%8C%96/" style="font-size: 10px;">序列化</a> <a href="/tags/%E5%BC%82%E6%AD%A5/" style="font-size: 10px;">异步</a> <a href="/tags/%E5%BE%AE%E6%9C%8D%E5%8A%A1/" style="font-size: 10.91px;">微服务</a> <a href="/tags/%E6%8E%A7%E4%BB%B6/" style="font-size: 10px;">控件</a> <a href="/tags/%E6%8E%A8%E8%8D%90%E7%B3%BB%E7%BB%9F/" style="font-size: 11.82px;">推荐系统</a> <a href="/tags/%E6%9E%B6%E6%9E%84/" style="font-size: 11.82px;">架构</a> <a href="/tags/%E7%AE%97%E6%B3%95/" style="font-size: 10px;">算法</a> <a href="/tags/%E7%BB%84%E4%BB%B6/" style="font-size: 10px;">组件</a> <a href="/tags/%E7%BB%9F%E8%AE%A1%E6%8C%87%E6%A0%87/" style="font-size: 10px;">统计指标</a> <a href="/tags/%E7%BD%91%E7%BB%9C/" style="font-size: 12.73px;">网络</a> <a href="/tags/%E8%BD%AE%E8%AF%A2/" style="font-size: 10px;">轮询</a>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">归档</h3>
+    <div class="widget">
+      <ul class="archive-list"><li class="archive-list-item"><a class="archive-list-link" href="/archives/2026/06/">六月 2026</a><span class="archive-list-count">14</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2026/05/">五月 2026</a><span class="archive-list-count">18</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2026/04/">四月 2026</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2026/01/">一月 2026</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2025/12/">十二月 2025</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2025/11/">十一月 2025</a><span class="archive-list-count">9</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2025/10/">十月 2025</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2025/09/">九月 2025</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2025/08/">八月 2025</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2025/07/">七月 2025</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2025/06/">六月 2025</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2025/05/">五月 2025</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2025/02/">二月 2025</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2025/01/">一月 2025</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2024/11/">十一月 2024</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2024/10/">十月 2024</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2024/08/">八月 2024</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2024/06/">六月 2024</a><span class="archive-list-count">11</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2024/05/">五月 2024</a><span class="archive-list-count">9</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2024/04/">四月 2024</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2024/03/">三月 2024</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2024/02/">二月 2024</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2024/01/">一月 2024</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/12/">十二月 2023</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/11/">十一月 2023</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/10/">十月 2023</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/09/">九月 2023</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/08/">八月 2023</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/07/">七月 2023</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/06/">六月 2023</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/05/">五月 2023</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/04/">四月 2023</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/03/">三月 2023</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/01/">一月 2023</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/12/">十二月 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/11/">十一月 2022</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/10/">十月 2022</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/09/">九月 2022</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/08/">八月 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/07/">七月 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/06/">六月 2022</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/05/">五月 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/04/">四月 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/03/">三月 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/02/">二月 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/01/">一月 2022</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/12/">十二月 2021</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/11/">十一月 2021</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/10/">十月 2021</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/08/">八月 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/07/">七月 2021</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/06/">六月 2021</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/05/">五月 2021</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/04/">四月 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/03/">三月 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/02/">二月 2021</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/01/">一月 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/12/">十二月 2020</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/11/">十一月 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/09/">九月 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/08/">八月 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/07/">七月 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/06/">六月 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/05/">五月 2020</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/04/">四月 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/03/">三月 2020</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/02/">二月 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/01/">一月 2020</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/12/">十二月 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/11/">十一月 2019</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/10/">十月 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/09/">九月 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/08/">八月 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/07/">七月 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/06/">六月 2019</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/05/">五月 2019</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/04/">四月 2019</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/03/">三月 2019</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/02/">二月 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/01/">一月 2019</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/12/">十二月 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/11/">十一月 2018</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/10/">十月 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/09/">九月 2018</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/08/">八月 2018</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/07/">七月 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/06/">六月 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/05/">五月 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/04/">四月 2018</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/03/">三月 2018</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/02/">二月 2018</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/01/">一月 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/12/">十二月 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/11/">十一月 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/10/">十月 2017</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/09/">九月 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/08/">八月 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/07/">七月 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/06/">六月 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/05/">五月 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/04/">四月 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/03/">三月 2017</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/02/">二月 2017</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/01/">一月 2017</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/12/">十二月 2016</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/11/">十一月 2016</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/10/">十月 2016</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/09/">九月 2016</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/08/">八月 2016</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/07/">七月 2016</a><span class="archive-list-count">11</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/06/">六月 2016</a><span class="archive-list-count">14</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/05/">五月 2016</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/04/">四月 2016</a><span class="archive-list-count">14</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/03/">三月 2016</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/02/">二月 2016</a><span class="archive-list-count">8</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/01/">一月 2016</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/12/">十二月 2015</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/11/">十一月 2015</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/10/">十月 2015</a><span class="archive-list-count">9</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/09/">九月 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/08/">八月 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/07/">七月 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/06/">六月 2015</a><span class="archive-list-count">8</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/05/">五月 2015</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/04/">四月 2015</a><span class="archive-list-count">15</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/03/">三月 2015</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/02/">二月 2015</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/01/">一月 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/12/">十二月 2014</a><span class="archive-list-count">28</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/11/">十一月 2014</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/10/">十月 2014</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/09/">九月 2014</a><span class="archive-list-count">28</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/08/">八月 2014</a><span class="archive-list-count">19</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/07/">七月 2014</a><span class="archive-list-count">1</span></li></ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">近期文章</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+            <a href="/2026/06/21/how-llm-actually-works/">LLM 究竟是如何工作的？</a>
+          </li>
+        
+          <li>
+            <a href="/2026/06/21/go-experimental-features-explained/">Go 实验特性详解</a>
+          </li>
+        
+          <li>
+            <a href="/2026/06/21/amd64-microarchitecture-level-go-performance/">amd64 微架构级别对 Go 程序性能提升多少？</a>
+          </li>
+        
+          <li>
+            <a href="/2026/06/17/loop-engineering-batch-8-issues-kuiniu-tool/">Loop Engineering 实践：一次批量实现 8 个 issue，完成夔牛工具的开发</a>
+          </li>
+        
+          <li>
+            <a href="/2026/06/17/loop-engineering-rdma-port-to-go-239-yuan/">Loop Engineering 实践：我把 RDMA 开发库移植到 Go 语言，花费 239 块钱</a>
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">友情链接</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+			 
+            <a href="http://stackshare.io" target="_blank">技术栈</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://toutiao.io/" target="_blank">开发者头条</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://weekly.manong.io/issues/" target="_blank">码农周刊</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.tuicool.com/mags" target="_blank">编程狂人周刊</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.importnew.com/" target="_blank">importnew</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://ifeve.com/" target="_blank">并发编程网</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://github.com" target="_blank">github</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://stackoverflow.com/" target="_blank">stackoverflow</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.javacodegeeks.com/" target="_blank">javacodegeeks</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.infoq.com/" target="_blank">infoq</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.dzone.com/links/index.html" target="_blank">dzone</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://oj.leetcode.com/problems/" target="_blank">leetcode</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://tutorials.jenkov.com" target="_blank">jenkov</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://howtodoinjava.com" target="_blank">HowToDoInJava</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://java-design-patterns.com/patterns/" target="_blank">java design patterns</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://medium.com/netflix-techblog" target="_blank">Netflix技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://www.techiedelight.com" target="_blank">Techie Delight</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://engineering.linkedin.com/blog" target="_blank">Linkedin技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://blogs.dropbox.com/tech/" target="_blank">Dropbox技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://code.fb.com" target="_blank">Facebook技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://jm.taobao.org" target="_blank">淘宝中间件团队</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://tech.meituan.com" target="_blank">美团技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://blogs.360.cn" target="_blank">360技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://xiaomi-info.github.io" target="_blank">小米信息部技术团队</a>
+			
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+      
+
+  
+</aside>
+        
+      </div>
+      <footer id="footer">
+  
+  <div class="outer">
+    <div id="footer-info" class="inner">
+      &copy; 2026 smallnest<br>
+	  Powered by <a href="http://hexo.io/" target="_blank">Hexo</a>
+    </div>
+  </div>
+</footer>
+    </div>
+    <nav id="mobile-nav">
+  
+    
+      <a href="/" class="mobile-nav-link"><i class="fa fa-home">&nbsp;</i>首页</a>
+    
+  
+    
+      <a href="/archives" class="mobile-nav-link"><i class="fa fa-regular fa-folder-open">&nbsp;</i>归档</a>
+    
+  
+    
+      <a href="https://github.com/smallnest" class="mobile-nav-link"><i class="fa fa-brands fa-github-alt">&nbsp;</i>github</a>
+    
+  
+    
+      <a class="mobile-nav-link" href="#"><i class="fa fa-brands fa-golang">&nbsp;</i>Go学习资源</a>
+    
+      
+            <a class="mobile-nav-link" href="/goasm">&nbsp;&nbsp;<i class="fa fa-brands fa-golang">&nbsp;</i>Go汇编示例</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="https://gowebexamples.com">&nbsp;&nbsp;<i class="fa fa-brands fa-golang">&nbsp;</i>Go Web开发示例</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://go-database-sql.org">&nbsp;&nbsp;<i class="fa fa-brands fa-golang">&nbsp;</i>Go 数据库开发教程</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="https://colobu.com/gotips/">&nbsp;&nbsp;<i class="fa fa-brands fa-golang">&nbsp;</i>Go 语言编程技巧</a>
+          
+          
+    
+      
+            
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://rpcx.io">&nbsp;&nbsp;<i class="fa ">&nbsp;</i>RPCX官网</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://cn.doc.rpcx.io">&nbsp;&nbsp;<i class="fa ">&nbsp;</i>RPC开发指南</a>
+          
+          
+    
+    
+  
+    
+      <a class="mobile-nav-link" href="#"><i class="fa fa-brands fa-rust">&nbsp;</i>Rust学习资源</a>
+    
+      
+            <a class="mobile-nav-link" href="/perf-book">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>Rust高性能编程指南</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/rust100">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>100个练习题学习Rust</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/atomics">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>Rust原子操作和锁</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/effective-rust">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>高效Rust编程</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/thebook">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>Rust程序设计语言</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/nomicon">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>Rust死灵书</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/rust-reference">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>Rust参考手册</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/tlborm">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>Rust宏小册</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/async-book">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>Rust异步编程书</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/rust-by-example">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>通过例子学Rust</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/api-guidelines">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>Rust API 编写指南</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/comprehensive-rust">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>全面Rust课程</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/easy-rust">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>简单英语学Rust</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/rust-patterns">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>Rust设计模式</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/2020/03/05/A-half-hour-to-learn-Rust/">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>半小时学会Rust</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/rust-cookbook">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>Rust实用指南(cookbook)</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/rust-rand">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>Rust随机库</a>
+          
+          
+    
+      
+            
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="https://rpcx.io/r/E6v8U">&nbsp;&nbsp;<i class="fa ">&nbsp;</i>Rust for the Polyglot Programmer</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="https://rpcx.io/r/oC5ii">&nbsp;&nbsp;<i class="fa ">&nbsp;</i>LifetimeKata</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="https://tfpk.github.io/macrokata/">&nbsp;&nbsp;<i class="fa ">&nbsp;</i>macrokata</a>
+          
+          
+    
+    
+  
+    
+      <a class="mobile-nav-link" href="#"><i class="fa ">&nbsp;</i>出版书籍</a>
+    
+      
+            <a class="mobile-nav-link" href="/ScalaCollectionsCookbook">&nbsp;&nbsp;<i class="fa ">&nbsp;</i>Scala集合技术手册（简/繁）</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="https://cpgo.colobu.com/">&nbsp;&nbsp;<i class="fa ">&nbsp;</i>深入理解Go并发编程（简/繁）</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="https://item.jd.com/14347716.html">&nbsp;&nbsp;<i class="fa ">&nbsp;</i>100个Go语言典型错误</a>
+          
+          
+    
+    
+  
+    
+      <a href="/ScalaCollectionsCookbook" class="mobile-nav-link"><i class="fa fa-solid fa-book">&nbsp;</i>Scala集合技术手册</a>
+    
+  
+    
+      <a href="/about" class="mobile-nav-link"><i class="fa fa-regular fa-address-card">&nbsp;</i>关于</a>
+    
+  
+</nav>
+    
+<script src="//cdn.staticfile.org/jquery/1.11.1/jquery.min.js"></script>
+<script src="//cdn.bootcss.com/jquery.lazyload/1.9.1/jquery.lazyload.min.js"></script>
+
+<script src="//cdnjs.cloudflare.com/ajax/libs/fancybox/3.2.5/jquery.fancybox.min.js"></script>
+
+
+
+<script src="/js/script.js"></script>
+
+<!-- mathjax config similar to math.stackexchange -->
+<script type="text/x-mathjax-config">
+  MathJax.Hub.Config({
+    tex2jax: {
+      inlineMath: [ ['$','$'], ["\\(","\\)"] ],
+      processEscapes: true,
+      skipTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code']
+    }
+  });
+  MathJax.Hub.Queue(function() {
+      var all = MathJax.Hub.getAllJax(), i;
+      for(i=0; i < all.length; i += 1) {
+        all[i].SourceElement().parentNode.className += ' has-jax';
+      }
+  });
+</script>
+<script type="text/javascript" src="//cdn.bootcss.com/mathjax/2.6.0-beta.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML">
+</script>
+
+<div id="totop" style="position:fixed;bottom:150px;right:10px;cursor: pointer;z-index: 2000;">
+	<a title="返回顶部"><img src="/images/scrollup.png"/></a>
+</div>
+
+<script src="/js/totop.js"></script>
+
+
+
+
+<script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "//hm.baidu.com/hm.js?e085d87993250aab11f3e0c15f1c2785";
+  var s = document.getElementsByTagName("script")[0]; 
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+
+
+  </div>
+</body>
+</html>

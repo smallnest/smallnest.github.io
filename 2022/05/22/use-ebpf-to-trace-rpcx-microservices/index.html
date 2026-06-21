@@ -1,0 +1,1049 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset="utf-8">
+  
+  <title>使用ebpf跟踪rpcx微服务</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+  <meta name="description" content="ebpf是一种创新的革命性技术，它能在内核中运行沙箱程序， 而无需修改内核源码或者加载内核模块。将 Linux 内核变成可编程之后，就能基于现有的（而非增加新的）抽象层来打造更加智能、 功能更加丰富的基础设施软件，而不会增加系统的复杂度，也不会牺牲执行效率和安全性。 BPF的第一个版本在1994年问世。我们在使用tcpdump工具编写规则的时候其实就使用到它了，该工具用于查看或”嗅探”网络数据包。">
+<meta property="og:type" content="article">
+<meta property="og:title" content="使用ebpf跟踪rpcx微服务">
+<meta property="og:url" content="https://colobu.com/2022/05/22/use-ebpf-to-trace-rpcx-microservices/index.html">
+<meta property="og:site_name" content="鸟窝">
+<meta property="og:description" content="ebpf是一种创新的革命性技术，它能在内核中运行沙箱程序， 而无需修改内核源码或者加载内核模块。将 Linux 内核变成可编程之后，就能基于现有的（而非增加新的）抽象层来打造更加智能、 功能更加丰富的基础设施软件，而不会增加系统的复杂度，也不会牺牲执行效率和安全性。 BPF的第一个版本在1994年问世。我们在使用tcpdump工具编写规则的时候其实就使用到它了，该工具用于查看或”嗅探”网络数据包。">
+<meta property="og:locale" content="zh_CN">
+<meta property="og:image" content="https://colobu.com/2022/05/22/use-ebpf-to-trace-rpcx-microservices/ebpf.png">
+<meta property="og:image" content="https://colobu.com/2022/05/22/use-ebpf-to-trace-rpcx-microservices/functions.png">
+<meta property="og:image" content="https://colobu.com/2022/05/22/use-ebpf-to-trace-rpcx-microservices/bcc_tracing_tools_early2019.png">
+<meta property="og:image" content="https://colobu.com/2022/05/22/use-ebpf-to-trace-rpcx-microservices/bpftrace_tools_early2019.png">
+<meta property="article:published_time" content="2022-05-22T08:34:29.000Z">
+<meta property="article:modified_time" content="2026-06-21T09:09:12.762Z">
+<meta property="article:author" content="smallnest">
+<meta property="article:tag" content="ebpf">
+<meta property="article:tag" content="go">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:image" content="https://colobu.com/2022/05/22/use-ebpf-to-trace-rpcx-microservices/ebpf.png">
+  
+  <link rel="alternative" href="/atom.xml" title="鸟窝" type="application/atom+xml">
+  
+  
+  <link rel="icon" href="/favicon.png">
+  
+  
+<link rel="stylesheet" href="/css/style.css">
+
+  <link href="//cdn.bootcdn.net/ajax/libs/font-awesome/6.6.0/css/all.min.css" rel="stylesheet">
+  
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/fancybox/3.2.5/jquery.fancybox.min.css"
+    media="screen" type="text/css">
+  
+  <link rel="stylesheet" href="//cdnjs.cloudflare.com/ajax/libs/animate.css/3.1.1/animate.min.css" media="screen"
+    type="text/css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/tonsky/FiraCode@1.207/distr/fira_code.css">
+<meta name="generator" content="Hexo 8.1.2"></head>
+<body>
+  <div id="container">
+    <div id="wrap">
+      <header id="header">
+  <div id="banner"></div>
+  <div id="header-outer" class="outer">
+    <div id="header-title" class="inner">
+      <h1 id="logo-wrap" class="animated bounceInLeft">
+        <a href="/" id="logo">鸟窝</a>
+      </h1>
+      
+    </div>
+    <div id="header-inner" class="inner">
+      <nav id="main-nav">
+        <a id="main-nav-toggle" class="nav-icon"></a>
+        
+          
+            <a class="main-nav-link" href="/"><i class="fa fa-home">&nbsp;</i>首页</a>
+          
+          
+          
+            <a class="main-nav-link" href="/archives"><i class="fa fa-regular fa-folder-open">&nbsp;</i>归档</a>
+          
+          
+          
+            <a class="main-nav-link" href="https://github.com/smallnest"><i class="fa fa-brands fa-github-alt">&nbsp;</i>github</a>
+          
+          
+          
+            <div class="dropdown main-nav-link"><a class="main-nav-link" href="#"><i class="fa fa-brands fa-golang">&nbsp;</i>Go学习资源</a>
+              <div class="dropdown-content">
+          
+            
+              <a href="/goasm"><i class="fa fa-brands fa-golang"></i>&nbsp;Go汇编示例</a>
+            
+                
+          
+            
+              <a href="https://gowebexamples.com"><i class="fa fa-brands fa-golang"></i>&nbsp;Go Web开发示例</a>
+            
+                
+          
+            
+              <a href="http://go-database-sql.org"><i class="fa fa-brands fa-golang"></i>&nbsp;Go 数据库开发教程</a>
+            
+                
+          
+            
+              <a href="https://colobu.com/gotips/"><i class="fa fa-brands fa-golang"></i>&nbsp;Go 语言编程技巧</a>
+            
+                
+          
+            
+              <hr>
+            
+                
+          
+            
+              <a href="http://rpcx.io"><i class="fa "></i>&nbsp;RPCX官网</a>
+            
+                
+          
+            
+              <a href="http://cn.doc.rpcx.io"><i class="fa "></i>&nbsp;RPC开发指南</a>
+            
+                
+          
+          </div>
+        </div>
+          
+          
+          
+            <div class="dropdown main-nav-link"><a class="main-nav-link" href="#"><i class="fa fa-brands fa-rust">&nbsp;</i>Rust学习资源</a>
+              <div class="dropdown-content">
+          
+            
+              <a href="/perf-book"><i class="fa fa-brands fa-rust"></i>&nbsp;Rust高性能编程指南</a>
+            
+                
+          
+            
+              <a href="/rust100"><i class="fa fa-brands fa-rust"></i>&nbsp;100个练习题学习Rust</a>
+            
+                
+          
+            
+              <a href="/atomics"><i class="fa fa-brands fa-rust"></i>&nbsp;Rust原子操作和锁</a>
+            
+                
+          
+            
+              <a href="/effective-rust"><i class="fa fa-brands fa-rust"></i>&nbsp;高效Rust编程</a>
+            
+                
+          
+            
+              <a href="/thebook"><i class="fa fa-brands fa-rust"></i>&nbsp;Rust程序设计语言</a>
+            
+                
+          
+            
+              <a href="/nomicon"><i class="fa fa-brands fa-rust"></i>&nbsp;Rust死灵书</a>
+            
+                
+          
+            
+              <a href="/rust-reference"><i class="fa fa-brands fa-rust"></i>&nbsp;Rust参考手册</a>
+            
+                
+          
+            
+              <a href="/tlborm"><i class="fa fa-brands fa-rust"></i>&nbsp;Rust宏小册</a>
+            
+                
+          
+            
+              <a href="/async-book"><i class="fa fa-brands fa-rust"></i>&nbsp;Rust异步编程书</a>
+            
+                
+          
+            
+              <a href="/rust-by-example"><i class="fa fa-brands fa-rust"></i>&nbsp;通过例子学Rust</a>
+            
+                
+          
+            
+              <a href="/api-guidelines"><i class="fa fa-brands fa-rust"></i>&nbsp;Rust API 编写指南</a>
+            
+                
+          
+            
+              <a href="/comprehensive-rust"><i class="fa fa-brands fa-rust"></i>&nbsp;全面Rust课程</a>
+            
+                
+          
+            
+              <a href="/easy-rust"><i class="fa fa-brands fa-rust"></i>&nbsp;简单英语学Rust</a>
+            
+                
+          
+            
+              <a href="/rust-patterns"><i class="fa fa-brands fa-rust"></i>&nbsp;Rust设计模式</a>
+            
+                
+          
+            
+              <a href="/2020/03/05/A-half-hour-to-learn-Rust/"><i class="fa fa-brands fa-rust"></i>&nbsp;半小时学会Rust</a>
+            
+                
+          
+            
+              <a href="/rust-cookbook"><i class="fa fa-brands fa-rust"></i>&nbsp;Rust实用指南(cookbook)</a>
+            
+                
+          
+            
+              <a href="/rust-rand"><i class="fa fa-brands fa-rust"></i>&nbsp;Rust随机库</a>
+            
+                
+          
+            
+              <hr>
+            
+                
+          
+            
+              <a href="https://rpcx.io/r/E6v8U"><i class="fa "></i>&nbsp;Rust for the Polyglot Programmer</a>
+            
+                
+          
+            
+              <a href="https://rpcx.io/r/oC5ii"><i class="fa "></i>&nbsp;LifetimeKata</a>
+            
+                
+          
+            
+              <a href="https://tfpk.github.io/macrokata/"><i class="fa "></i>&nbsp;macrokata</a>
+            
+                
+          
+          </div>
+        </div>
+          
+          
+          
+            <div class="dropdown main-nav-link"><a class="main-nav-link" href="#"><i class="fa ">&nbsp;</i>出版书籍</a>
+              <div class="dropdown-content">
+          
+            
+              <a href="/ScalaCollectionsCookbook"><i class="fa "></i>&nbsp;Scala集合技术手册（简/繁）</a>
+            
+                
+          
+            
+              <a href="https://cpgo.colobu.com/"><i class="fa "></i>&nbsp;深入理解Go并发编程（简/繁）</a>
+            
+                
+          
+            
+              <a href="https://item.jd.com/14347716.html"><i class="fa "></i>&nbsp;100个Go语言典型错误</a>
+            
+                
+          
+          </div>
+        </div>
+          
+          
+          
+            <a class="main-nav-link" href="/ScalaCollectionsCookbook"><i class="fa fa-solid fa-book">&nbsp;</i>Scala集合技术手册</a>
+          
+          
+          
+            <a class="main-nav-link" href="/about"><i class="fa fa-regular fa-address-card">&nbsp;</i>关于</a>
+          
+          
+
+
+      </nav>
+      <nav id="sub-nav">
+        
+          <a id="nav-rss-link" class="nav-icon" href="/atom.xml" title="RSS Feed"></a>
+        
+        <a id="nav-search-btn" class="nav-icon" title="Search"></a>
+      </nav>
+      <div id="search-form-wrap">
+        <form action="https://www.google.com/search" method="get" accept-charset="utf-8" class="search-form">
+          <input type="search" id="search-word" name="q" maxlength="20" class="search-form-input" placeholder="Search">
+          <input type=hidden name=ie value="utf-8">
+          <input type=hidden name=oe value="utf-8">
+          <input type=hidden name=hl value="zh-CN">
+          <input type="submit" id="search-submit" value="" class="search-form-submit">
+        </form>
+      </div>
+    </div>
+  </div>
+</header>
+      <div class="outer">
+        <section id="main"><article id="post-use-ebpf-to-trace-rpcx-microservices" class="article article-type-post" itemscope
+  itemprop="blogPost">
+  <div class="article-meta">
+    <a href="/2022/05/22/use-ebpf-to-trace-rpcx-microservices/" class="article-date">
+  <time datetime="2022-05-22T08:34:29.000Z" itemprop="datePublished">2022年05月22日</time>
+</a>
+    
+  <div class="article-category">
+    <a class="article-category-link" href="/categories/Go/">Go</a>
+  </div>
+
+    
+  <div class="article-author"> by smallnest</div>
+
+  </div>
+  <div class="article-inner">
+    
+    
+    <header class="article-header">
+      
+  
+    <h1 class="article-title" itemprop="name">
+      使用ebpf跟踪rpcx微服务
+	  
+    </h1>
+  
+
+    </header>
+    
+    <div class="article-entry" itemprop="articleBody">
+      
+      
+      
+      <script>function show_answer(btn, x) { if (btn.value === "显示答案") { btn.value = "隐藏答案" } else { btn.value = "显示答案" } var as = document.getElementById(x); if (as.style.display === "none") { as.style.display = "block" } else { as.style.display = "none" } }</script>
+      <p><a href="https://ebpf.io/zh-cn/">ebpf</a>是一种创新的革命性技术，它能在内核中运行沙箱程序， 而无需修改内核源码或者加载内核模块。将 Linux 内核变成可编程之后，就能基于现有的（而非增加新的）抽象层来打造更加智能、 功能更加丰富的基础设施软件，而不会增加系统的复杂度，也不会牺牲执行效率和安全性。</p>
+<p>BPF的第一个版本在1994年问世。我们在使用tcpdump工具编写规则的时候其实就使用到它了，该工具用于查看或”嗅探”网络数据包。</p>
+<span id="more"></span>
+
+<img src="/2022/05/22/use-ebpf-to-trace-rpcx-microservices/ebpf.png" class="">
+
+<p>使用ebpf技术，你可以从安全、跟踪&amp;性能分析、网络、观测&amp;监控等方向提供新的思路和技术：</p>
+<ul>
+<li>安全：可以从系统调用级、packet层、socket层进行安全检查，比如开发DDOS防护系统，编写防火墙程序。</li>
+<li>网络：可以开发内核层高性能包处理程序，比如Cilium提供内核层的负载均衡，把service mesh往更深层推进，解决sidecar的性能问题。</li>
+<li>跟踪&amp;性能分析: Linux提供多种类型的探针点(probe point),比如Kernel probes、perf events、Tracepoints、User-space probes、User statically defined tracepoints、XDP等等，我们可以编写probe程序收集这些探针点的信息，所以我们可以通过这种方式跟踪程序，分析性能。</li>
+<li>观测&amp;监控: 对这些探针点的持续观测和监控，我们可以丰富我们的trace程序。关键是，我们不需要更改既有的程序，而是通过ebpf方法从其它程序进行观测。2014年，著名的内核黑客Alexei Starovoitov对BPF的功能进行了扩展。他增加了寄存器的数量和程序允许的大小，增加了JIT编译，并创建了一个用于检查程序是否安全的程序。然而，最令人印象深刻的是，新的BPF程序不仅能够在处理数据包时运行，而且能够响应其他内核事件，并在内核和用户空间之间来回传递信息。Alexei Starovoitov的新版本的BPF被称为eBPF（e代表扩展：extended）。但现在，它已经取代了所有旧版的BPF用法，并且已经变得非常流行，为了简单起见，它仍然被称为BPF。</li>
+</ul>
+<img src="/2022/05/22/use-ebpf-to-trace-rpcx-microservices/functions.png" class="">
+
+
+<p>你可以自己编写bpf程序，进行定制化的逻辑处理和分析，也可以使用大神们写好的工具，利用这些工具对程序进行通用的性能分析和跟踪。本文主要介绍使用一些工具对rpcx微服务程序进行通用的分析，既然是通用的，你可以可以对其它的Go程序进行分析，而且不仅限于Go程序，其它应用程序甚至内核你可以进行分析和跟踪。</p>
+<p>自己编写bpf程序我准备再新开一篇文章介绍。</p>
+<p>这一次主要介绍<a href="https://github.com/iovisor/bcc">bcc提供的相关工具</a>和<a href="https://github.com/iovisor/bpftrace">bpftrace</a>。</p>
+<p>bcc是用于创建基于eBPF的高效内核跟踪和操作程序的工具包，其中包括一些有用的命令行工具和示例。 BCC简化了用C进行内核检测的eBPF程序的编写，包括LLVM的包装器以及Python和Lua的前端。它还提供了用于直接集成到应用程序中的高级库。</p>
+<p>bpftrace是Linux eBPF的高级跟踪语言。它的语言受awk和C以及DTrace和SystemTap等以前的跟踪程序的启发。 bpftrace使用LLVM作为后端将脚本编译为eBPF字节码，并利用BCC作为与Linux eBPF子系统以及现有Linux跟踪功能和连接点进行交互的库。</p>
+<h2 id="简单的-rpcx-微服务程序"><a href="#简单的-rpcx-微服务程序" class="headerlink" title="简单的 rpcx 微服务程序"></a>简单的 rpcx 微服务程序</h2><p>既然要使用ebpf分析程序，首先我们要有一个程序。这里我选取了<a href="https://github.com/smallnest/rpcx">rpcx</a>一个最简单的例子，实现一个乘法的最小的微服务。</p>
+<p>这个程序的代码可以在<a href="https://github.com/rpcxio/rpcx-examples/tree/master/102basic">rpcx-examples-102basic</a>下载到。</p>
+<p>服务端的程序如下:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br><span class="line">25</span><br><span class="line">26</span><br><span class="line">27</span><br><span class="line">28</span><br><span class="line">29</span><br><span class="line">30</span><br><span class="line">31</span><br><span class="line">32</span><br><span class="line">33</span><br><span class="line">34</span><br><span class="line">35</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">package</span> main</span><br><span class="line"></span><br><span class="line"><span class="keyword">import</span> (</span><br><span class="line">	<span class="string">&quot;context&quot;</span></span><br><span class="line">	<span class="string">&quot;flag&quot;</span></span><br><span class="line">	<span class="string">&quot;fmt&quot;</span></span><br><span class="line"></span><br><span class="line">	example <span class="string">&quot;github.com/rpcxio/rpcx-examples&quot;</span></span><br><span class="line">	<span class="string">&quot;github.com/smallnest/rpcx/server&quot;</span></span><br><span class="line">)</span><br><span class="line"></span><br><span class="line"><span class="keyword">var</span> (</span><br><span class="line">	addr = flag.String(<span class="string">&quot;addr&quot;</span>, <span class="string">&quot;localhost:8972&quot;</span>, <span class="string">&quot;server address&quot;</span>)</span><br><span class="line">)</span><br><span class="line"></span><br><span class="line"><span class="keyword">type</span> Arith <span class="keyword">struct</span>&#123;&#125;</span><br><span class="line"></span><br><span class="line"><span class="comment">// 使用ebpf跟踪这个服务调用</span></span><br><span class="line"><span class="function"><span class="keyword">func</span> <span class="params">(t *Arith)</span></span> Mul(ctx context.Context, args example.Args, reply *example.Reply) <span class="type">error</span> &#123;</span><br><span class="line">	reply.C = args.A * args.B</span><br><span class="line">	fmt.Println(<span class="string">&quot;C=&quot;</span>, reply.C)</span><br><span class="line">	<span class="keyword">return</span> <span class="literal">nil</span></span><br><span class="line">&#125;</span><br><span class="line"></span><br><span class="line"><span class="function"><span class="keyword">func</span> <span class="title">main</span><span class="params">()</span></span> &#123;</span><br><span class="line">	flag.Parse()</span><br><span class="line"></span><br><span class="line">	s := server.NewServer()</span><br><span class="line">	s.RegisterName(<span class="string">&quot;Arith&quot;</span>, <span class="built_in">new</span>(Arith), <span class="string">&quot;&quot;</span>)</span><br><span class="line">	err := s.Serve(<span class="string">&quot;tcp&quot;</span>, *addr)</span><br><span class="line">	<span class="keyword">if</span> err != <span class="literal">nil</span> &#123;</span><br><span class="line">		<span class="built_in">panic</span>(err)</span><br><span class="line">	&#125;</span><br><span class="line">&#125;</span><br><span class="line"></span><br></pre></td></tr></table></figure>
+
+<p>使用<code>go build server.go</code>编译出<code>server</code>程序并运行(<code>./server</code>)。</p>
+<p>客户端程序如下:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br><span class="line">25</span><br><span class="line">26</span><br><span class="line">27</span><br><span class="line">28</span><br><span class="line">29</span><br><span class="line">30</span><br><span class="line">31</span><br><span class="line">32</span><br><span class="line">33</span><br><span class="line">34</span><br><span class="line">35</span><br><span class="line">36</span><br><span class="line">37</span><br><span class="line">38</span><br><span class="line">39</span><br><span class="line">40</span><br><span class="line">41</span><br><span class="line">42</span><br><span class="line">43</span><br><span class="line">44</span><br><span class="line">45</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">package</span> main</span><br><span class="line"></span><br><span class="line"><span class="keyword">import</span> (</span><br><span class="line">	<span class="string">&quot;context&quot;</span></span><br><span class="line">	<span class="string">&quot;flag&quot;</span></span><br><span class="line">	<span class="string">&quot;log&quot;</span></span><br><span class="line">	<span class="string">&quot;time&quot;</span></span><br><span class="line"></span><br><span class="line">	<span class="string">&quot;github.com/smallnest/rpcx/protocol&quot;</span></span><br><span class="line"></span><br><span class="line">	example <span class="string">&quot;github.com/rpcxio/rpcx-examples&quot;</span></span><br><span class="line">	<span class="string">&quot;github.com/smallnest/rpcx/client&quot;</span></span><br><span class="line">)</span><br><span class="line"></span><br><span class="line"><span class="keyword">var</span> (</span><br><span class="line">	addr = flag.String(<span class="string">&quot;addr&quot;</span>, <span class="string">&quot;localhost:8972&quot;</span>, <span class="string">&quot;server address&quot;</span>)</span><br><span class="line">)</span><br><span class="line"></span><br><span class="line"><span class="function"><span class="keyword">func</span> <span class="title">main</span><span class="params">()</span></span> &#123;</span><br><span class="line">	flag.Parse()</span><br><span class="line"></span><br><span class="line">	d, _ := client.NewPeer2PeerDiscovery(<span class="string">&quot;tcp@&quot;</span>+*addr, <span class="string">&quot;&quot;</span>)</span><br><span class="line">	opt := client.DefaultOption</span><br><span class="line">	opt.SerializeType = protocol.JSON</span><br><span class="line"></span><br><span class="line">	xclient := client.NewXClient(<span class="string">&quot;Arith&quot;</span>, client.Failtry, client.RandomSelect, d, opt)</span><br><span class="line">	<span class="keyword">defer</span> xclient.Close()</span><br><span class="line"></span><br><span class="line">	args := example.Args&#123;</span><br><span class="line">		A: <span class="number">10</span>,</span><br><span class="line">		B: <span class="number">20</span>,</span><br><span class="line">	&#125;</span><br><span class="line"></span><br><span class="line">	<span class="keyword">for</span> &#123;</span><br><span class="line">		reply := &amp;example.Reply&#123;&#125;</span><br><span class="line">		err := xclient.Call(context.Background(), <span class="string">&quot;Mul&quot;</span>, args, reply)</span><br><span class="line">		<span class="keyword">if</span> err != <span class="literal">nil</span> &#123;</span><br><span class="line">			log.Fatalf(<span class="string">&quot;failed to call: %v&quot;</span>, err)</span><br><span class="line">		&#125;</span><br><span class="line"></span><br><span class="line">		log.Printf(<span class="string">&quot;%d * %d = %d&quot;</span>, args.A, args.B, reply.C)</span><br><span class="line">		time.Sleep(time.Second)</span><br><span class="line">	&#125;</span><br><span class="line"></span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+<p>客户端每一秒会调用<code>Arith.Mul</code>微服务一次，微服务的逻辑也很简单，就是执行乘法，并把结果返回给客户端。</p>
+<h2 id="跟踪和分析微服务"><a href="#跟踪和分析微服务" class="headerlink" title="跟踪和分析微服务"></a>跟踪和分析微服务</h2><p>作为演示，本文只跟踪服务端<code>Arith.Mul</code>调用情况。</p>
+<p>bcc提供了很多的基于bpf的分析程序，如下图(大神Brendan Gregg整理的经典图)</p>
+<img src="/2022/05/22/use-ebpf-to-trace-rpcx-microservices/bcc_tracing_tools_early2019.png" class="">
+<img src="/2022/05/22/use-ebpf-to-trace-rpcx-microservices/bpftrace_tools_early2019.png" class="">
+
+<p>这里我们会选取几个相关的工具演示如何使用这些工具分析运行中的程序。 注意是运行中的程序，我们并没有给程序添加额外的一些埋点。</p>
+<h3 id="bcc套件"><a href="#bcc套件" class="headerlink" title="bcc套件"></a>bcc套件</h3><p>首先你得安装bcc套件，而且你的Linux内核还要足够新，在一些大厂的机房内，还有一些内核版本的2.6.x服务器，这些老的内核服务器不能支持ebpf或者ebpf的新特性。</p>
+<p>我是在我的阿里云的一台虚机上测试的，它的版本是:</p>
+<ul>
+<li>Linux lab 4.18.0-348.2.1.el8_5.x86_64</li>
+<li>CentOS Stream release 8</li>
+</ul>
+<p>直接<code>yum install bcc-tools</code>就可以安装这些工具。 </p>
+<p>如果你是其它的版本的操作系统，你可以参考bcc的安装文档进行安装: <a href="https://github.com/iovisor/bcc/blob/master/INSTALL.md">bcc&#x2F;INSTALL</a>。</p>
+<p>在使用工具分析之前，你首先要知道你的微服务<code>Arith.Mul</code>在符号表中的名称，你可以使用objdump查询到:</p>
+<figure class="highlight sh"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line">[root@lab server]# objdump -t server|grep Mul|grep main</span><br><span class="line">000000000075a5e0 g     F .text	00000000000000d0              main.(*Arith).Mul</span><br></pre></td></tr></table></figure>
+
+<p>它的名称是<code>main.(*Arith).Mul</code>,下面我们会使用这个名称分析这个微服务。</p>
+<p>确保刚才的服务器一直在运行中。</p>
+<h4 id="funccount"><a href="#funccount" class="headerlink" title="funccount"></a>funccount</h4><p>funccount 用来统计一段时间内某个函数的调用次数。</p>
+<p>在server所在的目录下执行下面的命令(如果在不同的路径，你需要更改命令参数中程序的路径):</p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br></pre></td><td class="code"><pre><span class="line">[root@lab server]# funccount -d 10  &#x27;./server:main.*.Mul&#x27;</span><br><span class="line">Tracing 1 functions for &quot;b&#x27;./server:main.*.Mul&#x27;&quot;... Hit Ctrl-C to end.</span><br><span class="line"></span><br><span class="line">FUNC                                    COUNT</span><br><span class="line">b&#x27;main.(*Arith).Mul&#x27;                       10</span><br><span class="line">Detaching...</span><br><span class="line">[root@lab server]#</span><br></pre></td></tr></table></figure>
+
+<p>这里我们设置观察时间是10秒，可以看到在这10秒内，这个函数被调用了10次。</p>
+<p>它包含几个参数，比如你可以持续观察，每5秒输出一次结果:</p>
+<figure class="highlight sh"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br></pre></td><td class="code"><pre><span class="line">[root@lab server]# funccount -Ti 5  <span class="string">&#x27;./server:main.*.Mul&#x27;</span></span><br><span class="line">Tracing 1 <span class="built_in">functions</span> <span class="keyword">for</span> <span class="string">&quot;b&#x27;./server:main.*.Mul&#x27;&quot;</span>... Hit Ctrl-C to end.</span><br><span class="line"></span><br><span class="line">18:08:29</span><br><span class="line">FUNC                                    COUNT</span><br><span class="line">b<span class="string">&#x27;main.(*Arith).Mul&#x27;</span>                        5</span><br></pre></td></tr></table></figure>
+
+<p>我们甚至可以用它进行Go GC相关函数的跟踪:</p>
+<figure class="highlight sh"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br></pre></td><td class="code"><pre><span class="line">[root@lab server]# funccount -d 10  <span class="string">&#x27;./server:runtime.*.gc*&#x27;</span></span><br><span class="line">Tracing 21 <span class="built_in">functions</span> <span class="keyword">for</span> <span class="string">&quot;b&#x27;./server:runtime.*.gc*&#x27;&quot;</span>... Hit Ctrl-C to end.</span><br><span class="line"></span><br><span class="line">FUNC                                    COUNT</span><br><span class="line">b<span class="string">&#x27;runtime.(*gcControllerState).update&#x27;</span>        2</span><br><span class="line">b<span class="string">&#x27;runtime.mallocgc&#x27;</span>                       250</span><br></pre></td></tr></table></figure>
+
+<p>抑或是跟踪Go运行时的调度:</p>
+<figure class="highlight sh"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br></pre></td><td class="code"><pre><span class="line">[root@lab server]# funccount -d 10  <span class="string">&#x27;./server:runtime.schedule&#x27;</span></span><br><span class="line">Tracing 1 <span class="built_in">functions</span> <span class="keyword">for</span> <span class="string">&quot;b&#x27;./server:runtime.schedule&#x27;&quot;</span>... Hit Ctrl-C to end.</span><br><span class="line"></span><br><span class="line">FUNC                                    COUNT</span><br><span class="line">b<span class="string">&#x27;runtime.schedule&#x27;</span>                        20</span><br><span class="line">Detaching...</span><br></pre></td></tr></table></figure>
+
+<h4 id="funclatency"><a href="#funclatency" class="headerlink" title="funclatency"></a>funclatency</h4><p>funclatency统计函数的执行的耗时情况。<br>如果我们想分析<code>Arith.Mul</code>方法执行的情况，我们可以使用下面的命令，它会用直方图的形式展示这个函数调用的耗时分布:</p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br></pre></td><td class="code"><pre><span class="line">[root@lab server]# funclatency -d 10  &#x27;./server:main.*.Mul&#x27;</span><br><span class="line">Tracing 1 functions for &quot;./server:main.*.Mul&quot;... Hit Ctrl-C to end.</span><br><span class="line"></span><br><span class="line"></span><br><span class="line">Function = b&#x27;main.(*Arith).Mul&#x27; [359284]</span><br><span class="line">     nsecs               : count     distribution</span><br><span class="line">         0 -&gt; 1          : 0        |                                        |</span><br><span class="line">         2 -&gt; 3          : 0        |                                        |</span><br><span class="line">         4 -&gt; 7          : 0        |                                        |</span><br><span class="line">         8 -&gt; 15         : 0        |                                        |</span><br><span class="line">        16 -&gt; 31         : 0        |                                        |</span><br><span class="line">        32 -&gt; 63         : 0        |                                        |</span><br><span class="line">        64 -&gt; 127        : 0        |                                        |</span><br><span class="line">       128 -&gt; 255        : 0        |                                        |</span><br><span class="line">       256 -&gt; 511        : 0        |                                        |</span><br><span class="line">       512 -&gt; 1023       : 0        |                                        |</span><br><span class="line">      1024 -&gt; 2047       : 0        |                                        |</span><br><span class="line">      2048 -&gt; 4095       : 0        |                                        |</span><br><span class="line">      4096 -&gt; 8191       : 0        |                                        |</span><br><span class="line">      8192 -&gt; 16383      : 0        |                                        |</span><br><span class="line">     16384 -&gt; 32767      : 7        |****************************************|</span><br><span class="line">     32768 -&gt; 65535      : 3        |*****************                       |</span><br><span class="line"></span><br><span class="line">avg = 31978 nsecs, total: 319783 nsecs, count: 10</span><br></pre></td></tr></table></figure>
+
+<p>我们统计了10秒的数据。可以看到期间这个函数被调用了10次。平均耗时31微秒。</p>
+<p>如果我们想检查线上的程序有没有长尾的现象，使用这个工具很容易分析统计。</p>
+<h4 id="funcslower"><a href="#funcslower" class="headerlink" title="funcslower"></a>funcslower</h4><p>funcslower 这个工具可以跟踪内核和程序的执行慢的函数，比如使用下面的命令:</p>
+<figure class="highlight sh"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br></pre></td><td class="code"><pre><span class="line">[root@lab server]# funcslower -u 10  <span class="string">&#x27;./server:main.(*Arith).Mul&#x27;</span></span><br><span class="line">Tracing <span class="keyword">function</span> calls slower than 10 us... Ctrl+C to quit.</span><br><span class="line">COMM           PID    LAT(us)             RVAL FUNC</span><br><span class="line">server         359284   44.75                0 ./server:main.(*Arith).Mul</span><br><span class="line">server         359284   30.97                0 ./server:main.(*Arith).Mul</span><br><span class="line">server         359284   33.38                0 ./server:main.(*Arith).Mul</span><br><span class="line">server         359284   31.28                0 ./server:main.(*Arith).Mul</span><br></pre></td></tr></table></figure>
+
+<p>你甚至可以打印出堆栈信息:</p>
+<figure class="highlight sh"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br></pre></td><td class="code"><pre><span class="line">[root@lab server]funcslower -UK -u 10  <span class="string">&#x27;./server:main.(*Arith).Mul&#x27;</span></span><br><span class="line">Tracing <span class="keyword">function</span> calls slower than 10 us... Ctrl+C to quit.</span><br><span class="line">COMM           PID    LAT(us)             RVAL FUNC</span><br><span class="line">server         359284   31.20                0 ./server:main.(*Arith).Mul</span><br><span class="line">    b<span class="string">&#x27;runtime.call64.abi0&#x27;</span></span><br><span class="line">    b<span class="string">&#x27;runtime.reflectcall&#x27;</span></span><br><span class="line">    b<span class="string">&#x27;reflect.Value.call&#x27;</span></span><br><span class="line">    b<span class="string">&#x27;reflect.Value.Call&#x27;</span></span><br><span class="line">    b<span class="string">&#x27;github.com/smallnest/rpcx/server.(*service).call&#x27;</span></span><br><span class="line">    b<span class="string">&#x27;github.com/smallnest/rpcx/server.(*Server).handleRequest&#x27;</span></span><br><span class="line">    b<span class="string">&#x27;github.com/smallnest/rpcx/server.(*Server).serveConn.func2&#x27;</span></span><br><span class="line">    b<span class="string">&#x27;runtime.goexit.abi0&#x27;</span></span><br><span class="line">server         359284   32.23                0 ./server:main.(*Arith).Mul</span><br><span class="line">    b<span class="string">&#x27;runtime.call64.abi0&#x27;</span></span><br><span class="line">    b<span class="string">&#x27;runtime.reflectcall&#x27;</span></span><br><span class="line">    b<span class="string">&#x27;reflect.Value.call&#x27;</span></span><br><span class="line">    b<span class="string">&#x27;reflect.Value.Call&#x27;</span></span><br><span class="line">    b<span class="string">&#x27;github.com/smallnest/rpcx/server.(*service).call&#x27;</span></span><br></pre></td></tr></table></figure>
+
+
+<h4 id="tcp-系列工具"><a href="#tcp-系列工具" class="headerlink" title="tcp 系列工具"></a>tcp 系列工具</h4><p>bcc提供了一堆的对tcp的跟踪情况，我们可以针对不同的场景选择使用相应的工具。</p>
+<ul>
+<li>tools&#x2F;tcpaccept: 跟踪TCP被动连接 (accept()). </li>
+<li>tools&#x2F;tcpconnect: 跟踪TCP主动的连接 (connect()).</li>
+<li>tools&#x2F;tcpconnlat: 跟踪TCP主动连接的延迟(connect()). </li>
+<li>tools&#x2F;tcpdrop: 跟踪内核的TCP包的丢包细节.</li>
+<li>tools&#x2F;tcplife: 跟踪TCP session(生命周期指标汇总).</li>
+<li>tools&#x2F;tcpretrans: 跟踪TCP重传.</li>
+<li>tools&#x2F;tcprtt: 跟踪TCP来回的耗时.</li>
+<li>tools&#x2F;tcpstates: 跟踪TCP session状态的改变.</li>
+<li>tools&#x2F;tcpsubnet: 按子网汇总和聚合TCP发送情况.</li>
+<li>tools&#x2F;tcpsynbl: 显示TCP SYN backlog的情况.</li>
+<li>tools&#x2F;tcptop: 按主机汇总TCP send&#x2F;recv吞吐情况.</li>
+<li>tools&#x2F;tcptracer: 跟踪TCP 建立&#x2F;关闭连接的情况 (connect(), accept(), close()).</li>
+<li>tools&#x2F;tcpcong: 跟踪TCP套接字拥塞控制状态持续时间.</li>
+</ul>
+<p>比如我们如果关注连接的建立情况，可以使用<code>tcptracer</code>:</p>
+<figure class="highlight sh"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br></pre></td><td class="code"><pre><span class="line">[root@lab lib]# tcptracer</span><br><span class="line">Tracing TCP established connections. Ctrl-C to end.</span><br><span class="line">T  PID    COMM             IP SADDR            DADDR            SPORT  DPORT</span><br><span class="line">C  360005 client           4  127.0.0.1        127.0.0.1        43126  8972</span><br><span class="line">X  360005 client           6  [::1]            [::1]            43010  8972</span><br><span class="line">A  359284 server           4  127.0.0.1        127.0.0.1        8972   43126</span><br><span class="line">X  360005 client           4  127.0.0.1        127.0.0.1        43126  8972</span><br><span class="line">X  359284 server           4  127.0.0.1        127.0.0.1        8972   43126</span><br><span class="line">C  360009 client           4  127.0.0.1        127.0.0.1        43130  8972</span><br><span class="line">X  360009 client           6  [::1]            [::1]            43014  8972</span><br><span class="line">A  359284 server           4  127.0.0.1        127.0.0.1        8972   43130</span><br></pre></td></tr></table></figure>
+
+
+<p>另外还有一堆的<code>xxxxsnoop</code>程序，可以对特定的系统调用进行跟踪。</p>
+<h3 id="bpftrace"><a href="#bpftrace" class="headerlink" title="bpftrace"></a>bpftrace</h3><p>有时候，我们想使用脚本实现一些定制化的跟踪，比如类似awk这样的工具，可以提供简单的脚本编写。</p>
+<p>bpftrace就是这样的工具, 它使用LLVM作为后端将脚本编译为eBPF字节码，并利用BCC作为与Linux eBPF子系统以及现有Linux跟踪功能和连接点进行交互的库。</p>
+<p>bpftrace参考手册可以在<a href="https://github.com/iovisor/bpftrace/blob/master/docs/reference_guide.md#20-override-override-return-value">bpftrace reference_guide</a>找到。</p>
+<p>以我们的<code>Arith.Mul</code>为例，我们可以使用下面的命令，在函数调用时加入探针，把输入的参数打印出来:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br></pre></td><td class="code"><pre><span class="line">[root@lab server]# bpftrace -e <span class="string">&#x27;uprobe:./server:main.*.Mul &#123;printf(&quot;%s - %s: arg1: %d, arg2: %d\n&quot;, comm, func, arg0, arg1)&#125;&#x27;</span></span><br><span class="line">Attaching <span class="number">1</span> probe...</span><br><span class="line">server - main.(*Arith).Mul: arg1: <span class="number">10</span>, arg2: <span class="number">20</span></span><br><span class="line">server - main.(*Arith).Mul: arg1: <span class="number">10</span>, arg2: <span class="number">20</span></span><br><span class="line">server - main.(*Arith).Mul: arg1: <span class="number">10</span>, arg2: <span class="number">20</span></span><br></pre></td></tr></table></figure>
+
+<p>为什么arg0,arg1就能把参数打印出来呢？简单说，我们的微服务参数正好是两个int64的整数，正好对应arg0,arg1。</p>
+<p>rpcx的服务返回值也是当做参数传入的，函数调用的时候还没有设置，所以你如果打印arg3并不是reply返回值。</p>
+<p>这个时候我们需要移动探针，加一个偏移量，加多少的偏移量呢？通过反汇编我们看到加92时返回值已经赋值了，所以使用下面的命令就可以打印返回值了(这个时候第一个参数就被覆盖掉了):</p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br></pre></td><td class="code"><pre><span class="line">[root@lab server]# bpftrace -e &#x27;uprobe:./server:main.*.Mul+92 &#123;printf(&quot;%s - %s: reply: %d\n&quot;, comm, func, arg0)&#125;&#x27;</span><br><span class="line">Attaching 1 probe...</span><br><span class="line">server - main.(*Arith).Mul: reply: 200</span><br><span class="line">server - main.(*Arith).Mul: reply: 200</span><br><span class="line">server - main.(*Arith).Mul: reply: 200</span><br></pre></td></tr></table></figure>
+
+<blockquote>
+<p>Go自1.17开始已经改成了基于寄存器的调用惯例，所以这里使用了内建的arg0、arg1、..., 如果你使用更早的Go版本，这里你可以换成sarg0,sarg1,...试试(stack arguments)。</p>
+</blockquote>
+<h2 id="参考文档"><a href="#参考文档" class="headerlink" title="参考文档"></a>参考文档</h2><ol>
+<li><a href="https://www.brendangregg.com/blog/2017-01-31/golang-bcc-bpf-function-tracing.html">https://www.brendangregg.com/blog/2017-01-31/golang-bcc-bpf-function-tracing.html</a></li>
+<li><a href="https://golangexample.com/library-to-work-with-ebpf-programs-from-golang/">https://golangexample.com/library-to-work-with-ebpf-programs-from-golang/</a></li>
+<li><a href="https://tonybai.com/2020/12/25/bpf-and-go-modern-forms-of-introspection-in-linux/">https://tonybai.com/2020/12/25/bpf-and-go-modern-forms-of-introspection-in-linux/</a></li>
+<li><a href="https://networkop.co.uk/post/2021-03-ebpf-intro/">https://networkop.co.uk/post/2021-03-ebpf-intro/</a></li>
+<li><a href="https://medium.com/bumble-tech/bpf-and-go-modern-forms-of-introspection-in-linux-6b9802682223#db17">https://medium.com/bumble-tech/bpf-and-go-modern-forms-of-introspection-in-linux-6b9802682223#db17</a></li>
+<li><a href="https://blog.px.dev/ebpf-http-tracing/">https://blog.px.dev/ebpf-http-tracing/</a></li>
+<li><a href="https://www.ebpf.top/post/ebpf_and_go/">https://www.ebpf.top/post/ebpf_and_go/</a></li>
+<li><a href="https://www.ebpf.top/">https://www.ebpf.top/</a></li>
+</ol>
+
+      
+    </div>
+    <footer class="article-footer">
+      
+  <ul class="article-tag-list" itemprop="keywords"><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/ebpf/" rel="tag">ebpf</a></li><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/go/" rel="tag">go</a></li></ul>
+
+
+      
+      <!-- <link rel="stylesheet" href="https://unpkg.com/gitalk/dist/gitalk.css">
+      <script src="https://unpkg.com/gitalk/dist/gitalk.min.js"></script> -->
+      <section id="comments">
+        <script src="https://utteranc.es/client.js"
+                repo="smallnest/gitalk"
+                issue-term="title"
+                theme="github-light"
+                crossorigin="anonymous"
+                async>
+        </script>
+        <!-- <div id="gitalk-container"></div>
+        <script type="text/javascript">
+          var gitalkOpts = {
+            id: '2022/05/22/use-ebpf-to-trace-rpcx-microservices/',
+            owner: 'smallnest',
+            repo: 'gitalk',
+            title: '使用ebpf跟踪rpcx微服务',
+            body: 'https://colobu.com/2022/05/22/use-ebpf-to-trace-rpcx-microservices/index.html',
+            clientID: 'bc02724130ed5b7ee275',
+            clientSecret: '68cb0bae2f93a8b88b09e0eb9b08c844b06a9047',
+            admin: ['smallnest'],
+            distractionFreeMode: false
+          };
+
+          const gitalk = new Gitalk(gitalkOpts)
+          gitalk.render('gitalk-container')
+        </script> -->
+        <noscript> 为正常使用评论功能请激活JavaScript</noscript>
+      </section>
+
+      
+
+    </footer>
+  </div>
+  
+  
+<nav id="article-nav">
+  
+    <a href="/2022/06/02/setup-a-k8s-cluster-with-minikube/" id="article-nav-newer" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">Newer</strong>
+      <div class="article-nav-title">
+        
+          想学习k8s但没有环境？使用minikube轻松搭建一个
+        
+      </div>
+    </a>
+  
+  
+    <a href="/2022/05/06/changes-in-atomic-package/" id="article-nav-older" class="article-nav-link-wrap">
+      <strong class="article-nav-caption">Older</strong>
+      <div class="article-nav-title">atomic包的新变化</div>
+    </a>
+  
+</nav>
+
+  
+</article></section>
+        
+          <aside id="sidebar">
+  
+    <div class="widget-wrap">
+  <h3 class="widget-title">访问者来源</h3>
+  <div class="widget">
+    <script type="text/javascript" id="mmvst_globe" src="//mapmyvisitors.com/globe.js?d=33a_ORm-dIXRKRAG9KqfzawkYSIwGkaxOK0nA3Ha9Us"></script>
+  </div>
+</div>
+
+<div class="widget-wrap">
+  <h3 class="widget-title">微信公众号</h3>
+  <div class="widget">
+    <img width="100%" src="/images/widgets/gopatterns.jpg">
+  </div>
+</div>
+
+<div class="widget-wrap">
+  <h3 class="widget-title">极客时间专栏</h3>
+  <div class="widget">
+    <a href="https://time.geekbang.org/column/intro/100061801">
+      <img width="100%" src="/images/widgets/geekbang.png">
+    </a>
+    <a href="https://time.geekbang.org/column/intro/100953201">
+      <img width="100%" src="/images/widgets/geekbang2.png">
+    </a>
+  </div>
+</div>
+
+<div class="widget-wrap">
+    <h3 class="widget-title">出版图书</h3>
+    <div class="widget">
+      <a href="https://cpgo.colobu.com/">
+        <img width="100%" src="/cpgolang/cpgo.png">
+      </a>
+    </div>
+    <div class="widget">
+      <a href="https://www.books.com.tw/products/0010991366">
+        <img width="100%" src="/cpgolang/cpgo2.jpg">
+      </a>
+    </div>
+    <div class="widget">
+      <a href="https://item.jd.com/14347716.html">
+        <img width="100%" src="/100gomistakes/cover.png">
+      </a>
+    </div>
+    <div class="widget">
+      <a href="/ScalaCollectionsCookbook/">
+        <img width="100%" src="/ScalaCollectionsCookbook/scala_collections_cookbook.jpg">
+        <img width="100%" src="/ScalaCollectionsCookbook/scala_collections_cookbook_tw.png">
+      </a>
+    </div>
+</div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">分类</h3>
+    <div class="widget">
+      <ul class="category-list"><li class="category-list-item"><a class="category-list-link" href="/categories/Android/">Android</a><span class="category-list-count">12</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/C/">C++</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/DOTNET/">DOTNET</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Docker/">Docker</a><span class="category-list-count">5</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Go/">Go</a><span class="category-list-count">301</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Java/">Java</a><span class="category-list-count">64</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Linux/">Linux</a><span class="category-list-count">8</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Rust/">Rust</a><span class="category-list-count">16</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Scala/">Scala</a><span class="category-list-count">18</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/go/">go</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/k8s/">k8s</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/rust/">rust</a><span class="category-list-count">10</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E5%88%86%E4%BA%AB/">分享</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E5%89%8D%E7%AB%AF%E5%BC%80%E5%8F%91/">前端开发</a><span class="category-list-count">18</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E5%8C%BA%E5%9D%97%E9%93%BE/">区块链</a><span class="category-list-count">8</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E5%A4%A7%E6%95%B0%E6%8D%AE/">大数据</a><span class="category-list-count">60</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E5%B7%A5%E5%85%B7/">工具</a><span class="category-list-count">28</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E6%95%B0%E6%8D%AE%E5%BA%93/">数据库</a><span class="category-list-count">3</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E6%9E%B6%E6%9E%84/">架构</a><span class="category-list-count">27</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E7%AE%97%E6%B3%95/">算法</a><span class="category-list-count">4</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E7%AE%A1%E7%90%86/">管理</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E7%BD%91%E7%BB%9C%E7%BC%96%E7%A8%8B/">网络编程</a><span class="category-list-count">13</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E8%AE%BE%E8%AE%A1%E6%A8%A1%E5%BC%8F/">设计模式</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E8%AF%BB%E4%B9%A6%E7%AC%94%E8%AE%B0/">读书笔记</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E8%BF%90%E7%BB%B4/">运维</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E9%AB%98%E5%B9%B6%E5%8F%91%E7%BC%96%E7%A8%8B/">高并发编程</a><span class="category-list-count">20</span></li></ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">标签云</h3>
+    <div class="widget tagcloud">
+      <a href="/tags/AI/" style="font-size: 20px;">AI</a> <a href="/tags/Android/" style="font-size: 13.64px;">Android</a> <a href="/tags/ApacheBench/" style="font-size: 10.91px;">ApacheBench</a> <a href="/tags/Bower/" style="font-size: 10px;">Bower</a> <a href="/tags/C/" style="font-size: 10px;">C#</a> <a href="/tags/CDN/" style="font-size: 10px;">CDN</a> <a href="/tags/CQRS/" style="font-size: 10px;">CQRS</a> <a href="/tags/CRC/" style="font-size: 10px;">CRC</a> <a href="/tags/CSS/" style="font-size: 10.91px;">CSS</a> <a href="/tags/CompletableFuture/" style="font-size: 10px;">CompletableFuture</a> <a href="/tags/Comsat/" style="font-size: 10px;">Comsat</a> <a href="/tags/Curator/" style="font-size: 17.27px;">Curator</a> <a href="/tags/DSL/" style="font-size: 10px;">DSL</a> <a href="/tags/Disruptor/" style="font-size: 10px;">Disruptor</a> <a href="/tags/Docker/" style="font-size: 10.91px;">Docker</a> <a href="/tags/Ember/" style="font-size: 10.91px;">Ember</a> <a href="/tags/FastJson/" style="font-size: 10px;">FastJson</a> <a href="/tags/Fiber/" style="font-size: 10px;">Fiber</a> <a href="/tags/GAE/" style="font-size: 10px;">GAE</a> <a href="/tags/GC/" style="font-size: 11.82px;">GC</a> <a href="/tags/Gnuplot/" style="font-size: 10px;">Gnuplot</a> <a href="/tags/Go/" style="font-size: 15.45px;">Go</a> <a href="/tags/Gradle/" style="font-size: 10px;">Gradle</a> <a href="/tags/Grunt/" style="font-size: 10px;">Grunt</a> <a href="/tags/Gulp/" style="font-size: 10px;">Gulp</a> <a href="/tags/Hadoop/" style="font-size: 10px;">Hadoop</a> <a href="/tags/Hazelcast/" style="font-size: 10px;">Hazelcast</a> <a href="/tags/IPFS/" style="font-size: 10px;">IPFS</a> <a href="/tags/Ignite/" style="font-size: 10px;">Ignite</a> <a href="/tags/JVM/" style="font-size: 10px;">JVM</a> <a href="/tags/Java/" style="font-size: 14.55px;">Java</a> <a href="/tags/Kafka/" style="font-size: 18.18px;">Kafka</a> <a href="/tags/Lambda/" style="font-size: 12.73px;">Lambda</a> <a href="/tags/Linux/" style="font-size: 11.82px;">Linux</a> <a href="/tags/LongAdder/" style="font-size: 10px;">LongAdder</a> <a href="/tags/MathJax/" style="font-size: 10px;">MathJax</a> <a href="/tags/Maven/" style="font-size: 10.91px;">Maven</a> <a href="/tags/Memcached/" style="font-size: 10px;">Memcached</a> <a href="/tags/Metrics/" style="font-size: 10px;">Metrics</a> <a href="/tags/Mongo/" style="font-size: 11.82px;">Mongo</a> <a href="/tags/Netty/" style="font-size: 13.64px;">Netty</a> <a href="/tags/Nginx/" style="font-size: 10px;">Nginx</a> <a href="/tags/Node/" style="font-size: 10px;">Node</a> <a href="/tags/OAuth/" style="font-size: 10px;">OAuth</a> <a href="/tags/Performance/" style="font-size: 10px;">Performance</a> <a href="/tags/Quartz/" style="font-size: 10px;">Quartz</a> <a href="/tags/Quasar/" style="font-size: 10px;">Quasar</a> <a href="/tags/RPC/" style="font-size: 10px;">RPC</a> <a href="/tags/RTMP/" style="font-size: 10px;">RTMP</a> <a href="/tags/Regexp/" style="font-size: 10px;">Regexp</a> <a href="/tags/Round-Robin/" style="font-size: 10px;">Round-Robin</a> <a href="/tags/Rust/" style="font-size: 10.91px;">Rust</a> <a href="/tags/Sass/" style="font-size: 10px;">Sass</a> <a href="/tags/Scala/" style="font-size: 15.45px;">Scala</a> <a href="/tags/Spark/" style="font-size: 16.36px;">Spark</a> <a href="/tags/Spring/" style="font-size: 13.64px;">Spring</a> <a href="/tags/StampedLock/" style="font-size: 10px;">StampedLock</a> <a href="/tags/TCP-IP/" style="font-size: 10.91px;">TCP/IP</a> <a href="/tags/WebSocket/" style="font-size: 10px;">WebSocket</a> <a href="/tags/Yeoman/" style="font-size: 10px;">Yeoman</a> <a href="/tags/ZooKeeper/" style="font-size: 19.09px;">ZooKeeper</a> <a href="/tags/aio/" style="font-size: 10px;">aio</a> <a href="/tags/akka/" style="font-size: 10.91px;">akka</a> <a href="/tags/android/" style="font-size: 10px;">android</a> <a href="/tags/bbc/" style="font-size: 10px;">bbc</a> <a href="/tags/benchmark/" style="font-size: 10px;">benchmark</a> <a href="/tags/bloom-filter/" style="font-size: 10px;">bloom filter</a> <a href="/tags/bootstrap/" style="font-size: 10px;">bootstrap</a> <a href="/tags/buffer/" style="font-size: 10px;">buffer</a> <a href="/tags/cache/" style="font-size: 10px;">cache</a> <a href="/tags/cgroups/" style="font-size: 10px;">cgroups</a> <a href="/tags/css/" style="font-size: 10.91px;">css</a> <a href="/tags/d3-js/" style="font-size: 10px;">d3.js</a> <a href="/tags/design-pattern/" style="font-size: 10px;">design pattern</a> <a href="/tags/disruptor/" style="font-size: 10.91px;">disruptor</a> <a href="/tags/dns/" style="font-size: 10px;">dns</a> <a href="/tags/ebpf/" style="font-size: 10px;">ebpf</a> <a href="/tags/elasticsearch/" style="font-size: 10.91px;">elasticsearch</a> <a href="/tags/epoll/" style="font-size: 10px;">epoll</a> <a href="/tags/gRPC/" style="font-size: 11.82px;">gRPC</a> <a href="/tags/gitbook/" style="font-size: 10px;">gitbook</a> <a href="/tags/go/" style="font-size: 12.73px;">go</a> <a href="/tags/gulp/" style="font-size: 10px;">gulp</a> <a href="/tags/hexo/" style="font-size: 10.91px;">hexo</a> <a href="/tags/html5/" style="font-size: 10px;">html5</a> <a href="/tags/javascript/" style="font-size: 11.82px;">javascript</a> <a href="/tags/kafka/" style="font-size: 10px;">kafka</a> <a href="/tags/kernel/" style="font-size: 10px;">kernel</a> <a href="/tags/keytool/" style="font-size: 10px;">keytool</a> <a href="/tags/libra/" style="font-size: 11.82px;">libra</a> <a href="/tags/linux/" style="font-size: 10px;">linux</a> <a href="/tags/maven/" style="font-size: 10px;">maven</a> <a href="/tags/memcached/" style="font-size: 10px;">memcached</a> <a href="/tags/mllib/" style="font-size: 10px;">mllib</a> <a href="/tags/mongo/" style="font-size: 11.82px;">mongo</a> <a href="/tags/multicast/" style="font-size: 10px;">multicast</a> <a href="/tags/mysql/" style="font-size: 10px;">mysql</a> <a href="/tags/netty/" style="font-size: 11.82px;">netty</a> <a href="/tags/nginx/" style="font-size: 10.91px;">nginx</a> <a href="/tags/node-js/" style="font-size: 10px;">node.js</a> <a href="/tags/npm/" style="font-size: 10px;">npm</a> <a href="/tags/nsq/" style="font-size: 10px;">nsq</a> <a href="/tags/p2p/" style="font-size: 10px;">p2p</a> <a href="/tags/protobuf/" style="font-size: 10.91px;">protobuf</a> <a href="/tags/quasar/" style="font-size: 10px;">quasar</a> <a href="/tags/rate-limiting/" style="font-size: 10px;">rate limiting</a> <a href="/tags/recommendation/" style="font-size: 10px;">recommendation</a> <a href="/tags/rust/" style="font-size: 10px;">rust</a> <a href="/tags/rxjava/" style="font-size: 10px;">rxjava</a> <a href="/tags/slack/" style="font-size: 10px;">slack</a> <a href="/tags/sortpom/" style="font-size: 10px;">sortpom</a> <a href="/tags/spark/" style="font-size: 10px;">spark</a> <a href="/tags/spray/" style="font-size: 10px;">spray</a> <a href="/tags/sysctl/" style="font-size: 10px;">sysctl</a> <a href="/tags/trace/" style="font-size: 10px;">trace</a> <a href="/tags/undertow/" style="font-size: 10px;">undertow</a> <a href="/tags/validation/" style="font-size: 10px;">validation</a> <a href="/tags/virtualbox/" style="font-size: 10px;">virtualbox</a> <a href="/tags/vscode/" style="font-size: 11.82px;">vscode</a> <a href="/tags/%E4%B8%80%E8%87%B4%E6%80%A7%E5%93%88%E5%B8%8C/" style="font-size: 10px;">一致性哈希</a> <a href="/tags/%E5%8D%8F%E5%90%8C%E8%BF%87%E6%BB%A4%EF%BC%8Cmahout/" style="font-size: 10.91px;">协同过滤，mahout</a> <a href="/tags/%E5%9F%BA%E6%95%B0%E4%BC%B0%E8%AE%A1/" style="font-size: 10px;">基数估计</a> <a href="/tags/%E5%BA%8F%E5%88%97%E5%8C%96/" style="font-size: 10px;">序列化</a> <a href="/tags/%E5%BC%82%E6%AD%A5/" style="font-size: 10px;">异步</a> <a href="/tags/%E5%BE%AE%E6%9C%8D%E5%8A%A1/" style="font-size: 10.91px;">微服务</a> <a href="/tags/%E6%8E%A7%E4%BB%B6/" style="font-size: 10px;">控件</a> <a href="/tags/%E6%8E%A8%E8%8D%90%E7%B3%BB%E7%BB%9F/" style="font-size: 11.82px;">推荐系统</a> <a href="/tags/%E6%9E%B6%E6%9E%84/" style="font-size: 11.82px;">架构</a> <a href="/tags/%E7%AE%97%E6%B3%95/" style="font-size: 10px;">算法</a> <a href="/tags/%E7%BB%84%E4%BB%B6/" style="font-size: 10px;">组件</a> <a href="/tags/%E7%BB%9F%E8%AE%A1%E6%8C%87%E6%A0%87/" style="font-size: 10px;">统计指标</a> <a href="/tags/%E7%BD%91%E7%BB%9C/" style="font-size: 12.73px;">网络</a> <a href="/tags/%E8%BD%AE%E8%AF%A2/" style="font-size: 10px;">轮询</a>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">归档</h3>
+    <div class="widget">
+      <ul class="archive-list"><li class="archive-list-item"><a class="archive-list-link" href="/archives/2026/06/">六月 2026</a><span class="archive-list-count">14</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2026/05/">五月 2026</a><span class="archive-list-count">18</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2026/04/">四月 2026</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2026/01/">一月 2026</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2025/12/">十二月 2025</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2025/11/">十一月 2025</a><span class="archive-list-count">9</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2025/10/">十月 2025</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2025/09/">九月 2025</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2025/08/">八月 2025</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2025/07/">七月 2025</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2025/06/">六月 2025</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2025/05/">五月 2025</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2025/02/">二月 2025</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2025/01/">一月 2025</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2024/11/">十一月 2024</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2024/10/">十月 2024</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2024/08/">八月 2024</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2024/06/">六月 2024</a><span class="archive-list-count">11</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2024/05/">五月 2024</a><span class="archive-list-count">9</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2024/04/">四月 2024</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2024/03/">三月 2024</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2024/02/">二月 2024</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2024/01/">一月 2024</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/12/">十二月 2023</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/11/">十一月 2023</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/10/">十月 2023</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/09/">九月 2023</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/08/">八月 2023</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/07/">七月 2023</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/06/">六月 2023</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/05/">五月 2023</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/04/">四月 2023</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/03/">三月 2023</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2023/01/">一月 2023</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/12/">十二月 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/11/">十一月 2022</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/10/">十月 2022</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/09/">九月 2022</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/08/">八月 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/07/">七月 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/06/">六月 2022</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/05/">五月 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/04/">四月 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/03/">三月 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/02/">二月 2022</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2022/01/">一月 2022</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/12/">十二月 2021</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/11/">十一月 2021</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/10/">十月 2021</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/08/">八月 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/07/">七月 2021</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/06/">六月 2021</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/05/">五月 2021</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/04/">四月 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/03/">三月 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/02/">二月 2021</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2021/01/">一月 2021</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/12/">十二月 2020</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/11/">十一月 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/09/">九月 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/08/">八月 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/07/">七月 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/06/">六月 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/05/">五月 2020</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/04/">四月 2020</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/03/">三月 2020</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/02/">二月 2020</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2020/01/">一月 2020</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/12/">十二月 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/11/">十一月 2019</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/10/">十月 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/09/">九月 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/08/">八月 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/07/">七月 2019</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/06/">六月 2019</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/05/">五月 2019</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/04/">四月 2019</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/03/">三月 2019</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/02/">二月 2019</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2019/01/">一月 2019</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/12/">十二月 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/11/">十一月 2018</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/10/">十月 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/09/">九月 2018</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/08/">八月 2018</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/07/">七月 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/06/">六月 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/05/">五月 2018</a><span class="archive-list-count">2</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/04/">四月 2018</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/03/">三月 2018</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/02/">二月 2018</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/01/">一月 2018</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/12/">十二月 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/11/">十一月 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/10/">十月 2017</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/09/">九月 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/08/">八月 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/07/">七月 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/06/">六月 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/05/">五月 2017</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/04/">四月 2017</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/03/">三月 2017</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/02/">二月 2017</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2017/01/">一月 2017</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/12/">十二月 2016</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/11/">十一月 2016</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/10/">十月 2016</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/09/">九月 2016</a><span class="archive-list-count">5</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/08/">八月 2016</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/07/">七月 2016</a><span class="archive-list-count">11</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/06/">六月 2016</a><span class="archive-list-count">14</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/05/">五月 2016</a><span class="archive-list-count">6</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/04/">四月 2016</a><span class="archive-list-count">14</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/03/">三月 2016</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/02/">二月 2016</a><span class="archive-list-count">8</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2016/01/">一月 2016</a><span class="archive-list-count">1</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/12/">十二月 2015</a><span class="archive-list-count">3</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/11/">十一月 2015</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/10/">十月 2015</a><span class="archive-list-count">9</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/09/">九月 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/08/">八月 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/07/">七月 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/06/">六月 2015</a><span class="archive-list-count">8</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/05/">五月 2015</a><span class="archive-list-count">7</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/04/">四月 2015</a><span class="archive-list-count">15</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/03/">三月 2015</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/02/">二月 2015</a><span class="archive-list-count">4</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2015/01/">一月 2015</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/12/">十二月 2014</a><span class="archive-list-count">28</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/11/">十一月 2014</a><span class="archive-list-count">12</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/10/">十月 2014</a><span class="archive-list-count">10</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/09/">九月 2014</a><span class="archive-list-count">28</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/08/">八月 2014</a><span class="archive-list-count">19</span></li><li class="archive-list-item"><a class="archive-list-link" href="/archives/2014/07/">七月 2014</a><span class="archive-list-count">1</span></li></ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">近期文章</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+            <a href="/2026/06/21/how-llm-actually-works/">LLM 究竟是如何工作的？</a>
+          </li>
+        
+          <li>
+            <a href="/2026/06/21/go-experimental-features-explained/">Go 实验特性详解</a>
+          </li>
+        
+          <li>
+            <a href="/2026/06/21/amd64-microarchitecture-level-go-performance/">amd64 微架构级别对 Go 程序性能提升多少？</a>
+          </li>
+        
+          <li>
+            <a href="/2026/06/17/loop-engineering-batch-8-issues-kuiniu-tool/">Loop Engineering 实践：一次批量实现 8 个 issue，完成夔牛工具的开发</a>
+          </li>
+        
+          <li>
+            <a href="/2026/06/17/loop-engineering-rdma-port-to-go-239-yuan/">Loop Engineering 实践：我把 RDMA 开发库移植到 Go 语言，花费 239 块钱</a>
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">友情链接</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+			 
+            <a href="http://stackshare.io" target="_blank">技术栈</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://toutiao.io/" target="_blank">开发者头条</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://weekly.manong.io/issues/" target="_blank">码农周刊</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.tuicool.com/mags" target="_blank">编程狂人周刊</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.importnew.com/" target="_blank">importnew</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://ifeve.com/" target="_blank">并发编程网</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://github.com" target="_blank">github</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://stackoverflow.com/" target="_blank">stackoverflow</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.javacodegeeks.com/" target="_blank">javacodegeeks</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.infoq.com/" target="_blank">infoq</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://www.dzone.com/links/index.html" target="_blank">dzone</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://oj.leetcode.com/problems/" target="_blank">leetcode</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://tutorials.jenkov.com" target="_blank">jenkov</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://howtodoinjava.com" target="_blank">HowToDoInJava</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://java-design-patterns.com/patterns/" target="_blank">java design patterns</a>
+			
+          </li>
+        
+          <li>
+			 
+			&nbsp;
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://medium.com/netflix-techblog" target="_blank">Netflix技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://www.techiedelight.com" target="_blank">Techie Delight</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://engineering.linkedin.com/blog" target="_blank">Linkedin技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://blogs.dropbox.com/tech/" target="_blank">Dropbox技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://code.fb.com" target="_blank">Facebook技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://jm.taobao.org" target="_blank">淘宝中间件团队</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://tech.meituan.com" target="_blank">美团技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="http://blogs.360.cn" target="_blank">360技术博客</a>
+			
+          </li>
+        
+          <li>
+			 
+            <a href="https://xiaomi-info.github.io" target="_blank">小米信息部技术团队</a>
+			
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+      
+
+  
+</aside>
+        
+      </div>
+      <footer id="footer">
+  
+  <div class="outer">
+    <div id="footer-info" class="inner">
+      &copy; 2026 smallnest<br>
+	  Powered by <a href="http://hexo.io/" target="_blank">Hexo</a>
+    </div>
+  </div>
+</footer>
+    </div>
+    <nav id="mobile-nav">
+  
+    
+      <a href="/" class="mobile-nav-link"><i class="fa fa-home">&nbsp;</i>首页</a>
+    
+  
+    
+      <a href="/archives" class="mobile-nav-link"><i class="fa fa-regular fa-folder-open">&nbsp;</i>归档</a>
+    
+  
+    
+      <a href="https://github.com/smallnest" class="mobile-nav-link"><i class="fa fa-brands fa-github-alt">&nbsp;</i>github</a>
+    
+  
+    
+      <a class="mobile-nav-link" href="#"><i class="fa fa-brands fa-golang">&nbsp;</i>Go学习资源</a>
+    
+      
+            <a class="mobile-nav-link" href="/goasm">&nbsp;&nbsp;<i class="fa fa-brands fa-golang">&nbsp;</i>Go汇编示例</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="https://gowebexamples.com">&nbsp;&nbsp;<i class="fa fa-brands fa-golang">&nbsp;</i>Go Web开发示例</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://go-database-sql.org">&nbsp;&nbsp;<i class="fa fa-brands fa-golang">&nbsp;</i>Go 数据库开发教程</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="https://colobu.com/gotips/">&nbsp;&nbsp;<i class="fa fa-brands fa-golang">&nbsp;</i>Go 语言编程技巧</a>
+          
+          
+    
+      
+            
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://rpcx.io">&nbsp;&nbsp;<i class="fa ">&nbsp;</i>RPCX官网</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="http://cn.doc.rpcx.io">&nbsp;&nbsp;<i class="fa ">&nbsp;</i>RPC开发指南</a>
+          
+          
+    
+    
+  
+    
+      <a class="mobile-nav-link" href="#"><i class="fa fa-brands fa-rust">&nbsp;</i>Rust学习资源</a>
+    
+      
+            <a class="mobile-nav-link" href="/perf-book">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>Rust高性能编程指南</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/rust100">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>100个练习题学习Rust</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/atomics">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>Rust原子操作和锁</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/effective-rust">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>高效Rust编程</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/thebook">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>Rust程序设计语言</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/nomicon">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>Rust死灵书</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/rust-reference">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>Rust参考手册</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/tlborm">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>Rust宏小册</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/async-book">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>Rust异步编程书</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/rust-by-example">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>通过例子学Rust</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/api-guidelines">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>Rust API 编写指南</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/comprehensive-rust">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>全面Rust课程</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/easy-rust">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>简单英语学Rust</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/rust-patterns">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>Rust设计模式</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/2020/03/05/A-half-hour-to-learn-Rust/">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>半小时学会Rust</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/rust-cookbook">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>Rust实用指南(cookbook)</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="/rust-rand">&nbsp;&nbsp;<i class="fa fa-brands fa-rust">&nbsp;</i>Rust随机库</a>
+          
+          
+    
+      
+            
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="https://rpcx.io/r/E6v8U">&nbsp;&nbsp;<i class="fa ">&nbsp;</i>Rust for the Polyglot Programmer</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="https://rpcx.io/r/oC5ii">&nbsp;&nbsp;<i class="fa ">&nbsp;</i>LifetimeKata</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="https://tfpk.github.io/macrokata/">&nbsp;&nbsp;<i class="fa ">&nbsp;</i>macrokata</a>
+          
+          
+    
+    
+  
+    
+      <a class="mobile-nav-link" href="#"><i class="fa ">&nbsp;</i>出版书籍</a>
+    
+      
+            <a class="mobile-nav-link" href="/ScalaCollectionsCookbook">&nbsp;&nbsp;<i class="fa ">&nbsp;</i>Scala集合技术手册（简/繁）</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="https://cpgo.colobu.com/">&nbsp;&nbsp;<i class="fa ">&nbsp;</i>深入理解Go并发编程（简/繁）</a>
+          
+          
+    
+      
+            <a class="mobile-nav-link" href="https://item.jd.com/14347716.html">&nbsp;&nbsp;<i class="fa ">&nbsp;</i>100个Go语言典型错误</a>
+          
+          
+    
+    
+  
+    
+      <a href="/ScalaCollectionsCookbook" class="mobile-nav-link"><i class="fa fa-solid fa-book">&nbsp;</i>Scala集合技术手册</a>
+    
+  
+    
+      <a href="/about" class="mobile-nav-link"><i class="fa fa-regular fa-address-card">&nbsp;</i>关于</a>
+    
+  
+</nav>
+    
+<script src="//cdn.staticfile.org/jquery/1.11.1/jquery.min.js"></script>
+<script src="//cdn.bootcss.com/jquery.lazyload/1.9.1/jquery.lazyload.min.js"></script>
+
+<script src="//cdnjs.cloudflare.com/ajax/libs/fancybox/3.2.5/jquery.fancybox.min.js"></script>
+
+
+
+<script src="/js/script.js"></script>
+
+<!-- mathjax config similar to math.stackexchange -->
+<script type="text/x-mathjax-config">
+  MathJax.Hub.Config({
+    tex2jax: {
+      inlineMath: [ ['$','$'], ["\\(","\\)"] ],
+      processEscapes: true,
+      skipTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code']
+    }
+  });
+  MathJax.Hub.Queue(function() {
+      var all = MathJax.Hub.getAllJax(), i;
+      for(i=0; i < all.length; i += 1) {
+        all[i].SourceElement().parentNode.className += ' has-jax';
+      }
+  });
+</script>
+<script type="text/javascript" src="//cdn.bootcss.com/mathjax/2.6.0-beta.1/MathJax.js?config=TeX-AMS-MML_HTMLorMML">
+</script>
+
+<div id="totop" style="position:fixed;bottom:150px;right:10px;cursor: pointer;z-index: 2000;">
+	<a title="返回顶部"><img src="/images/scrollup.png"/></a>
+</div>
+
+<script src="/js/totop.js"></script>
+
+
+
+
+<script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "//hm.baidu.com/hm.js?e085d87993250aab11f3e0c15f1c2785";
+  var s = document.getElementsByTagName("script")[0]; 
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+
+
+  </div>
+</body>
+</html>

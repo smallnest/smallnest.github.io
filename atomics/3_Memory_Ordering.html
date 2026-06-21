@@ -1,0 +1,941 @@
+<!doctype html>
+<html>
+   <head>
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+      <meta name="generator" content="pandoc">
+      
+      
+      
+      <!-- Bootstrap -->
+      <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.5.0/css/bootstrap.min.css" integrity="sha384-9aIt2nRpC12Uk9gS9baDl411NQApFmC26EwAOH8WgZl5MYYxFfc+NcPb1dKGj7Sk" crossorigin="anonymous">
+      <!-- Font-awesome -->
+      <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css">
+      <!-- Styles -->
+      <link rel="stylesheet" href="https://ashki23.github.io/styles.css">
+         </head>
+   <body>
+            <div class="container">
+         
+         <h1 id="第三章内存排序1">第三章：内存排序<a href="#fn1"
+class="footnote-ref" id="fnref1"
+role="doc-noteref"><sup>1</sup></a></h1>
+<p>（<a href="https://marabos.nl/atomics/memory-ordering.html" target="_blank">英文版本</a>）</p>
+<p>在<a
+href="./2_Atomics.md">第二章</a>，我们简要地谈到了内存排序的概念。在该章节，我们将研究这个主题，并探索所有可用的内存排序选项，并且，更重要地是，我们将学习如何使用它们。</p>
+<h2 id="重排和优化">重排和优化</h2>
+<p>（<a href="https://marabos.nl/atomics/memory-ordering.html#reordering-and-optimizations" target="_blank">英文版本</a>）</p>
+<p>处理器和编译器执行各种优化，以便使你的程序运行地尽可能地快。例如，处理器可能会确定你程序中的两个连续指令不会相互影响，如果顺序执行更快就这样执行，否则按不正常顺序执行。当一个指令在从主存中获取一些数据被短暂地阻塞了，只要这不会更改你程序的行为，几个后续地指令可能在第一个指令结束之前被执行和完成。类似地，编译器可能会决定重排或者重写你程序的部分代码，如果它有理由相信这可能会导致更快地执行。但是，同样，仅有在不更改你程序行为的情况下。</p>
+<p>让我们来看看以下这个例子：</p>
+<div class="sourceCode" id="cb1"><pre
+class="sourceCode rust"><code class="sourceCode rust"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="kw">fn</span> f(a<span class="op">:</span> <span class="op">&amp;</span><span class="kw">mut</span> <span class="dt">i32</span><span class="op">,</span> b<span class="op">:</span> <span class="op">&amp;</span><span class="kw">mut</span> <span class="dt">i32</span>) <span class="op">{</span></span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a>    <span class="op">*</span>a <span class="op">+=</span> <span class="dv">1</span><span class="op">;</span></span>
+<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a>    <span class="op">*</span>b <span class="op">+=</span> <span class="dv">1</span><span class="op">;</span></span>
+<span id="cb1-4"><a href="#cb1-4" aria-hidden="true" tabindex="-1"></a>    <span class="op">*</span>a <span class="op">+=</span> <span class="dv">1</span><span class="op">;</span></span>
+<span id="cb1-5"><a href="#cb1-5" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p>这里，编译器肯定会明白，操作的顺序并不重要，因为在这三个加运算之间没有发生任何依赖于
+<code>*a</code> 或 <code>*b</code>
+的操作（假设溢出检查被禁用）。因此，编译器可能会重新排序第二个和第三个操作，然后将前两个操作合并为单个加运算：</p>
+<div class="sourceCode" id="cb2"><pre
+class="sourceCode rust"><code class="sourceCode rust"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="kw">fn</span> f(a<span class="op">:</span> <span class="op">&amp;</span><span class="kw">mut</span> <span class="dt">i32</span><span class="op">,</span> b<span class="op">:</span> <span class="op">&amp;</span><span class="kw">mut</span> <span class="dt">i32</span>) <span class="op">{</span></span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a>    <span class="op">*</span>a <span class="op">+=</span> <span class="dv">2</span><span class="op">;</span></span>
+<span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a>    <span class="op">*</span>b <span class="op">+=</span> <span class="dv">1</span><span class="op">;</span></span>
+<span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p>稍后，在执行优化编译程序的函数时，由于各种原因，处理器可能最终在执行第一次加运算之前，执行第二次加运算，可能是
+<code>*b</code> 在缓存中可用，而 <code>*a</code> 在主内存可获取。</p>
+<p>无论这些优化如何，结果都是相同的：<code>*a</code> 加上
+2，<code>*b</code> 加上
+1。它们执行加运算的顺序对于你程序的其余部分完全不可见。</p>
+<p>验证特定的重新排序或者其他优化并不影响程序的行为的逻辑并不需要考虑其他线程。在我们上面的示例中，这是极好的，因为独占引用（<code>&amp;mut i32</code>）保证没有其他线程可以访问这个值。出现问题的唯一情况是，当共享的数据在线程之间发生改变。或者，换句话说，当使用原子操作时。这就是为什么，我们必须明确地告诉编译器和处理器，它们可以和不能使用我们的原子操作做什么，因为它们通常的逻辑忽略了线程之间的交互，并且可能允许的优化，会导致我们程序的结果改变。</p>
+<p>有趣的问题是我们<em>如何</em>告诉它们。如果我们想要准确地阐明什么是可以接受的，什么是不可以接受的，并发程序将变得非常冗长并很容易出错，并且可能特定于架构：</p>
+<div class="sourceCode" id="cb3"><pre
+class="sourceCode rust"><code class="sourceCode rust"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="kw">let</span> x <span class="op">=</span> a<span class="op">.</span>fetch_add(<span class="dv">1</span><span class="op">,</span></span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a>    Dear compiler and processor<span class="op">,</span></span>
+<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a>    Feel free to reorder this with operations on b<span class="op">,</span></span>
+<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a>    but <span class="cf">if</span> there<span class="ot">&#39;s</span> another thread concurrently executing f<span class="op">,</span></span>
+<span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a>    please don<span class="ot">&#39;t</span> reorder this with operations on <span class="pp">c!</span></span>
+<span id="cb3-6"><a href="#cb3-6" aria-hidden="true" tabindex="-1"></a>    Also<span class="op">,</span> processor<span class="op">,</span> don<span class="ot">&#39;t</span> forget to flush your store <span class="pp">buffer!</span></span>
+<span id="cb3-7"><a href="#cb3-7" aria-hidden="true" tabindex="-1"></a>    If b is zero<span class="op">,</span> though<span class="op">,</span> it doesn<span class="ot">&#39;t</span> matter<span class="op">.</span></span>
+<span id="cb3-8"><a href="#cb3-8" aria-hidden="true" tabindex="-1"></a>    In that case<span class="op">,</span> feel free to <span class="kw">do</span> whatever is fastest<span class="op">.</span></span>
+<span id="cb3-9"><a href="#cb3-9" aria-hidden="true" tabindex="-1"></a>    Thanks<span class="op">~</span> <span class="op">&lt;</span><span class="dv">3</span></span>
+<span id="cb3-10"><a href="#cb3-10" aria-hidden="true" tabindex="-1"></a>)<span class="op">;</span></span></code></pre></div>
+<p>的确，我们仅能从一小部分选项中进行选择，这些选项由
+<code>std::sync::atomic::Ordering</code>
+枚举表示，每个原子操作都将其作为参数。可用选项的部分是非常有限的，但是经过精心挑选，可以适用大部分用例。排序是非常抽象的，并且不能直接反映实际编译器和处理器涉及的机制，例如指令重排。这使得你的并发代码可以脱离架构并且面向未来。它允许在不知道每个当前和未来处理器版本的信息的情况下进行验证。</p>
+<p>在 Rust 中可用的排序：</p>
+<ul>
+<li>Relaxed 排序：<code>Ordering::Relaxed</code></li>
+<li>Release 和 acquire
+排序：<code>Ordering::{Release, Acquire, AcqRel}</code></li>
+<li>顺序一致性排序：<code>Ordering::SeqCst</code></li>
+</ul>
+<p>在 C++ 中，有一种叫做 <em>consume 排序</em>，它在 Rust
+中被省略了，尽管如此，对它的讨论也是很有用的。</p>
+<h2 id="内存模型">内存模型</h2>
+<p>（<a href="https://marabos.nl/atomics/memory-ordering.html#the-memory-model" target="_blank">英文版本</a>）</p>
+<p>不同的内存排序选项有一个严格的形式定义，以确保我们确切地知道我们允许假设什么，并且让编译器编写者确切知道它们需要向我们提供什么。为了将它与特定处理器架构的细节解耦，内存排序是根据抽象<em>内存模型</em>定义的。</p>
+<p>Rust 的内存模型，它更多的抄自
+C++，与任何现有的处理器架构不匹配，而是一个抽象模型，它有一套严格的规则，试图代表当前和未来所有架构的最大公约数，同时给予编译器足够的自由去进行程序分析和优化时作出有用的假设。</p>
+<p>我们已经在<a
+href="./1_Basic_of_Rust_Concurrency.md#借用和数据竞争">第一章的“借用和数据竞争”</a>看到内存模型的一部分，我们讨论了数据竞争如何导致未定义行为。Rust
+的内存模型允许并发的原子存储，但将并发的非原子存储到相同的变量视为数据竞争，这将导致未定义行为。</p>
+<p>然而，在大多数处理器架构中，原子存储之间和常规非原子存储之间并没有什么区别，我们将在<a
+href="./7_Understanding_the_Processor.md">第七章</a>看到这些。人们可以争辩说，内存模型的限制性比必要性要强，但这些严格的规则使编译器和程序员更容易对程序进行推理，并为未来的发展留下了空间。</p>
+<h2 id="happens-before-关系">Happens-Before 关系</h2>
+<p>（<a href="https://marabos.nl/atomics/memory-ordering.html#happens-before" target="_blank">英文版本</a>）</p>
+<p>内存模型定义了操作在 <em>happens-before
+关系</em>发生的顺序。这意味着，作为一个抽象模型，它不涉及机器指令、缓存、缓冲区、时间、指令重排、编译优化等，而只指定一件事情在另一件事情之前保证发生的情况，并将其它一切的顺序都视为未定义的。</p>
+<p>基础的 happens-before
+规则是同一线程内的任何事情都按顺序发生。如果线程线程正在执行
+<code>f(); g();</code>，那么 <code>f()</code> 在 <code>g()</code>
+之前发生。</p>
+<p>然而，在线程之间，happens-before
+仅发生在一些特定的情况下，例如，在创建和等待线程时，解锁和锁定
+mutex，以及使用非 relaxed 的原子操作。Relaxed
+内存排序是最基本的（也是性能最好的）内存排序，它本身并不会导致任何跨线程的
+happens-before 关系。</p>
+<p>为了探索这意味着什么，让我们看看以下示例，我们假设 a 和 b
+有不同的线程并发执行：</p>
+<div class="sourceCode" id="cb4"><pre
+class="sourceCode rust"><code class="sourceCode rust"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="kw">static</span> X<span class="op">:</span> AtomicI32 <span class="op">=</span> <span class="pp">AtomicI32::</span>new(<span class="dv">0</span>)<span class="op">;</span></span>
+<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a><span class="kw">static</span> Y<span class="op">:</span> AtomicI32 <span class="op">=</span> <span class="pp">AtomicI32::</span>new(<span class="dv">0</span>)<span class="op">;</span></span>
+<span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-4"><a href="#cb4-4" aria-hidden="true" tabindex="-1"></a><span class="kw">fn</span> a() <span class="op">{</span></span>
+<span id="cb4-5"><a href="#cb4-5" aria-hidden="true" tabindex="-1"></a>    X<span class="op">.</span>store(<span class="dv">10</span><span class="op">,</span> Relaxed)<span class="op">;</span> <span class="co">// 1</span></span>
+<span id="cb4-6"><a href="#cb4-6" aria-hidden="true" tabindex="-1"></a>    Y<span class="op">.</span>store(<span class="dv">20</span><span class="op">,</span> Relaxed)<span class="op">;</span> <span class="co">// 2</span></span>
+<span id="cb4-7"><a href="#cb4-7" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span>
+<span id="cb4-8"><a href="#cb4-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-9"><a href="#cb4-9" aria-hidden="true" tabindex="-1"></a><span class="kw">fn</span> b() <span class="op">{</span></span>
+<span id="cb4-10"><a href="#cb4-10" aria-hidden="true" tabindex="-1"></a>    <span class="kw">let</span> y <span class="op">=</span> Y<span class="op">.</span>load(Relaxed)<span class="op">;</span> <span class="co">// 3</span></span>
+<span id="cb4-11"><a href="#cb4-11" aria-hidden="true" tabindex="-1"></a>    <span class="kw">let</span> x <span class="op">=</span> X<span class="op">.</span>load(Relaxed)<span class="op">;</span> <span class="co">// 4</span></span>
+<span id="cb4-12"><a href="#cb4-12" aria-hidden="true" tabindex="-1"></a>    <span class="pp">println!</span>(<span class="st">&quot;{x} {y}&quot;</span>)<span class="op">;</span></span>
+<span id="cb4-13"><a href="#cb4-13" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p>正如以上提及的，基础的 happens-before
+规则是同一线程内的任何事情都按顺序发生。因在这个示例中，1 发生在 2
+之前，并且 3 发生在 4 之前，正如 3-1 图片所示。因为我们使用 relaxed
+内存排序，在我们的示例中并没有其它的 happens-before 关系。</p>
+<p><img
+src="https://github.com/rustcc/Rust_Atomics_and_Locks/raw/main/picture/raal_0301.png" />
+图3-1。示例代码中原子操作之间的 happens-before 关系。</p>
+<p>如果 a 或 b 的任何一个在另一个开始之前完成，输出将是 0 0 或 10
+20。如果 a 和 b 并发地运行，很容易看见输出是 10
+0。发生这种操作的方式是，可能以以下顺序写运行：3 1 2 4。</p>
+<p>更有趣地是，输出可以也是 0
+20，尽管导致这个结果的操作不可能有全局地一致性顺序。当 3 被执行，它与 2
+之间不存在 happens-before 关系，这意味着它可以加载 0 或 20。当 4
+被执行，它与 1 之间不存在 happens-before 关系，这意味它可以加载 0 或
+10。因此，输出 0 20 是一种有效的结果。</p>
+<p>需要理解的重要和反直觉的是操作 3 加载值 20 并不能与 2 操作形成
+happens-before 关系，即使这个值是由操作 2
+存储的。我们对“之前”的概念的直觉是，在事情不一定按照全局一致性的顺序发生时会被打破，比如涉及指令重排的情况。</p>
+<p>一个更有用并且直观，但是不太正式的理解是，从执行 b
+的线程的视角来看，操作 1 和 2 可能以相反的顺序发生。</p>
+<h3 id="spawn-和-join">spawn 和 join</h3>
+<p>（<a href="https://marabos.nl/atomics/memory-ordering.html#spawning-and-joining" target="_blank">英文版本</a>）</p>
+<p>产生的线程会创建一个 happens-before 关系，它将发生在
+<code>spawn()</code> 之前的事件与新线程关联起来。同样地，join
+线程创建一个 happens-before 关系，它将发生在 <code>join()</code>
+调用之后的事件与被 join 的线程关联起来。</p>
+<p>为了证明，以下示例中的断言不能失败：</p>
+<div class="sourceCode" id="cb5"><pre
+class="sourceCode rust"><code class="sourceCode rust"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="kw">static</span> X<span class="op">:</span> AtomicI32 <span class="op">=</span> <span class="pp">AtomicI32::</span>new(<span class="dv">0</span>)<span class="op">;</span></span>
+<span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-3"><a href="#cb5-3" aria-hidden="true" tabindex="-1"></a><span class="kw">fn</span> main() <span class="op">{</span></span>
+<span id="cb5-4"><a href="#cb5-4" aria-hidden="true" tabindex="-1"></a>    X<span class="op">.</span>store(<span class="dv">1</span><span class="op">,</span> Relaxed)<span class="op">;</span></span>
+<span id="cb5-5"><a href="#cb5-5" aria-hidden="true" tabindex="-1"></a>    <span class="kw">let</span> t <span class="op">=</span> <span class="pp">thread::</span>spawn(f)<span class="op">;</span></span>
+<span id="cb5-6"><a href="#cb5-6" aria-hidden="true" tabindex="-1"></a>    X<span class="op">.</span>store(<span class="dv">2</span><span class="op">,</span> Relaxed)<span class="op">;</span></span>
+<span id="cb5-7"><a href="#cb5-7" aria-hidden="true" tabindex="-1"></a>    t<span class="op">.</span>join()<span class="op">.</span>unwrap()<span class="op">;</span></span>
+<span id="cb5-8"><a href="#cb5-8" aria-hidden="true" tabindex="-1"></a>    X<span class="op">.</span>store(<span class="dv">3</span><span class="op">,</span> Relaxed)<span class="op">;</span></span>
+<span id="cb5-9"><a href="#cb5-9" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span>
+<span id="cb5-10"><a href="#cb5-10" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-11"><a href="#cb5-11" aria-hidden="true" tabindex="-1"></a><span class="kw">fn</span> f() <span class="op">{</span></span>
+<span id="cb5-12"><a href="#cb5-12" aria-hidden="true" tabindex="-1"></a>    <span class="kw">let</span> x <span class="op">=</span> X<span class="op">.</span>load(Relaxed)<span class="op">;</span></span>
+<span id="cb5-13"><a href="#cb5-13" aria-hidden="true" tabindex="-1"></a>    <span class="pp">assert!</span>(x <span class="op">==</span> <span class="dv">1</span> <span class="op">||</span> x <span class="op">==</span> <span class="dv">2</span>)<span class="op">;</span></span>
+<span id="cb5-14"><a href="#cb5-14" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p>由于 join 和 spawn 操作形成 happens-before 关系，我们肯定知道 X 的
+load 操作在第一个 store 之后，但在最后一个 store 之前，正如在图 3-2
+所见。然而，它是否在第二个 store
+操作之前或之后观察值是不可预测的。换句话说，它可能是 1 或 2，但不是 0 或
+3。</p>
+<p><img
+src="https://github.com/rustcc/Rust_Atomics_and_Locks/raw/main/picture/raal_0302.png" />
+图 3-2。示例代码中 spawn、join、store 和 load 操作之间的 happens-before
+关系。</p>
+<h2 id="relaxed-排序">Relaxed 排序</h2>
+<p>（<a href="https://marabos.nl/atomics/memory-ordering.html#relaxed" target="_blank">英文版本</a>）</p>
+<p>当原子操作使用 relaxed 内存排序并不会提供任何 happens-before
+关系，但是它们仍然保证了每个原子变量的<em>总的修改顺序</em>。这意味着，从线程的角度来看，<em>同一原子变量</em>的所有修改都是以相同的顺序进行的。</p>
+<p>为了证明这意味着什么，我们假设 a 和 b
+由不同的线程并发执行，考虑以下示例：</p>
+<div class="sourceCode" id="cb6"><pre
+class="sourceCode rust"><code class="sourceCode rust"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a><span class="kw">static</span> X<span class="op">:</span> AtomicI32 <span class="op">=</span> <span class="pp">AtomicI32::</span>new(<span class="dv">0</span>)<span class="op">;</span></span>
+<span id="cb6-2"><a href="#cb6-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-3"><a href="#cb6-3" aria-hidden="true" tabindex="-1"></a><span class="kw">fn</span> a() <span class="op">{</span></span>
+<span id="cb6-4"><a href="#cb6-4" aria-hidden="true" tabindex="-1"></a>    X<span class="op">.</span>fetch_add(<span class="dv">5</span><span class="op">,</span> Relaxed)<span class="op">;</span></span>
+<span id="cb6-5"><a href="#cb6-5" aria-hidden="true" tabindex="-1"></a>    X<span class="op">.</span>fetch_add(<span class="dv">10</span><span class="op">,</span> Relaxed)<span class="op">;</span></span>
+<span id="cb6-6"><a href="#cb6-6" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span>
+<span id="cb6-7"><a href="#cb6-7" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-8"><a href="#cb6-8" aria-hidden="true" tabindex="-1"></a><span class="kw">fn</span> b() <span class="op">{</span></span>
+<span id="cb6-9"><a href="#cb6-9" aria-hidden="true" tabindex="-1"></a>    <span class="kw">let</span> a <span class="op">=</span> X<span class="op">.</span>load(Relaxed)<span class="op">;</span></span>
+<span id="cb6-10"><a href="#cb6-10" aria-hidden="true" tabindex="-1"></a>    <span class="kw">let</span> b <span class="op">=</span> X<span class="op">.</span>load(Relaxed)<span class="op">;</span></span>
+<span id="cb6-11"><a href="#cb6-11" aria-hidden="true" tabindex="-1"></a>    <span class="kw">let</span> c <span class="op">=</span> X<span class="op">.</span>load(Relaxed)<span class="op">;</span></span>
+<span id="cb6-12"><a href="#cb6-12" aria-hidden="true" tabindex="-1"></a>    <span class="kw">let</span> d <span class="op">=</span> X<span class="op">.</span>load(Relaxed)<span class="op">;</span></span>
+<span id="cb6-13"><a href="#cb6-13" aria-hidden="true" tabindex="-1"></a>    <span class="pp">println!</span>(<span class="st">&quot;{a} {b} {c} {d}&quot;</span>)<span class="op">;</span></span>
+<span id="cb6-14"><a href="#cb6-14" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p>在该示例中，仅有一个线程修改 X，这使得很轻松地能够看到 X
+的修改顺序：0→5→15。它从 0 开始，然后变成 5，最终变成 15。线程并不能从 X
+中观察到与此总修改不一致的任何值。这意味着“0 0 0 0”、“0 0 5 15”和“0 15
+15 15”是来自另一个线程打印语句的可能结果，而“0 5 0 15”或“0 0 10
+15”的输出是不可能的。</p>
+<p>即使原子变量有多个可能的修改顺序，所有线程也仅约定好一个顺序。</p>
+<p>让我们用两个单独的函数替换 a1 和
+a2，我们假设它们分别由一个单独的线程执行：</p>
+<div class="sourceCode" id="cb7"><pre
+class="sourceCode rust"><code class="sourceCode rust"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="kw">fn</span> a1() <span class="op">{</span></span>
+<span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a>    X<span class="op">.</span>fetch_add(<span class="dv">5</span><span class="op">,</span> Relaxed)<span class="op">;</span></span>
+<span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span>
+<span id="cb7-4"><a href="#cb7-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb7-5"><a href="#cb7-5" aria-hidden="true" tabindex="-1"></a><span class="kw">fn</span> a2() <span class="op">{</span></span>
+<span id="cb7-6"><a href="#cb7-6" aria-hidden="true" tabindex="-1"></a>    X<span class="op">.</span>fetch_add(<span class="dv">10</span><span class="op">,</span> Relaxed)<span class="op">;</span></span>
+<span id="cb7-7"><a href="#cb7-7" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p>假设这些是唯一修改 X 的线程，现在有两种修改顺序：要么是 0→5→15 或
+0→10→15，这取决于哪个 fetch_add
+操作先执行。无论哪种情况，所有线程都遵守相同的顺序。因此，即使我们即使我们有数百个额外的线程正在运行我们的
+<code>b()</code> 函数，我们知道如果其中一个打印出 10，那么顺序必须是
+0→10→15，而它们其中的任何一个都不可能打印出 5。反之亦然。</p>
+<p>在<a
+href="./2_Atomics.md">第二章</a>，我们看见几个用例示例，其中保证个别变量的总修改顺序就足够了，使用
+Relaxed
+内存排序足够了。然而，如果我们尝试任何超出这些示例更高级的东西，我们将很快发现，需要比
+relaxed 更强的保证。</p>
+<div class="box">
+<h2 style="text-align: center;">
+凭空出现的值
+</h2>
+<p>
+在使用 Relaxed
+内存排序时，由于缺乏顺序保证，当操作在循环方式下相互依赖时，可能会导致理论上的复杂情况。
+</p>
+<p>
+为了演示，这里有一个人为的例子，两个线程从一个原子加载一个值，并将其存储在另一个原子中：
+</p>
+<pre>static X: AtomicI32 = AtomicI32::new(0);
+static Y: AtomicI32 = AtomicI32::new(0);
+
+fn main() {
+    let a = thread::spawn(|| {
+        let x = X.load(Relaxed);
+        Y.store(x, Relaxed);
+    });
+    let b = thread::spawn(|| {
+        let y = Y.load(Relaxed);
+        X.store(y, Relaxed);
+    });
+    a.join().unwrap();
+    b.join().unwrap();
+    assert_eq!(X.load(Relaxed), 0); // 可能失败？
+    assert_eq!(Y.load(Relaxed), 0); // 可能失败？
+}</pre>
+<p>
+似乎很容易得出 X 和 Y 的值不会是除 0 以外的任何东西的结论，因为 store
+操作仅从这项相同的原子中加载值，而这些原子仅是 0。
+</p>
+<p>
+然而，如果我们严格遵循理论内存模型，我们必须面对循环推理，并得出可怕的结论，我们可能错了。事实上，内存模型在技术上允许出现这样的结果，即最终
+X 和 Y 都是 37，或者任意其它的值，导致断言失败。
+</p>
+<p>
+由于缺乏顺序保证，这两个线程的 load 操作可能都看到另一个线程 store
+操作的结果，允许按操作顺序循环：我们在 Y 中存储 37，因为我们从 X 加载了
+37，X 存储到 X，因为我们从 Y 加载了 37，这是我们在 Y 中存储的值。
+</p>
+<p>
+幸运的是，这种<i>凭空捏造</i>值的可能性在理论模型中被普遍认为是一个
+bug，而不需要你在实践中考虑。如何在不允许这种异常情况的情况下形式化
+relaxed
+内存排序还是一个未解决的问题。尽管这对于形式化验证来说可能是一个问题，让许多理论家夜不能寐，但是我们其他人可以放心地使用
+relaxed，因为在实践中不会发生这种情况。
+</p>
+</div>
+<h2 id="release-和-acquire-排序">Release 和 Acquire 排序</h2>
+<p>（<a href="https://marabos.nl/atomics/memory-ordering.html#release-and-acquire-ordering" target="_blank">英文版本</a>）</p>
+<p><em>Release</em> 和 <em>Acquire</em>
+内存排序通常成对使用，它们用于形成线程之间的 happens-before
+关系。<code>Release</code> 内存排序适用于 store 操作，而
+<code>Acquire</code> 内存排序适用于 load 操作。</p>
+<p>当 acquire-load 操作观察 release-store 操作的结果时，就会形成
+happens-before 关系。在这种情况下，store
+操作及其之前的所有操作在时间上先于 load 操作和之后的所有操作。</p>
+<p>当使用 Acquire
+进行「获取并修改」或者「比较并交换」操作时，它仅适用于操作的 load
+部分。类似地，Release 仅适用于操作的 store 部分。<code>AcqRel</code>
+用于表示 Acquire 和 Release 的组合，这既能使 load 使用 Acquire，也能使
+store 使用 Release。<a class="indexterm" id="index-AcqRel"></p>
+<p>让我们回顾一个示例，看看我们在实践中如何使用它们。在以下示例中，我们将一个
+64
+位整数从产生的线程发送到主线程。我们使用一个额外的原子布尔类型以指示主线程，整数已经被存储并且已经可以读取：</p>
+<div class="sourceCode" id="cb8"><pre
+class="sourceCode rust"><code class="sourceCode rust"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a><span class="kw">use</span> <span class="pp">std::sync::atomic::Ordering::</span><span class="op">{</span>Acquire<span class="op">,</span> Release<span class="op">};</span></span>
+<span id="cb8-2"><a href="#cb8-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb8-3"><a href="#cb8-3" aria-hidden="true" tabindex="-1"></a><span class="kw">static</span> DATA<span class="op">:</span> AtomicU64 <span class="op">=</span> <span class="pp">AtomicU64::</span>new(<span class="dv">0</span>)<span class="op">;</span></span>
+<span id="cb8-4"><a href="#cb8-4" aria-hidden="true" tabindex="-1"></a><span class="kw">static</span> READY<span class="op">:</span> AtomicBool <span class="op">=</span> <span class="pp">AtomicBool::</span>new(<span class="cn">false</span>)<span class="op">;</span></span>
+<span id="cb8-5"><a href="#cb8-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb8-6"><a href="#cb8-6" aria-hidden="true" tabindex="-1"></a><span class="kw">fn</span> main() <span class="op">{</span></span>
+<span id="cb8-7"><a href="#cb8-7" aria-hidden="true" tabindex="-1"></a>    <span class="pp">thread::</span>spawn(<span class="op">||</span> <span class="op">{</span></span>
+<span id="cb8-8"><a href="#cb8-8" aria-hidden="true" tabindex="-1"></a>        DATA<span class="op">.</span>store(<span class="dv">123</span><span class="op">,</span> Relaxed)<span class="op">;</span></span>
+<span id="cb8-9"><a href="#cb8-9" aria-hidden="true" tabindex="-1"></a>        READY<span class="op">.</span>store(<span class="cn">true</span><span class="op">,</span> Release)<span class="op">;</span> <span class="co">// 在这个 store 之前的所有操作都会在这个 store 操作之后可见</span></span>
+<span id="cb8-10"><a href="#cb8-10" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span>)<span class="op">;</span></span>
+<span id="cb8-11"><a href="#cb8-11" aria-hidden="true" tabindex="-1"></a>    <span class="cf">while</span> <span class="op">!</span>READY<span class="op">.</span>load(Acquire) <span class="op">{</span> <span class="co">// READY 的值变为 true，表示前面的 load 操作对于其他线程可见</span></span>
+<span id="cb8-12"><a href="#cb8-12" aria-hidden="true" tabindex="-1"></a>        <span class="pp">thread::</span>sleep(<span class="pp">Duration::</span>from_millis(<span class="dv">100</span>))<span class="op">;</span></span>
+<span id="cb8-13"><a href="#cb8-13" aria-hidden="true" tabindex="-1"></a>        <span class="pp">println!</span>(<span class="st">&quot;waiting...&quot;</span>)<span class="op">;</span></span>
+<span id="cb8-14"><a href="#cb8-14" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb8-15"><a href="#cb8-15" aria-hidden="true" tabindex="-1"></a>    <span class="pp">println!</span>(<span class="st">&quot;{}&quot;</span><span class="op">,</span> DATA<span class="op">.</span>load(Relaxed))<span class="op">;</span></span>
+<span id="cb8-16"><a href="#cb8-16" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p>当产生的线程完成数据存储时，它使用 release-store 去设置
+<code>READY</code> 标识为真。当主线程通过它的 acquire-load
+操作观察到时，会在这两个线程之间建立一个 happens-before 关系，正如图 3-3
+所示。此时，我们肯定知道在 release-store 到 READY 之前的所有操作对
+acquire-load 之后的所有操作都可见。具体而言，当主线程从
+<code>DATA</code>
+加载时，我们可以肯定它将加载由后台线程存储的值。该程序在最后一行只有一种输出结果：123。</p>
+<p><img
+src="https://github.com/rustcc/Rust_Atomics_and_Locks/raw/main/picture/raal_0303.png" /></p>
+<p>图 3-3。示例代码中原子操作之间的 happens-before 关系，展示了通过
+acquire 和 release 操作形成的跨线程关系。</p>
+<p>如果我们在这个示例为所有操作使用 relaxed 内存排序，主线程可能会看到
+<code>READY</code> 翻转为 true，而之后仍然从 DATA 中加载 0。</p>
+<blockquote>
+<p>“Release”和“Acquire”的名称基于它们最基本用例：一个线程通过原子地存储一些值到原子变量来发布数据，而另一个线程通过原子地加载这个值来获取数据。这正是当我们解锁（释放）互斥体并随后在另一个线程上锁定（获取）它时发生的情况。</p>
+</blockquote>
+<p>在我们的示例中，来自 READY 标识的 happens-before 关系保证了 DATA 的
+store 和 load
+操作不能并发地发生。这意味着我们实际上不需要这些操作是原子的。</p>
+<p>然而，如果我们仅是为我们的数据变量尝试去使用常规的非原子类型，编译器将拒绝我们的程序，因为当另一个线程也在借用它们，Rust
+的类型系统不允许我们修改它们。类型系统不会理解我们在这里创建的
+happens-before
+关系。一些不安全的代码是必要的，以向编译器承诺我们已经仔细考虑过这个问题，我们确信我们没有违反任何规则，如下所示：</p>
+<div class="sourceCode" id="cb9"><pre
+class="sourceCode rust"><code class="sourceCode rust"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a><span class="kw">static</span> <span class="kw">mut</span> DATA<span class="op">:</span> <span class="dt">u64</span> <span class="op">=</span> <span class="dv">0</span><span class="op">;</span></span>
+<span id="cb9-2"><a href="#cb9-2" aria-hidden="true" tabindex="-1"></a><span class="kw">static</span> READY<span class="op">:</span> AtomicBool <span class="op">=</span> <span class="pp">AtomicBool::</span>new(<span class="cn">false</span>)<span class="op">;</span></span>
+<span id="cb9-3"><a href="#cb9-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-4"><a href="#cb9-4" aria-hidden="true" tabindex="-1"></a><span class="kw">fn</span> main() <span class="op">{</span></span>
+<span id="cb9-5"><a href="#cb9-5" aria-hidden="true" tabindex="-1"></a>    <span class="pp">thread::</span>spawn(<span class="op">||</span> <span class="op">{</span></span>
+<span id="cb9-6"><a href="#cb9-6" aria-hidden="true" tabindex="-1"></a>        <span class="co">// 安全性：没有其他东西正在访问 DATA，</span></span>
+<span id="cb9-7"><a href="#cb9-7" aria-hidden="true" tabindex="-1"></a>        <span class="co">// 因为我们还没有设置 READY 标识。</span></span>
+<span id="cb9-8"><a href="#cb9-8" aria-hidden="true" tabindex="-1"></a>        <span class="kw">unsafe</span> <span class="op">{</span> DATA <span class="op">=</span> <span class="dv">123</span> <span class="op">};</span></span>
+<span id="cb9-9"><a href="#cb9-9" aria-hidden="true" tabindex="-1"></a>        READY<span class="op">.</span>store(<span class="cn">true</span><span class="op">,</span> Release)<span class="op">;</span> <span class="co">// 在这个 store 之前的所有操作都会在这个 store 操作之后可见</span></span>
+<span id="cb9-10"><a href="#cb9-10" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span>)<span class="op">;</span></span>
+<span id="cb9-11"><a href="#cb9-11" aria-hidden="true" tabindex="-1"></a>    <span class="cf">while</span> <span class="op">!</span>READY<span class="op">.</span>load(Acquire) <span class="op">{</span> <span class="co">// READY 的值变为 true，表示前面的 store 操作对于其他线程可见</span></span>
+<span id="cb9-12"><a href="#cb9-12" aria-hidden="true" tabindex="-1"></a>        <span class="pp">thread::</span>sleep(<span class="pp">Duration::</span>from_millis(<span class="dv">100</span>))<span class="op">;</span></span>
+<span id="cb9-13"><a href="#cb9-13" aria-hidden="true" tabindex="-1"></a>        <span class="pp">println!</span>(<span class="st">&quot;waiting...&quot;</span>)<span class="op">;</span></span>
+<span id="cb9-14"><a href="#cb9-14" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb9-15"><a href="#cb9-15" aria-hidden="true" tabindex="-1"></a>    <span class="co">// 安全地：没有其他东西修改 DATA，因为 READY 已设置。</span></span>
+<span id="cb9-16"><a href="#cb9-16" aria-hidden="true" tabindex="-1"></a>    <span class="pp">println!</span>(<span class="st">&quot;{}&quot;</span><span class="op">,</span> <span class="kw">unsafe</span> <span class="op">{</span> DATA <span class="op">}</span>)<span class="op">;</span></span>
+<span id="cb9-17"><a href="#cb9-17" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<div class="box">
+<h2 style="text-align: center;">
+更正式地
+</h2>
+<p>
+当 acquire-load 操作观察 release-store 操作的结果时，就会形成
+happens-before 关系。但那是什么意思？
+</p>
+<p>
+想象一下，两个线程都将一个 7 release-store
+到相同的原子变量中，第三个线程从该变量中加载
+7。第三个线程和第一个或者第二个线程有一个 happens-before
+关系吗？这取决于它加载“哪个 7”：线程一还是线程二的。（或许一个不相关的
+7）。这使我们得出的结论是，尽管 7 等于 7，但两个 7
+与两个线程有一些不同。
+</p>
+<p>
+思考这个问题的方式是我们在<a href="#relaxed-排序">“Relaxed
+排序”</a>中讨论的<i>总修改顺序</i>：发生在原子变量上的所有修改的有序列表。即使将相同的值多次写入相同的变量，这些操作中的每一个都以该变量的总修改顺序代表一个单独的事件。当我们加载一个值，加载的值与每个变量“时间线”上的特定点相匹配，这告诉我们我们可能会同步哪个操作。
+</p>
+<p>
+例如，如果原子总修改顺序是
+</p>
+<p>
+<ol type="1">
+<li>初始化为 0
+</p></li>
+</ol>
+<p>
+<ol start="2" type="1">
+<li>Release-store 7（来自线程二）
+</p></li>
+</ol>
+<p>
+<ol start="3" type="1">
+<li>Release-store 6
+</p></li>
+</ol>
+<p>
+<ol start="4" type="1">
+<li>Release-store 7（来自线程一）
+</p></li>
+</ol>
+<p>
+然后，acquire-load 7 将与第二个线程的 release-store 或者最后一个事件的
+release-store 同步。然而，如果我们之前（就 happens-before 关系而言）见过
+6，我们知道我们看到的是最后一个 7，而不是第一个
+7，这意味着我们现在与线程一有 happens-before 的关系，而不是线程二。
+</p>
+<p>
+还有一个额外的细节，即 release-stored
+的值可以经过被任意数量的「获取并修改」和「比较并交换」操作修改，但仍会导致与读取最终结果的
+acquire-load 操作建立 happens-before 关系。
+</p>
+<p>
+例如，想象一个具有以下总修改顺序的原子变量：
+</p>
+<p>
+<ol type="1">
+<li>初始化为 0
+</p></li>
+</ol>
+<p>
+<ol start="2" type="1">
+<li>Release-store 7
+</p></li>
+</ol>
+<p>
+<ol start="3" type="1">
+<li>Relaxed-fetch-and-add 1，改变 7 到 8
+</p></li>
+</ol>
+<p>
+<ol start="4" type="1">
+<li>Relaxed-fetch-and-add 1，改变 8 到 9
+</p></li>
+</ol>
+<p>
+<ol start="5" type="1">
+<li>Release-store 7
+</p></li>
+</ol>
+<p>
+<ol start="6" type="1">
+<li>Relaxed-swap 10，改变 7 到 10
+</p></li>
+</ol>
+<p>
+现在，如果我们在这个变量上执行 acquire-load 到
+9，我们不仅与第四个操作（存储此值）建立了一个 happens-before
+关系，同时也与第二个操作（存储 7）建立了该关系，即使第三个操作使用了
+Relaxed 内存排序。
+</p>
+<p>
+相似地，如果我们在这个变量上执行 acquire-load 到 10，而该值是由一个
+relaxed 操作写入的，我们仍然建立了与第五个操作（存储 7）的
+happens-before 关系。因为它只是一个普通的 store
+操作（不是「获取并修改」或「比较并交换」操作），它打破了规则链：我们没有与其他操作建立
+happens-before 关系。
+</p>
+</div>
+<h3 id="示例锁定">示例：锁定</h3>
+<p>（<a href="https://marabos.nl/atomics/memory-ordering.html#example-locking" target="_blank">英文版本</a>）</p>
+<p>互斥锁是 release 和 acquire 排序的最常见用例（参见<a
+href="./1_Basic_of_Rust_Concurrency.md#锁互斥锁和读写锁">第一章的“锁：互斥锁和读写锁”</a>）。当锁定时，它们使用
+acquire
+排序的原子操作来检查是否它已解锁，同时也（原子地）改变状态到“锁定”。当解锁时，它们使用
+release 排序设置状态到“解锁”。这意味着，在解锁 mutex 和随后锁定它有一个
+happens-before 关系。</p>
+<p>以下是这种模式的演示：</p>
+<div class="sourceCode" id="cb10"><pre
+class="sourceCode rust"><code class="sourceCode rust"><span id="cb10-1"><a href="#cb10-1" aria-hidden="true" tabindex="-1"></a><span class="kw">static</span> <span class="kw">mut</span> DATA<span class="op">:</span> <span class="dt">String</span> <span class="op">=</span> <span class="dt">String</span><span class="pp">::</span>new()<span class="op">;</span></span>
+<span id="cb10-2"><a href="#cb10-2" aria-hidden="true" tabindex="-1"></a><span class="kw">static</span> LOCKED<span class="op">:</span> AtomicBool <span class="op">=</span> <span class="pp">AtomicBool::</span>new(<span class="cn">false</span>)<span class="op">;</span></span>
+<span id="cb10-3"><a href="#cb10-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-4"><a href="#cb10-4" aria-hidden="true" tabindex="-1"></a><span class="kw">fn</span> f() <span class="op">{</span></span>
+<span id="cb10-5"><a href="#cb10-5" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> LOCKED<span class="op">.</span>compare_exchange(<span class="cn">false</span><span class="op">,</span> <span class="cn">true</span><span class="op">,</span> Acquire<span class="op">,</span> Relaxed)<span class="op">.</span>is_ok() <span class="op">{</span></span>
+<span id="cb10-6"><a href="#cb10-6" aria-hidden="true" tabindex="-1"></a>        <span class="co">// 安全地：我们持有独占的锁，所以没有其他东西访问 DATA。</span></span>
+<span id="cb10-7"><a href="#cb10-7" aria-hidden="true" tabindex="-1"></a>        <span class="kw">unsafe</span> <span class="op">{</span> DATA<span class="op">.</span>push(<span class="ch">&#39;!&#39;</span>) <span class="op">};</span></span>
+<span id="cb10-8"><a href="#cb10-8" aria-hidden="true" tabindex="-1"></a>        LOCKED<span class="op">.</span>store(<span class="cn">false</span><span class="op">,</span> Release)<span class="op">;</span></span>
+<span id="cb10-9"><a href="#cb10-9" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb10-10"><a href="#cb10-10" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span>
+<span id="cb10-11"><a href="#cb10-11" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-12"><a href="#cb10-12" aria-hidden="true" tabindex="-1"></a><span class="kw">fn</span> main() <span class="op">{</span></span>
+<span id="cb10-13"><a href="#cb10-13" aria-hidden="true" tabindex="-1"></a>    <span class="pp">thread::</span>scope(<span class="op">|</span>s<span class="op">|</span> <span class="op">{</span></span>
+<span id="cb10-14"><a href="#cb10-14" aria-hidden="true" tabindex="-1"></a>        <span class="cf">for</span> _ <span class="kw">in</span> <span class="dv">0</span><span class="op">..</span><span class="dv">100</span> <span class="op">{</span></span>
+<span id="cb10-15"><a href="#cb10-15" aria-hidden="true" tabindex="-1"></a>            s<span class="op">.</span>spawn(f)<span class="op">;</span></span>
+<span id="cb10-16"><a href="#cb10-16" aria-hidden="true" tabindex="-1"></a>        <span class="op">}</span></span>
+<span id="cb10-17"><a href="#cb10-17" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span>)<span class="op">;</span></span>
+<span id="cb10-18"><a href="#cb10-18" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p>正如我们在<a
+href="./2_Atomics.md#比较并交换操作">第二章“「比较并交换」操作”</a>简要地所见，「比较并交换」接收两个内存排序参数：一个用于比较成功且
+store 发生的情况，一个用于比较失败且 <code>store</code>
+没有发生的情况。在 f 中，我们试图去改变 <code>LOCKED</code> 的值从 false
+到 true，并且只有在成功的情况下才能访问
+DATA。所以，我们仅关心成功的内存排序。如果 <code>compare_exchange</code>
+操作失败，那一定是因为 <code>LOCKED</code> 已经设置为 true，在这种情况下
+f 不会做任何事情。这与常规 mutex 上的 <code>try_lock</code>
+操作相匹配。</p>
+<blockquote>
+<p>观察力强的读者可能已经注意到，「比较并交换」操作也可能是 swap
+操作，因为在已锁定时将 true 替换为 true 不会改变代码的正确性：</p>
+<div class="sourceCode" id="cb11"><pre
+class="sourceCode rust"><code class="sourceCode rust"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true" tabindex="-1"></a><span class="co">// 这也有效。</span></span>
+<span id="cb11-2"><a href="#cb11-2" aria-hidden="true" tabindex="-1"></a><span class="cf">if</span> LOCKED<span class="op">.</span>swap(<span class="cn">true</span><span class="op">,</span> Acquire) <span class="op">==</span> <span class="cn">false</span> <span class="op">{</span></span>
+<span id="cb11-3"><a href="#cb11-3" aria-hidden="true" tabindex="-1"></a>   <span class="co">// …</span></span>
+<span id="cb11-4"><a href="#cb11-4" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+</blockquote>
+<p>归功于 acquire 和 release
+内存排序，我们肯定没有两个线程能并发地访问数据。正如在图 3-4 展示的，对
+DATA 的任何先前访问都在随后使用 release-store 操作将 false 存储到 LOCKED
+之前发生，然后在下一个 acquire-compare-exchange（或
+acquire-swap）操作中将 false 更改为 true，然后在下一次访问 DATA
+之前发生。</p>
+<p><img
+src="https://github.com/rustcc/Rust_Atomics_and_Locks/raw/main/picture/raal_0304.png" />
+图 3-4。锁定示例中原子操作之间的 happens-before
+关系，显示了两个线程按顺序锁定和解锁。</p>
+<p>在<a
+href="./4_Building_Our_Own_Spin_Lock.md">第四章</a>，我们将把这个概念变成一个可重复使用的类型：自旋锁。</p>
+<h3
+id="示例使用间接的方式惰性初始化">示例：使用间接的方式惰性初始化</h3>
+<p>（<a href="https://marabos.nl/atomics/memory-ordering.html#example-lazy-initialization-with-indirection" target="_blank">英文版本</a>）</p>
+<p>在<a
+href="./2_Atomics.md#示例惰性一次性初始化">第二章的“示例：惰性一次性初始化”</a>中，我们实现一个全局变量的惰性初始化，使用「比较并交换」操作去处理多个线程竞争同时初始化值的情况。由于该值是非零的
+64 位整数，我们能够使用 AtomicU64
+来存储它，在初始化之前使用零作为占位符。</p>
+<p>要对不适合单个原子变量的更大的数据类型做同样的事情，我们需要寻找替代方案。</p>
+<p>在这个例子中，假设我们想保持非阻塞行为，这样线程就不会等待另一个线程，而是从第一个线程中竞争并获取值来完成初始化。这意味着我们仍然需要能够在单个原子操作中从“未初始化”到“完全初始化”。</p>
+<p>正如软件工程的基本定理告诉我们的那样，计算机科学中的每个问题都可以通过添加另一层间接来解决，这个问题也不例外。由于我们无法将数据放入单个原子变量中，因此我们可以使用原子变量来存储指向数据的<em>指针</em>。</p>
+<p><code>AtomicPtr&lt;T&gt;</code> 是 <code>*mut T</code>
+的原子版本：指向 T
+的指针。我们可以使用空指针作为初始状态的占位符，并使用「比较并交换」操作将其原子地替换为指向新分配的、完全初始化的
+T 的指针，然后可以由其他线程读取。</p>
+<p>由于我们不仅共享包含指针的原子变量，还共享它所指向的数据，因此我们不能再像<a
+href="./2_Atomics.md">第 2 章</a>那样使用 Relaxed
+的内存排序。我们需要确保数据的分配和初始化不会与读取数据竞争。换句话说，我们需要在
+store 和 load 操作上使用 release 和 acquire
+排序，以确保编译器和处理器不会通过（例如）重新排序指针的存储和数据本身的初始化来破坏我们的代码。</p>
+<p>对于一些名为 Data 的任意数据类型，这引出了以下实现：</p>
+<div class="sourceCode" id="cb12"><pre
+class="sourceCode rust"><code class="sourceCode rust"><span id="cb12-1"><a href="#cb12-1" aria-hidden="true" tabindex="-1"></a><span class="kw">use</span> <span class="pp">std::sync::atomic::</span>AtomicPtr<span class="op">;</span></span>
+<span id="cb12-2"><a href="#cb12-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb12-3"><a href="#cb12-3" aria-hidden="true" tabindex="-1"></a><span class="kw">fn</span> get_data() <span class="op">-&gt;</span> <span class="op">&amp;</span><span class="ot">&#39;static</span> Data <span class="op">{</span></span>
+<span id="cb12-4"><a href="#cb12-4" aria-hidden="true" tabindex="-1"></a>    <span class="kw">static</span> PTR<span class="op">:</span> AtomicPtr<span class="op">&lt;</span>Data<span class="op">&gt;</span> <span class="op">=</span> <span class="pp">AtomicPtr::</span>new(<span class="pp">std::ptr::</span>null_mut())<span class="op">;</span></span>
+<span id="cb12-5"><a href="#cb12-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb12-6"><a href="#cb12-6" aria-hidden="true" tabindex="-1"></a>    <span class="kw">let</span> <span class="kw">mut</span> p <span class="op">=</span> PTR<span class="op">.</span>load(Acquire)<span class="op">;</span></span>
+<span id="cb12-7"><a href="#cb12-7" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb12-8"><a href="#cb12-8" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> p<span class="op">.</span>is_null() <span class="op">{</span></span>
+<span id="cb12-9"><a href="#cb12-9" aria-hidden="true" tabindex="-1"></a>        p <span class="op">=</span> <span class="dt">Box</span><span class="pp">::</span>into_raw(<span class="dt">Box</span><span class="pp">::</span>new(generate_data()))<span class="op">;</span></span>
+<span id="cb12-10"><a href="#cb12-10" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> <span class="kw">let</span> <span class="cn">Err</span>(e) <span class="op">=</span> PTR<span class="op">.</span>compare_exchange(</span>
+<span id="cb12-11"><a href="#cb12-11" aria-hidden="true" tabindex="-1"></a>            <span class="pp">std::ptr::</span>null_mut()<span class="op">,</span> p<span class="op">,</span> Release<span class="op">,</span> Acquire</span>
+<span id="cb12-12"><a href="#cb12-12" aria-hidden="true" tabindex="-1"></a>        ) <span class="op">{</span></span>
+<span id="cb12-13"><a href="#cb12-13" aria-hidden="true" tabindex="-1"></a>            <span class="co">// 安全性：p 来自上方的 Box::into_raw，</span></span>
+<span id="cb12-14"><a href="#cb12-14" aria-hidden="true" tabindex="-1"></a>            <span class="co">// 并且不能与其他线程共享</span></span>
+<span id="cb12-15"><a href="#cb12-15" aria-hidden="true" tabindex="-1"></a>            drop(<span class="kw">unsafe</span> <span class="op">{</span> <span class="dt">Box</span><span class="pp">::</span>from_raw(p) <span class="op">}</span>)<span class="op">;</span></span>
+<span id="cb12-16"><a href="#cb12-16" aria-hidden="true" tabindex="-1"></a>            p <span class="op">=</span> e<span class="op">;</span></span>
+<span id="cb12-17"><a href="#cb12-17" aria-hidden="true" tabindex="-1"></a>        <span class="op">}</span></span>
+<span id="cb12-18"><a href="#cb12-18" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb12-19"><a href="#cb12-19" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb12-20"><a href="#cb12-20" aria-hidden="true" tabindex="-1"></a>    <span class="co">// 安全性：p 不是 null，并且指向一个正确初始化的值。</span></span>
+<span id="cb12-21"><a href="#cb12-21" aria-hidden="true" tabindex="-1"></a>    <span class="kw">unsafe</span> <span class="op">{</span> <span class="op">&amp;*</span>p <span class="op">}</span></span>
+<span id="cb12-22"><a href="#cb12-22" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p>如果我们以 acquire-load 操作从 PTR
+得到的指针是非空的，我们假设它指向已初始化的数据，并构建对该数据的引用。</p>
+<p>然而，如果它仍然为空，我们会生成新数据，并使用 <code>Box::new</code>
+将其存储在新的内存分配中。然后，我们使用 <code>Box::into_raw</code> 将此
+<code>Box</code>
+转换为原始指针，因此我们可以尝试使用「比较并交换」操作将其存储到 PTR
+中。如果另一个线程赢得初始化竞争，<code>compare_exchange</code>
+将失败，因为 PTR 不再是空的。如果发生这种情况，我们将原始指针转回
+Box，使用 <code>drop</code>
+来释放内存分配，避免内存泄漏，并继续使用另一个线程存储在 PTR
+中的指针。</p>
+<p>在最后的不安全块中，关于安全性的注释表明我们的假设是指它指向的数据已经被初始化。注意，这包括对事情发生顺序的假设。为了确保我们的假设成立，我们使用
+release 和 acquire
+内存排序来确保初始化数据实际上在创建对它引用之前已经发生。</p>
+<p>我们在两个地方加载一个可能的非空（即初始化）指针：通过 load 操作和当
+compare_exchange 失败时的该操作。因此，如上所述，我们需要在 load
+内存排序和 compare_exchange 失败内存排序上都使用
+Acquire，以便能够与存储指针的操作进行同步。当 compare_exchange
+操作成功时，会发生 store 操作，因此我们必须使用 Release
+作为其成功的内存排序。</p>
+<p>图 3-5 显示了三个线程调用 <code>get_data()</code>
+的情况的操作和发生前关系的可视化。在这种情况下，线程 A 和 B
+都观察到一个空指针并都试图去初始化原子指针。线程 A 赢得竞争，导致线程 B
+的 compare_exchange 调用失败。线程 C 在通过线程 A
+初始化之后观察原子指针。最终结果是，所有三个线程最终都使用由线程 A
+分配的 box。</p>
+<p><img
+src="https://github.com/rustcc/Rust_Atomics_and_Locks/raw/main/picture/raal_0305.png" />
+图3-5。调用 <code>get_data()</code>
+的三个线程之间的操作和发生前关系。</p>
+<h2 id="consume-排序">Consume 排序</h2>
+<p>（<a href="https://marabos.nl/atomics/memory-ordering.html#consume" target="_blank">英文版本</a>）</p>
+<p>让我们仔细看看上一个示例中的内存排序。如果我们把严格的模型放在一边，从更实际的方面来思考它，我们可以说
+release 排序阻止了数据的初始化与共享指针的 store
+操作重新排序。这一点非常重要，因为否则其它线程可能会在数据完全初始化之前就能看到它。</p>
+<p>类似地，我们可以说 acquire
+排序为防止重新排序，使得数据在加载指针之前被访问。然而，人们可能合理地质疑，在实践中是否有意义。在数据的地址被加载之前，如何访问数据？我们可能会得出结论：比
+acquire
+排序更弱的内存排序可能就足够了。我们的结论是正确的：这种较弱的内存排序被称为
+consume 排序。</p>
+<p>consume 排序是 acquire
+排序的一个轻量级、更高效的变体，其同步效果仅限于那些依赖于被加载值的操作。</p>
+<p>这意味着如果你用 consume-load 从一个原子变量中加载一个通过 release
+存储的值 x，那么基本上，这个 store 操作发生在依赖 x 的表达式（如
+<code>*x</code>、<code>array[x]</code> 或
+<code>table.lookup(x + 1)</code>）的求值之前，但不一定发生在不相关的操作（如读取另一个与
+x 无关的变量）之前。</p>
+<p>现在有好消息和坏消息。</p>
+<p>好消息是，在所有现代处理器架构上，consume 排序是通过与 relaxed
+排序完全相同的指令实现的。换句话说，consume 排序可以是“免费的”，而
+acquire 内存排序在某些平台可能不是这样。</p>
+<p>坏消息是，没有编译器真正实现 consume 排序。</p>
+<p>事实证明，这种“依赖性”评估的概念不仅难以定义，而且在转换和优化程序时保持这些依赖性也很难。例如，编译器能够优化
+x + 2 - x 为 2，有效地消除了对 x 的依赖。对于更复杂的表达式，如
+<code>array[x]</code>，如果编译器能够对 x
+或数组元素的可能值进行逻辑推断，那么可能会出现更微妙的变化。当考虑控制流，如
+if 语句或函数调用时，问题将变得更加复杂。</p>
+<p>因此，为了安全起见，编译器将 consume 排序升级到 acquire 排序。C++20
+标准甚至明确地不鼓励使用 consume 排序，并指出，除了 acquire
+排序之外，其他实现被证明是不可行的。</p>
+<p>将来可能找到一个 consume
+排序的有效定义和实现。然而，直到这一天到来之前，Rust 都不会暴露
+<code>Ordering::Consume</code>。</p>
+<h2 id="顺序一致性排序">顺序一致性排序</h2>
+<p>（<a href="https://marabos.nl/atomics/memory-ordering.html#seqcst" target="_blank">英文版本</a>）</p>
+<p>最强的内存排序是<em>顺序一致性</em>排序：<code>Ordering::SeqCst</code>。它包含了
+acquire 排序（对于 load 操作）以及 release 排序（对于 store
+操作）的所有保证，并且<em>也</em>保证了操作的全局一致排序。</p>
+<p>这意味着在程序中使用 <code>SeqCst</code>
+排序的每个操作是所有线程都同意的单独全序<a href="#fn2"
+class="footnote-ref" id="fnref2"
+role="doc-noteref"><sup>2</sup></a>（single total
+order，译注：可以理解为在该顺序关系中，每个操作都与其它操作有单独的顺序关系）的一部分。该全序<a
+href="#fn3" class="footnote-ref" id="fnref3"
+role="doc-noteref"><sup>3</sup></a>（total
+order，译注：该原子变量的顺序关系）与每个单独变量的总修改顺序（total
+modification order）一致。</p>
+<p>由于它严格强于 acquire 和 release 内存排序，因此顺序一致性 load 或者
+store 操作可以取代一对 release-acquire 中的 acquire-load 或
+release-store 操作，形成 happens-before 关系。换句话说，acquire-load
+不仅可以与 release-store 形成 happens-before
+关系，同时也可以和顺序一致的 store 形成 happens-before 关系，同样
+release-store 也是如此。</p>
+<blockquote>
+<p>仅有当 happens-before 关系的双方都使用 SeqCst 时，才能保证与 SeqCst
+操作的单独全序一致。</p>
+</blockquote>
+<p>虽然这似乎是最容易推理的内存排序，但 SeqCst
+排序在实践中几乎从来都没有必要。在几乎所有情况下，通常 acquire 和
+release 排序就足够了。</p>
+<p>以下是一个依赖于顺序一致的有序操作的示例：</p>
+<div class="sourceCode" id="cb13"><pre
+class="sourceCode rust"><code class="sourceCode rust"><span id="cb13-1"><a href="#cb13-1" aria-hidden="true" tabindex="-1"></a><span class="kw">use</span> <span class="pp">std::sync::atomic::Ordering::</span>SeqCst<span class="op">;</span></span>
+<span id="cb13-2"><a href="#cb13-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb13-3"><a href="#cb13-3" aria-hidden="true" tabindex="-1"></a><span class="kw">static</span> A<span class="op">:</span> AtomicBool <span class="op">=</span> <span class="pp">AtomicBool::</span>new(<span class="cn">false</span>)<span class="op">;</span></span>
+<span id="cb13-4"><a href="#cb13-4" aria-hidden="true" tabindex="-1"></a><span class="kw">static</span> B<span class="op">:</span> AtomicBool <span class="op">=</span> <span class="pp">AtomicBool::</span>new(<span class="cn">false</span>)<span class="op">;</span></span>
+<span id="cb13-5"><a href="#cb13-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb13-6"><a href="#cb13-6" aria-hidden="true" tabindex="-1"></a><span class="kw">static</span> <span class="kw">mut</span> S<span class="op">:</span> <span class="dt">String</span> <span class="op">=</span> <span class="dt">String</span><span class="pp">::</span>new()<span class="op">;</span></span>
+<span id="cb13-7"><a href="#cb13-7" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb13-8"><a href="#cb13-8" aria-hidden="true" tabindex="-1"></a><span class="kw">fn</span> main() <span class="op">{</span></span>
+<span id="cb13-9"><a href="#cb13-9" aria-hidden="true" tabindex="-1"></a>    <span class="kw">let</span> a <span class="op">=</span> <span class="pp">thread::</span>spawn(<span class="op">||</span> <span class="op">{</span></span>
+<span id="cb13-10"><a href="#cb13-10" aria-hidden="true" tabindex="-1"></a>        A<span class="op">.</span>store(<span class="cn">true</span><span class="op">,</span> SeqCst)<span class="op">;</span></span>
+<span id="cb13-11"><a href="#cb13-11" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> <span class="op">!</span>B<span class="op">.</span>load(SeqCst) <span class="op">{</span></span>
+<span id="cb13-12"><a href="#cb13-12" aria-hidden="true" tabindex="-1"></a>            <span class="kw">unsafe</span> <span class="op">{</span> S<span class="op">.</span>push(<span class="ch">&#39;!&#39;</span>) <span class="op">};</span></span>
+<span id="cb13-13"><a href="#cb13-13" aria-hidden="true" tabindex="-1"></a>        <span class="op">}</span></span>
+<span id="cb13-14"><a href="#cb13-14" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span>)<span class="op">;</span></span>
+<span id="cb13-15"><a href="#cb13-15" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb13-16"><a href="#cb13-16" aria-hidden="true" tabindex="-1"></a>    <span class="kw">let</span> b <span class="op">=</span> <span class="pp">thread::</span>spawn(<span class="op">||</span> <span class="op">{</span></span>
+<span id="cb13-17"><a href="#cb13-17" aria-hidden="true" tabindex="-1"></a>        B<span class="op">.</span>store(<span class="cn">true</span><span class="op">,</span> SeqCst)<span class="op">;</span></span>
+<span id="cb13-18"><a href="#cb13-18" aria-hidden="true" tabindex="-1"></a>        <span class="cf">if</span> <span class="op">!</span>A<span class="op">.</span>load(SeqCst) <span class="op">{</span></span>
+<span id="cb13-19"><a href="#cb13-19" aria-hidden="true" tabindex="-1"></a>            <span class="kw">unsafe</span> <span class="op">{</span> S<span class="op">.</span>push(<span class="ch">&#39;!&#39;</span>) <span class="op">};</span></span>
+<span id="cb13-20"><a href="#cb13-20" aria-hidden="true" tabindex="-1"></a>        <span class="op">}</span></span>
+<span id="cb13-21"><a href="#cb13-21" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span>)<span class="op">;</span></span>
+<span id="cb13-22"><a href="#cb13-22" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb13-23"><a href="#cb13-23" aria-hidden="true" tabindex="-1"></a>    a<span class="op">.</span>join()<span class="op">.</span>unwrap()<span class="op">;</span></span>
+<span id="cb13-24"><a href="#cb13-24" aria-hidden="true" tabindex="-1"></a>    b<span class="op">.</span>join()<span class="op">.</span>unwrap()<span class="op">;</span></span>
+<span id="cb13-25"><a href="#cb13-25" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<p>两个线程首先设置它们自己的原子布尔值到
+true，以告知另一个线程它们正在获取
+S，并且然后检查其它的原子变量布尔值，是否它们可以安全地获取
+S，而不会导致数据竞争。</p>
+<p>如果两个 store 操作都发生在任一 load
+操作之前，则两个线程最终都无法访问 S。然而，两个线程都不可能访问 S
+并导致未定义的行为，因为顺序一致的顺序保证了其中只有一个线程可以赢得竞争。在每个可能的单独全序中，第一个操作将是
+store 操作，这阻止其他线程访问 S。</p>
+<p>在实际情况中，几乎所有对 SeqCst 的使用都涉及一种类似的存储模式，
+store 操作在随后同一线程上的 load
+操作之前必须成为全局可见的。对于这些情况，一个潜在的更有效的替代方案是将
+relaxed 的操作与 SeqCst 屏障结合使用，我们接下来将探索。</p>
+<h2 id="屏障fence2">屏障（Fence）<a href="#fn4" class="footnote-ref"
+id="fnref4" role="doc-noteref"><sup>4</sup></a></h2>
+<p>（<a href="https://marabos.nl/atomics/memory-ordering.html#fences" target="_blank">英文版本</a>）</p>
+<p>除了对原子变量的额外操作，我们还可以将内存排序应用于：原子屏障。</p>
+<p><code>std::sync::atomic::fence</code>
+函数表示一个<em>原子屏障</em>，它可以是一个 Release 屏障、一个 Acquire
+屏障，或者两者都是（AcqRel 或 SeqCst）。SeqCst
+屏障还参与到顺序一致性的全序中。</p>
+<p>原子屏障允许你从原子操作中分离内存排序。如果你想要应用内存排序到多个操作这可能是有用的，或者你想要有条件地应用内存排序。</p>
+<p>本质上，release-store 可以拆分成 release
+屏障，然后是（relaxed）store，并且 acquire-load
+可以拆分成（relaxed）load，然后是 acquire 屏障：</p>
+<div
+style="columns: 2;column-gap: 20px;column-rule-color: green;column-rule-style: solid;">
+<div style="break-inside: avoid">
+<pre><code>release-acquire 关系的 store 操作，
+&lt;pre&gt;
+a.store(1, Release);&lt;/pre&gt;
+可以由 release 屏障和随后的 relaxed store 组成：
+&lt;pre&gt;
+fence(Release);
+a.store(1, Relaxed);&lt;/pre&gt;</code></pre>
+</div>
+<div style="break-inside: avoid">
+<pre><code>release-acquire 关系的 load 操作，
+  &lt;pre&gt;
+  a.load(Acquire);&lt;/pre&gt;
+可以由 relaxed load 和随后的 acquire 屏障组成：
+&lt;pre&gt;
+a.load(Relaxed);
+fence(Acquire);&lt;/pre&gt;</code></pre>
+</div>
+</div>
+<p>不过，使用单独的屏障可能会导致额外的处理器指令，这可能会略微降低效率。</p>
+<p>更重要的是，与 release-store 或者 acquire-load
+不同，屏障不会与任意单个原子变量捆绑。这意味着单个屏障可以立刻用于多个变量。</p>
+<p>从形式上讲，如果 release
+屏障在同一线程上的位置紧跟着任何一个原子操作，而该原子操作存储的值被我们要同步的
+acquire 操作观察到，那么该 release 屏障可以代替 release 操作，并建立一个
+happens-before 关系。同样地，如果一个 acquire
+屏障在同一线程上的位置紧接着之前的任何一个原子操作，而该原子操作加载的值是由
+release 操作存储的，那么该 acquire 屏障可以替代任何一个 acquire
+操作。</p>
+<p>综上所述，这意味着如果在 release 屏障之后的任何 store 操作被在
+acquire 屏障之前的任何 load 操作所观察，那么在 release 屏障和 acquire
+屏障之间将建立 happens-before 关系。</p>
+<p>例如，假设我们有一个线程执行一个 release
+屏障，然后对不同的变量执行三个原子 store
+操作，另一个线程从这些相同的变量执行三个 load 操作，然后是一个 acquire
+屏障，如下所示：</p>
+<div
+style="columns: 2;column-gap: 20px;column-rule-color: green;column-rule-style: solid;">
+<div style="break-inside: avoid">
+<pre><code>线程 1：
+&lt;pre&gt;
+fence(Release);
+A.store(1, Relaxed);
+B.store(2, Relaxed);
+C.store(3, Relaxed);&lt;/pre&gt;</code></pre>
+</div>
+<div style="break-inside: avoid">
+<pre><code>线程 2：
+&lt;pre&gt;
+A.load(Relaxed);
+B.load(Relaxed);
+C.load(Relaxed);
+fence(Acquire);&lt;/pre&gt;</code></pre>
+</div>
+</div>
+<p>在这种情况下，如果线程 2 上的任意 load 操作从线程 1 上的相应 store
+操作加载值，那么线程 1 上的 release 屏障和线程 2 上的 acquire
+屏障之间将建立 happens-before 关系。</p>
+<p>屏障不必直接在原子操作之前或者之后。屏障和原子操作之间可以进行任何事，包括控制流。这可以用于使屏障具有条件性，类似于「比较并交换」操作具有成功和失败的排序。</p>
+<p>例如，如果我们从使用 acquire
+内存排序的原子变量中加载指针，我们可以使用屏障仅当指针不是空的时候应用
+acquire 内存排序：</p>
+<div
+style="columns: 2;column-gap: 20px;column-rule-color: green;column-rule-style: solid;">
+<div style="break-inside: avoid">
+<pre><code>使用 acquire-load：
+&lt;pre&gt;let p = PTR.load(Acquire);</code></pre>
+if p.is_null() { println!(“no data”); } else { println!(“data = {}”,
+unsafe { *p }); }
+</pre>
+</div>
+<div style="break-inside: avoid">
+<pre><code>使用条件的 acquire 屏障：
+&lt;pre&gt;let p = PTR.load(Relaxed);</code></pre>
+if p.is_null() { println!(“no data”); } else { fence(Acquire);
+println!(“data = {}”, unsafe {*p }); }
+</pre>
+</div>
+</div>
+<p>如果指针通常为空，这可能是有益的，在不需要时避免 acquire
+内存排序。</p>
+<p>让我们来看看一个更复杂的 release 和 acquire 屏障的用例：</p>
+<div class="sourceCode" id="cb20"><pre
+class="sourceCode rust"><code class="sourceCode rust"><span id="cb20-1"><a href="#cb20-1" aria-hidden="true" tabindex="-1"></a><span class="kw">use</span> <span class="pp">std::sync::atomic::</span>fence<span class="op">;</span></span>
+<span id="cb20-2"><a href="#cb20-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb20-3"><a href="#cb20-3" aria-hidden="true" tabindex="-1"></a><span class="kw">static</span> <span class="kw">mut</span> DATA<span class="op">:</span> [<span class="dt">u64</span><span class="op">;</span> <span class="dv">10</span>] <span class="op">=</span> [<span class="dv">0</span><span class="op">;</span> <span class="dv">10</span>]<span class="op">;</span></span>
+<span id="cb20-4"><a href="#cb20-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb20-5"><a href="#cb20-5" aria-hidden="true" tabindex="-1"></a><span class="kw">const</span> ATOMIC_FALSE<span class="op">:</span> AtomicBool <span class="op">=</span> <span class="pp">AtomicBool::</span>new(<span class="cn">false</span>)<span class="op">;</span></span>
+<span id="cb20-6"><a href="#cb20-6" aria-hidden="true" tabindex="-1"></a><span class="kw">static</span> READY<span class="op">:</span> [AtomicBool<span class="op">;</span> <span class="dv">10</span>] <span class="op">=</span> [ATOMIC_FALSE<span class="op">;</span> <span class="dv">10</span>]<span class="op">;</span></span>
+<span id="cb20-7"><a href="#cb20-7" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb20-8"><a href="#cb20-8" aria-hidden="true" tabindex="-1"></a><span class="kw">fn</span> main() <span class="op">{</span></span>
+<span id="cb20-9"><a href="#cb20-9" aria-hidden="true" tabindex="-1"></a>    <span class="cf">for</span> i <span class="kw">in</span> <span class="dv">0</span><span class="op">..</span><span class="dv">10</span> <span class="op">{</span></span>
+<span id="cb20-10"><a href="#cb20-10" aria-hidden="true" tabindex="-1"></a>        <span class="pp">thread::</span>spawn(<span class="kw">move</span> <span class="op">||</span> <span class="op">{</span></span>
+<span id="cb20-11"><a href="#cb20-11" aria-hidden="true" tabindex="-1"></a>            <span class="kw">let</span> data <span class="op">=</span> some_calculation(i)<span class="op">;</span></span>
+<span id="cb20-12"><a href="#cb20-12" aria-hidden="true" tabindex="-1"></a>            <span class="kw">unsafe</span> <span class="op">{</span> DATA[i] <span class="op">=</span> data <span class="op">};</span></span>
+<span id="cb20-13"><a href="#cb20-13" aria-hidden="true" tabindex="-1"></a>            READY[i]<span class="op">.</span>store(<span class="cn">true</span><span class="op">,</span> Release)<span class="op">;</span></span>
+<span id="cb20-14"><a href="#cb20-14" aria-hidden="true" tabindex="-1"></a>        <span class="op">}</span>)<span class="op">;</span></span>
+<span id="cb20-15"><a href="#cb20-15" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb20-16"><a href="#cb20-16" aria-hidden="true" tabindex="-1"></a>    <span class="pp">thread::</span>sleep(<span class="pp">Duration::</span>from_millis(<span class="dv">500</span>))<span class="op">;</span></span>
+<span id="cb20-17"><a href="#cb20-17" aria-hidden="true" tabindex="-1"></a>    <span class="kw">let</span> ready<span class="op">:</span> [<span class="dt">bool</span><span class="op">;</span> <span class="dv">10</span>] <span class="op">=</span> <span class="pp">std::array::</span>from_fn(<span class="op">|</span>i<span class="op">|</span> READY[i]<span class="op">.</span>load(Relaxed))<span class="op">;</span></span>
+<span id="cb20-18"><a href="#cb20-18" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> ready<span class="op">.</span>contains(<span class="op">&amp;</span><span class="cn">true</span>) <span class="op">{</span></span>
+<span id="cb20-19"><a href="#cb20-19" aria-hidden="true" tabindex="-1"></a>        fence(Acquire)<span class="op">;</span></span>
+<span id="cb20-20"><a href="#cb20-20" aria-hidden="true" tabindex="-1"></a>        <span class="cf">for</span> i <span class="kw">in</span> <span class="dv">0</span><span class="op">..</span><span class="dv">10</span> <span class="op">{</span></span>
+<span id="cb20-21"><a href="#cb20-21" aria-hidden="true" tabindex="-1"></a>            <span class="cf">if</span> ready[i] <span class="op">{</span></span>
+<span id="cb20-22"><a href="#cb20-22" aria-hidden="true" tabindex="-1"></a>                <span class="pp">println!</span>(<span class="st">&quot;data{i} = {}&quot;</span><span class="op">,</span> <span class="kw">unsafe</span> <span class="op">{</span> DATA[i] <span class="op">}</span>)<span class="op">;</span></span>
+<span id="cb20-23"><a href="#cb20-23" aria-hidden="true" tabindex="-1"></a>            <span class="op">}</span></span>
+<span id="cb20-24"><a href="#cb20-24" aria-hidden="true" tabindex="-1"></a>        <span class="op">}</span></span>
+<span id="cb20-25"><a href="#cb20-25" aria-hidden="true" tabindex="-1"></a>    <span class="op">}</span></span>
+<span id="cb20-26"><a href="#cb20-26" aria-hidden="true" tabindex="-1"></a><span class="op">}</span></span></code></pre></div>
+<blockquote>
+<p><code>std::array::from_fn</code>
+是一种执行一定次数并将结果收集到数组中的简单方法。</p>
+</blockquote>
+<p>在这个示例中，10
+个线程做了一些计算，并存储它们的结果到一个（非原子）共享变量中。每个线程设置一个原子布尔值，以指示数据已经通过主线程准备好读取，使用一个普通的
+release-store。主线程等待半秒，检查所有 10
+个布尔值以查看哪些线程已完成，并打印任何准备好的结果。</p>
+<p>主线程不使用 10 个 acquire-load 操作来读取布尔值，而是使用 relaxed
+的操作和单个 acquire
+屏障。它在读取数据之前执行屏障，但前提是有数据要读取。</p>
+<p>虽然在这个特定的例子中，投入任何精力进行此类优化可能完全没有必要，但在构建高效的并发数据结构时，这种节省额外获取操作开销的模式可能很重要。</p>
+<p><code>SeqCst</code> 屏障既是 release 屏障也是 acquire 屏障（就像
+<code>AcqRel</code>），同时也是顺序一致性操作中单独全序的一部分。然而，只有屏障是全序的一部分，但它之前或之后的原子操作不必是总顺序的一部分。这意味着，与
+release 或 acquire 操作不同，顺序一致性的操作不能拆分为 relaxed
+操作和内存屏障。</p>
+<div class="box">
+<h2 style="text-align: center;">
+编译器屏障
+</h2>
+<p>
+除了常规的原子屏障，Rust
+标准库还提供了<i>编译器屏障</i>：<code>std::sync::atomic::compiler_fence</code>。它的签名与我们上面讨论的这些常规
+<code>fence()</code>
+不同，但它的效果仅限于编译器。与原子屏障不同，例如，它并不会阻止处理器重排指令。在绝大多数屏障的用例中，编译器屏障是不够的。
+</p>
+<p>
+在实现 Unix
+信号处理程序或嵌入式系统上的中断时，可能会出现的用例。这些机制可以突然中断一个线程，暂时在同一处理器内核上执行一个不相关的函数。由于它发生在同一处理器内核上，处理器可能影响内存排序的常规方式不适用。（更多细节请参考<a href="./7_Understanding_the_Processor.html">第七章</a>）在这种情况下，编译器屏障可能阻隔，这样可以节省一条指令并且希望提高性能。
+</p>
+<p>
+另一用例涉及进程级内存屏障。这种技术超出了 Rust
+内存模型的范畴，并且仅在某些操作系统上受支持：在 Linux 上通过 membarrier
+系统调用，在 Windows 上使用 FlushProcessWriterBuffers
+函数。它有效地允许一个线程强制向所有并发运行的线程注入（顺序一致性）原子屏障。这使得我们可以使用轻量级的编译器屏障和重型的进程级屏障替换两个匹配的屏障。如果轻量级屏障一侧的代码执行效率更高，这可以提高整体性能。（请参阅
+<code>crates.io</code> 上的 membarrier crate 文档，了解更多详细信息和在
+Rust 中使用这种屏障的跨平台方法。）
+</p>
+<p>
+编译器屏障也可以是一个有趣的工具，用于探索处理器对内存排序的影响。
+</p>
+<p>
+在<a href="./7_Understanding_the_Processor.html#一个实验">第七章“一个实验”</a>中，我们将故意使用编译器屏障替换常规屏障。这将让我们在使用错误的内存排序时体验到处理器的微妙但潜在的灾难性影响。
+</p>
+</div>
+<h2 id="常见的误解">常见的误解</h2>
+<p>（<a href="https://marabos.nl/atomics/memory-ordering.html#common-misconceptions" target="_blank">英文版本</a>）</p>
+<p>围绕内存排序有很多误解。在我们结束本章之前，让我们回顾一下最常见的误解。</p>
+<blockquote>
+<p>误区：我需要强大的内存排序，以确保更改“立即”可见。</p>
+</blockquote>
+<p>一个常见的误解是，使用像 Relaxed
+这样的弱内存排序意味着对原子变量的更改可能永远不会到达另一个线程，或者只有在显著延迟之后才会到达。“Relaxed”这个名字可能会让它听起来像什么都没发生，直到有什么东西迫使硬件被唤醒并执行本该执行的操作。</p>
+<p>事实是，内存模型并没有说任何关于时机的事情。它仅定义了某些事情发生的顺序；而不是你要等待多久。假设一台计算机需要数年时间才能将数据从一个线程传输到另一个线程，这完全无法使用，但可以完美地满足内存模型。</p>
+<p>在现实生活中，内存排序是关于重新排序指令等事情，这通常以纳秒规模发生。更强的内存排序不会使你的数据传输速度更快；它甚至可能会减慢你的程序速度。</p>
+<blockquote>
+<p>误区：禁用优化意味着我不需要关心内存排序。</p>
+</blockquote>
+<p>编译器和处理器在使事情按照我们预期的顺序发生方面起着作用。禁用编译器优化并不能禁用编译器中的每种可能的转换，也不能禁用处理器的功能，这些功能导致指令重新排序和类似的潜在问题行为。</p>
+<blockquote>
+<p>误区：使用不重新排序指令的处理器意味着我不需要关心内存排序。</p>
+</blockquote>
+<p>一些简单的处理器，比如小型微控制器中的处理器，只有一个核心，每次只能执行一条指令，并且按顺序执行。然而，虽然在这类设备上，出现错误的内存排序导致实际问题的可能性较低，但编译器仍然可能基于错误的内存排序做出无效的假设，导致代码出错。此外，还需要认识到，即使处理器不会乱序执行指令，它仍可能具有其他与内存排序相关的特性。</p>
+<blockquote>
+<p>误区：Relaxed 的操作是免费的。</p>
+</blockquote>
+<p>这是否成立取决于对“免费”一词的定义。的确，Relaxed
+是最高效的内存排序，相比其他内存排序可以显著提升性能。事实上，对于所有现代平台，Relaxed
+load 和 store 操作编译成与非原子读写相同的处理器指令。</p>
+<p>如果原子变量只在单个线程中使用，与非原子变量相比，速度上的差异很可能是因为编译器对非原子操作具有更大的自由度并更有效地进行优化。（编译器通常避免对原子变量进行大部分类型的优化。）</p>
+<p>然而，从多个线程访问相同的内存通常比从单个线程访问要慢得多。当其他线程开始重复读取该变量时，持续写入原子变量的线程可能会遇到明显的减速，因为处理器核心和它们的缓存现在必须开始协作。</p>
+<p>我们将在<a href="./7_Understanding_the_Processor.md">第 7
+章</a>中探讨这种效应。</p>
+<blockquote>
+<p>误区：顺序一致的内存排序是一个很好的默认值，并且总是正确的。</p>
+</blockquote>
+<p>抛开性能问题，顺序一致性内存排序通常被视为默认选择的理想内存排序类型，因为它具有强大的保证。确实，如果任何其他内存排序是正确的，那么
+<code>SeqCst</code> 也是正确的。这可能让人觉得 <code>SeqCst</code>
+总是正确的。然而，可能并发算法本身就是不正确的，不论使用哪种内存排序。</p>
+<p>更重要的是，在阅读代码时，<code>SeqCst</code>
+基本上告诉读者：“该操作依赖于程序中每个单独 <code>SeqCst</code>
+操作的全序”，这是一个极其广泛的声明。如果可能的话，使用较弱的内存排序往往会使相同的代码更容易进行审查和验证。例如，Release
+明确告诉读者：“这与同一变量的 acquire
+操作相关”，在形成对代码的理解时涉及的考虑要少得多。</p>
+<p>建议将 SeqCst
+看作是一个警示标识。在实际代码中看到它通常意味着要么涉及到复杂的情况，要么简单地说是作者没有花时间分析其与内存排序相关的假设，这两种情况都需要额外的审查。</p>
+<blockquote>
+<p>误区：顺序一致的内存排序可用于“release-store”或“acquire-load”。</p>
+</blockquote>
+<p>虽然顺序一致性内存排序可以替代 Acquire 或
+Release，但它并不能以某种方式创建 acquire-store 或
+release-load。这些仍然是不存在的。Release 仅适用于 store 操作，而
+acquire 仅适用于 load 操作。</p>
+<p>例如，Release-store 与 SeqCst-store 不会形成任何 release-acquire
+关系。如果你希望它们成为全局一致顺序的一部分，两个操作都必须使用
+SeqCst。</p>
+<h2 id="总结">总结</h2>
+<p>（<a href="https://marabos.nl/atomics/memory-ordering.html#summary" target="_blank">英文版本</a>）</p>
+<ul>
+<li>所有的原子操作可能没有全局一致的顺序，因为不同的线程视角可能会以不同的顺序发生。</li>
+<li>然而，每个单独的原子变量都有它自己的<em>总修改顺序</em>，不管内存排序如何，所有线程都会达成一致意见。</li>
+<li>操作顺序是通过 <em>happens-before</em> 关系来定义的。</li>
+<li>在单个线程中，每个操作之间都会有一个 <em>happens-before</em>
+关系。</li>
+<li>创建一个线程的操作在顺序上发生在该线程的所有操作之前。</li>
+<li>线程做的任何事情都会在 join 这个线程之前发生。</li>
+<li>解锁 mutex 的操作在顺序上发生在再次锁定 mutex 的操作之前。</li>
+<li>从 release 存储中以 acquire 加载值建立了一个 happens-before
+关系。该值可以通过任意数量的「获取并修改」以及「比较并交换」操作修改。</li>
+<li>如果存在 consume-load，这将是 acquire-load 的轻量级版本。</li>
+<li>顺序一致的排序导致全局一致的操作顺序，但几乎从来都没有必要，并且会使代码审查更加复杂。</li>
+<li>屏障允许你组合多个操作的内存排序或有条件地应用内存排序。</li>
+</ul>
+<p style="text-align: center; padding-block-start: 5rem;">
+<a href="./4_Building_Our_Own_Spin_Lock.html">下一篇，第四章：构建我们自己的自旋锁</a>
+</p>
+<p>参见：<a href="https://zh.cppreference.com/w/cpp/atomic/memory_order"
+class="uri">https://zh.cppreference.com/w/cpp/atomic/memory_order</a></p>
+<aside id="footnotes" class="footnotes footnotes-end-of-document"
+role="doc-endnotes">
+<hr />
+<ol>
+<li id="fn1"><p><a href="https://zh.wikipedia.org/wiki/内存排序"
+class="uri">https://zh.wikipedia.org/wiki/内存排序</a><a href="#fnref1"
+class="footnote-back" role="doc-backlink">↩︎</a></p></li>
+<li id="fn2"><p>摘自 CPP 原子变量的内存排序翻译，请参考参见<a
+href="#fnref2" class="footnote-back" role="doc-backlink">↩︎</a></p></li>
+<li id="fn3"><p>摘自 CPP 原子变量的内存排序翻译，请参考参见<a
+href="#fnref3" class="footnote-back" role="doc-backlink">↩︎</a></p></li>
+<li id="fn4"><p><a href="https://zh.wikipedia.org/wiki/内存屏障"
+class="uri">https://zh.wikipedia.org/wiki/内存屏障</a><a href="#fnref4"
+class="footnote-back" role="doc-backlink">↩︎</a></p></li>
+</ol>
+</aside>      </div>
+            <!-- JS, Popper.js, and jQuery -->
+      <script src="https://code.jquery.com/jquery-3.5.1.slim.min.js" integrity="sha384-DfXdz2htPH0lsSSs5nCTpuj/zy4C+OGpamoFVy38MVBnE+IbbVYUew+OrCXaRkfj" crossorigin="anonymous"></script>
+      <script src="https://cdn.jsdelivr.net/npm/popper.js@1.16.0/dist/umd/popper.min.js" integrity="sha384-Q6E9RHvbIyZFJoft+2mJbHaEWldlvI9IOYy5n3zV9zzTtmI3UksdQRVvoxMfooAo" crossorigin="anonymous"></script>
+      <script src="https://stackpath.bootstrapcdn.com/bootstrap/4.5.0/js/bootstrap.min.js" integrity="sha384-OgVRvuATP1z7JjHLkuOU7Xw704+h835Lr+6QL9UvYjZE3Ipu6Tp75j7Bh/kR0JKI" crossorigin="anonymous"></script>
+      <!-- Mathjax -->
+      <script src="https://polyfill.io/v3/polyfill.min.js?features=es6"></script>
+      <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+      <script>
+         /* Bootstrap styles to tables */
+         function bootstrapStylePandocTables() {
+         $('tr.header').parent('thead').parent('table').addClass('table table-condensed'); }
+         $(document).ready(function () { bootstrapStylePandocTables(); });
+         /* Adjust the height when click the toc */
+         var shiftWindow = function() { scrollBy(0, -60) };
+         window.addEventListener("hashchange", shiftWindow);
+         function load() { if (window.location.hash) shiftWindow(); }
+      </script>
+   </body>
+</html>
