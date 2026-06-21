@@ -352,7 +352,6 @@
       <img class="article-post-image" src="/images/logos/network.png">
       
       
-      <script>function show_answer(btn, x) { if (btn.value === "显示答案") { btn.value = "隐藏答案" } else { btn.value = "显示答案" } var as = document.getElementById(x); if (as.style.display === "none") { as.style.display = "block" } else { as.style.display = "none" } }</script>
       <p>用 Go 写 RDMA，到底能有多简单？又能有多快？这篇带你从零跑到 400 Gb&#x2F;s。</p>
 <h2 id="开篇：一个让人又爱又怕的技术"><a href="#开篇：一个让人又爱又怕的技术" class="headerlink" title="开篇：一个让人又爱又怕的技术"></a>开篇：一个让人又爱又怕的技术</h2><p>如果你做过高性能网络，一定听过 <strong>RDMA</strong> 这个词。它是 AI 训练集群里 GPU 之间狂飙数据的底层、是分布式存储压榨延迟的杀手锏、是金融交易系统微秒必争的武器。</p>
 <img src="/2026/06/17/rdma-high-performance-networking-400gbps/image-20260616064940096.png" class="">
@@ -367,155 +366,11 @@
 <li><p><strong>单边操作</strong>(RDMA Write&#x2F;Read):发起方直接读写对端内存，<strong>对端 CPU 完全不参与</strong>——这是 RDMA 最&quot;魔法&quot;的地方</p>
 </li>
 </ul>
-<hr>
-<h2 id="二-·-先用-perftest-摸清家底"><a href="#二-·-先用-perftest-摸清家底" class="headerlink" title="二 · 先用 perftest 摸清家底"></a>二 · 先用 perftest 摸清家底</h2><p>在写代码之前，先得知道你的网卡能跑多快。业界标准是 <strong>perftest</strong>(linux-rdma 出品的 C 版基准工具)。gordma 贴心地用 Go 复刻了一套对标工具，放在 <code>cmd/</code> 下:</p>
-<table>
-<thead>
-<tr>
-<th>工具</th>
-<th>对标</th>
-<th>测什么</th>
-</tr>
-</thead>
-<tbody><tr>
-<td><code>go_send_bw / lat</code></td>
-<td><code>ib_send_bw/lat</code></td>
-<td>双边 Send 的带宽 &#x2F; 延迟</td>
-</tr>
-<tr>
-<td><code>go_write_bw / lat</code></td>
-<td><code>ib_write_bw/lat</code></td>
-<td>单边 Write</td>
-</tr>
-<tr>
-<td><code>go_read_bw / lat</code></td>
-<td><code>ib_read_bw/lat</code></td>
-<td>单边 Read</td>
-</tr>
-<tr>
-<td><code>go_rdmanet_bw / lat</code></td>
-<td>—(高级)</td>
-<td>测 gordma 高级 API</td>
-</tr>
-</tbody></table>
-<p>命名规律很简单:<strong>操作(send&#x2F;write&#x2F;read) + 指标(bw 带宽 &#x2F; lat 延迟)</strong>。每个工具<strong>不带地址就是服务端，带对端地址就是客户端</strong>。</p>
-<p>跑一把带宽测试:</p>
-<figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br></pre></td><td class="code"><pre><span class="line">go build -o bin/ ./cmd/...</span><br><span class="line"></span><br><span class="line"><span class="comment"># 服务端(不带地址)</span></span><br><span class="line">./bin/go_send_bw -s 65536 -n 1000000 -d mlx5_1 -x 3</span><br><span class="line"></span><br><span class="line"><span class="comment"># 客户端(带服务端 IP)</span></span><br><span class="line">./bin/go_send_bw -s 65536 -n 1000000 -d mlx5_1 -x 3 33.0.226.25:18515</span><br></pre></td></tr></table></figure>
-
-<p>输出:</p>
-<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line">#bytes    #iterations   BW average[MB/s]   MsgRate[Mpps]</span><br><span class="line">65536     1000000       48996.54           0.747628</span><br></pre></td></tr></table></figure>
-
-<p><strong>48996 MB&#x2F;s ≈ 392 Gb&#x2F;s</strong>(注意单位:<code>go_send_bw</code> 输出的是 <strong>MB&#x2F;s</strong>&#x3D;10⁶ 字节&#x2F;秒，×8÷1000 才是 Gb&#x2F;s)，这就是这张 400G 网卡的实力基准。记住这个数，后面要拿它当标尺。</p>
-<blockquote>
-<p>⚠️ <strong>单位是个大坑</strong>:三个常用工具输出单位<strong>各不相同</strong>,直接比原始数会差出 8 倍——C 版 <code>ib_send_bw</code> 是 <strong>MiB&#x2F;s</strong>(2²⁰ 字节)、Go 版 <code>go_send_bw</code> 是 <strong>MB&#x2F;s</strong>(10⁶ 字节)、gordma 的 <code>--raw</code> 是 <strong>MiB&#x2F;s</strong>(已对齐 C 版)。本文所有数字都统一换算到 <strong>Gb&#x2F;s</strong>(10⁹ bit) 再比较。</p>
-</blockquote>
-<blockquote>
-<p>💡 小贴士:命令里的 IP 是服务端 <strong><code>-d</code> 指定的那张 RoCE 网卡</strong>绑定的 IP，<strong>不是CPU网络&#x2F;SSH 那个 IP</strong>。这是新手最容易连不上的坑。两端的 <code>-d</code>(设备)和 <code>-x</code>(GID 索引，RoCE v2 常用 3，  可以使用show_gids查看)要对齐同一张物理网络。</p>
-</blockquote>
-<hr>
-<h2 id="三-·-底层-API-完全掌控-但要写够样板"><a href="#三-·-底层-API-完全掌控-但要写够样板" class="headerlink" title="三 · 底层 API:完全掌控,但要写够样板"></a>三 · 底层 API:完全掌控,但要写够样板</h2><p>gordma 的底层包 <code>gordma</code> 一比一映射了 RDMA 的对象模型。想要完全掌控每个工作请求、每个 QP 参数，用它。代价是:你得自己走完那七步。</p>
-<img src="/2026/06/17/rdma-high-performance-networking-400gbps/image-20260616065212884.png" class="">
-
-<p>来看一个<strong>完整可跑</strong>的 RC 回显(用 rdma_cm 建连，省掉手写状态机):</p>
-<p><strong>服务端:收一条,回显</strong></p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br><span class="line">25</span><br><span class="line">26</span><br><span class="line">27</span><br><span class="line">28</span><br><span class="line">29</span><br><span class="line">30</span><br><span class="line">31</span><br><span class="line">32</span><br><span class="line">33</span><br><span class="line">34</span><br><span class="line">35</span><br><span class="line">36</span><br><span class="line">37</span><br><span class="line">38</span><br><span class="line">39</span><br><span class="line">40</span><br></pre></td><td class="code"><pre><span class="line"><span class="function"><span class="keyword">func</span> <span class="title">server</span><span class="params">(addr <span class="type">string</span>)</span></span> <span class="type">error</span> &#123;</span><br><span class="line">    ln, _ := gordma.Listen(addr)          <span class="comment">// rdma_cm 监听</span></span><br><span class="line">    <span class="keyword">defer</span> ln.Close()</span><br><span class="line">    cm, _ := ln.Accept()                  <span class="comment">// QP 已在 RTS 状态</span></span><br><span class="line">    <span class="keyword">defer</span> cm.Close()</span><br><span class="line">    qp, cq, pd := cm.QP(), cm.CQ(), cm.PD()</span><br><span class="line"></span><br><span class="line">    <span class="comment">// 注册接收缓冲区——网卡只能 DMA 已注册内存</span></span><br><span class="line">    mr, _ := pd.RegMRBuffer(<span class="number">4096</span>, gordma.AccessLocalWrite)</span><br><span class="line">    <span class="keyword">defer</span> mr.Close()</span><br><span class="line"></span><br><span class="line">    <span class="comment">// 收之前必须先挂 recv,否则对端发来会 RNR</span></span><br><span class="line">    sge := gordma.SGEFromMR(mr, <span class="number">0</span>, <span class="number">4096</span>)</span><br><span class="line">    qp.PostRecv(gordma.RecvWR&#123;WRID: <span class="number">1</span>, SGList: []gordma.SGE&#123;sge&#125;&#125;)</span><br><span class="line"></span><br><span class="line">    <span class="comment">// 轮询完成队列</span></span><br><span class="line">    wc := <span class="built_in">make</span>([]gordma.WorkCompletion, <span class="number">1</span>)</span><br><span class="line">    pollOne(cq, wc)</span><br><span class="line">    msg := mr.Bytes()[:wc[<span class="number">0</span>].ByteLen]</span><br><span class="line">    fmt.Printf(<span class="string">&quot;got %q\n&quot;</span>, msg)</span><br><span class="line"></span><br><span class="line">    <span class="comment">// 原样发回</span></span><br><span class="line">    <span class="built_in">copy</span>(mr.Bytes(), msg)</span><br><span class="line">    qp.PostSend(gordma.SendWR&#123;</span><br><span class="line">        WRID: <span class="number">2</span>, Opcode: gordma.OpSend,</span><br><span class="line">        SGList:   []gordma.SGE&#123;gordma.SGEFromMR(mr, <span class="number">0</span>, <span class="built_in">len</span>(msg))&#125;,</span><br><span class="line">        Signaled: <span class="literal">true</span>,</span><br><span class="line">    &#125;)</span><br><span class="line">    pollOne(cq, wc)                       <span class="comment">// 等发送完成</span></span><br><span class="line">    <span class="keyword">return</span> <span class="literal">nil</span></span><br><span class="line">&#125;</span><br><span class="line"></span><br><span class="line"><span class="comment">// 忙轮询 CQ 直到取到一个完成</span></span><br><span class="line"><span class="function"><span class="keyword">func</span> <span class="title">pollOne</span><span class="params">(cq *gordma.CQ, wc []gordma.WorkCompletion)</span></span> &#123;</span><br><span class="line">    <span class="keyword">for</span> &#123;</span><br><span class="line">        <span class="keyword">if</span> n, err := cq.Poll(wc); err != <span class="literal">nil</span> || n &gt; <span class="number">0</span> &#123;</span><br><span class="line">            <span class="keyword">return</span></span><br><span class="line">        &#125;</span><br><span class="line">    &#125;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
-
-<p>每一行都对应一个 RDMA 概念:<strong>注册内存 → 先挂 recv → 轮询 CQ → post send</strong>。底层 API 的好处是<strong>没有任何隐藏行为</strong>,你能做单边 Write&#x2F;Read、能精调 QP 容量、能复刻 perftest——坏处是,样板真的多。</p>
-<hr>
-<h2 id="四-·-高级-API-像写-net-一样写-RDMA"><a href="#四-·-高级-API-像写-net-一样写-RDMA" class="headerlink" title="四 · 高级 API:像写 net 一样写 RDMA"></a>四 · 高级 API:像写 net 一样写 RDMA</h2><p>如果你只是想<strong>写业务</strong>,不想碰 MR、WR、CQ 这些——用 <code>rdmanet</code> 子包。它把上面那一大坨全收进了 <code>Dial / Listen / SendMsg / RecvMsg</code>。</p>
-<img src="/2026/06/17/rdma-high-performance-networking-400gbps/image-20260616072533414.png" class="">
-<p>来看同样的事,高级怎么写。一个 <strong>RPC 服务</strong>:</p>
-<p><strong>服务端</strong></p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br></pre></td><td class="code"><pre><span class="line"><span class="function"><span class="keyword">func</span> <span class="title">serve</span><span class="params">(addr <span class="type">string</span>, opts []rdmanet.Option)</span></span> <span class="type">error</span> &#123;</span><br><span class="line">    ln, err := rdmanet.Listen(addr, opts...)</span><br><span class="line">    <span class="keyword">if</span> err != <span class="literal">nil</span> &#123; <span class="keyword">return</span> err &#125;</span><br><span class="line">    <span class="keyword">defer</span> ln.Close()</span><br><span class="line">    <span class="keyword">for</span> &#123;</span><br><span class="line">        conn, err := ln.Accept()</span><br><span class="line">        <span class="keyword">if</span> err != <span class="literal">nil</span> &#123; <span class="keyword">return</span> err &#125;</span><br><span class="line">        <span class="keyword">go</span> handle(conn)               <span class="comment">// 每个连接一个 goroutine</span></span><br><span class="line">    &#125;</span><br><span class="line">&#125;</span><br><span class="line"></span><br><span class="line"><span class="function"><span class="keyword">func</span> <span class="title">handle</span><span class="params">(conn *rdmanet.Conn)</span></span> &#123;</span><br><span class="line">    <span class="keyword">defer</span> conn.Close()</span><br><span class="line">    <span class="keyword">for</span> &#123;</span><br><span class="line">        req, err := conn.RecvMsg()    <span class="comment">// 收一条完整请求</span></span><br><span class="line">        <span class="keyword">if</span> err == io.EOF &#123; <span class="keyword">return</span> &#125;   <span class="comment">// 客户端关闭,正常结束</span></span><br><span class="line">        <span class="keyword">if</span> err != <span class="literal">nil</span> &#123; <span class="keyword">return</span> &#125;</span><br><span class="line">        conn.SendMsg(process(req))    <span class="comment">// 处理并回复</span></span><br><span class="line">    &#125;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
-
-<p><strong>客户端</strong></p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br></pre></td><td class="code"><pre><span class="line">conn, _ := rdmanet.Dial(<span class="string">&quot;33.0.226.25:18515&quot;</span>,</span><br><span class="line">    rdmanet.WithDevice(<span class="string">&quot;mlx5_1&quot;</span>), rdmanet.WithGIDIndex(<span class="number">3</span>))</span><br><span class="line"><span class="keyword">defer</span> conn.Close()</span><br><span class="line">conn.SendMsg([]<span class="type">byte</span>(<span class="string">&quot;hello&quot;</span>))</span><br><span class="line">reply, _ := conn.RecvMsg()           <span class="comment">// 阻塞等响应</span></span><br></pre></td></tr></table></figure>
-
-<p><strong>没有 MR、没有 WR、没有 CQ 轮询、没有状态机。</strong> 是不是和标准库 <code>net</code> 一模一样?</p>
-<p><code>rdmanet</code> 还提供了一整套实用能力:</p>
-<ul>
-<li><strong>消息语义</strong> <code>SendMsg</code>&#x2F;<code>RecvMsg</code>:保留边界,大消息自动分片重组</li>
-<li><strong>字节流适配器</strong> <code>Read</code>&#x2F;<code>Write</code>:<code>Conn</code> 直接满足 <code>io.ReadWriteCloser</code>,能配 <code>io.Copy</code> 传文件</li>
-<li><strong>批量 I&#x2F;O</strong> <code>SendBatch</code>&#x2F;<code>RecvBatch</code>:摊薄每次调用开销</li>
-<li><strong>UD 数据报</strong> <code>PacketConn</code>:无连接、一对多</li>
-<li><strong>地址注册表</strong> <code>Registry</code>:带外发现对端</li>
-</ul>
-<p>仓库里还附带了 <strong>17 个按功能拆分的示例</strong>(<code>examples/</code> 目录),从最小回显到全双工聊天、文件传输、一对多广播,一个功能一个目录,照着抄就行。</p>
-<hr>
-<h2 id="五-·-RawConn-既要-net-风格-又要榨干网卡"><a href="#五-·-RawConn-既要-net-风格-又要榨干网卡" class="headerlink" title="五 · RawConn:既要 net 风格,又要榨干网卡"></a>五 · RawConn:既要 net 风格,又要榨干网卡</h2><p>高级 <code>Conn</code> 好用,但有个问题:它为了&quot;保留消息边界 + 流控 + 易用&quot;付出了固定成本——封帧、信用流控、bounce 缓冲拷贝、后台 poller goroutine 的跨线程交接。这些叠加起来,让它在 64KB 大包上<strong>只能跑到约 28 Gb&#x2F;s</strong>,远没喂满 400G 网卡。</p>
-<p>于是 gordma 给了第三个选择:<strong><code>RawConn</code></strong>。</p>
-<img src="/2026/06/17/rdma-high-performance-networking-400gbps/image-20260616065325484.png" class="">
-
-<p>它的理念很直接:<strong>把所有花哨的东西全剥掉</strong>,直接暴露&quot;注册内存 + 投递 WR + 自己轮询 CQ&quot;,在同一个 goroutine 里 post + busy-poll,无封帧、无流控、无交接。这正是 perftest 打满线速的那套循环。</p>
-<p>最省事的用法是内置的 <code>PipelineBatch</code>,保持 N 个请求 <strong>in-flight</strong>(同时在网卡里跑),每完成一个补一个:</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br></pre></td><td class="code"><pre><span class="line">rc, _ := rdmanet.DialRaw(addr,</span><br><span class="line">    rdmanet.WithDevice(<span class="string">&quot;mlx5_1&quot;</span>),</span><br><span class="line">    rdmanet.WithGIDIndex(<span class="number">3</span>),</span><br><span class="line">    rdmanet.WithQueueDepth(<span class="number">128</span>))</span><br><span class="line"><span class="keyword">defer</span> rc.Close()</span><br><span class="line"></span><br><span class="line">mr, _ := rc.RegisterMemory(size * txDepth)</span><br><span class="line"><span class="keyword">defer</span> mr.Close()</span><br><span class="line"></span><br><span class="line">rc.PipelineBatch(iters, txDepth, <span class="function"><span class="keyword">func</span><span class="params">(wrID <span class="type">uint64</span>)</span></span> gordma.SendWR &#123;</span><br><span class="line">    slot := <span class="type">int</span>(wrID) % txDepth</span><br><span class="line">    <span class="keyword">return</span> gordma.SendWR&#123;</span><br><span class="line">        WRID:     wrID,</span><br><span class="line">        Opcode:   gordma.OpSend,</span><br><span class="line">        SGList:   []gordma.SGE&#123;gordma.SGEFromMR(mr, slot*size, size)&#125;,</span><br><span class="line">        Signaled: <span class="literal">true</span>,</span><br><span class="line">    &#125;</span><br><span class="line">&#125;)</span><br></pre></td></tr></table></figure>
-
-<p><code>RawConn</code> 还支持:</p>
-<ul>
-<li><strong>单边 Write&#x2F;Read</strong>:走 TCP 握手交换了对端 rkey&#x2F;地址,可以直接做&quot;对端 CPU 不参与&quot;的远程读写</li>
-<li><strong>批量提交 <code>PostSendBatch</code></strong>:用 WR 链表一次 <code>ibv_post_send</code> 提交多个请求,把 cgo 跨界开销从&quot;每个 WR 一次&quot;降到&quot;每批一次&quot;，小包消息率因此能提升约一个数量级</li>
-<li><strong>逃生舱</strong> <code>QP()</code>&#x2F;<code>CQ()</code>&#x2F;<code>PD()</code>:需要时随时下沉到底层自己驱动</li>
-</ul>
-<p>代价当然有:<code>RawConn</code> <strong>不替你保留消息边界、不做流控(得自己控制 in-flight 数,否则 RNR)、不托管缓冲区</strong>。一句话：<strong>先用 <code>Conn</code>，确实要榨干网卡时再上 <code>RawConn</code></strong>。</p>
-<blockquote>
-<p>🔬 <strong>顺带破一个误解</strong>:很多人(包括我一开始)以为&quot;Go 经 cgo 调 RDMA 一定比 C 慢一截&quot;。我用 <code>GORDMA_PROBE=1</code> 把发送循环拆成&quot;提交 WR(post)&quot;和&quot;忙等完成(poll)&quot;两段实测,结论反直觉:<strong>一次 <code>ibv_post_send</code> 含 cgo 跨界约 300ns,只占总时间 ~15%,而且 <code>go_send_bw</code> 和 <code>RawConn</code> 两者完全相同</strong>。也就是说——cgo 提交开销真实存在但很小,<strong>不是</strong>性能差距的主因。后面第六节会看到,<code>go_send_bw</code> 状态好时能直接追平 C 版 <code>ib_send_bw</code>,根本没有&quot;Go 追不上 C&quot;的固有差距。</p>
-</blockquote>
-<hr>
-<h2 id="六-·-真刀真枪-带宽压测对比"><a href="#六-·-真刀真枪-带宽压测对比" class="headerlink" title="六 · 真刀真枪:带宽压测对比"></a>六 · 真刀真枪:带宽压测对比</h2><p>理论讲完,上数据。同一对 400G RoCE v2 节点,64KB 大包,100 万条消息,实测:</p>
-<img src="/2026/06/17/rdma-high-performance-networking-400gbps/image-20260616070038206.png" class="">
-<p><strong>结论很清楚:</strong></p>
-<ul>
-<li>从 <code>Conn</code> 到 <code>RawConn</code>,同一个库、同一张卡,吞吐 <strong>暴涨约 8 倍</strong>，证明那 28 Gb&#x2F;s 的天花板就是高级那套便利机制的固定成本。</li>
-<li><code>RawConn</code> 用纯 Go(加薄薄一层 cgo)把吞吐推到了 <strong>230+ Gb&#x2F;s 的量级</strong>,已经和同一个库的底层 <code>go_send_bw</code> 在同一个数量级。</li>
-</ul>
-<h3 id="一个反直觉的发现-差距不在-cgo-而且不是固定的"><a href="#一个反直觉的发现-差距不在-cgo-而且不是固定的" class="headerlink" title="一个反直觉的发现:差距不在 cgo,而且不是固定的"></a>一个反直觉的发现:差距不在 cgo,而且不是固定的</h3><p>我原本想搞清&quot;<code>RawConn</code>(232) 为什么比 <code>go_send_bw</code>(392) 慢约 1.7 倍&quot;,于是做了一组<strong>同机、同口径、交替跑</strong>的实验(锁核 <code>taskset</code> + 性能调频,尽量压住抖动),用 <code>GORDMA_PROBE=1</code> 拆出 post&#x2F;poll。结果挖出三件事:</p>
-<p><strong>① cgo 提交不是瓶颈。</strong> 两个工具的 post(提交 WR)都是 <strong>~300 ns&#x2F;WR、占比 ~15%,完全相同</strong>。所谓&quot;每个 WR 一次 cgo 跨界拖慢了 Go&quot;,在这个负载上<strong>站不住</strong>——提交很便宜,而且两边一样便宜。</p>
-<p><strong>② Go 能追平 C。</strong> 锁核后 <code>go_send_bw</code> 实测峰值 <strong>0.748 Mpps,和 C 版 <code>ib_send_bw</code> 完全一致</strong>。早先看到的&quot;go_send_bw 只有 ~314 Gb&#x2F;s&quot;是机器状态差时的数,不是 cgo 的锅。</p>
-<p><strong>③ 差距是&quot;可变&quot;的,不是固定缺陷。</strong> 交替跑 3 轮,<code>go_send_bw</code> 在 <strong>0.414 &#x2F; 0.748 &#x2F; 0.414 Mpps</strong> 之间<strong>离散双峰跳变</strong>,而 <code>RawConn</code> 稳定在 <del>0.42。也就是说:<code>go_send_bw</code> 状态差的那几轮,<strong>和 RawConn 几乎持平</strong>;两者差距在 **1.05×</del>1.76× 之间晃**,取决于那一轮 <code>go_send_bw</code> 能不能抢到干净的网卡&#x2F;CPU 窗口。</p>
-<p>差距的真正位置在 <strong>poll(忙等完成到达)</strong>:<code>go_send_bw</code> 的 poll 在 0.75~1.33 µs&#x2F;WR 间大幅波动(状态好就打满线速),<code>RawConn</code> 则被稳定压在 ~1.40 µs。考虑到这是一台<strong>共享 GPU 机、400G 链路被其他租户竞争</strong>,最合理的解释是<strong>环境竞争</strong>,而非 RawConn 有独立的代码缺陷——两个工具走的是同一套 QP 建立和 CQ 轮询路径,逐行核对没有能让 RawConn 单独变慢的差异。</p>
-<blockquote>
-<p>🧭 <strong>给读者的实用结论</strong>:① 不要迷信&quot;Go+cgo 必慢于 C&quot;,在大包带宽场景两者能打平;② cgo 的固定开销真实但小,真正要省它得靠<strong>批量提交 + 忙轮询</strong>(见下文小包测试);③ 想认真比性能,务必<strong>锁核、独占机器、多次取中位数</strong>,共享机上的单次数字会骗你。</p>
-</blockquote>
-<h3 id="小包更能看出批量提交的威力"><a href="#小包更能看出批量提交的威力" class="headerlink" title="小包更能看出批量提交的威力"></a>小包更能看出批量提交的威力</h3><p>64KB 大包很容易撞带宽上限,看不出 CPU 侧的优化。换成 1KB 小包(消息率受限场景):</p>
-<figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">./bin/go_rdmanet_bw --raw -s 1024 -n 5000000 -d mlx5_1 -x 3 -b 128 33.0.226.25:18515</span><br></pre></td></tr></table></figure>
-<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">raw-batch Send(txDepth=128): 5000000 x 1024 bytes in 0.85s: 47.92 Gb/s, 5.850 Mpps</span><br></pre></td></tr></table></figure>
-
-<p><strong>5.85 Mpps</strong>——批量提交(<code>PostSendBatch</code>)在小包上把消息率拉高了一个数量级。这正是榨干高频小消息场景的关键。</p>
-<hr>
-<h2 id="尾声-三个档位-按需取用"><a href="#尾声-三个档位-按需取用" class="headerlink" title="尾声:三个档位,按需取用"></a>尾声:三个档位,按需取用</h2><p>gordma 最打动我的,是它没有逼你在&quot;易用&quot;和&quot;性能&quot;之间二选一,而是给了一条平滑的升级路径:</p>
-<table>
-<thead>
-<tr>
-<th>你的需求</th>
-<th>用哪个</th>
-<th>心智负担</th>
-</tr>
-</thead>
-<tbody><tr>
-<td>写业务,要 net 风格</td>
-<td><code>rdmanet.Conn</code></td>
-<td>像写 socket,几行搞定</td>
-</tr>
-<tr>
-<td>既要简单又要极限吞吐</td>
-<td><code>rdmanet.RawConn</code></td>
-<td>自己管内存,几十行</td>
-</tr>
-<tr>
-<td>完全掌控每个细节</td>
-<td>底层 <code>gordma</code> 包</td>
-<td>复刻 perftest 的程度</td>
-</tr>
-</tbody></table>
-<p>而且全部代码<strong>在任何平台都能编译</strong>(macOS&#x2F;Windows 走 stub 桩实现,RDMA 调用优雅返回 <code>ErrNotSupported</code>),只有真正运行时才需要 Linux + RDMA 硬件。这意味着你可以在 MacBook 上写代码、跑单元测试,真要压测时再丢到带卡的机器上，开发体验和门槛都友好得多。</p>
-<p>如果你正在被 RDMA 编程劝退,或者想给你的 Go 服务接上高性能网络,不妨试试 gordma:</p>
-<blockquote>
-<p>🔗 <strong>github.com&#x2F;smallnest&#x2F;gordma</strong></p>
-</blockquote>
-<p>从 <code>go run ./examples/echo-msg</code> 跑通第一个 RDMA 程序开始,你会发现——<strong>原来 RDMA 也可以这么&quot;傻瓜&quot;。</strong></p>
-<hr>
-<p><em>本文所有性能数据均为同一对 400G RoCE v2 节点上的实测结果,会随硬件与配置不同而变化。完整教程、API 文档、17 个示例和 8 个压测工具均在仓库中。</em></p>
-
+      
+      <p class="article-more-link">
+        <a href="/2026/06/17/rdma-high-performance-networking-400gbps/#more">阅读全文</a>
+      </p>
+      
       
     </div>
     <footer class="article-footer">
@@ -637,7 +492,7 @@
           </li>
         
           <li>
-            <a href="/2026/06/17/loop-engineering-rdma-port-to-go-239-yuan/">Loop Engineering 实践：我把 RDMA 开发库移植到 Go 语言，花费 239 块钱</a>
+            <a href="/2026/06/17/loop-engineering-batch-8-issues-kuiniu-tool/">Loop Engineering 实践：一次批量实现 8 个 issue，完成夔牛工具的开发</a>
           </li>
         
       </ul>
