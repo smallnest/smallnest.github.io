@@ -6,6 +6,8 @@
   
   <title>Loop Engineering 实践：我把 RDMA 开发库移植到 Go 语言，花费 239 块钱</title>
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.cn/css2?family=Chivo+Mono:ital,wght@0,400;0,500;0,600;1,400&family=Inter:ital,opsz,wght@0,14..32,400;0,14..32,500;0,14..32,600;0,14..32,700;1,14..32,400&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400&display=swap" rel="stylesheet">
   <meta name="description" content="一次几乎全自动的库开发实验：从一份 PRD 出发，15 个 issue 串成流水线，让 Agent 一路 实现 → 审查 → 记录 → 发布，最后我只在真机上验证。本文复盘整个过程，验证了Loop Engineering和实际的花费。 0. 缘起我想要一个 Go 语言的 RDMA 库。 从去年我们做高性能网络的黑盒监控起，就开始尝试用 RDMA 做探测。但我们的技术栈是 Go，找了几个库，实现得不">
 <meta property="og:type" content="article">
 <meta property="og:title" content="Loop Engineering 实践：我把 RDMA 开发库移植到 Go 语言，花费 239 块钱">
@@ -13,19 +15,15 @@
 <meta property="og:site_name" content="鸟窝">
 <meta property="og:description" content="一次几乎全自动的库开发实验：从一份 PRD 出发，15 个 issue 串成流水线，让 Agent 一路 实现 → 审查 → 记录 → 发布，最后我只在真机上验证。本文复盘整个过程，验证了Loop Engineering和实际的花费。 0. 缘起我想要一个 Go 语言的 RDMA 库。 从去年我们做高性能网络的黑盒监控起，就开始尝试用 RDMA 做探测。但我们的技术栈是 Go，找了几个库，实现得不">
 <meta property="og:locale" content="zh_CN">
-<meta property="og:image" content="https://colobu.com/2026/06/17/loop-engineering-rdma-port-to-go-239-yuan/image-20260612095602515.png">
-<meta property="og:image" content="https://colobu.com/2026/06/17/loop-engineering-rdma-port-to-go-239-yuan/image-20260612091859384.png">
-<meta property="og:image" content="https://colobu.com/2026/06/17/loop-engineering-rdma-port-to-go-239-yuan/image-20260612092201206.png">
-<meta property="og:image" content="https://colobu.com/2026/06/17/loop-engineering-rdma-port-to-go-239-yuan/image-20260612095723403.png">
 <meta property="og:image" content="https://colobu.com/2026/06/17/loop-engineering-rdma-port-to-go-239-yuan/image-20260612095840690.png">
 <meta property="og:image" content="https://colobu.com/2026/06/17/loop-engineering-rdma-port-to-go-239-yuan/image-20260612100035693.png">
 <meta property="article:published_time" content="2026-06-16T20:00:24.000Z">
-<meta property="article:modified_time" content="2026-06-21T09:23:33.747Z">
+<meta property="article:modified_time" content="2026-06-21T10:12:59.501Z">
 <meta property="article:author" content="smallnest">
 <meta property="article:tag" content="Go">
 <meta property="article:tag" content="Rust">
 <meta name="twitter:card" content="summary">
-<meta name="twitter:image" content="https://colobu.com/2026/06/17/loop-engineering-rdma-port-to-go-239-yuan/image-20260612095602515.png">
+<meta name="twitter:image" content="https://colobu.com/2026/06/17/loop-engineering-rdma-port-to-go-239-yuan/image-20260612095840690.png">
   
   <link rel="alternative" href="/atom.xml" title="鸟窝" type="application/atom+xml">
   
@@ -233,12 +231,12 @@
               <div class="dropdown-content">
           
             
-              <a href="/ScalaCollectionsCookbook"><i class="fa "></i>&nbsp;Scala集合技术手册（简/繁）</a>
+              <a href="https://cpgo.colobu.com/"><i class="fa "></i>&nbsp;深入理解Go并发编程（简/繁）</a>
             
                 
           
             
-              <a href="https://cpgo.colobu.com/"><i class="fa "></i>&nbsp;深入理解Go并发编程（简/繁）</a>
+              <a href="/ScalaCollectionsCookbook"><i class="fa fa-solid fa-book"></i>&nbsp;Scala集合技术手册（简/繁）</a>
             
                 
           
@@ -249,10 +247,6 @@
           
           </div>
         </div>
-          
-          
-          
-            <a class="main-nav-link" href="/ScalaCollectionsCookbook"><i class="fa fa-solid fa-book">&nbsp;</i>Scala集合技术手册</a>
           
           
           
@@ -322,80 +316,8 @@
 <p>还有，大家普遍担心 Loop Engineering 实践起来 token 花费太高，我也想实际看看到底花费几何。</p>
 <p>移植RDMA到Go生态圈是个典型的「工作量不小、但每一步都不算难」的活儿。cgo 封装 verbs 是体力活：几十个 C 结构体、状态机、字节序、资源生命周期，错一个字段编译就挂。正是这种结构清晰、可分解、可验证的任务，最适合拿来做一次 Loop Engineering 实验。</p>
 <p>所谓 Loop Engineering，核心就一句话：不要让 Agent 一口气写完一个大项目，而是把工作拆成带依赖的小单元，让它在一个可恢复、可观测的循环里逐个吃掉，每一步都有验证关卡。</p>
-<p>![image-20260612095602515.png<img src="/2026/06/17/loop-engineering-rdma-port-to-go-239-yuan/image-20260612095602515.png" class=""></p>
-<p>最终结果（仓库 <code>github.com/smallnest/gordma</code>）：</p>
-<ul>
-<li><p>52 个 Go 文件，约 3981 行代码</p>
-</li>
-<li><p>16 个 PR（#16–#31），对应 15 个 issue + 1 个清理 PR</p>
-</li>
-<li><p>核心 verbs 层 ~2266 行，perftest 工具 ~1211 行，TCP 握手 ~213 行</p>
-</li>
-<li><p>跨平台：Linux+cgo 真实实现 &#x2F; 非 Linux 的 stub 实现（macOS 上能编译、能跑单测）</p>
-</li>
-</ul>
-<p>下面是它怎么长出来的。</p>
-<hr>
-<h2 id="1-流水线：PRD-→-Issues-→-Loop"><a href="#1-流水线：PRD-→-Issues-→-Loop" class="headerlink" title="1. 流水线：PRD → Issues → Loop"></a>1. 流水线：PRD → Issues → Loop</h2><p>整条链路是这样的：</p>
-<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">/prd → /to-issues → /loop-it (→ /goal → /review-it → /note-it → /ship-it) ×N</span><br></pre></td></tr></table></figure>
+<img src="/2026/06/17/loop-engineering-rdma-port-to-go-239-yuan/image-20260612095840690.png" class="">
 
-<p>![image-20260612091859384.png<img src="/2026/06/17/loop-engineering-rdma-port-to-go-239-yuan/image-20260612091859384.png" class=""></p>
-<ul>
-<li><strong>PRD</strong>：一份需求文档（<code>tasks/prd-rdma-go-library.md</code>），把关键决策钉死：cgo 封装、6 个工具全集、RC+UD、TCP 握手 + rdma_cm 两种建连、目标是 Mellanox&#x2F;NVIDIA 网卡 + RoCE v2、<code>-t tx-depth</code> 默认 128、延迟工具输出直方图 + min&#x2F;avg&#x2F;max&#x2F;p99。其实这些注意事项并不是我提出来的，而是 prd 这个 skill 会主动询问我，提供选项让我澄清。我最开始就一句提示词：<code>把rdma移植到Go语言</code></li>
-<li><strong>拆 issue</strong>：PRD 被拆成 15 个 issue，并标注依赖关系。这个也是 <code>to-issues</code> 自动帮我生成的，我只告诉它帮我拆成小的、能快速实现的 issue。</li>
-<li><strong>loop-it</strong>：一个带「检查点恢复」的自动化循环，逐个 issue 跑完整流水线。![image-20260612092201206.png<img src="/2026/06/17/loop-engineering-rdma-port-to-go-239-yuan/image-20260612092201206.png" class=""></li>
-</ul>
-<p>15 个 issue 的依赖图大致是一棵树：</p>
-<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br></pre></td><td class="code"><pre><span class="line">#1 项目骨架 (go.mod, cgo, 非 Linux stub)</span><br><span class="line">  └─ #2 设备枚举与 Context</span><br><span class="line">       ├─ #3 PD 分配 + MR 注册 (GC 安全)</span><br><span class="line">       │    └─ #5 RC QP 创建与状态迁移 (INIT/RTR/RTS)</span><br><span class="line">       ├─ #4 CQ 创建、轮询、事件通知</span><br><span class="line">       │    └─ #5 ...</span><br><span class="line">       └─ #14 跨平台 stub 验证</span><br><span class="line">  #5 ─┬─ #6 TCP 带外握手 (交换 QPN/PSN/GID/RKey)</span><br><span class="line">      ├─ #7 UD QP + Address Handle</span><br><span class="line">      └─ #8 Send/Recv + RDMA Read/Write 工作请求</span><br><span class="line">           └─ #9 rdma_cm 建连 (Dial/Listen/Accept)</span><br><span class="line">  #6,#7,#8,#9 ─→ #10 perftest 公共骨架 (参数解析/建连/统计/直方图)</span><br><span class="line">                   ├─ #11 go-send_bw / go-send_lat</span><br><span class="line">                   ├─ #12 go-write_bw / go-write_lat</span><br><span class="line">                   └─ #13 go-read_bw / go-read_lat</span><br><span class="line">  #13,#14 ─→ #15 文档、godoc、CI</span><br></pre></td></tr></table></figure>
-
-<p>loop-it 对它做拓扑排序，得到处理顺序 <code>1→2→3→4→5→6→7→8→9→14→10→11→12→13→15</code>，然后逐个推进。每个 issue 走同一套子流程：</p>
-<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">分支准备 → /goal 实现 → /review-it 审查 → /note-it 记录 → /ship-it 发布 → 清理 → 写检查点</span><br></pre></td></tr></table></figure>
-
-<p>每完成一个 issue，状态写进 <code>.loop-state.json</code>（已加进 <code>.gitignore</code>），崩溃了能从检查点恢复。</p>
-<hr>
-<h2 id="2-实际怎么跑的"><a href="#2-实际怎么跑的" class="headerlink" title="2. 实际怎么跑的"></a>2. 实际怎么跑的</h2><p>前置检查先过一遍：<code>gh</code> 认证、git 仓库、工作树干净、远程可达、有没有旧的状态文件。然后初始化 15 个 issue 全为 <code>pending</code>，从 <code>#1</code> 开始。</p>
-<p>每个 issue 的真实节奏（以 <code>#3 PD/MR</code> 为例）：</p>
-<ol>
-<li><code>git checkout -b feat/issue-3-pd-mr</code>，写检查点 <code>in_progress</code></li>
-<li>实现 <code>mr_linux.go</code>（cgo 真实实现）+ <code>mr_stub.go</code>（非 Linux 桩）+ <code>mr_test.go</code></li>
-<li><code>go vet</code> &#x2F; <code>go build</code> &#x2F; <code>go test</code> 三连</li>
-<li>commit → push → <code>gh pr create</code> → squash merge → 删分支</li>
-<li>同步 master，写检查点 <code>shipped</code></li>
-</ol>
-<p>15 个 issue 一路绿灯跑完，没有一个失败或阻塞。从设备枚举到 6 个 perftest 工具，再到 CI 和文档，全部 shipped。<br>![image-20260612095723403.png<img src="/2026/06/17/loop-engineering-rdma-port-to-go-239-yuan/image-20260612095723403.png" class=""></p>
-<p>到这里，故事看起来很完美。但完美正是需要警惕的地方。</p>
-<hr>
-<h2 id="3-第一个教训：流水线「跳过了审查」，而我一开始没说"><a href="#3-第一个教训：流水线「跳过了审查」，而我一开始没说" class="headerlink" title="3. 第一个教训：流水线「跳过了审查」，而我一开始没说"></a>3. 第一个教训：流水线「跳过了审查」，而我一开始没说</h2><p>复盘时我发现：「loop-it 中没有调用 review-it 啊？」</p>
-<p>真相是：<code>/goal</code> 是交互式的 UI 斜杠命令，不是 skill。我第一次试图调起 <code>/goal</code> 时就撞上了「这是 UI 命令，不是 skill」的报错。于是 ClaudeCode 自动用手工方式替代了整条流水线：</p>
-<table>
-<thead>
-<tr>
-<th>流水线步骤</th>
-<th>我实际做的</th>
-</tr>
-</thead>
-<tbody><tr>
-<td><code>/goal</code></td>
-<td>自己读 PRD&#x2F;issue，直接写代码</td>
-</tr>
-<tr>
-<td><code>/review-it</code></td>
-<td>用 <code>go vet</code> + <code>go build</code> + <code>go test</code> 替代——这只是编译和单测，不是真正的代码审查</td>
-</tr>
-<tr>
-<td><code>/note-it</code></td>
-<td>完全跳过，没生成实现笔记</td>
-</tr>
-<tr>
-<td><code>/ship-it</code></td>
-<td>手工 git &#x2F; PR &#x2F; squash-merge &#x2F; close 替代</td>
-</tr>
-<tr>
-<td>所以实际上 <code>review-it</code>、<code>note-it</code>、<code>ship-it</code> 这几个 skill 都没真正跑起来，CC 用了替代方法去执行的。</td>
-<td></td>
-</tr>
-</tbody></table>
-<p>![image-20260612095840690.png<img src="/2026/06/17/loop-engineering-rdma-port-to-go-239-yuan/image-20260612095840690.png" class=""></p>
 <p>这是我的锅，实现的<code>loop-it</code>有问题。后来在执行过程中我发现了这个问题，修复了 <code>loop-it</code>。</p>
 <hr>
 <h2 id="4-补救：真正的审查发现了什么"><a href="#4-补救：真正的审查发现了什么" class="headerlink" title="4. 补救：真正的审查发现了什么"></a>4. 补救：真正的审查发现了什么</h2><p>最后我还是做了补救，让 CC「现在跑一次真正的审查」。这次 CC 调起了能用的 <code>/code-review</code>（high effort：多个独立角度并行找问题，再逐条对抗式验证），对已合并的全部代码做了一轮真正的 correctness 审查。</p>
@@ -433,7 +355,8 @@
 <li>第二次：<code>c.imm_data undefined</code> + <code>ibv_query_port</code> 类型不匹配，就是 <code>/code-review</code> 预言的那两个编译错误，这下在真机上真实地复现了。CC 按 libibverbs 的正确用法修：给 <code>imm_data</code> 写 C 辅助函数 <code>wc_imm_data()</code>（<code>ntohl</code> 转主机序）；给 <code>ibv_query_port</code> 包一层 C wrapper <code>gordma_query_port()</code> 让 inline 在 C 里展开；发送侧 <code>imm_data</code> 补 <code>htonl</code>。</li>
 <li>第三次：<code>device_linux.go:67: possible misuse of unsafe.Pointer</code>，<code>go vet</code> 嫌弃把指针存进 <code>uintptr</code> 再做算术。改用 <code>unsafe.Add</code>，让指针运算全程保持 <code>unsafe.Pointer</code> 形式。</li>
 </ul>
-<p>![image-20260612100035693.png<img src="/2026/06/17/loop-engineering-rdma-port-to-go-239-yuan/image-20260612100035693.png" class=""><br>因为这些都没进 Loop，所以不适合放在循环里，而是在循环之外执行的。起始后续<code>/simplify</code> 也可以加在循环中。</p>
+<img src="/2026/06/17/loop-engineering-rdma-port-to-go-239-yuan/image-20260612100035693.png" class="">
+<p>因为这些都没进 Loop，所以不适合放在循环里，而是在循环之外执行的。起始后续<code>/simplify</code> 也可以加在循环中。</p>
 <hr>
 <h2 id="6-完整的提交时间线"><a href="#6-完整的提交时间线" class="headerlink" title="6. 完整的提交时间线"></a>6. 完整的提交时间线</h2><p>如果把 16 个功能 PR 之后的修复也算上，整条提交线是这样的（节选）：</p>
 <figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br></pre></td><td class="code"><pre><span class="line">edd44e2 docs: add badges to README</span><br><span class="line">4fa8b9c fix: use unsafe.Add to walk device list (go vet unsafe.Pointer)   ← 真机第3次</span><br><span class="line">f0b0453 fix: cgo compile errors (imm_data, ibv_query_port) + imm byte order ← 真机第2次</span><br><span class="line">d253e36 Chore/simplify cleanups (#31)                                     ← 质量清理+工程化</span><br><span class="line">f2519af docs: README usage, godoc, and CI workflow (#15)                  ← loop-it 最后一个 issue</span><br><span class="line">...</span><br><span class="line">d15513b 项目骨架：go.mod、cgo 构建配置、非 Linux stub (#1)                  ← loop-it 第一个 issue</span><br><span class="line">56514ff Initial commit</span><br></pre></td></tr></table></figure>
@@ -992,12 +915,12 @@
       <a class="mobile-nav-link" href="#"><i class="fa ">&nbsp;</i>出版书籍</a>
     
       
-            <a class="mobile-nav-link" href="/ScalaCollectionsCookbook">&nbsp;&nbsp;<i class="fa ">&nbsp;</i>Scala集合技术手册（简/繁）</a>
+            <a class="mobile-nav-link" href="https://cpgo.colobu.com/">&nbsp;&nbsp;<i class="fa ">&nbsp;</i>深入理解Go并发编程（简/繁）</a>
           
           
     
       
-            <a class="mobile-nav-link" href="https://cpgo.colobu.com/">&nbsp;&nbsp;<i class="fa ">&nbsp;</i>深入理解Go并发编程（简/繁）</a>
+            <a class="mobile-nav-link" href="/ScalaCollectionsCookbook">&nbsp;&nbsp;<i class="fa fa-solid fa-book">&nbsp;</i>Scala集合技术手册（简/繁）</a>
           
           
     
@@ -1006,10 +929,6 @@
           
           
     
-    
-  
-    
-      <a href="/ScalaCollectionsCookbook" class="mobile-nav-link"><i class="fa fa-solid fa-book">&nbsp;</i>Scala集合技术手册</a>
     
   
     
