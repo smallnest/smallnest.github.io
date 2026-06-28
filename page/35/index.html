@@ -269,11 +269,11 @@
       <div class="outer">
         <section id="main">
   
-    <article id="post-learn-go-module" class="article article-type-post" itemscope
+    <article id="post-cacheline-affects-performance-in-go" class="article article-type-post" itemscope
   itemprop="blogPost">
   <div class="article-meta">
-    <a href="/2018/08/27/learn-go-module/" class="article-date">
-  <time datetime="2018-08-27T11:11:34.000Z" itemprop="datePublished">2018年08月27日</time>
+    <a href="/2019/01/24/cacheline-affects-performance-in-go/" class="article-date">
+  <time datetime="2019-01-24T09:13:44.000Z" itemprop="datePublished">2019年01月24日</time>
 </a>
     
     
@@ -287,7 +287,86 @@
       
   
     <h1 itemprop="name">
-      <a class="article-title" href="/2018/08/27/learn-go-module/">跳出Go module的泥潭</a>
+      <a class="article-title" href="/2019/01/24/cacheline-affects-performance-in-go/">cacheline 对 Go 程序的影响</a>
+    </h1>
+  
+
+    </header>
+    
+    <div class="article-entry" itemprop="articleBody">
+      
+      
+      <img class="article-post-image" src="/images/logos/golang7.png">
+      
+      
+      <script>function show_answer(btn, x) { if (btn.value === "显示答案") { btn.value = "隐藏答案" } else { btn.value = "显示答案" } var as = document.getElementById(x); if (as.style.display === "none") { as.style.display = "block" } else { as.style.display = "none" } }</script>
+      <p>首先来了解一下来自维基百科上关于CPU缓存的介绍。</p>
+<blockquote>
+<p>在计算机系统中，CPU高速缓存（英语：CPU Cache，在本文中简称缓存）是用于减少处理器访问内存所需平均时间的部件。在金字塔式存储体系中它位于自顶向下的第二层，仅次于CPU寄存器。其容量远小于内存，但速度却可以接近处理器的频率。</p>
+<p>当处理器发出内存访问请求时，会先查看缓存内是否有请求数据。如果存在（命中），则不经访问内存直接返回该数据；如果不存在（失效），则要先把内存中的相应数据载入缓存，再将其返回处理器。<br>缓存之所以有效，主要是因为程序运行时对内存的访问呈现局部性（Locality）特征。这种局部性既包括空间局部性（Spatial Locality），也包括时间局部性（Temporal Locality）。有效利用这种局部性，缓存可以达到极高的命中率。<br>在处理器看来，缓存是一个透明部件。因此，程序员通常无法直接干预对缓存的操作。但是，确实可以根据缓存的特点对程序代码实施特定优化，从而更好地利用缓存。</p>
+<p>结构上，一个直接映射（Direct Mapped）缓存由若干缓存块（Cache Block，或Cache Line）构成。每个缓存块存储具有连续内存地址的若干个存储单元。在32位计算机上这通常是一个双字（dword），即四个字节。因此，每个双字具有唯一的块内偏移量。每个缓存块还可对应若干标志位，包括有效位（valid bit）、脏位（dirty bit）、使用位（use bit）等。这些位在保证正确性、排除冲突、优化性能等方面起着重要作用。</p>
+<img src="/2019/01/24/cacheline-affects-performance-in-go/programming-latency-numbers.jpg" class=""></blockquote>
+<p>在并发编程中，经常会有共享数据被多个goroutine同时访问， 所以如何有效的进行数据的设计，就是一个相当有技巧的操作。最常用的技巧就是<code>Padding</code>。现在大部分的CPU的cahceline是64字节，将变量补足为64字节可以保证它正好可以填充一个cacheline。</p>
+<p>台湾的<a href="https://github.com/genchilu/concurrencyPractice/tree/master/golang/pad">盧俊錡 Genchi Lu</a>提供了一个很好的例子来比较pad和没有padding的性能(我稍微改了一下)。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br><span class="line">25</span><br><span class="line">26</span><br><span class="line">27</span><br><span class="line">28</span><br><span class="line">29</span><br><span class="line">30</span><br><span class="line">31</span><br><span class="line">32</span><br><span class="line">33</span><br><span class="line">34</span><br><span class="line">35</span><br><span class="line">36</span><br><span class="line">37</span><br><span class="line">38</span><br><span class="line">39</span><br><span class="line">40</span><br><span class="line">41</span><br><span class="line">42</span><br><span class="line">43</span><br><span class="line">44</span><br><span class="line">45</span><br><span class="line">46</span><br><span class="line">47</span><br><span class="line">48</span><br><span class="line">49</span><br><span class="line">50</span><br><span class="line">51</span><br><span class="line">52</span><br><span class="line">53</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">package</span> test</span><br><span class="line"></span><br><span class="line"><span class="keyword">import</span> (</span><br><span class="line">	<span class="string">&quot;sync/atomic&quot;</span></span><br><span class="line">	<span class="string">&quot;testing&quot;</span></span><br><span class="line">)</span><br><span class="line"></span><br><span class="line"><span class="keyword">type</span> NoPad <span class="keyword">struct</span> &#123;</span><br><span class="line">	a <span class="type">uint64</span></span><br><span class="line">	b <span class="type">uint64</span></span><br><span class="line">	c <span class="type">uint64</span></span><br><span class="line">&#125;</span><br><span class="line"></span><br><span class="line"><span class="function"><span class="keyword">func</span> <span class="params">(np *NoPad)</span></span> Increase() &#123;</span><br><span class="line">	atomic.AddUint64(&amp;np.a, <span class="number">1</span>)</span><br><span class="line">	atomic.AddUint64(&amp;np.b, <span class="number">1</span>)</span><br><span class="line">	atomic.AddUint64(&amp;np.c, <span class="number">1</span>)</span><br><span class="line">&#125;</span><br><span class="line"></span><br><span class="line"><span class="keyword">type</span> Pad <span class="keyword">struct</span> &#123;</span><br><span class="line">	a   <span class="type">uint64</span></span><br><span class="line">	_p1 [<span class="number">8</span>]<span class="type">uint64</span></span><br><span class="line">	b   <span class="type">uint64</span></span><br><span class="line">	_p2 [<span class="number">8</span>]<span class="type">uint64</span></span><br><span class="line">	c   <span class="type">uint64</span></span><br><span class="line">	_p3 [<span class="number">8</span>]<span class="type">uint64</span></span><br><span class="line">&#125;</span><br><span class="line"></span><br><span class="line"><span class="function"><span class="keyword">func</span> <span class="params">(p *Pad)</span></span> Increase() &#123;</span><br><span class="line">	atomic.AddUint64(&amp;p.a, <span class="number">1</span>)</span><br><span class="line">	atomic.AddUint64(&amp;p.b, <span class="number">1</span>)</span><br><span class="line">	atomic.AddUint64(&amp;p.c, <span class="number">1</span>)</span><br><span class="line">&#125;</span><br><span class="line"></span><br><span class="line"><span class="function"><span class="keyword">func</span> <span class="title">BenchmarkPad_Increase</span><span class="params">(b *testing.B)</span></span> &#123;</span><br><span class="line">	pad := &amp;Pad&#123;&#125;</span><br><span class="line"></span><br><span class="line">	b.RunParallel(<span class="function"><span class="keyword">func</span><span class="params">(pb *testing.PB)</span></span> &#123;</span><br><span class="line">		<span class="keyword">for</span> pb.Next() &#123;</span><br><span class="line">			pad.Increase()</span><br><span class="line">		&#125;</span><br><span class="line">	&#125;)</span><br><span class="line"></span><br><span class="line">&#125;</span><br><span class="line"></span><br><span class="line"><span class="function"><span class="keyword">func</span> <span class="title">BenchmarkNoPad_Increase</span><span class="params">(b *testing.B)</span></span> &#123;</span><br><span class="line">	nopad := &amp;NoPad&#123;&#125;</span><br><span class="line">	b.RunParallel(<span class="function"><span class="keyword">func</span><span class="params">(pb *testing.PB)</span></span> &#123;</span><br><span class="line">		<span class="keyword">for</span> pb.Next() &#123;</span><br><span class="line">			nopad.Increase()</span><br><span class="line">		&#125;</span><br><span class="line">	&#125;)</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+<p>运行结果:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">go</span> test -gcflags <span class="string">&quot;-N -l&quot;</span> -bench .</span><br><span class="line">goos: darwin</span><br><span class="line">goarch: amd64</span><br><span class="line">BenchmarkPad_Increase<span class="number">-4</span>     	<span class="number">30000000</span>	        <span class="number">56.4</span> ns/op</span><br><span class="line">BenchmarkNoPad_Increase<span class="number">-4</span>   	<span class="number">20000000</span>	        <span class="number">91.4</span> ns/op</span><br></pre></td></tr></table></figure>
+
+<p>可能每次运行的结果不相同，但是基本上Padding后的数据结构要比没有padding的数据结构要好的多。</p>
+<p>Java中知名的高性能的<a href="https://github.com/LMAX-Exchange/disruptor/blob/master/src/main/java/com/lmax/disruptor/RingBuffer.java#L24">disruptor库</a>中的设计中也采用了padding的方式避免伪共享。</p>
+<p>你可以使用<a href="https://github.com/intel-go/cpuid">intel-go&#x2F;cpuid</a>获取CPU的cacheline的大小， 官方库<a href="https://github.com/golang/sys/blob/master/cpu/cpu.go">x&#x2F;sys&#x2F;cpu</a>也提供了一个<code>CacheLinePad</code> struct用来padding,你只需要在你的struct定义的第一行增加<code>_            CacheLinePad</code>这么一行即可：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">var</span> X86 <span class="keyword">struct</span> &#123;</span><br><span class="line">	_            CacheLinePad</span><br><span class="line">	HasAES       <span class="type">bool</span> <span class="comment">// AES hardware implementation (AES NI)</span></span><br><span class="line">    HasADX       <span class="type">bool</span> <span class="comment">// Multi-precision add-carry instruction extensions</span></span><br><span class="line">    ......</span><br></pre></td></tr></table></figure>
+
+
+<p>一个完整的<a href="https://play.golang.org/p/hp_MXQWEJvB">测试</a>, 相关讨论<a href="https://github.com/golang/go/issues/25203">#25203</a>:</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br><span class="line">25</span><br><span class="line">26</span><br><span class="line">27</span><br><span class="line">28</span><br><span class="line">29</span><br><span class="line">30</span><br><span class="line">31</span><br><span class="line">32</span><br><span class="line">33</span><br><span class="line">34</span><br><span class="line">35</span><br><span class="line">36</span><br><span class="line">37</span><br><span class="line">38</span><br><span class="line">39</span><br><span class="line">40</span><br><span class="line">41</span><br><span class="line">42</span><br><span class="line">43</span><br><span class="line">44</span><br><span class="line">45</span><br><span class="line">46</span><br><span class="line">47</span><br><span class="line">48</span><br><span class="line">49</span><br><span class="line">50</span><br><span class="line">51</span><br><span class="line">52</span><br><span class="line">53</span><br><span class="line">54</span><br><span class="line">55</span><br><span class="line">56</span><br><span class="line">57</span><br><span class="line">58</span><br><span class="line">59</span><br><span class="line">60</span><br><span class="line">61</span><br><span class="line">62</span><br><span class="line">63</span><br><span class="line">64</span><br><span class="line">65</span><br><span class="line">66</span><br><span class="line">67</span><br><span class="line">68</span><br><span class="line">69</span><br><span class="line">70</span><br><span class="line">71</span><br><span class="line">72</span><br><span class="line">73</span><br><span class="line">74</span><br><span class="line">75</span><br><span class="line">76</span><br><span class="line">77</span><br><span class="line">78</span><br><span class="line">79</span><br><span class="line">80</span><br><span class="line">81</span><br><span class="line">82</span><br><span class="line">83</span><br><span class="line">84</span><br><span class="line">85</span><br><span class="line">86</span><br><span class="line">87</span><br><span class="line">88</span><br><span class="line">89</span><br><span class="line">90</span><br><span class="line">91</span><br><span class="line">92</span><br><span class="line">93</span><br><span class="line">94</span><br><span class="line">95</span><br><span class="line">96</span><br><span class="line">97</span><br><span class="line">98</span><br><span class="line">99</span><br><span class="line">100</span><br><span class="line">101</span><br><span class="line">102</span><br><span class="line">103</span><br><span class="line">104</span><br><span class="line">105</span><br><span class="line">106</span><br><span class="line">107</span><br><span class="line">108</span><br><span class="line">109</span><br><span class="line">110</span><br><span class="line">111</span><br><span class="line">112</span><br><span class="line">113</span><br><span class="line">114</span><br><span class="line">115</span><br><span class="line">116</span><br><span class="line">117</span><br><span class="line">118</span><br><span class="line">119</span><br><span class="line">120</span><br><span class="line">121</span><br><span class="line">122</span><br><span class="line">123</span><br><span class="line">124</span><br><span class="line">125</span><br><span class="line">126</span><br><span class="line">127</span><br><span class="line">128</span><br><span class="line">129</span><br><span class="line">130</span><br><span class="line">131</span><br><span class="line">132</span><br><span class="line">133</span><br><span class="line">134</span><br><span class="line">135</span><br><span class="line">136</span><br><span class="line">137</span><br><span class="line">138</span><br><span class="line">139</span><br><span class="line">140</span><br><span class="line">141</span><br><span class="line">142</span><br><span class="line">143</span><br><span class="line">144</span><br><span class="line">145</span><br><span class="line">146</span><br><span class="line">147</span><br><span class="line">148</span><br><span class="line">149</span><br><span class="line">150</span><br><span class="line">151</span><br><span class="line">152</span><br><span class="line">153</span><br><span class="line">154</span><br><span class="line">155</span><br><span class="line">156</span><br><span class="line">157</span><br><span class="line">158</span><br><span class="line">159</span><br><span class="line">160</span><br><span class="line">161</span><br><span class="line">162</span><br><span class="line">163</span><br><span class="line">164</span><br><span class="line">165</span><br><span class="line">166</span><br><span class="line">167</span><br><span class="line">168</span><br><span class="line">169</span><br><span class="line">170</span><br><span class="line">171</span><br><span class="line">172</span><br><span class="line">173</span><br><span class="line">174</span><br><span class="line">175</span><br><span class="line">176</span><br><span class="line">177</span><br><span class="line">178</span><br><span class="line">179</span><br><span class="line">180</span><br><span class="line">181</span><br><span class="line">182</span><br><span class="line">183</span><br><span class="line">184</span><br><span class="line">185</span><br><span class="line">186</span><br><span class="line">187</span><br><span class="line">188</span><br><span class="line">189</span><br><span class="line">190</span><br><span class="line">191</span><br><span class="line">192</span><br><span class="line">193</span><br><span class="line">194</span><br><span class="line">195</span><br><span class="line">196</span><br><span class="line">197</span><br><span class="line">198</span><br><span class="line">199</span><br><span class="line">200</span><br><span class="line">201</span><br><span class="line">202</span><br><span class="line">203</span><br><span class="line">204</span><br><span class="line">205</span><br><span class="line">206</span><br><span class="line">207</span><br><span class="line">208</span><br><span class="line">209</span><br><span class="line">210</span><br><span class="line">211</span><br><span class="line">212</span><br><span class="line">213</span><br><span class="line">214</span><br><span class="line">215</span><br><span class="line">216</span><br><span class="line">217</span><br><span class="line">218</span><br><span class="line">219</span><br><span class="line">220</span><br><span class="line">221</span><br><span class="line">222</span><br><span class="line">223</span><br><span class="line">224</span><br><span class="line">225</span><br><span class="line">226</span><br><span class="line">227</span><br><span class="line">228</span><br><span class="line">229</span><br><span class="line">230</span><br><span class="line">231</span><br><span class="line">232</span><br><span class="line">233</span><br><span class="line">234</span><br><span class="line">235</span><br><span class="line">236</span><br><span class="line">237</span><br><span class="line">238</span><br><span class="line">239</span><br><span class="line">240</span><br><span class="line">241</span><br><span class="line">242</span><br><span class="line">243</span><br><span class="line">244</span><br><span class="line">245</span><br><span class="line">246</span><br><span class="line">247</span><br><span class="line">248</span><br><span class="line">249</span><br><span class="line">250</span><br><span class="line">251</span><br><span class="line">252</span><br><span class="line">253</span><br><span class="line">254</span><br><span class="line">255</span><br><span class="line">256</span><br><span class="line">257</span><br><span class="line">258</span><br><span class="line">259</span><br><span class="line">260</span><br><span class="line">261</span><br><span class="line">262</span><br><span class="line">263</span><br><span class="line">264</span><br><span class="line">265</span><br><span class="line">266</span><br><span class="line">267</span><br><span class="line">268</span><br><span class="line">269</span><br><span class="line">270</span><br><span class="line">271</span><br><span class="line">272</span><br><span class="line">273</span><br><span class="line">274</span><br><span class="line">275</span><br><span class="line">276</span><br><span class="line">277</span><br><span class="line">278</span><br><span class="line">279</span><br><span class="line">280</span><br><span class="line">281</span><br><span class="line">282</span><br><span class="line">283</span><br><span class="line">284</span><br><span class="line">285</span><br><span class="line">286</span><br><span class="line">287</span><br><span class="line">288</span><br><span class="line">289</span><br><span class="line">290</span><br><span class="line">291</span><br><span class="line">292</span><br><span class="line">293</span><br><span class="line">294</span><br><span class="line">295</span><br><span class="line">296</span><br><span class="line">297</span><br><span class="line">298</span><br><span class="line">299</span><br><span class="line">300</span><br><span class="line">301</span><br><span class="line">302</span><br><span class="line">303</span><br><span class="line">304</span><br><span class="line">305</span><br><span class="line">306</span><br><span class="line">307</span><br><span class="line">308</span><br><span class="line">309</span><br><span class="line">310</span><br><span class="line">311</span><br><span class="line">312</span><br><span class="line">313</span><br><span class="line">314</span><br><span class="line">315</span><br><span class="line">316</span><br><span class="line">317</span><br><span class="line">318</span><br><span class="line">319</span><br><span class="line">320</span><br><span class="line">321</span><br><span class="line">322</span><br><span class="line">323</span><br><span class="line">324</span><br><span class="line">325</span><br><span class="line">326</span><br><span class="line">327</span><br><span class="line">328</span><br><span class="line">329</span><br><span class="line">330</span><br><span class="line">331</span><br><span class="line">332</span><br><span class="line">333</span><br><span class="line">334</span><br><span class="line">335</span><br><span class="line">336</span><br><span class="line">337</span><br><span class="line">338</span><br><span class="line">339</span><br><span class="line">340</span><br><span class="line">341</span><br><span class="line">342</span><br><span class="line">343</span><br><span class="line">344</span><br><span class="line">345</span><br><span class="line">346</span><br><span class="line">347</span><br><span class="line">348</span><br><span class="line">349</span><br><span class="line">350</span><br><span class="line">351</span><br><span class="line">352</span><br><span class="line">353</span><br><span class="line">354</span><br><span class="line">355</span><br><span class="line">356</span><br><span class="line">357</span><br><span class="line">358</span><br><span class="line">359</span><br><span class="line">360</span><br><span class="line">361</span><br><span class="line">362</span><br><span class="line">363</span><br><span class="line">364</span><br><span class="line">365</span><br><span class="line">366</span><br><span class="line">367</span><br><span class="line">368</span><br><span class="line">369</span><br><span class="line">370</span><br><span class="line">371</span><br><span class="line">372</span><br><span class="line">373</span><br><span class="line">374</span><br><span class="line">375</span><br><span class="line">376</span><br><span class="line">377</span><br><span class="line">378</span><br><span class="line">379</span><br><span class="line">380</span><br><span class="line">381</span><br><span class="line">382</span><br><span class="line">383</span><br><span class="line">384</span><br><span class="line">385</span><br><span class="line">386</span><br><span class="line">387</span><br><span class="line">388</span><br><span class="line">389</span><br><span class="line">390</span><br><span class="line">391</span><br><span class="line">392</span><br><span class="line">393</span><br><span class="line">394</span><br><span class="line">395</span><br><span class="line">396</span><br><span class="line">397</span><br><span class="line">398</span><br><span class="line">399</span><br><span class="line">400</span><br><span class="line">401</span><br><span class="line">402</span><br><span class="line">403</span><br><span class="line">404</span><br><span class="line">405</span><br><span class="line">406</span><br><span class="line">407</span><br><span class="line">408</span><br><span class="line">409</span><br><span class="line">410</span><br><span class="line">411</span><br><span class="line">412</span><br><span class="line">413</span><br><span class="line">414</span><br><span class="line">415</span><br><span class="line">416</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">package</span> test</span><br><span class="line"></span><br><span class="line"><span class="keyword">import</span> (</span><br><span class="line">	<span class="string">&quot;runtime&quot;</span></span><br><span class="line">	<span class="string">&quot;sync&quot;</span></span><br><span class="line">	<span class="string">&quot;testing&quot;</span></span><br><span class="line">)</span><br><span class="line"></span><br><span class="line"><span class="keyword">type</span> foo <span class="keyword">struct</span> &#123;</span><br><span class="line">	x, y, z <span class="type">int64</span></span><br><span class="line">&#125;</span><br><span class="line"></span><br><span class="line"><span class="keyword">type</span> foo64Start <span class="keyword">struct</span> &#123;</span><br><span class="line">	_       [<span class="number">64</span>]<span class="type">byte</span></span><br><span class="line">	x, y, z <span class="type">int64</span></span><br><span class="line">&#125;</span><br><span class="line"></span><br><span class="line"><span class="keyword">type</span> foo64StartEnd <span class="keyword">struct</span> &#123;</span><br><span class="line">	_       [<span class="number">64</span>]<span class="type">byte</span></span><br><span class="line">	x, y, z <span class="type">int64</span></span><br><span class="line">	_       [<span class="number">64</span>]<span class="type">byte</span></span><br><span class="line">&#125;</span><br><span class="line"></span><br><span class="line"><span class="keyword">type</span> foo128Start <span class="keyword">struct</span> &#123;</span><br><span class="line">	_       [<span class="number">128</span>]<span class="type">byte</span></span><br><span class="line">	x, y, z <span class="type">int64</span></span><br><span class="line">&#125;</span><br><span class="line"></span><br><span class="line"><span class="keyword">type</span> foo128StartEnd <span class="keyword">struct</span> &#123;</span><br><span class="line">	_       [<span class="number">128</span>]<span class="type">byte</span></span><br><span class="line">	x, y, z <span class="type">int64</span></span><br><span class="line">	_       [<span class="number">128</span>]<span class="type">byte</span></span><br><span class="line">&#125;</span><br><span class="line"></span><br><span class="line"><span class="keyword">type</span> foo64StartEndAligned <span class="keyword">struct</span> &#123;</span><br><span class="line">	_       [<span class="number">64</span>]<span class="type">byte</span></span><br><span class="line">	x, y, z <span class="type">int64</span></span><br><span class="line">	_       [<span class="number">64</span> - <span class="number">24</span>]<span class="type">byte</span></span><br><span class="line">&#125;</span><br><span class="line"></span><br><span class="line"><span class="keyword">type</span> foo128StartEndAligned <span class="keyword">struct</span> &#123;</span><br><span class="line">	_       [<span class="number">128</span>]<span class="type">byte</span></span><br><span class="line">	x, y, z <span class="type">int64</span></span><br><span class="line">	_       [<span class="number">128</span> - <span class="number">24</span>]<span class="type">byte</span></span><br><span class="line">&#125;</span><br><span class="line"></span><br><span class="line"><span class="keyword">const</span> iter = (<span class="number">1</span> &lt;&lt; <span class="number">16</span>)</span><br><span class="line"></span><br><span class="line"><span class="function"><span class="keyword">func</span> <span class="title">BenchmarkFalseSharing</span><span class="params">(b *testing.B)</span></span> &#123;</span><br><span class="line">	<span class="keyword">var</span> wg sync.WaitGroup</span><br><span class="line"></span><br><span class="line">	b.Run(<span class="string">&quot;NoPad&quot;</span>, <span class="function"><span class="keyword">func</span><span class="params">(b *testing.B)</span></span> &#123;</span><br><span class="line">		arr := <span class="built_in">make</span>([]foo, runtime.GOMAXPROCS(<span class="number">0</span>))</span><br><span class="line">		arrChan := <span class="built_in">make</span>([]<span class="keyword">chan</span> <span class="keyword">struct</span>&#123;&#125;, runtime.GOMAXPROCS(<span class="number">0</span>))</span><br><span class="line">		<span class="keyword">for</span> i := <span class="keyword">range</span> arrChan &#123;</span><br><span class="line">			arrChan[i] = <span class="built_in">make</span>(<span class="keyword">chan</span> <span class="keyword">struct</span>&#123;&#125;)</span><br><span class="line">		&#125;</span><br><span class="line"></span><br><span class="line">		<span class="keyword">for</span> i := <span class="keyword">range</span> arr &#123;</span><br><span class="line">			<span class="keyword">go</span> <span class="function"><span class="keyword">func</span><span class="params">(i <span class="type">int</span>)</span></span> &#123;</span><br><span class="line">				<span class="keyword">for</span> <span class="keyword">range</span> arrChan[i] &#123;</span><br><span class="line">					<span class="keyword">for</span> j := <span class="number">0</span>; j &lt; iter; j++ &#123;</span><br><span class="line">						arr[i].x++</span><br><span class="line">					&#125;</span><br><span class="line">					wg.Done()</span><br><span class="line">				&#125;</span><br><span class="line"></span><br><span class="line">			&#125;(i)</span><br><span class="line">		&#125;</span><br><span class="line"></span><br><span class="line">		b.ResetTimer()</span><br><span class="line"></span><br><span class="line">		<span class="keyword">for</span> i := <span class="number">0</span>; i &lt; b.N; i++ &#123;</span><br><span class="line">			wg.Add(runtime.GOMAXPROCS(<span class="number">0</span>))</span><br><span class="line">			<span class="keyword">for</span> j := <span class="keyword">range</span> arrChan &#123;</span><br><span class="line">				arrChan[j] &lt;- <span class="keyword">struct</span>&#123;&#125;&#123;&#125;</span><br><span class="line">			&#125;</span><br><span class="line">			wg.Wait()</span><br><span class="line">		&#125;</span><br><span class="line"></span><br><span class="line">		b.StopTimer()</span><br><span class="line"></span><br><span class="line">		<span class="keyword">for</span> i := <span class="keyword">range</span> arrChan &#123;</span><br><span class="line">			<span class="built_in">close</span>(arrChan[i])</span><br><span class="line">		&#125;</span><br><span class="line">	&#125;)</span><br><span class="line"></span><br><span class="line">	b.Run(<span class="string">&quot;Pad64Start&quot;</span>, <span class="function"><span class="keyword">func</span><span class="params">(b *testing.B)</span></span> &#123;</span><br><span class="line">		arr := <span class="built_in">make</span>([]foo64Start, runtime.GOMAXPROCS(<span class="number">0</span>))</span><br><span class="line">		arrChan := <span class="built_in">make</span>([]<span class="keyword">chan</span> <span class="keyword">struct</span>&#123;&#125;, runtime.GOMAXPROCS(<span class="number">0</span>))</span><br><span class="line">		<span class="keyword">for</span> i := <span class="keyword">range</span> arrChan &#123;</span><br><span class="line">			arrChan[i] = <span class="built_in">make</span>(<span class="keyword">chan</span> <span class="keyword">struct</span>&#123;&#125;)</span><br><span class="line">		&#125;</span><br><span class="line"></span><br><span class="line">		<span class="keyword">for</span> i := <span class="keyword">range</span> arr &#123;</span><br><span class="line">			<span class="keyword">go</span> <span class="function"><span class="keyword">func</span><span class="params">(i <span class="type">int</span>)</span></span> &#123;</span><br><span class="line">				<span class="keyword">for</span> <span class="keyword">range</span> arrChan[i] &#123;</span><br><span class="line">					<span class="keyword">for</span> j := <span class="number">0</span>; j &lt; iter; j++ &#123;</span><br><span class="line">						arr[i].x++</span><br><span class="line">					&#125;</span><br><span class="line">					wg.Done()</span><br><span class="line">				&#125;</span><br><span class="line"></span><br><span class="line">			&#125;(i)</span><br><span class="line">		&#125;</span><br><span class="line"></span><br><span class="line">		b.ResetTimer()</span><br><span class="line"></span><br><span class="line">		<span class="keyword">for</span> i := <span class="number">0</span>; i &lt; b.N; i++ &#123;</span><br><span class="line">			wg.Add(runtime.GOMAXPROCS(<span class="number">0</span>))</span><br><span class="line">			<span class="keyword">for</span> j := <span class="keyword">range</span> arrChan &#123;</span><br><span class="line">				arrChan[j] &lt;- <span class="keyword">struct</span>&#123;&#125;&#123;&#125;</span><br><span class="line">			&#125;</span><br><span class="line">			wg.Wait()</span><br><span class="line">		&#125;</span><br><span class="line"></span><br><span class="line">		b.StopTimer()</span><br><span class="line"></span><br><span class="line">		<span class="keyword">for</span> i := <span class="keyword">range</span> arrChan &#123;</span><br><span class="line">			<span class="built_in">close</span>(arrChan[i])</span><br><span class="line">		&#125;</span><br><span class="line">	&#125;)</span><br><span class="line"></span><br><span class="line">	b.Run(<span class="string">&quot;Pad64StartEnd&quot;</span>, <span class="function"><span class="keyword">func</span><span class="params">(b *testing.B)</span></span> &#123;</span><br><span class="line">		arr := <span class="built_in">make</span>([]foo64StartEnd, runtime.GOMAXPROCS(<span class="number">0</span>))</span><br><span class="line">		arrChan := <span class="built_in">make</span>([]<span class="keyword">chan</span> <span class="keyword">struct</span>&#123;&#125;, runtime.GOMAXPROCS(<span class="number">0</span>))</span><br><span class="line">		<span class="keyword">for</span> i := <span class="keyword">range</span> arrChan &#123;</span><br><span class="line">			arrChan[i] = <span class="built_in">make</span>(<span class="keyword">chan</span> <span class="keyword">struct</span>&#123;&#125;)</span><br><span class="line">		&#125;</span><br><span class="line"></span><br><span class="line">		<span class="keyword">for</span> i := <span class="keyword">range</span> arr &#123;</span><br><span class="line">			<span class="keyword">go</span> <span class="function"><span class="keyword">func</span><span class="params">(i <span class="type">int</span>)</span></span> &#123;</span><br><span class="line">				<span class="keyword">for</span> <span class="keyword">range</span> arrChan[i] &#123;</span><br><span class="line">					<span class="keyword">for</span> j := <span class="number">0</span>; j &lt; iter; j++ &#123;</span><br><span class="line">						arr[i].x++</span><br><span class="line">					&#125;</span><br><span class="line">					wg.Done()</span><br><span class="line">				&#125;</span><br><span class="line"></span><br><span class="line">			&#125;(i)</span><br><span class="line">		&#125;</span><br><span class="line"></span><br><span class="line">		b.ResetTimer()</span><br><span class="line"></span><br><span class="line">		<span class="keyword">for</span> i := <span class="number">0</span>; i &lt; b.N; i++ &#123;</span><br><span class="line">			wg.Add(runtime.GOMAXPROCS(<span class="number">0</span>))</span><br><span class="line">			<span class="keyword">for</span> j := <span class="keyword">range</span> arrChan &#123;</span><br><span class="line">				arrChan[j] &lt;- <span class="keyword">struct</span>&#123;&#125;&#123;&#125;</span><br><span class="line">			&#125;</span><br><span class="line">			wg.Wait()</span><br><span class="line">		&#125;</span><br><span class="line"></span><br><span class="line">		b.StopTimer()</span><br><span class="line"></span><br><span class="line">		<span class="keyword">for</span> i := <span class="keyword">range</span> arrChan &#123;</span><br><span class="line">			<span class="built_in">close</span>(arrChan[i])</span><br><span class="line">		&#125;</span><br><span class="line">	&#125;)</span><br><span class="line"></span><br><span class="line">	b.Run(<span class="string">&quot;Pad128Start&quot;</span>, <span class="function"><span class="keyword">func</span><span class="params">(b *testing.B)</span></span> &#123;</span><br><span class="line">		arr := <span class="built_in">make</span>([]foo128Start, runtime.GOMAXPROCS(<span class="number">0</span>))</span><br><span class="line">		arrChan := <span class="built_in">make</span>([]<span class="keyword">chan</span> <span class="keyword">struct</span>&#123;&#125;, runtime.GOMAXPROCS(<span class="number">0</span>))</span><br><span class="line">		<span class="keyword">for</span> i := <span class="keyword">range</span> arrChan &#123;</span><br><span class="line">			arrChan[i] = <span class="built_in">make</span>(<span class="keyword">chan</span> <span class="keyword">struct</span>&#123;&#125;)</span><br><span class="line">		&#125;</span><br><span class="line"></span><br><span class="line">		<span class="keyword">for</span> i := <span class="keyword">range</span> arr &#123;</span><br><span class="line">			<span class="keyword">go</span> <span class="function"><span class="keyword">func</span><span class="params">(i <span class="type">int</span>)</span></span> &#123;</span><br><span class="line">				<span class="keyword">for</span> <span class="keyword">range</span> arrChan[i] &#123;</span><br><span class="line">					<span class="keyword">for</span> j := <span class="number">0</span>; j &lt; iter; j++ &#123;</span><br><span class="line">						arr[i].x++</span><br><span class="line">					&#125;</span><br><span class="line">					wg.Done()</span><br><span class="line">				&#125;</span><br><span class="line"></span><br><span class="line">			&#125;(i)</span><br><span class="line">		&#125;</span><br><span class="line"></span><br><span class="line">		b.ResetTimer()</span><br><span class="line"></span><br><span class="line">		<span class="keyword">for</span> i := <span class="number">0</span>; i &lt; b.N; i++ &#123;</span><br><span class="line">			wg.Add(runtime.GOMAXPROCS(<span class="number">0</span>))</span><br><span class="line">			<span class="keyword">for</span> j := <span class="keyword">range</span> arrChan &#123;</span><br><span class="line">				arrChan[j] &lt;- <span class="keyword">struct</span>&#123;&#125;&#123;&#125;</span><br><span class="line">			&#125;</span><br><span class="line">			wg.Wait()</span><br><span class="line">		&#125;</span><br><span class="line"></span><br><span class="line">		b.StopTimer()</span><br><span class="line"></span><br><span class="line">		<span class="keyword">for</span> i := <span class="keyword">range</span> arrChan &#123;</span><br><span class="line">			<span class="built_in">close</span>(arrChan[i])</span><br><span class="line">		&#125;</span><br><span class="line">	&#125;)</span><br><span class="line"></span><br><span class="line">	b.Run(<span class="string">&quot;Pad128StartEnd&quot;</span>, <span class="function"><span class="keyword">func</span><span class="params">(b *testing.B)</span></span> &#123;</span><br><span class="line">		arr := <span class="built_in">make</span>([]foo128StartEnd, runtime.GOMAXPROCS(<span class="number">0</span>))</span><br><span class="line">		arrChan := <span class="built_in">make</span>([]<span class="keyword">chan</span> <span class="keyword">struct</span>&#123;&#125;, runtime.GOMAXPROCS(<span class="number">0</span>))</span><br><span class="line">		<span class="keyword">for</span> i := <span class="keyword">range</span> arrChan &#123;</span><br><span class="line">			arrChan[i] = <span class="built_in">make</span>(<span class="keyword">chan</span> <span class="keyword">struct</span>&#123;&#125;)</span><br><span class="line">		&#125;</span><br><span class="line"></span><br><span class="line">		<span class="keyword">for</span> i := <span class="keyword">range</span> arr &#123;</span><br><span class="line">			<span class="keyword">go</span> <span class="function"><span class="keyword">func</span><span class="params">(i <span class="type">int</span>)</span></span> &#123;</span><br><span class="line">				<span class="keyword">for</span> <span class="keyword">range</span> arrChan[i] &#123;</span><br><span class="line">					<span class="keyword">for</span> j := <span class="number">0</span>; j &lt; iter; j++ &#123;</span><br><span class="line">						arr[i].x++</span><br><span class="line">					&#125;</span><br><span class="line">					wg.Done()</span><br><span class="line">				&#125;</span><br><span class="line"></span><br><span class="line">			&#125;(i)</span><br><span class="line">		&#125;</span><br><span class="line"></span><br><span class="line">		b.ResetTimer()</span><br><span class="line"></span><br><span class="line">		<span class="keyword">for</span> i := <span class="number">0</span>; i &lt; b.N; i++ &#123;</span><br><span class="line">			wg.Add(runtime.GOMAXPROCS(<span class="number">0</span>))</span><br><span class="line">			<span class="keyword">for</span> j := <span class="keyword">range</span> arrChan &#123;</span><br><span class="line">				arrChan[j] &lt;- <span class="keyword">struct</span>&#123;&#125;&#123;&#125;</span><br><span class="line">			&#125;</span><br><span class="line">			wg.Wait()</span><br><span class="line">		&#125;</span><br><span class="line"></span><br><span class="line">		b.StopTimer()</span><br><span class="line"></span><br><span class="line">		<span class="keyword">for</span> i := <span class="keyword">range</span> arrChan &#123;</span><br><span class="line">			<span class="built_in">close</span>(arrChan[i])</span><br><span class="line">		&#125;</span><br><span class="line">	&#125;)</span><br><span class="line"></span><br><span class="line">	b.Run(<span class="string">&quot;Pad64StartEndAligned&quot;</span>, <span class="function"><span class="keyword">func</span><span class="params">(b *testing.B)</span></span> &#123;</span><br><span class="line">		arr := <span class="built_in">make</span>([]foo64StartEndAligned, runtime.GOMAXPROCS(<span class="number">0</span>))</span><br><span class="line">		arrChan := <span class="built_in">make</span>([]<span class="keyword">chan</span> <span class="keyword">struct</span>&#123;&#125;, runtime.GOMAXPROCS(<span class="number">0</span>))</span><br><span class="line">		<span class="keyword">for</span> i := <span class="keyword">range</span> arrChan &#123;</span><br><span class="line">			arrChan[i] = <span class="built_in">make</span>(<span class="keyword">chan</span> <span class="keyword">struct</span>&#123;&#125;)</span><br><span class="line">		&#125;</span><br><span class="line"></span><br><span class="line">		<span class="keyword">for</span> i := <span class="keyword">range</span> arr &#123;</span><br><span class="line">			<span class="keyword">go</span> <span class="function"><span class="keyword">func</span><span class="params">(i <span class="type">int</span>)</span></span> &#123;</span><br><span class="line">				<span class="keyword">for</span> <span class="keyword">range</span> arrChan[i] &#123;</span><br><span class="line">					<span class="keyword">for</span> j := <span class="number">0</span>; j &lt; iter; j++ &#123;</span><br><span class="line">						arr[i].x++</span><br><span class="line">					&#125;</span><br><span class="line">					wg.Done()</span><br><span class="line">				&#125;</span><br><span class="line"></span><br><span class="line">			&#125;(i)</span><br><span class="line">		&#125;</span><br><span class="line"></span><br><span class="line">		b.ResetTimer()</span><br><span class="line"></span><br><span class="line">		<span class="keyword">for</span> i := <span class="number">0</span>; i &lt; b.N; i++ &#123;</span><br><span class="line">			wg.Add(runtime.GOMAXPROCS(<span class="number">0</span>))</span><br><span class="line">			<span class="keyword">for</span> j := <span class="keyword">range</span> arrChan &#123;</span><br><span class="line">				arrChan[j] &lt;- <span class="keyword">struct</span>&#123;&#125;&#123;&#125;</span><br><span class="line">			&#125;</span><br><span class="line">			wg.Wait()</span><br><span class="line">		&#125;</span><br><span class="line"></span><br><span class="line">		b.StopTimer()</span><br><span class="line"></span><br><span class="line">		<span class="keyword">for</span> i := <span class="keyword">range</span> arrChan &#123;</span><br><span class="line">			<span class="built_in">close</span>(arrChan[i])</span><br><span class="line">		&#125;</span><br><span class="line">	&#125;)</span><br><span class="line"></span><br><span class="line">	b.Run(<span class="string">&quot;Pad128StartEndAligned&quot;</span>, <span class="function"><span class="keyword">func</span><span class="params">(b *testing.B)</span></span> &#123;</span><br><span class="line">		arr := <span class="built_in">make</span>([]foo128StartEndAligned, runtime.GOMAXPROCS(<span class="number">0</span>))</span><br><span class="line">		arrChan := <span class="built_in">make</span>([]<span class="keyword">chan</span> <span class="keyword">struct</span>&#123;&#125;, runtime.GOMAXPROCS(<span class="number">0</span>))</span><br><span class="line">		<span class="keyword">for</span> i := <span class="keyword">range</span> arrChan &#123;</span><br><span class="line">			arrChan[i] = <span class="built_in">make</span>(<span class="keyword">chan</span> <span class="keyword">struct</span>&#123;&#125;)</span><br><span class="line">		&#125;</span><br><span class="line"></span><br><span class="line">		<span class="keyword">for</span> i := <span class="keyword">range</span> arr &#123;</span><br><span class="line">			<span class="keyword">go</span> <span class="function"><span class="keyword">func</span><span class="params">(i <span class="type">int</span>)</span></span> &#123;</span><br><span class="line">				<span class="keyword">for</span> <span class="keyword">range</span> arrChan[i] &#123;</span><br><span class="line">					<span class="keyword">for</span> j := <span class="number">0</span>; j &lt; iter; j++ &#123;</span><br><span class="line">						arr[i].x++</span><br><span class="line">					&#125;</span><br><span class="line">					wg.Done()</span><br><span class="line">				&#125;</span><br><span class="line"></span><br><span class="line">			&#125;(i)</span><br><span class="line">		&#125;</span><br><span class="line"></span><br><span class="line">		b.ResetTimer()</span><br><span class="line"></span><br><span class="line">		<span class="keyword">for</span> i := <span class="number">0</span>; i &lt; b.N; i++ &#123;</span><br><span class="line">			wg.Add(runtime.GOMAXPROCS(<span class="number">0</span>))</span><br><span class="line">			<span class="keyword">for</span> j := <span class="keyword">range</span> arrChan &#123;</span><br><span class="line">				arrChan[j] &lt;- <span class="keyword">struct</span>&#123;&#125;&#123;&#125;</span><br><span class="line">			&#125;</span><br><span class="line">			wg.Wait()</span><br><span class="line">		&#125;</span><br><span class="line"></span><br><span class="line">		b.StopTimer()</span><br><span class="line"></span><br><span class="line">		<span class="keyword">for</span> i := <span class="keyword">range</span> arrChan &#123;</span><br><span class="line">			<span class="built_in">close</span>(arrChan[i])</span><br><span class="line">		&#125;</span><br><span class="line">	&#125;)</span><br><span class="line">&#125;</span><br><span class="line"></span><br><span class="line"><span class="function"><span class="keyword">func</span> <span class="title">BenchmarkTrueSharing</span><span class="params">(b *testing.B)</span></span> &#123;</span><br><span class="line">	<span class="keyword">var</span> wg sync.WaitGroup</span><br><span class="line"></span><br><span class="line">	b.Run(<span class="string">&quot;&lt;64&quot;</span>, <span class="function"><span class="keyword">func</span><span class="params">(b *testing.B)</span></span> &#123;</span><br><span class="line">		arr := <span class="built_in">make</span>([]foo, runtime.GOMAXPROCS(<span class="number">0</span>)*iter)</span><br><span class="line">		arrChan := <span class="built_in">make</span>([]<span class="keyword">chan</span> <span class="keyword">struct</span>&#123;&#125;, runtime.GOMAXPROCS(<span class="number">0</span>))</span><br><span class="line">		<span class="keyword">for</span> i := <span class="keyword">range</span> arrChan &#123;</span><br><span class="line">			arrChan[i] = <span class="built_in">make</span>(<span class="keyword">chan</span> <span class="keyword">struct</span>&#123;&#125;)</span><br><span class="line">		&#125;</span><br><span class="line"></span><br><span class="line">		<span class="keyword">for</span> i := <span class="keyword">range</span> arrChan &#123;</span><br><span class="line">			<span class="keyword">go</span> <span class="function"><span class="keyword">func</span><span class="params">(i <span class="type">int</span>)</span></span> &#123;</span><br><span class="line">				<span class="keyword">for</span> <span class="keyword">range</span> arrChan[i] &#123;</span><br><span class="line">					<span class="keyword">for</span> j := <span class="number">0</span>; j &lt; iter; j++ &#123;</span><br><span class="line">						arr[(i*iter)+j].x++</span><br><span class="line">					&#125;</span><br><span class="line">					wg.Done()</span><br><span class="line">				&#125;</span><br><span class="line"></span><br><span class="line">			&#125;(i)</span><br><span class="line">		&#125;</span><br><span class="line"></span><br><span class="line">		b.ResetTimer()</span><br><span class="line"></span><br><span class="line">		<span class="keyword">for</span> i := <span class="number">0</span>; i &lt; b.N; i++ &#123;</span><br><span class="line">			wg.Add(runtime.GOMAXPROCS(<span class="number">0</span>))</span><br><span class="line">			<span class="keyword">for</span> j := <span class="keyword">range</span> arrChan &#123;</span><br><span class="line">				arrChan[j] &lt;- <span class="keyword">struct</span>&#123;&#125;&#123;&#125;</span><br><span class="line">			&#125;</span><br><span class="line">			wg.Wait()</span><br><span class="line">		&#125;</span><br><span class="line"></span><br><span class="line">		b.StopTimer()</span><br><span class="line"></span><br><span class="line">		<span class="keyword">for</span> i := <span class="keyword">range</span> arrChan &#123;</span><br><span class="line">			<span class="built_in">close</span>(arrChan[i])</span><br><span class="line">		&#125;</span><br><span class="line">	&#125;)</span><br><span class="line"></span><br><span class="line">	b.Run(<span class="string">&quot;&gt;64&quot;</span>, <span class="function"><span class="keyword">func</span><span class="params">(b *testing.B)</span></span> &#123;</span><br><span class="line">		arr := <span class="built_in">make</span>([]foo64Start, runtime.GOMAXPROCS(<span class="number">0</span>)*iter)</span><br><span class="line">		arrChan := <span class="built_in">make</span>([]<span class="keyword">chan</span> <span class="keyword">struct</span>&#123;&#125;, runtime.GOMAXPROCS(<span class="number">0</span>))</span><br><span class="line">		<span class="keyword">for</span> i := <span class="keyword">range</span> arrChan &#123;</span><br><span class="line">			arrChan[i] = <span class="built_in">make</span>(<span class="keyword">chan</span> <span class="keyword">struct</span>&#123;&#125;)</span><br><span class="line">		&#125;</span><br><span class="line"></span><br><span class="line">		<span class="keyword">for</span> i := <span class="keyword">range</span> arrChan &#123;</span><br><span class="line">			<span class="keyword">go</span> <span class="function"><span class="keyword">func</span><span class="params">(i <span class="type">int</span>)</span></span> &#123;</span><br><span class="line">				<span class="keyword">for</span> <span class="keyword">range</span> arrChan[i] &#123;</span><br><span class="line">					<span class="keyword">for</span> j := <span class="number">0</span>; j &lt; iter; j++ &#123;</span><br><span class="line">						arr[(i*iter)+j].x++</span><br><span class="line">					&#125;</span><br><span class="line">					wg.Done()</span><br><span class="line">				&#125;</span><br><span class="line"></span><br><span class="line">			&#125;(i)</span><br><span class="line">		&#125;</span><br><span class="line"></span><br><span class="line">		b.ResetTimer()</span><br><span class="line"></span><br><span class="line">		<span class="keyword">for</span> i := <span class="number">0</span>; i &lt; b.N; i++ &#123;</span><br><span class="line">			wg.Add(runtime.GOMAXPROCS(<span class="number">0</span>))</span><br><span class="line">			<span class="keyword">for</span> j := <span class="keyword">range</span> arrChan &#123;</span><br><span class="line">				arrChan[j] &lt;- <span class="keyword">struct</span>&#123;&#125;&#123;&#125;</span><br><span class="line">			&#125;</span><br><span class="line">			wg.Wait()</span><br><span class="line">		&#125;</span><br><span class="line"></span><br><span class="line">		b.StopTimer()</span><br><span class="line"></span><br><span class="line">		<span class="keyword">for</span> i := <span class="keyword">range</span> arrChan &#123;</span><br><span class="line">			<span class="built_in">close</span>(arrChan[i])</span><br><span class="line">		&#125;</span><br><span class="line">	&#125;)</span><br><span class="line"></span><br><span class="line">	b.Run(<span class="string">&quot;&gt;128&quot;</span>, <span class="function"><span class="keyword">func</span><span class="params">(b *testing.B)</span></span> &#123;</span><br><span class="line">		arr := <span class="built_in">make</span>([]foo128Start, runtime.GOMAXPROCS(<span class="number">0</span>)*iter)</span><br><span class="line">		arrChan := <span class="built_in">make</span>([]<span class="keyword">chan</span> <span class="keyword">struct</span>&#123;&#125;, runtime.GOMAXPROCS(<span class="number">0</span>))</span><br><span class="line">		<span class="keyword">for</span> i := <span class="keyword">range</span> arrChan &#123;</span><br><span class="line">			arrChan[i] = <span class="built_in">make</span>(<span class="keyword">chan</span> <span class="keyword">struct</span>&#123;&#125;)</span><br><span class="line">		&#125;</span><br><span class="line"></span><br><span class="line">		<span class="keyword">for</span> i := <span class="keyword">range</span> arrChan &#123;</span><br><span class="line">			<span class="keyword">go</span> <span class="function"><span class="keyword">func</span><span class="params">(i <span class="type">int</span>)</span></span> &#123;</span><br><span class="line">				<span class="keyword">for</span> <span class="keyword">range</span> arrChan[i] &#123;</span><br><span class="line">					<span class="keyword">for</span> j := <span class="number">0</span>; j &lt; iter; j++ &#123;</span><br><span class="line">						arr[(i*iter)+j].x++</span><br><span class="line">					&#125;</span><br><span class="line">					wg.Done()</span><br><span class="line">				&#125;</span><br><span class="line"></span><br><span class="line">			&#125;(i)</span><br><span class="line">		&#125;</span><br><span class="line"></span><br><span class="line">		b.ResetTimer()</span><br><span class="line"></span><br><span class="line">		<span class="keyword">for</span> i := <span class="number">0</span>; i &lt; b.N; i++ &#123;</span><br><span class="line">			wg.Add(runtime.GOMAXPROCS(<span class="number">0</span>))</span><br><span class="line">			<span class="keyword">for</span> j := <span class="keyword">range</span> arrChan &#123;</span><br><span class="line">				arrChan[j] &lt;- <span class="keyword">struct</span>&#123;&#125;&#123;&#125;</span><br><span class="line">			&#125;</span><br><span class="line">			wg.Wait()</span><br><span class="line">		&#125;</span><br><span class="line"></span><br><span class="line">		b.StopTimer()</span><br><span class="line"></span><br><span class="line">		<span class="keyword">for</span> i := <span class="keyword">range</span> arrChan &#123;</span><br><span class="line">			<span class="built_in">close</span>(arrChan[i])</span><br><span class="line">		&#125;</span><br><span class="line">	&#125;)</span><br><span class="line">&#125;</span><br><span class="line"></span><br></pre></td></tr></table></figure>
+
+<h2 id="参考资料"><a href="#参考资料" class="headerlink" title="参考资料"></a>参考资料</h2><ol start="0">
+<li><a href="https://zh.wikipedia.org/wiki/CPU%E7%BC%93%E5%AD%98">https://zh.wikipedia.org/wiki/CPU缓存</a></li>
+<li><a href="https://medium.com/@genchilu/whats-false-sharing-and-how-to-solve-it-using-golang-as-example-ef978a305e10">https://medium.com/@genchilu/whats-false-sharing-and-how-to-solve-it-using-golang-as-example-ef978a305e10</a></li>
+<li><a href="https://github.com/golang/go/issues/14980">https://github.com/golang/go/issues/14980</a></li>
+<li><a href="https://github.com/klauspost/cpuid">https://github.com/klauspost/cpuid</a></li>
+<li><a href="https://segment.com/blog/allocation-efficiency-in-high-performance-go-services/">https://segment.com/blog/allocation-efficiency-in-high-performance-go-services/</a></li>
+<li><a href="https://luciotato.svbtle.com/golangs-duffs-devices">https://luciotato.svbtle.com/golangs-duffs-devices</a></li>
+<li><a href="https://stackoverflow.com/questions/14707803/line-size-of-l1-and-l2-caches">https://stackoverflow.com/questions/14707803/line-size-of-l1-and-l2-caches</a></li>
+<li><a href="https://luciotato.svbtle.com/golangs-duffs-devices">https://luciotato.svbtle.com/golangs-duffs-devices</a></li>
+<li><a href="https://github.com/golang/go/issues/25203">https://github.com/golang/go/issues/25203</a></li>
+</ol>
+
+      
+    </div>
+    <footer class="article-footer">
+      
+  <ul class="article-tag-list" itemprop="keywords"><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/Go/" rel="tag">Go</a></li></ul>
+
+
+      
+
+    </footer>
+  </div>
+  
+</article>
+  
+    <article id="post-Runtime-overhead-of-using-defer-in-go" class="article article-type-post" itemscope
+  itemprop="blogPost">
+  <div class="article-meta">
+    <a href="/2019/01/22/Runtime-overhead-of-using-defer-in-go/" class="article-date">
+  <time datetime="2019-01-22T10:08:13.000Z" itemprop="datePublished">2019年01月22日</time>
+</a>
+    
+    
+  <div class="article-author"> by smallnest</div>
+
+  </div>
+  <div class="article-inner">
+    
+    
+    <header class="article-header">
+      
+  
+    <h1 itemprop="name">
+      <a class="article-title" href="/2019/01/22/Runtime-overhead-of-using-defer-in-go/">使用 defer 还是不使用 defer?</a>
     </h1>
   
 
@@ -299,24 +378,118 @@
       <img class="article-post-image" src="/images/logos/golang6.png">
       
       
-      <blockquote>
-<p>说明： go module增在快速的成长中，最近每个版本中(1.11 ~ 1.13)都有很大的变动。 建议你阅读官方的wiki了解go module最新的知识: <a href="https://github.com/golang/go/wiki/Modules">go&#x2F;wiki&#x2F;Modules</a></p>
+      <p>对于Go语言的defer语句，或许你回经历一个 <strong>赞赏</strong> --&gt; <strong>怀疑</strong> --&gt; <strong>肯定</strong> --&gt; <strong>再怀疑</strong>的一个过程，本文带你回顾一下defer的故事，以及如何在代码中使用defer语句。</p>
+      
+      <p class="article-more-link">
+        <a href="/2019/01/22/Runtime-overhead-of-using-defer-in-go/#more">阅读全文</a>
+      </p>
+      
+      
+    </div>
+    <footer class="article-footer">
+      
+  <ul class="article-tag-list" itemprop="keywords"><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/Go/" rel="tag">Go</a></li></ul>
+
+
+      
+
+    </footer>
+  </div>
+  
+</article>
+  
+    <article id="post-drivers-connection-string-in-Go" class="article article-type-post" itemscope
+  itemprop="blogPost">
+  <div class="article-meta">
+    <a href="/2019/01/10/drivers-connection-string-in-Go/" class="article-date">
+  <time datetime="2019-01-10T11:09:17.000Z" itemprop="datePublished">2019年01月10日</time>
+</a>
+    
+    
+  <div class="article-author"> by smallnest</div>
+
+  </div>
+  <div class="article-inner">
+    
+    
+    <header class="article-header">
+      
+  
+    <h1 itemprop="name">
+      <a class="article-title" href="/2019/01/10/drivers-connection-string-in-Go/">Go 各种数据库连接字符串汇总</a>
+    </h1>
+  
+
+    </header>
+    
+    <div class="article-entry" itemprop="articleBody">
+      
+      
+      
+      <p>各种数据库的连接字符串的连接格式(一般叫做database source name, 简称<strong>DSN</strong>)是不同的，本文汇总了各个数据库驱动程序的字符串连接方式。</p>
+      
+      <p class="article-more-link">
+        <a href="/2019/01/10/drivers-connection-string-in-Go/#more">阅读全文</a>
+      </p>
+      
+      
+    </div>
+    <footer class="article-footer">
+      
+
+      
+
+    </footer>
+  </div>
+  
+</article>
+  
+    <article id="post-how-many-charactors-in-a-java-string" class="article article-type-post" itemscope
+  itemprop="blogPost">
+  <div class="article-meta">
+    <a href="/2019/01/04/how-many-charactors-in-a-java-string/" class="article-date">
+  <time datetime="2019-01-04T10:17:18.000Z" itemprop="datePublished">2019年01月04日</time>
+</a>
+    
+    
+  <div class="article-author"> by smallnest</div>
+
+  </div>
+  <div class="article-inner">
+    
+    
+    <header class="article-header">
+      
+  
+    <h1 itemprop="name">
+      <a class="article-title" href="/2019/01/04/how-many-charactors-in-a-java-string/">一个Java字符串中到底有多少个字符?</a>
+    </h1>
+  
+
+    </header>
+    
+    <div class="article-entry" itemprop="articleBody">
+      
+      
+      <img class="article-post-image" src="/images/logos/java.png">
+      
+      
+      <p>依照Java的文档， Java中的字符内部是以UTF-16编码方式表示的，最小值是 <code>\u0000</code> (<code>0</code>),最大值是<code>\uffff</code>(<code>65535</code>)， 也就是一个字符以2个字节来表示，难道Java最多只能表示 65535个字符？</p>
+<blockquote>
+<p><strong>char</strong>: The char data type is a single 16-bit Unicode character. It has a minimum value of &#39;\u0000&#39; (or 0) and a maximum value of &#39;\uffff&#39; (or 65,535 inclusive).</p>
+<p>from <a href="https://docs.oracle.com/javase/tutorial/java/nutsandbolts/datatypes.html">The Java™ Tutorials</a></p>
 </blockquote>
-<p>最新扩展阅读(go 1.13):<a href="https://colobu.com/2019/09/23/review-go-module-again/">Go module 再回顾</a>。</p>
-<p>Go 1.11 前天已经正式发布了，这个版本包含了两个最重要的feature就是 <code>module</code>和<code>web assembly</code>。虽然也有一些简单的教程介绍了<code>go module</code>的特性，但是基本上都是<code>hello world</code>的例子，在实践的过程中， 很多人都在“拼命的挣扎”，包括我自己， 从一些qq群、github的issue, twitter上都可以看到大家茫然或者抱怨的语句。</p>
-<p>虽然有三个帮助文件<code>go help mod</code>、<code>go help modules</code>、<code>go help module-get</code>可以了解一些go module的用法，但是感觉Go开发组对<code>module</code>这一特性还是没有很好的做一个全面的介绍，很多情况还得靠大家看源代码或者去猜，比如module下载的文件夹、版本格式的完整声明，<code>module</code>的最佳实践等，并且当前Go 1.11的实现中还有一些bug,给大家在使用的过程中带来了很大的困难。</p>
-<p>我也在摸索中前行， 记录了摸索过程中的一些总结，希望能给还在挣扎中的Gopher一些帮助。</p>
-<p><a href="https://roberto.selbach.ca/intro-to-go-modules/">Introduction to Go Modules</a> 是一篇很好的go module 入门介绍， 如果你仔细阅读了它，应该就不需要看本文了。</p>
+<p>首先，让我们先看个例子：</p>
       
       <p class="article-more-link">
-        <a href="/2018/08/27/learn-go-module/#more">阅读全文</a>
+        <a href="/2019/01/04/how-many-charactors-in-a-java-string/#more">阅读全文</a>
       </p>
       
       
     </div>
     <footer class="article-footer">
       
-  <ul class="article-tag-list" itemprop="keywords"><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/Go/" rel="tag">Go</a></li></ul>
+  <ul class="article-tag-list" itemprop="keywords"><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/Java/" rel="tag">Java</a></li></ul>
 
 
       
@@ -326,11 +499,11 @@
   
 </article>
   
-    <article id="post-locality-sensitive-hashing" class="article article-type-post" itemscope
+    <article id="post-get-assembly-output-for-go-programs" class="article article-type-post" itemscope
   itemprop="blogPost">
   <div class="article-meta">
-    <a href="/2018/08/16/locality-sensitive-hashing/" class="article-date">
-  <time datetime="2018-08-16T09:19:25.000Z" itemprop="datePublished">2018年08月16日</time>
+    <a href="/2018/12/29/get-assembly-output-for-go-programs/" class="article-date">
+  <time datetime="2018-12-29T02:58:37.000Z" itemprop="datePublished">2018年12月29日</time>
 </a>
     
     
@@ -344,162 +517,7 @@
       
   
     <h1 itemprop="name">
-      <a class="article-title" href="/2018/08/16/locality-sensitive-hashing/">局部敏感哈希介绍</a>
-    </h1>
-  
-
-    </header>
-    
-    <div class="article-entry" itemprop="articleBody">
-      
-      
-      
-      <p>传统的Hash当源数据有些许的变化的时候生成的哈希值差异也非常的大， 比如：</p>
-<figure class="highlight go"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br></pre></td><td class="code"><pre><span class="line"><span class="function"><span class="keyword">func</span> <span class="title">main</span><span class="params">()</span></span> &#123;</span><br><span class="line">	s1 := []<span class="type">byte</span>(<span class="string">&quot;你好世界&quot;</span>)</span><br><span class="line">	s2 := []<span class="type">byte</span>(<span class="string">&quot;你好,世界&quot;</span>)</span><br><span class="line"></span><br><span class="line">	hash1 := md5.Sum(s1)</span><br><span class="line">	hash2 := md5.Sum(s2)</span><br><span class="line"></span><br><span class="line">	fmt.Println(hex.EncodeToString(hash1[:]))</span><br><span class="line">	fmt.Println(hex.EncodeToString(hash2[:]))</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
-
-<p>s1的哈希值是<code>65396ee4aad0b4f17aacd1c6112ee364</code>、s2的哈希值是<code>27444ee2d245c3e8e11ed8b9b035c43b</code>,源数据仅仅是一个逗号的区别，但是哈希值完全不一样。这是我们使用Hash的常见的场景，输出的哈希值经常被称为消息摘要（message digest）或摘要（digest）。</p>
-<p>局部敏感哈希(Locality-sensitive hashing， 简称LSH)则不同， LSH则希望相似的源数据计算出来的哈希值越相近越好。<br>LSH经常用在判重、文章摘要、聚类、相似搜索、近邻查找等场景， 用来减少高维度的数据的维度，相近的数据放在同一个桶中。 比如<a href="https://cloud.tencent.com/developer/article/1035600">大规模异常滥用检测：基于局部敏感哈希算法——来自Uber Engineering的实践</a></p>
-      
-      <p class="article-more-link">
-        <a href="/2018/08/16/locality-sensitive-hashing/#more">阅读全文</a>
-      </p>
-      
-      
-    </div>
-    <footer class="article-footer">
-      
-  <ul class="article-tag-list" itemprop="keywords"><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/%E7%AE%97%E6%B3%95/" rel="tag">算法</a></li></ul>
-
-
-      
-
-    </footer>
-  </div>
-  
-</article>
-  
-    <article id="post-create-minimal-docker-image-for-go-applications" class="article article-type-post" itemscope
-  itemprop="blogPost">
-  <div class="article-meta">
-    <a href="/2018/08/13/create-minimal-docker-image-for-go-applications/" class="article-date">
-  <time datetime="2018-08-13T10:30:10.000Z" itemprop="datePublished">2018年08月13日</time>
-</a>
-    
-    
-  <div class="article-author"> by smallnest</div>
-
-  </div>
-  <div class="article-inner">
-    
-    
-    <header class="article-header">
-      
-  
-    <h1 itemprop="name">
-      <a class="article-title" href="/2018/08/13/create-minimal-docker-image-for-go-applications/">创建最小的Go docker 镜像</a>
-    </h1>
-  
-
-    </header>
-    
-    <div class="article-entry" itemprop="articleBody">
-      
-      
-      <img class="article-post-image" src="/images/logos/golang2.png">
-      
-      
-      <p>虽然曾有一些文章介绍了如何创建一个最小的Go Docker镜像，我也曾写过一篇<a href="http://colobu.com/2015/10/12/create-minimal-golang-docker-images/">文章</a>，但是随着Go的新的版本的发布， 以及docker本身的进化，有些技巧已经发生了变化， 本文介绍了最新的创建超小的Go镜像的方法。</p>
-      
-      <p class="article-more-link">
-        <a href="/2018/08/13/create-minimal-docker-image-for-go-applications/#more">阅读全文</a>
-      </p>
-      
-      
-    </div>
-    <footer class="article-footer">
-      
-  <ul class="article-tag-list" itemprop="keywords"><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/Go/" rel="tag">Go</a></li></ul>
-
-
-      
-
-    </footer>
-  </div>
-  
-</article>
-  
-    <article id="post-exposing-go-on-the-internet" class="article article-type-post" itemscope
-  itemprop="blogPost">
-  <div class="article-meta">
-    <a href="/2018/07/25/exposing-go-on-the-internet/" class="article-date">
-  <time datetime="2018-07-25T11:09:15.000Z" itemprop="datePublished">2018年07月25日</time>
-</a>
-    
-    
-  <div class="article-author"> by Filippo Valsorda</div>
-
-  </div>
-  <div class="article-inner">
-    
-    
-    <header class="article-header">
-      
-  
-    <h1 itemprop="name">
-      <a class="article-title" href="/2018/07/25/exposing-go-on-the-internet/">[译]Go HttpServer 最佳实践</a>
-    </h1>
-  
-
-    </header>
-    
-    <div class="article-entry" itemprop="articleBody">
-      
-      
-      <img class="article-post-image" src="/images/logos/golang6.png">
-      
-      
-      <p>这是 Cloudflare 的 Filippo Valsorda 2016年发表在Gopher Academy的一篇<a href="https://blog.gopheracademy.com/advent-2016/exposing-go-on-the-internet/">文章</a>， 虽然过去两年了，但是依然很有意义。</p>
-<p>先前 <code>crypto/tls</code> 太慢而<code>net/http</code>也很年轻， 所以对于Go web server来说， 通常我们明智的做法把它放在反向代理的后面， 如nginx等，现在不需要了。</p>
-<p>在Cloudflare我们最近试验了直接暴漏纯Go的服务作为主机。 Go 1.8的<code>net/http</code> 和 <code>crypto/tls</code> 提供了稳定的、高性能并且灵活的功能。</p>
-<p>然后，需要做一些调优的工作，本文我们将展示怎么去调优和使web服务器更稳定。</p>
-      
-      <p class="article-more-link">
-        <a href="/2018/07/25/exposing-go-on-the-internet/#more">阅读全文</a>
-      </p>
-      
-      
-    </div>
-    <footer class="article-footer">
-      
-  <ul class="article-tag-list" itemprop="keywords"><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/Go/" rel="tag">Go</a></li></ul>
-
-
-      
-
-    </footer>
-  </div>
-  
-</article>
-  
-    <article id="post-totally-static-Go-builds" class="article article-type-post" itemscope
-  itemprop="blogPost">
-  <div class="article-meta">
-    <a href="/2018/07/20/totally-static-Go-builds/" class="article-date">
-  <time datetime="2018-07-20T00:36:18.000Z" itemprop="datePublished">2018年07月20日</time>
-</a>
-    
-    
-  <div class="article-author"> by smallnest</div>
-
-  </div>
-  <div class="article-inner">
-    
-    
-    <header class="article-header">
-      
-  
-    <h1 itemprop="name">
-      <a class="article-title" href="/2018/07/20/totally-static-Go-builds/">完全静态编译一个Go程序</a>
+      <a class="article-title" href="/2018/12/29/get-assembly-output-for-go-programs/">得到Go程序的汇编代码的方法</a>
     </h1>
   
 
@@ -511,18 +529,12 @@
       <img class="article-post-image" src="/images/logos/golang5.png">
       
       
-      <script>function show_answer(btn, x) { if (btn.value === "显示答案") { btn.value = "隐藏答案" } else { btn.value = "显示答案" } var as = document.getElementById(x); if (as.style.display === "none") { as.style.display = "block" } else { as.style.display = "none" } }</script>
-      <p>在Docker化的今天， 我们经常需要静态编译一个Go程序，以便方便放在Docker容器中。 即使你没有引用其它的第三方包，只是在程序中使用了标准库<code>net</code>,你也会发现你编译后的程序依赖glibc,这时候你需要glibc-static库，并且静态连接。</p>
-<p>不同的Go版本下静态编译方式还有点不同，在go 1.10下， 下面的方式会尽可能做到静态编译：</p>
-<figure class="highlight sh"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">CGO_ENABLED=0 go build -a -ldflags <span class="string">&#x27;-extldflags &quot;-static&quot;&#x27;</span> .</span><br></pre></td></tr></table></figure>
-
-<p>有一个<a href="https://github.com/golang/go/issues/26492">提案</a>请求给编译加一个<code>static</code>,如果接收了的话也许在将来的go中直接使用<code>static</code>。</p>
-<h2 id="参考文档"><a href="#参考文档" class="headerlink" title="参考文档"></a>参考文档</h2><ol>
-<li><a href="http://blog.wrouesnel.com/articles/Totally%20static%20Go%20builds/">http://blog.wrouesnel.com/articles/Totally%20static%20Go%20builds/</a></li>
-<li><a href="https://github.com/golang/go/issues/9344">https://github.com/golang/go/issues/9344</a></li>
-<li><a href="https://github.com/golang/go/issues/26492">https://github.com/golang/go/issues/26492</a></li>
-</ol>
-
+      <p>有多种方式可以获得Go程序的汇编代码， 尽管输出的格式有些不同，但是都是方便阅读的汇编代码，可以帮助我们更好的了解程序的底层运行方式。</p>
+      
+      <p class="article-more-link">
+        <a href="/2018/12/29/get-assembly-output-for-go-programs/#more">阅读全文</a>
+      </p>
+      
       
     </div>
     <footer class="article-footer">
@@ -537,11 +549,11 @@
   
 </article>
   
-    <article id="post-some-tools-in-GNU-Binutils" class="article article-type-post" itemscope
+    <article id="post-dive-into-sync-mutex" class="article article-type-post" itemscope
   itemprop="blogPost">
   <div class="article-meta">
-    <a href="/2018/07/12/some-tools-in-GNU-Binutils/" class="article-date">
-  <time datetime="2018-07-12T08:11:29.000Z" itemprop="datePublished">2018年07月12日</time>
+    <a href="/2018/12/18/dive-into-sync-mutex/" class="article-date">
+  <time datetime="2018-12-18T10:34:21.000Z" itemprop="datePublished">2018年12月18日</time>
 </a>
     
     
@@ -555,7 +567,7 @@
       
   
     <h1 itemprop="name">
-      <a class="article-title" href="/2018/07/12/some-tools-in-GNU-Binutils/">ldd、objdump、nm、strings、strip等工具</a>
+      <a class="article-title" href="/2018/12/18/dive-into-sync-mutex/">sync.mutex 源代码分析</a>
     </h1>
   
 
@@ -565,56 +577,18 @@
       
       
       
-      <script>function show_answer(btn, x) { if (btn.value === "显示答案") { btn.value = "隐藏答案" } else { btn.value = "显示答案" } var as = document.getElementById(x); if (as.style.display === "none") { as.style.display = "block" } else { as.style.display = "none" } }</script>
-      <p>最近在做Docker镜像的时候发现镜像文件非常大，需要找出程序的依赖库，减少程序的大小，所以整理了一下相关的工具。基本上这些工具都在<a href="https://www.gnu.org/software/binutils/">GNU Binutils</a>中。</p>
-<p>GNU Binary Utilities或binutils是一整套的编程语言工具程序，用来处理许多格式的目标文件。当前的版本原本由在Cygnus Solutions的程序员以Binary File Descriptor library（libbfd）所撰写。这个工具程序通常搭配GCC、make、和GDB这些程序来使用。</p>
-<p>它包含20个左右的工具，本文介绍了我在创建Docker镜像的时候的使用的几种工具。</p>
-<h3 id="ldd"><a href="#ldd" class="headerlink" title="ldd"></a>ldd</h3><p>ldd不是GNU Binutils工具集中的一个工具，但是却是一个非常有用的工具， 它可以显示程序或者共享库所需的共享库。</p>
-<p>例如:</p>
-<figure class="highlight sh"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br></pre></td><td class="code"><pre><span class="line">   <span class="comment"># ldd main</span></span><br><span class="line">linux-vdso.so.1 =&gt;  (0x00007ffc88fd4000)</span><br><span class="line">libpthread.so.0 =&gt; /lib64/libpthread.so.0 (0x00007faee13b8000)</span><br><span class="line">libc.so.6 =&gt; /lib64/libc.so.6 (0x00007faee0feb000)</span><br><span class="line">/lib64/ld-linux-x86-64.so.2 (0x00007faee15d4000)</span><br></pre></td></tr></table></figure>
-
-<p>依照ldd得手册， 有时候ldd会通过执行程序来获取依赖信息，对于来源不明的程序，执行这些程序可能会带来风险，所以对于来源不明的程序，可以使用<code>objdump</code>来分析。</p>
-<h3 id="objdump"><a href="#objdump" class="headerlink" title="objdump"></a>objdump</h3><p>onjdump可以显示目标文件的信息,可以通过参数控制要显示的内容。</p>
-<p>比如<code>-p</code>可以显示文件头内容， 通过<code>grep</code>可以查看依赖的库。</p>
-<figure class="highlight sh"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br></pre></td><td class="code"><pre><span class="line"><span class="comment"># objdump -p  main|grep GLIBC</span></span><br><span class="line">0x09691a75 0x00 02 GLIBC_2.2.5</span><br><span class="line">0x09691972 0x00 03 GLIBC_2.3.2</span><br><span class="line">0x09691a75 0x00 04 GLIBC_2.2.5</span><br></pre></td></tr></table></figure>
-
-
-<p>甚至可以查看<code>-T</code>可以查看动态符号表的内容：</p>
-<figure class="highlight sh"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br></pre></td><td class="code"><pre><span class="line"><span class="comment"># objdump -T  main|grep GLIBC</span></span><br><span class="line">0000000000000000      DO *UND*	0000000000000000  GLIBC_2.2.5 stderr</span><br><span class="line">0000000000000000      DO *UND*	0000000000000000  GLIBC_2.2.5 fwrite</span><br><span class="line">0000000000000000      DO *UND*	0000000000000000  GLIBC_2.2.5 vfprintf</span><br><span class="line">0000000000000000      DO *UND*	0000000000000000  GLIBC_2.2.5 fputc</span><br><span class="line">0000000000000000      DO *UND*	0000000000000000  GLIBC_2.2.5 abort</span><br><span class="line">0000000000000000      DO *UND*	0000000000000000  GLIBC_2.2.5 pthread_mutex_lock</span><br><span class="line">0000000000000000      DO *UND*	0000000000000000  GLIBC_2.3.2 pthread_cond_wait</span><br><span class="line">0000000000000000      DO *UND*	0000000000000000  GLIBC_2.2.5 pthread_mutex_unlock</span><br><span class="line">0000000000000000      DO *UND*	0000000000000000  GLIBC_2.3.2 pthread_cond_broadcast</span><br><span class="line">0000000000000000      DO *UND*	0000000000000000  GLIBC_2.2.5 pthread_create</span><br><span class="line">0000000000000000      DO *UND*	0000000000000000  GLIBC_2.2.5 nanosleep</span><br><span class="line">0000000000000000      DO *UND*	0000000000000000  GLIBC_2.2.5 pthread_detach</span><br><span class="line">......</span><br></pre></td></tr></table></figure>
-
-<h3 id="nm"><a href="#nm" class="headerlink" title="nm"></a>nm</h3><p>nm显示目标文件的符号。</p>
-<figure class="highlight sh"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br></pre></td><td class="code"><pre><span class="line"><span class="comment"># nm go/bin/glide |more</span></span><br><span class="line">0000000000908680 r andMask</span><br><span class="line">0000000000901d00 r bswapMask</span><br><span class="line">00000000009036c0 r BSWAP_SHUFB_CTL</span><br><span class="line">0000000000b000e0 B bufio.ErrAdvanceTooFar</span><br><span class="line">0000000000b000f0 B bufio.ErrBufferFull</span><br><span class="line">0000000000b00100 B bufio.ErrFinalToken</span><br><span class="line">0000000000b00110 B bufio.ErrInvalidUnreadByte</span><br><span class="line">0000000000b00120 B bufio.ErrInvalidUnreadRune</span><br><span class="line">0000000000b00130 B bufio.ErrNegativeAdvance</span><br><span class="line">0000000000b00140 B bufio.ErrNegativeCount</span><br><span class="line">0000000000b00160 B bufio.errNegativeRead</span><br><span class="line">0000000000b00170 B bufio.errNegativeWrite</span><br><span class="line">0000000000b00150 B bufio.ErrTooLong</span><br><span class="line">00000000004d9140 T bufio.init</span><br><span class="line">0000000000b21120 B bufio.initdone.</span><br><span class="line">00000000004d6510 T bufio.(*Reader).Buffered</span><br><span class="line">00000000004d59d0 T bufio.(*Reader).Discard</span><br><span class="line">00000000004d5590 T bufio.(*Reader).fill</span><br><span class="line">00000000004d57c0 T bufio.(*Reader).Peek</span><br><span class="line">00000000004d5b70 T bufio.(*Reader).Read</span><br><span class="line">......</span><br></pre></td></tr></table></figure>
-
-<h3 id="strings"><a href="#strings" class="headerlink" title="strings"></a>strings</h3><p>strings显示文件中的可打印字符。</p>
-<figure class="highlight sh"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br></pre></td><td class="code"><pre><span class="line"><span class="comment"># strings main|grep GLIBC</span></span><br><span class="line">GLIBC_2.2.5</span><br><span class="line">GLIBC_2.3.2</span><br><span class="line">GLIBC_2.2.5</span><br></pre></td></tr></table></figure>
-
-<h3 id="strip"><a href="#strip" class="headerlink" title="strip"></a>strip</h3><p>通过上面的工具，可以分析出文件的依赖库，创建Docker镜像的时候只需把所需的依赖库加进去即可。</p>
-<p>如果程序本身比较大，可以将程序压缩，去掉不需要的一些数据， 比如使用<code>strip</code>进行裁剪。</p>
-<p>你可以通过参数控制要丢掉的哪些符号。<br>比如去除符号表和行号信息：</p>
-<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">strip main</span><br></pre></td></tr></table></figure>
-
-<h3 id="libtool"><a href="#libtool" class="headerlink" title="libtool"></a>libtool</h3><p>Linux下的GNU Libtool是一种属于GNU建构系统的GNU程序设计工具，用来产生便携式的库。这里引用libtool手册的说明：</p>
-<figure class="highlight sh"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">libtool --mode=compile gcc -g -O -c foo.c</span><br></pre></td></tr></table></figure>
-
-
-<p>MacOS下的libtool时另外一个工具，可以用来创建库：</p>
-<figure class="highlight sh"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line">libtool -dynamic -o c.dylib a.o b.o </span><br><span class="line">libtool -static -o c.a a.o b.o</span><br></pre></td></tr></table></figure>
-
-<h2 id="ar"><a href="#ar" class="headerlink" title="ar"></a>ar</h2><p>可以对静态库做创建、修改和提取的操作。</p>
-<figure class="highlight sh"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br></pre></td><td class="code"><pre><span class="line">ar rv libNAME.a file1.o file2.o</span><br><span class="line">ar -d lib.a conflict.o</span><br><span class="line">ar -x lib.a</span><br></pre></td></tr></table></figure>
-
-<h3 id="otool"><a href="#otool" class="headerlink" title="otool"></a>otool</h3><p>比nm更强大，mac还有一个对应的图形化工具——MachOView。</p>
-<p>查看依赖动态库：</p>
-<figure class="highlight sh"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">otool -L a.out</span><br></pre></td></tr></table></figure>
-
-<p>查看反汇编代码段：</p>
-<figure class="highlight sh"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">otool -v -t a.out</span><br></pre></td></tr></table></figure>
+      <p><a href="https://golang.org/pkg/sync/#Mutex">sync.Mutex</a>是Go标准库中常用的一个排外锁。当一个 goroutine 获得了这个锁的拥有权后， 其它请求锁的 goroutine 就会阻塞在 <code>Lock</code> 方法的调用上，直到锁被释放。</p>
+<p><img src="/2018/12/18/dive-into-sync-mutex/mutex.png" alt="mutex"></p>
+<p><code>sync.Mutex</code>的实现也是经过多次的演化，功能逐步加强，增加了公平的处理和饥饿机制。</p>
+      
+      <p class="article-more-link">
+        <a href="/2018/12/18/dive-into-sync-mutex/#more">阅读全文</a>
+      </p>
+      
       
     </div>
     <footer class="article-footer">
       
-  <ul class="article-tag-list" itemprop="keywords"><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/%E5%B7%A5%E5%85%B7/" rel="tag">工具</a></li></ul>
-
 
       
 
@@ -623,11 +597,11 @@
   
 </article>
   
-    <article id="post-Error-response-from-daemon-error-creating-overlay-mount-to-var-lib-docker-overlay2" class="article article-type-post" itemscope
+    <article id="post-EOS-whitepaper" class="article article-type-post" itemscope
   itemprop="blogPost">
   <div class="article-meta">
-    <a href="/2018/06/28/Error-response-from-daemon-error-creating-overlay-mount-to-var-lib-docker-overlay2/" class="article-date">
-  <time datetime="2018-06-28T08:45:44.000Z" itemprop="datePublished">2018年06月28日</time>
+    <a href="/2018/11/28/EOS-whitepaper/" class="article-date">
+  <time datetime="2018-11-28T09:15:03.000Z" itemprop="datePublished">2018年11月28日</time>
 </a>
     
     
@@ -641,7 +615,7 @@
       
   
     <h1 itemprop="name">
-      <a class="article-title" href="/2018/06/28/Error-response-from-daemon-error-creating-overlay-mount-to-var-lib-docker-overlay2/">解决 error creating overlay mount to /var/lib/docker/overlay2</a>
+      <a class="article-title" href="/2018/11/28/EOS-whitepaper/">[转] EOS 白皮书 第二版</a>
     </h1>
   
 
@@ -650,50 +624,21 @@
     <div class="article-entry" itemprop="articleBody">
       
       
+      <img class="article-post-image" src="/images/logos/eos.png">
       
-      <script>function show_answer(btn, x) { if (btn.value === "显示答案") { btn.value = "隐藏答案" } else { btn.value = "显示答案" } var as = document.getElementById(x); if (as.style.display === "none") { as.style.display = "block" } else { as.style.display = "none" } }</script>
-      <p>最近在<code>centos7.1</code>使用docker运行<code>redis</code>镜像，出现下面的错误：</p>
-<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line">/usr/bin/docker-current: Error response from daemon: error creating overlay mount to /var/lib/docker/overlay2/65f3c109fb903539820f84856d2725af784f2f03f95b1f0214e34184e4d61ff7-init/merged: invalid argument.</span><br><span class="line">See &#x27;/usr/bin/docker-current run --help&#x27;.</span><br></pre></td></tr></table></figure>
-
-<p>在网上搜索一番后，一个可行的方案如下(改变storage driver类型， 禁用selinux):</p>
-<ol>
-<li>停止docker服务</li>
-</ol>
-<figure class="highlight sh"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">systemctl stop docker </span><br></pre></td></tr></table></figure>
-
-<ol start="2">
-<li>清理镜像</li>
-</ol>
-<figure class="highlight sh"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line"><span class="built_in">rm</span> -rf /var/lib/docker</span><br></pre></td></tr></table></figure>
-
-<ol start="3">
-<li>修改存储类型</li>
-</ol>
-<figure class="highlight sh"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">vi /etc/sysconfig/docker-storage</span><br></pre></td></tr></table></figure>
-
-<p>把空的DOCKER_STORAGE_OPTIONS参数改为overlay:</p>
-<figure class="highlight sh"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">DOCKER_STORAGE_OPTIONS=<span class="string">&quot;--storage-driver overlay&quot;</span></span><br></pre></td></tr></table></figure>
-
-
-<ol start="4">
-<li>禁用selinux</li>
-</ol>
-<figure class="highlight sh"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">vi /etc/sysconfig/docker  </span><br></pre></td></tr></table></figure>
-
-<p>去掉option的<code>--selinux-enabled</code></p>
-<ol start="5">
-<li>启动docker应该就可以了</li>
-</ol>
-<figure class="highlight sh"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">systemctl start docker</span><br></pre></td></tr></table></figure>
-
-
-<p>方案抄自 <a href="https://blog.csdn.net/Ysssssssssssssss/article/details/79596367">Ysssssssssssssss的博客</a> 和 redis的讨论: <a href="https://github.com/coreos/bugs/issues/2340">error creating overlay mount to ...&#x2F;merged: invalid argument.</a>, 基本可以确定是启用selinux导致的。</p>
-
+      
+      <p>EOS白皮书官方文档: <a href="https://github.com/EOSIO/Documentation/blob/master/TechnicalWhitePaper.md">EOS.IO Technical White Paper v2</a>,</p>
+<p>中文翻译: <a href="https://github.com/EOSIO/Documentation/pull/71/files">EOS.IO 技术白皮书 v2</a>, 由<strong>汪涛</strong>，<strong>minghua</strong>，<strong>鞠禹</strong>，<strong>李晓宇</strong>，<strong>轻灵紫</strong>，<strong>陈伟桢</strong>，<strong>赵余</strong>，以及另外两位不具名人士共同翻译，终稿由<strong>汪帆</strong>审校。</p>
+      
+      <p class="article-more-link">
+        <a href="/2018/11/28/EOS-whitepaper/#more">阅读全文</a>
+      </p>
+      
       
     </div>
     <footer class="article-footer">
       
-  <ul class="article-tag-list" itemprop="keywords"><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/Docker/" rel="tag">Docker</a></li></ul>
+  <ul class="article-tag-list" itemprop="keywords"><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/%E5%8C%BA%E5%9D%97%E9%93%BE/" rel="tag">区块链</a></li></ul>
 
 
       
@@ -703,11 +648,60 @@
   
 </article>
   
-    <article id="post-implement-quick-sort-in-golang" class="article article-type-post" itemscope
+    <article id="post-setup-a-private-EOS-cluster-2" class="article article-type-post" itemscope
   itemprop="blogPost">
   <div class="article-meta">
-    <a href="/2018/06/26/implement-quick-sort-in-golang/" class="article-date">
-  <time datetime="2018-06-26T10:29:33.000Z" itemprop="datePublished">2018年06月26日</time>
+    <a href="/2018/11/23/setup-a-private-EOS-cluster-2/" class="article-date">
+  <time datetime="2018-11-23T08:15:34.000Z" itemprop="datePublished">2018年11月23日</time>
+</a>
+    
+    
+  </div>
+  <div class="article-inner">
+    
+    
+    <header class="article-header">
+      
+  
+    <h1 itemprop="name">
+      <a class="article-title" href="/2018/11/23/setup-a-private-EOS-cluster-2/">搭建一个私有的EOS集群 - 2</a>
+    </h1>
+  
+
+    </header>
+    
+    <div class="article-entry" itemprop="articleBody">
+      
+      
+      <img class="article-post-image" src="/images/logos/eos.png">
+      
+      
+      <p>上一篇 <a href="https://colobu.com/2018/11/21/setup-a-private-EOS-cluster/">搭建一个私有的EOS集群</a> 搭建了一个单节点的私链，本文将继续介绍多节点的私链搭建。</p>
+<p><img src="/2018/11/23/setup-a-private-EOS-cluster-2/single-host-multi-node-testnet.png" alt="一台服务器上搭建的多节点"></p>
+      
+      <p class="article-more-link">
+        <a href="/2018/11/23/setup-a-private-EOS-cluster-2/#more">阅读全文</a>
+      </p>
+      
+      
+    </div>
+    <footer class="article-footer">
+      
+  <ul class="article-tag-list" itemprop="keywords"><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/%E5%8C%BA%E5%9D%97%E9%93%BE/" rel="tag">区块链</a></li></ul>
+
+
+      
+
+    </footer>
+  </div>
+  
+</article>
+  
+    <article id="post-setup-a-private-EOS-cluster" class="article article-type-post" itemscope
+  itemprop="blogPost">
+  <div class="article-meta">
+    <a href="/2018/11/21/setup-a-private-EOS-cluster/" class="article-date">
+  <time datetime="2018-11-21T02:47:17.000Z" itemprop="datePublished">2018年11月21日</time>
 </a>
     
     
@@ -721,7 +715,62 @@
       
   
     <h1 itemprop="name">
-      <a class="article-title" href="/2018/06/26/implement-quick-sort-in-golang/">使用 Go 实现快速排序</a>
+      <a class="article-title" href="/2018/11/21/setup-a-private-EOS-cluster/">搭建一个私有的EOS集群</a>
+    </h1>
+  
+
+    </header>
+    
+    <div class="article-entry" itemprop="articleBody">
+      
+      
+      <img class="article-post-image" src="/images/logos/eos.png">
+      
+      
+      <p>EOS (Enterprise Operation System)是由 Block.one公司主导开发的一种全新的基于区块链智能合约平台，由区块链奇才 BM （Daniel Larimer）领导开发。旨在为高性能分布式应用提供底层区块链平台服务。EOS 项目的目标是实现一个类似操作系统的支撑分布式应用程序的区块链架构。该架构可以提供账户，身份认证，数据库，异步通信以及可在数以万计的 CPU&#x2F;GPU群集上进行程序调度和并行运算。EOS最终可以支持每秒执行数百万个交易，同时普通用户执行智能合约无需支付使用费用。</p>
+<p>Block.one团队人才济济，包括Brendan Blummer（之前的公司交易MMORPG游戏货币）、首席科技官Daniel Larimer（区块链传奇人物之一，下面会介绍）和Brock Pierce（区块链基金会主席，Blockchain Capital联合创始人）等等。</p>
+<p>2017年6月26日，Block.one开始销售EOS代币，计划355天共销售10亿EOS代币，EOS主网上线后会将这个以太坊基础版本的代币EOS转换为其主链上的代币。</p>
+<p>2017年6月26-30日，销售20%也就是2亿代币，5天融资1.85亿美元，打破了当时ICO的世界纪录。70%接下来会以每小时23小时200万个发售。发售期间始于7月1号，剩下的持续350天。剩余的10%留属Block.one，不能交易和转让。每年新产生最多5%用于做DPoS的奖励。</p>
+<p>EOS 项目刚刚发布的时候的共识机制是 DPoS(Deligated Proof of Stake，委托股权证明)，类似于 Bitshares 和 Steem，这种共识机制采用随机的见证人出块顺序，出块速度为 3 秒，交易不可逆需要45秒。</p>
+<p>EOS 最新的白皮书中已经将共识机制从 DPoS 升级为了 BFT-DPoS（Byzantine Fault Tolerance – Deligated Proof of Stake，带有拜占庭容错的委托股权证明）。交易确认时间大大缩短，从 45 秒缩短至 3 秒左右（主要为等待生产区块的时间）。这种机制可以称为初级版的 BFT-DPoS 共识机制。Daniel Larimer 称 EOS 新的 BFT-DPoS 共识机制还在开发中，会在系统上线前完成开发。</p>
+      
+      <p class="article-more-link">
+        <a href="/2018/11/21/setup-a-private-EOS-cluster/#more">阅读全文</a>
+      </p>
+      
+      
+    </div>
+    <footer class="article-footer">
+      
+  <ul class="article-tag-list" itemprop="keywords"><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/%E5%8C%BA%E5%9D%97%E9%93%BE/" rel="tag">区块链</a></li></ul>
+
+
+      
+
+    </footer>
+  </div>
+  
+</article>
+  
+    <article id="post-get-function-name-in-go" class="article article-type-post" itemscope
+  itemprop="blogPost">
+  <div class="article-meta">
+    <a href="/2018/11/03/get-function-name-in-go/" class="article-date">
+  <time datetime="2018-11-03T08:17:54.000Z" itemprop="datePublished">2018年11月03日</time>
+</a>
+    
+    
+  <div class="article-author"> by smallnest</div>
+
+  </div>
+  <div class="article-inner">
+    
+    
+    <header class="article-header">
+      
+  
+    <h1 itemprop="name">
+      <a class="article-title" href="/2018/11/03/get-function-name-in-go/">如何在Go的函数中得到调用者函数名?</a>
     </h1>
   
 
@@ -733,21 +782,11 @@
       <img class="article-post-image" src="/images/logos/golang5.png">
       
       
-      <p>快速排序(quick sort)号称是二十世纪最伟大的十大算法之一(<a href="http://www.uta.edu/faculty/rcli/TopTen/topten.pdf">The Best of the 20th Century: Editors Name Top 10 Algorithms</a>), 但是快速排序也是最不容易实现的排序算法之一 (<a href=""></a>)。虽然它的原理非常的简单，但实现起来很容易出错。 也曾因为快排导致腥风血雨甚至网站攻击事件。</p>
-<p>快速排序由C. A. R. Hoare在1962年提出。它的基本思想是：通过一趟排序将要排序的数据分割成独立的两部分，其中一部分的所有数据都比另外一部分的所有数据都要小，然后再按此方法对这两部分数据分别进行快速排序，整个排序过程可以递归进行，以此达到整个数据变成有序序列。</p>
-<blockquote>
-<p>分治法：将问题分解为若干个规模更小但结构与原问题相似的子问题。递归地解这些子问题，然后将这些子问题的解组合为原问题的解。</p>
-</blockquote>
-<p>利用分治法可将快速排序的分为三步：</p>
-<ul>
-<li>在数据集之中，选择一个元素作为”基准”（pivot）。</li>
-<li>所有小于”基准”的元素，都移到”基准”的左边；所有大于”基准”的元素，都移到”基准”的右边。这个操作称为分区 (partition) 操作，分区操作结束后，基准元素所处的位置就是最终排序后它的位置。</li>
-<li>对”基准”左边和右边的两个子集，不断重复第一步和第二步，直到所有子集只剩下一个元素为止。</li>
-</ul>
-<p>快速排序平均时间复杂度为<code>O(n log n)</code>,最坏情况为<code>O(n2)</code>，不稳定排序。</p>
+      <p>有时候在Go的函数调用的过程中，我们需要知道函数被谁调用，比如打印日志信息等。例如下面的函数，我们希望在日志中打印出调用者的名字。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br></pre></td><td class="code"><pre><span class="line"><span class="function"><span class="keyword">func</span> <span class="title">Foo</span><span class="params">()</span></span> &#123;</span><br><span class="line">	fmt.Println(<span class="string">&quot;谁在调用我？&quot;</span>)</span><br><span class="line">	bar()</span><br><span class="line">&#125;</span><br><span class="line"></span><br><span class="line"><span class="function"><span class="keyword">func</span> <span class="title">Bar</span><span class="params">()</span></span> &#123;</span><br><span class="line">	fmt.Println(<span class="string">&quot;谁又在调用我？&quot;</span>)</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
       
       <p class="article-more-link">
-        <a href="/2018/06/26/implement-quick-sort-in-golang/#more">阅读全文</a>
+        <a href="/2018/11/03/get-function-name-in-go/#more">阅读全文</a>
       </p>
       
       
@@ -755,121 +794,6 @@
     <footer class="article-footer">
       
   <ul class="article-tag-list" itemprop="keywords"><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/Go/" rel="tag">Go</a></li></ul>
-
-
-      
-
-    </footer>
-  </div>
-  
-</article>
-  
-    <article id="post-cgo-articles" class="article article-type-post" itemscope
-  itemprop="blogPost">
-  <div class="article-meta">
-    <a href="/2018/06/13/cgo-articles/" class="article-date">
-  <time datetime="2018-06-13T10:08:15.000Z" itemprop="datePublished">2018年06月13日</time>
-</a>
-    
-    
-  <div class="article-author"> by smallnest</div>
-
-  </div>
-  <div class="article-inner">
-    
-    
-    <header class="article-header">
-      
-  
-    <h1 itemprop="name">
-      <a class="article-title" href="/2018/06/13/cgo-articles/">CGO 文章整理</a>
-    </h1>
-  
-
-    </header>
-    
-    <div class="article-entry" itemprop="articleBody">
-      
-      
-      <img class="article-post-image" src="/images/logos/golang6.png">
-      
-      
-      <p>虽然<code>CGO</code>属于不太常用的技术，但是偶尔在一些场景中还是会用到的，本文搜集了一些<code>CGO</code>的文章, 方便大家学习和参考。</p>
-      
-      <p class="article-more-link">
-        <a href="/2018/06/13/cgo-articles/#more">阅读全文</a>
-      </p>
-      
-      
-    </div>
-    <footer class="article-footer">
-      
-  <ul class="article-tag-list" itemprop="keywords"><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/Go/" rel="tag">Go</a></li></ul>
-
-
-      
-
-    </footer>
-  </div>
-  
-</article>
-  
-    <article id="post-setup-ipfs-private-network" class="article article-type-post" itemscope
-  itemprop="blogPost">
-  <div class="article-meta">
-    <a href="/2018/05/29/setup-ipfs-private-network/" class="article-date">
-  <time datetime="2018-05-29T09:05:56.000Z" itemprop="datePublished">2018年05月29日</time>
-</a>
-    
-    
-  <div class="article-author"> by smallnest</div>
-
-  </div>
-  <div class="article-inner">
-    
-    
-    <header class="article-header">
-      
-  
-    <h1 itemprop="name">
-      <a class="article-title" href="/2018/05/29/setup-ipfs-private-network/">搭建IPFS私有网络</a>
-    </h1>
-  
-
-    </header>
-    
-    <div class="article-entry" itemprop="articleBody">
-      
-      
-      
-      <p>IPFS (InterPlanetary File System) 是一个面向全球的、点对点的分布式版本文件系统。它用基于内容的地址替代基于域名的地址，也就是用户寻找的不是某个地址而是储存在某个地方的内容，不需要验证发送者的身份，而只需要验证内容的哈希，通过这样可以让网页的速度更快、更安全、更健壮、更持久。IPFS表示，IPFS未来将替代HTTP（以及其他的许多东西）。</p>
-<blockquote>
-<p>IPFS 和 BitTorrent 的区别: <a href="https://github.com/ipfs/faq/issues/17">How does it compare to BitTorrent&#39;s Project Maelstrom?</a></p>
-</blockquote>
-<p>IPFS从根本上改变了用户搜索的方式。通过IPFS，用户搜索的是内容。通过HTTP浏览器搜索文件的时候，首先找到服务器的位置（IP地址），然后使用路径名称在服务器上查找文件。按照这个设计，只有文件所有者可以判断这是否是用户要找的文件。此时，必须保证托管者不会通过移除文件或者关闭服务器而对文件做任何更改。</p>
-<p>当文件被添加到IPFS节点上，它得到一个新的名字。这个名字实际上是一个加密哈希，它是从文件内容中被计算出来。通过加密保证该哈希始终只表示该文件的内容。哪怕只在文件中修改一个比特的数据，哈希都会完全不同。</p>
-<p>当下一步向IPFS分布式网络询问哈希的时候，它通过使用一个分布式哈希表，可以快速（在一个拥有10,000,000个节点的网络中只需要20跳）地找到拥有数据的节点，从而检索该数据，并使用哈希验证这是否是正确的数据。</p>
-<p>不幸的是， IPFS 被<strong>墙</strong>了。如果你有幸能翻墙，你可以通过通过下面的命令下载并安装预编译的ipfs工具。</p>
-<figure class="highlight sh"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br></pre></td><td class="code"><pre><span class="line">tar xvfz go-ipfs.tar.gz</span><br><span class="line"><span class="built_in">cd</span> go-ipfs</span><br><span class="line">./install.sh</span><br></pre></td></tr></table></figure>
-
-<p>然后初始化仓库:</p>
-<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br></pre></td><td class="code"><pre><span class="line">&gt; ipfs init</span><br><span class="line"></span><br><span class="line">initializing ipfs node at /Users/jbenet/.go-ipfs</span><br><span class="line">generating 2048-bit RSA keypair...done</span><br><span class="line">peer identity: Qmcpo2iLBikrdf1d6QU6vXuNb6P7hwrbNPW9kLAH8eG67z</span><br><span class="line">to get started, enter:</span><br><span class="line"></span><br><span class="line">  ipfs cat /ipfs/QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG/readme</span><br><span class="line"></span><br></pre></td></tr></table></figure>
-
-<p>它默认会在你的Home下创建一个<code>.ipfs</code>文件夹。</p>
-<figure class="highlight sh"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">ipfs <span class="built_in">cat</span> /ipfs/QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG/readme</span><br></pre></td></tr></table></figure>
-<p>查看ipfs网络上的一个文件，正常你可以看到这个文件的内容。</p>
-<p>你可以使用<code>ipfs add</code>上传文件，<code>ipfs cat</code>查看文件。当然<code>ipfs</code>包含很多的命令，你可以在 <a href="https://ipfs.io/docs/commands/">commands</a> 页面查看每个命令。</p>
-<p>默认IPFS会通过一些种子连接到IPFS全球网络， 如果你想搭建一个私有的IPFS网络，可以使用本文下面介绍的方法。</p>
-      
-      <p class="article-more-link">
-        <a href="/2018/05/29/setup-ipfs-private-network/#more">阅读全文</a>
-      </p>
-      
-      
-    </div>
-    <footer class="article-footer">
-      
-  <ul class="article-tag-list" itemprop="keywords"><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/IPFS/" rel="tag">IPFS</a></li></ul>
 
 
       
@@ -881,7 +805,7 @@
   
   
     <nav id="page-nav">
-      <a class="extend prev" rel="prev" href="/page/34/">&laquo; 上一页</a><a class="page-number" href="/">1</a><span class="space">&hellip;</span><a class="page-number" href="/page/33/">33</a><a class="page-number" href="/page/34/">34</a><span class="page-number current">35</span><a class="page-number" href="/page/36/">36</a><a class="page-number" href="/page/37/">37</a><span class="space">&hellip;</span><a class="page-number" href="/page/73/">73</a><a class="extend next" rel="next" href="/page/36/">下一页 &raquo;</a>
+      <a class="extend prev" rel="prev" href="/page/34/">&laquo; 上一页</a><a class="page-number" href="/">1</a><span class="space">&hellip;</span><a class="page-number" href="/page/33/">33</a><a class="page-number" href="/page/34/">34</a><span class="page-number current">35</span><a class="page-number" href="/page/36/">36</a><a class="page-number" href="/page/37/">37</a><span class="space">&hellip;</span><a class="page-number" href="/page/75/">75</a><a class="extend next" rel="next" href="/page/36/">下一页 &raquo;</a>
     </nav>
   
 </section>
@@ -944,7 +868,7 @@
   <div class="widget-wrap">
     <h3 class="widget-title">分类</h3>
     <div class="widget">
-      <ul class="category-list"><li class="category-list-item"><a class="category-list-link" href="/categories/AI/">AI</a><span class="category-list-count">21</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Android/">Android</a><span class="category-list-count">7</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/DOTNET/">DOTNET</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Docker/">Docker</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Go/">Go</a><span class="category-list-count">22</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Java/">Java</a><span class="category-list-count">41</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Linux/">Linux</a><span class="category-list-count">3</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Rust/">Rust</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Scala/">Scala</a><span class="category-list-count">13</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E5%89%8D%E7%AB%AF%E5%BC%80%E5%8F%91/">前端开发</a><span class="category-list-count">17</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E5%8C%BA%E5%9D%97%E9%93%BE/">区块链</a><span class="category-list-count">4</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E5%A4%A7%E6%95%B0%E6%8D%AE/">大数据</a><span class="category-list-count">54</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E5%B7%A5%E5%85%B7/">工具</a><span class="category-list-count">14</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E6%95%B0%E6%8D%AE%E5%BA%93/">数据库</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E6%9E%B6%E6%9E%84/">架构</a><span class="category-list-count">10</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E7%AE%97%E6%B3%95/">算法</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E7%BD%91%E7%BB%9C/">网络</a><span class="category-list-count">4</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E7%BD%91%E7%BB%9C%E7%BC%96%E7%A8%8B/">网络编程</a><span class="category-list-count">5</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E8%AF%BB%E4%B9%A6%E7%AC%94%E8%AE%B0/">读书笔记</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E8%BD%AF%E4%BB%B6%E5%B7%A5%E7%A8%8B/">软件工程</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E9%AB%98%E5%B9%B6%E5%8F%91%E7%BC%96%E7%A8%8B/">高并发编程</a><span class="category-list-count">8</span></li></ul>
+      <ul class="category-list"><li class="category-list-item"><a class="category-list-link" href="/categories/AI/">AI</a><span class="category-list-count">41</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Android/">Android</a><span class="category-list-count">7</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/DOTNET/">DOTNET</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Docker/">Docker</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Go/">Go</a><span class="category-list-count">22</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Java/">Java</a><span class="category-list-count">41</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Linux/">Linux</a><span class="category-list-count">3</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Rust/">Rust</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Scala/">Scala</a><span class="category-list-count">13</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E5%89%8D%E7%AB%AF%E5%BC%80%E5%8F%91/">前端开发</a><span class="category-list-count">17</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E5%8C%BA%E5%9D%97%E9%93%BE/">区块链</a><span class="category-list-count">4</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E5%A4%A7%E6%95%B0%E6%8D%AE/">大数据</a><span class="category-list-count">54</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E5%B7%A5%E5%85%B7/">工具</a><span class="category-list-count">14</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E6%95%B0%E6%8D%AE%E5%BA%93/">数据库</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E6%9E%B6%E6%9E%84/">架构</a><span class="category-list-count">10</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E7%AE%97%E6%B3%95/">算法</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E7%BD%91%E7%BB%9C/">网络</a><span class="category-list-count">4</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E7%BD%91%E7%BB%9C%E7%BC%96%E7%A8%8B/">网络编程</a><span class="category-list-count">5</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E8%AF%BB%E4%B9%A6%E7%AC%94%E8%AE%B0/">读书笔记</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E8%BD%AF%E4%BB%B6%E5%B7%A5%E7%A8%8B/">软件工程</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E9%AB%98%E5%B9%B6%E5%8F%91%E7%BC%96%E7%A8%8B/">高并发编程</a><span class="category-list-count">8</span></li></ul>
     </div>
   </div>
 
@@ -956,23 +880,23 @@
       <ul>
         
           <li>
-            <a href="/2026/06/26/open-decision-making-from-go-issue/">如何做决策 - 从 Go 的一个 issue 说起</a>
+            <a href="/2026/06/28/go-language-skills-ai-era-go-toolchain/">Go 语言技能：AI 时代的 Go 开发工具链</a>
           </li>
         
           <li>
-            <a href="/2026/06/25/go-seq-chained-pipeline-like-scala/">等了十年的 Go 链式管道，终于来了：seq 让你像写 Scala 一样写 Go</a>
+            <a href="/2026/06/28/refactoring-code-evolution-in-ai-era/">重构：AI 时代的代码进化</a>
           </li>
         
           <li>
-            <a href="/2026/06/23/2026-06-23-how-to-write-design-doc/">如何写好设计文档？</a>
+            <a href="/2026/06/28/uml-new-use-ai-understands-generated-code/">UML 新用途：让 AI 理解你生成的代码</a>
           </li>
         
           <li>
-            <a href="/2026/06/22/software-engineering-fifty-years-paradigm-shift/">01 引言：软件工程范式的五十年之变</a>
+            <a href="/2026/06/28/understand-anything-code-knowledge-graph/">Understand-Anything：代码知识图谱</a>
           </li>
         
           <li>
-            <a href="/2026/06/21/karpathy-half-year-no-code-prologue/">00 卷首语：当 Karpathy 说他半年没写一行代码</a>
+            <a href="/2026/06/28/anthropic-official-plugins-domain-knowledge-ai-agent/">Anthropic 官方插件：AI Agent 的领域知识插件</a>
           </li>
         
       </ul>

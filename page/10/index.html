@@ -269,11 +269,11 @@
       <div class="outer">
         <section id="main">
   
-    <article id="post-go-evolves-in-the-wrong-direction" class="article article-type-post" itemscope
+    <article id="post-go-synctest-solving-flaky-tests" class="article article-type-post" itemscope
   itemprop="blogPost">
   <div class="article-meta">
-    <a href="/2024/06/11/go-evolves-in-the-wrong-direction/" class="article-date">
-  <time datetime="2024-06-11T14:02:06.000Z" itemprop="datePublished">2024年06月11日</time>
+    <a href="/2025/06/01/go-synctest-solving-flaky-tests/" class="article-date">
+  <time datetime="2025-05-31T16:00:00.000Z" itemprop="datePublished">2025年06月01日</time>
 </a>
     
     
@@ -287,7 +287,7 @@
       
   
     <h1 itemprop="name">
-      <a class="article-title" href="/2024/06/11/go-evolves-in-the-wrong-direction/">Go 朝着错误的方向发展</a>
+      <a class="article-title" href="/2025/06/01/go-synctest-solving-flaky-tests/">Go synctest：解决不稳定测试的利器</a>
     </h1>
   
 
@@ -296,15 +296,254 @@
     <div class="article-entry" itemprop="articleBody">
       
       
-      <img class="article-post-image" src="/images/logos/golang6.png">
+      
+      <script>function show_answer(btn, x) { if (btn.value === "显示答案") { btn.value = "隐藏答案" } else { btn.value = "显示答案" } var as = document.getElementById(x); if (as.style.display === "none") { as.style.display = "block" } else { as.style.display = "none" } }</script>
+      <p>英文来源： <a href="https://victoriametrics.com/blog/go-synctest/">Go synctest: Solving Flaky Tests</a></p>
+<p>要理解 <code>synctest</code> 解决的问题，我们首先必须认识核心问题：并发测试中的非确定性。</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br></pre></td><td class="code"><pre><span class="line"><span class="function"><span class="keyword">func</span> <span class="title">TestSharedValue</span><span class="params">(t *testing.T)</span></span> &#123;</span><br><span class="line">	<span class="keyword">var</span> shared atomic.Int64</span><br><span class="line">	<span class="keyword">go</span> <span class="function"><span class="keyword">func</span><span class="params">()</span></span> &#123;</span><br><span class="line">		shared.Store(<span class="number">1</span>)</span><br><span class="line"></span><br><span class="line">&lt;!--more--&gt;</span><br><span class="line"></span><br><span class="line">		time.Sleep(<span class="number">1</span> * time.Microsecond)</span><br><span class="line">		shared.Store(<span class="number">2</span>)</span><br><span class="line">	&#125;()</span><br><span class="line"></span><br><span class="line">	<span class="comment">// 5微秒后检查共享值</span></span><br><span class="line">	time.Sleep(<span class="number">5</span> * time.Microsecond)</span><br><span class="line">	<span class="keyword">if</span> shared.Load() != <span class="number">2</span> &#123;</span><br><span class="line">		t.Errorf(<span class="string">&quot;shared = %d, want 2&quot;</span>, shared.Load())</span><br><span class="line">	&#125;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+<p>这个测试启动一个goroutine来修改共享变量。它将 <code>shared</code> 设为1，休眠1微秒，然后设为2。</p>
+<p>与此同时，主测试函数等待5微秒后检查 <code>shared</code> 是否达到2。乍一看，这个测试似乎应该总是通过。毕竟，5微秒应该足够goroutine完成执行。</p>
+<p>然而，重复运行测试：</p>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">go <span class="built_in">test</span> -run TestSharedValue -count=1000</span><br></pre></td></tr></table></figure>
+
+<p>会显示测试有时会失败。你可能会看到如下输出：</p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">shared = 0, want 2</span><br></pre></td></tr></table></figure>
+
+<p>或者</p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">shared = 1, want 2</span><br></pre></td></tr></table></figure>
+
+<p>这是因为测试是不稳定的。有时goroutine在检查运行时还没有完成，甚至还没有开始。结果取决于系统调度器以及运行时选择goroutine的速度。</p>
+<p><code>time.Sleep</code> 的准确性和调度器的行为可能存在很大差异。操作系统差异和系统负载等因素都会影响时序。这使得任何仅基于休眠的同步策略都不可靠。</p>
+<p>虽然这个例子使用微秒级延迟进行演示，但现实世界的问题往往涉及毫秒或秒级的延迟，特别是在高负载下。</p>
+<p>受这种不稳定性影响的真实系统包括后台清理、重试逻辑、基于时间的缓存驱逐、心跳监控、分布式环境中的领导者选举等。</p>
+<p>像这样依赖时序的测试也可能很耗时。想象一下，如果它必须等待5秒而不是仅仅5微秒。</p>
+<h2 id="什么是-synctest？"><a href="#什么是-synctest？" class="headerlink" title="什么是 synctest？"></a>什么是 synctest？</h2><p><code>synctest</code> 是Go 1.24引入的新特性。它通过在受控的隔离环境中运行goroutine，实现了并发代码的确定性测试。</p>
+<p>考虑这个不使用 <code>synctest</code> 的例子：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br></pre></td><td class="code"><pre><span class="line"><span class="function"><span class="keyword">func</span> <span class="title">TestTimingWithoutSynctest</span><span class="params">(t *testing.T)</span></span> &#123;</span><br><span class="line">	start := time.Now().UTC()</span><br><span class="line">	time.Sleep(<span class="number">5</span> * time.Second)</span><br><span class="line">	t.Log(time.Since(start))</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+<p>当你运行这个测试：</p>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">go <span class="built_in">test</span> . -v</span><br></pre></td></tr></table></figure>
+
+<p>你会发现输出永远不会恰好是 <code>5s</code>。相反，它可能看起来像 <code>5.329s</code>、<code>5.394s</code> 或 <code>5.456s</code>。这些变化来自系统调度和时序分辨率的延迟。</p>
+<p>使用 <code>synctest</code>，时间完全受控。持续时间变得一致，输出将始终显示 <code>5s</code>。</p>
+<p>要使用 <code>synctest</code>，将你的测试逻辑包装在一个函数中，并将其传递给 <code>synctest.Run()</code>：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">import</span> <span class="string">&quot;testing/synctest&quot;</span></span><br><span class="line"></span><br><span class="line"><span class="function"><span class="keyword">func</span> <span class="title">TestTimingWithSynctest</span><span class="params">(t *testing.T)</span></span> &#123;</span><br><span class="line">	synctest.Run(<span class="function"><span class="keyword">func</span><span class="params">()</span></span> &#123;</span><br><span class="line">		start := time.Now().UTC()</span><br><span class="line">		time.Sleep(<span class="number">5</span> * time.Second)</span><br><span class="line">		t.Log(time.Since(start))</span><br><span class="line">	&#125;)</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+<p>然后使用 <code>GOEXPERIMENT=synctest</code> 标志运行测试：</p>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">GOEXPERIMENT=synctest go <span class="built_in">test</span> -run TestTimingWithSynctest -v</span><br></pre></td></tr></table></figure>
+
+<p>示例输出：</p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br></pre></td><td class="code"><pre><span class="line">=== RUN   TestTimingWithSynctest</span><br><span class="line">    main_test.go:8: 5s</span><br><span class="line">--- PASS: TestTimingWithSynctest (0.00s)</span><br><span class="line">PASS</span><br></pre></td></tr></table></figure>
+
+<p>注意 <code>synctest</code> 内部的 <code>time.Sleep</code> 立即返回。测试实际上不会等待5秒。这使得测试运行得更快，同时仍然保持准确性。</p>
+<p>现在我们知道 <code>synctest</code> 操纵时间来产生确定性行为，我们可以用它来修复之前的不稳定测试。只需用 <code>synctest.Run</code> 包装测试主体：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br></pre></td><td class="code"><pre><span class="line"><span class="function"><span class="keyword">func</span> <span class="title">TestSharedValue</span><span class="params">(t *testing.T)</span></span> &#123;</span><br><span class="line">	synctest.Run(<span class="function"><span class="keyword">func</span><span class="params">()</span></span> &#123;</span><br><span class="line">		<span class="keyword">var</span> shared atomic.Int64</span><br><span class="line">		<span class="keyword">go</span> <span class="function"><span class="keyword">func</span><span class="params">()</span></span> &#123;</span><br><span class="line">			shared.Store(<span class="number">1</span>)</span><br><span class="line">			time.Sleep(<span class="number">1</span> * time.Microsecond)</span><br><span class="line">			shared.Store(<span class="number">2</span>)</span><br><span class="line">		&#125;()</span><br><span class="line"></span><br><span class="line">		<span class="comment">// 5微秒后检查共享值</span></span><br><span class="line">		time.Sleep(<span class="number">5</span> * time.Microsecond)</span><br><span class="line">		<span class="keyword">if</span> shared.Load() != <span class="number">2</span> &#123;</span><br><span class="line">			t.Errorf(<span class="string">&quot;shared = %d, want 2&quot;</span>, shared.Load())</span><br><span class="line">		&#125;</span><br><span class="line">	&#125;)</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+<p>通过这个改变，测试将每次都通过。但它是如何解决Go运行时调度器没有选择goroutine运行的问题的呢？</p>
+<p>原因是时间是受控的。5微秒是模拟的而不是真实的。当代码运行时，时间实际上是冻结的，<code>synctest</code> 管理其进展。换句话说，逻辑不依赖于真实时间，而是依赖于确定性的执行顺序。</p>
+<h3 id="等待机制"><a href="#等待机制" class="headerlink" title="等待机制"></a>等待机制</h3><p>除了合成时间外，<code>synctest</code> 还提供了一个强大的同步原语：<code>synctest.Wait</code> 函数。</p>
+<p>当你调用 <code>synctest.Wait()</code> 时，它会阻塞直到所有其他goroutine（在同一 <code>synctest</code> 组中）要么完成，要么持久阻塞。<code>Wait()</code> 最常见的用法是启动后台goroutine，然后暂停直到它们达到稳定点，再进行断言。</p>
+<p>这里是一个例子，其中 <code>Wait()</code> 确保 <code>afterFunc</code> 回调已被调用：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br></pre></td><td class="code"><pre><span class="line">synctest.Run(<span class="function"><span class="keyword">func</span><span class="params">()</span></span> &#123;</span><br><span class="line">    ctx, cancel := context.WithCancel(context.Background())</span><br><span class="line"></span><br><span class="line">    afterFuncCalled := <span class="literal">false</span></span><br><span class="line">    context.AfterFunc(ctx, <span class="function"><span class="keyword">func</span><span class="params">()</span></span> &#123;</span><br><span class="line">        afterFuncCalled = <span class="literal">true</span></span><br><span class="line">    &#125;)</span><br><span class="line"></span><br><span class="line">    <span class="comment">// 取消上下文并等待AfterFunc完成</span></span><br><span class="line">    cancel()</span><br><span class="line">    synctest.Wait()</span><br><span class="line"></span><br><span class="line">    <span class="comment">// 现在我们可以安全地检查回调是否已被调用</span></span><br><span class="line">    fmt.Printf(<span class="string">&quot;after context is canceled: afterFuncCalled=%v\n&quot;</span>, afterFuncCalled)</span><br><span class="line">&#125;)</span><br></pre></td></tr></table></figure>
+
+<p>当我们调用 <code>cancel()</code> 时，传递给 <code>context.AfterFunc</code> 的函数在单独的goroutine中运行。没有协调，我们无法确定该goroutine何时被调度或何时完成。</p>
+<p>因为 <code>synctest</code> 跟踪测试气泡中的所有goroutine，它知道它们的确切状态。当 <code>Wait()</code> 返回时，它保证所有其他goroutine要么完成，要么阻塞。这使你能够对程序状态进行可靠和确定性的断言。</p>
+<h2 id="synctest-如何工作"><a href="#synctest-如何工作" class="headerlink" title="synctest 如何工作"></a>synctest 如何工作</h2><p><code>synctest</code> 通过创建称为&quot;气泡&quot;的隔离环境来工作。气泡是一组在受控和独立环境中运行的goroutine，与程序的正常执行分离。</p>
+<p>当你调用 <code>synctest.Run(f)</code> 时，Go运行时创建一个新的执行气泡。这个气泡有几个独特的特征，使其与常规Go行为不同：</p>
+<h3 id="1-合成时间"><a href="#1-合成时间" class="headerlink" title="1. 合成时间"></a>1. 合成时间</h3><p>每个气泡都有自己的合成时钟。这个合成时间从2000年1月1日UTC午夜开始（纪元946684800000000000）：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br></pre></td><td class="code"><pre><span class="line"><span class="function"><span class="keyword">func</span> <span class="title">TestTimingWithSynctest</span><span class="params">(t *testing.T)</span></span> &#123;</span><br><span class="line">	synctest.Run(<span class="function"><span class="keyword">func</span><span class="params">()</span></span> &#123;</span><br><span class="line">		t.Log(time.Now().UTC())</span><br><span class="line">	&#125;)</span><br><span class="line">&#125;</span><br><span class="line"></span><br><span class="line"><span class="comment">// 输出:</span></span><br><span class="line"><span class="comment">// 2000-01-01 00:00:00 +0000 UTC</span></span><br></pre></td></tr></table></figure>
+
+<p>在气泡内部，时间不会实时向前移动。相反，Go暂停时间并观察goroutine在做什么。如果任何goroutine仍然活跃（未阻塞），合成时间保持冻结：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br></pre></td><td class="code"><pre><span class="line"><span class="function"><span class="keyword">func</span> <span class="title">TestTimingWithSynctest</span><span class="params">(t *testing.T)</span></span> &#123;</span><br><span class="line">	synctest.Run(<span class="function"><span class="keyword">func</span><span class="params">()</span></span> &#123;</span><br><span class="line">		t.Log(time.Now().UnixNano())</span><br><span class="line"></span><br><span class="line">		<span class="keyword">var</span> now <span class="type">int64</span></span><br><span class="line">		<span class="keyword">for</span> <span class="keyword">range</span> <span class="number">10000000</span> &#123;</span><br><span class="line">			now = time.Now().UnixNano()</span><br><span class="line">		&#125;</span><br><span class="line"></span><br><span class="line">		t.Log(now)</span><br><span class="line">	&#125;)</span><br><span class="line">&#125;</span><br><span class="line"></span><br><span class="line"><span class="comment">// 输出:</span></span><br><span class="line"><span class="comment">// 946684800000000000</span></span><br><span class="line"><span class="comment">// 946684800000000000</span></span><br></pre></td></tr></table></figure>
+
+<p>时间只有在气泡中的所有goroutine都被阻塞时才会前进。这意味着它们正在等待操作，如 <code>time.Sleep</code>、通道接收、互斥锁或其他阻塞调用。</p>
+<p>在 <code>synctest</code> 气泡中，时间只为触发预定事件而前进。这使测试完全控制执行时序和顺序。</p>
+<p>例如，如果一个goroutine休眠5秒，而所有其他goroutine也被阻塞，Go将立即将合成时间向前移动5秒。这允许goroutine立即恢复，无需等待真实时间过去。</p>
+<h3 id="2-Goroutine协调"><a href="#2-Goroutine协调" class="headerlink" title="2. Goroutine协调"></a>2. Goroutine协调</h3><p>当调用 <code>synctest.Run(f)</code> 时，当前goroutine成为气泡的根。这个根goroutine管理合成时间并协调气泡内所有其他goroutine的执行。</p>
+<p>传递给 <code>synctest.Run</code> 的函数 <code>f</code> 在新goroutine中启动并成为气泡的一部分。然后根goroutine进入循环来管理时间并控制其他气泡goroutine的调度。</p>
+<p><img src="/synctest.png"></p>
+<p>被阻塞的goroutine有两类：<strong>外部阻塞</strong>和<strong>持久阻塞</strong>。</p>
+<p><strong>持久阻塞</strong>意味着goroutine无法继续，直到其他东西触发解除阻塞，而那个&quot;其他东西&quot;在测试环境内受控。例子包括：</p>
+<ul>
+<li><code>time.Sleep()</code></li>
+<li><code>sync.Cond.Wait()</code></li>
+<li><code>sync.WaitGroup.Wait()</code></li>
+<li>对 <code>nil</code> 通道的操作</li>
+<li>所有case都涉及气泡内通道的 <code>select</code> 语句</li>
+<li>在气泡内创建的通道上的发送和接收</li>
+</ul>
+<p>如果goroutine等待气泡外的事件，则它们<strong>不是持久阻塞</strong>。这些包括：</p>
+<ul>
+<li>文件或网络I&#x2F;O等系统调用</li>
+<li>外部事件处理（如从套接字读取）</li>
+<li>在气泡外创建的通道上的通道操作</li>
+</ul>
+<p>从 <code>synctest</code> 的角度来看，在外部事件上阻塞的goroutine被认为是运行的，因为它们的进展取决于现实世界的状态。</p>
+<p>所以如果你有一个永远外部阻塞的goroutine，以及另一个在像 <code>time.Sleep(5 * time.Microsecond)</code> 这样的东西上持久阻塞的goroutine，休眠将永远不会完成。由于外部阻塞阻止系统达到完全阻塞状态，合成时间不会前进，持久阻塞的goroutine将保持暂停。</p>
+<p>当没有运行的goroutine且所有活跃的goroutine都持久阻塞时，<code>synctest</code> 继续要么唤醒等待 <code>synctest.Wait()</code> 的goroutine，要么继续执行根goroutine。决策逻辑如下：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br></pre></td><td class="code"><pre><span class="line"><span class="function"><span class="keyword">func</span> <span class="params">(sg *synctestGroup)</span></span> maybeWakeLocked() *g &#123;</span><br><span class="line">	<span class="keyword">if</span> sg.running &gt; <span class="number">0</span> || sg.active &gt; <span class="number">0</span> &#123;</span><br><span class="line">		<span class="keyword">return</span> <span class="literal">nil</span></span><br><span class="line">	&#125;</span><br><span class="line"></span><br><span class="line">	sg.active++</span><br><span class="line">	<span class="keyword">if</span> gp := sg.waiter; gp != <span class="literal">nil</span> &#123;</span><br><span class="line">		<span class="keyword">return</span> gp</span><br><span class="line">	&#125;</span><br><span class="line"></span><br><span class="line">	<span class="keyword">return</span> sg.root</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+<p>此时根goroutine的作用是找到下一个预定的计时器事件。这可能由 <code>time.Sleep</code>、<code>time.Timer</code>、<code>time.Ticker</code> 或 <code>time.AfterFunc</code> 等函数触发。所有这些都在内部创建计时器。</p>
+<p>一旦根找到下一个事件，它将合成时间设置到那个时刻（<code>sg.now = next</code>），然后停驻自己并等待测试调度器恢复现在应该运行的goroutine。</p>
+<p>请记住，<code>synctest</code> 主要设计用于测试同步逻辑的时序和正确性，而不是完全模拟现实世界的时序行为。如果使用不当，它可能隐藏在现实条件下会出现的错误。</p>
+<p>最后注意，本文是在 <code>synctest</code> 仍处于实验阶段时编写的。一些细节可能随时间而改变，但核心概念预期保持不变。</p>
+
+      
+    </div>
+    <footer class="article-footer">
+      
+
+      
+
+    </footer>
+  </div>
+  
+</article>
+  
+    <article id="post-go-centralized-http-error-handling" class="article article-type-post" itemscope
+  itemprop="blogPost">
+  <div class="article-meta">
+    <a href="/2025/05/01/go-centralized-http-error-handling/" class="article-date">
+  <time datetime="2025-04-30T16:00:00.000Z" itemprop="datePublished">2025年05月01日</time>
+</a>
+    
+    
+  <div class="article-author"> by smallnest</div>
+
+  </div>
+  <div class="article-inner">
+    
+    
+    <header class="article-header">
+      
+  
+    <h1 itemprop="name">
+      <a class="article-title" href="/2025/05/01/go-centralized-http-error-handling/">Go 语言中集中处理 HTTP 错误</a>
+    </h1>
+  
+
+    </header>
+    
+    <div class="article-entry" itemprop="articleBody">
       
       
-      <p>这是 Aliaksandr Valialkin 昨天刚写的一篇文章, 心有戚戚焉，所以特意翻译成中文，个人感觉，自从Rob Pike退休后，Go在大方向迷失了，正如老貘(Go101)所说，目前Go的开发就像完成KPI一样，也许, 大师不会再回来了。</p>
-<p>Aliaksandr Valialkin是fasthttp的作者，也是VictoriaMetrics开发者，一位资深的Go程序员。</p>
-<p>以下是译文。</p>
+      
+      <p><a href="https://www.alexisbouchez.com/blog/http-error-handling-in-go">https://www.alexisbouchez.com/blog/http-error-handling-in-go</a></p>
+<p>在这篇短文中，我将与你分享一个我用来集中处理 HTTP 处理程序的错误的简单模式。</p>
+<p>如果你写过一些 Go HTTP 服务器，你可能已经厌倦了一遍又一遍地编写相同的错误处理代码：</p>
+<figure class="highlight go"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br></pre></td><td class="code"><pre><span class="line"><span class="function"><span class="keyword">func</span> <span class="title">SomeHandler</span><span class="params">(w http.ResponseWriter, r *http.Request)</span></span> &#123;</span><br><span class="line">    data, err := fetchSomeData()</span><br><span class="line">    <span class="keyword">if</span> err != <span class="literal">nil</span> &#123;</span><br><span class="line">        http.Error(w, <span class="string">&quot;Failed to fetch data&quot;</span>, http.StatusInternalServerError)</span><br><span class="line">        log.Printf(<span class="string">&quot;Error fetching data: %v&quot;</span>, err)</span><br><span class="line">        <span class="keyword">return</span></span><br><span class="line">    &#125;</span><br><span class="line"></span><br><span class="line">    <span class="comment">// More if-err blocks...</span></span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+<p>这段代码重复性很高，并且用样板代码塞满了你的处理程序，而不是业务逻辑。</p>
       
       <p class="article-more-link">
-        <a href="/2024/06/11/go-evolves-in-the-wrong-direction/#more">阅读全文</a>
+        <a href="/2025/05/01/go-centralized-http-error-handling/#more">阅读全文</a>
+      </p>
+      
+      
+    </div>
+    <footer class="article-footer">
+      
+
+      
+
+    </footer>
+  </div>
+  
+</article>
+  
+    <article id="post-microsoft-10x-engineer-typescript-optimization" class="article article-type-post" itemscope
+  itemprop="blogPost">
+  <div class="article-meta">
+    <a href="/2025/05/01/microsoft-10x-engineer-typescript-optimization/" class="article-date">
+  <time datetime="2025-04-30T16:00:00.000Z" itemprop="datePublished">2025年05月01日</time>
+</a>
+    
+    
+  <div class="article-author"> by smallnest</div>
+
+  </div>
+  <div class="article-inner">
+    
+    
+    <header class="article-header">
+      
+  
+    <h1 itemprop="name">
+      <a class="article-title" href="/2025/05/01/microsoft-10x-engineer-typescript-optimization/">微软10x工程师优化10倍typescript编译性能后被优化</a>
+    </h1>
+  
+
+    </header>
+    
+    <div class="article-entry" itemprop="articleBody">
+      
+      
+      
+      <script>function show_answer(btn, x) { if (btn.value === "显示答案") { btn.value = "隐藏答案" } else { btn.value = "显示答案" } var as = document.getElementById(x); if (as.style.display === "none") { as.style.display = "block" } else { as.style.display = "none" } }</script>
+      <span id="more"></span>
+
+
+<p>Ron Buckton是微软的一位10x工程师，专注于TypeScript开发。他在微软工作了18年，其中10年致力于TypeScript，为其性能提升做出了巨大贡献，尤其是让构建速度和编辑器响应速度提升了10倍。然而，2025年5月14日，微软宣布裁员6000人，Ron不幸被解雇。他在X上发文表达失望，提到需要时间消化消息。</p>
+<p><img src="/rbuckton.png"></p>
+<hr>
+<p>Ron Buckton是微软的一位资深软件开发工程师，专注于TypeScript的开发。TypeScript是由微软开发的自由与跨平台的编程语言，是JavaScript的超集，主要提供类型检查和静态检查功能。根据<a href="https://www.linkedin.com/in/rbuckton/">Ron Buckton的LinkedIn资料</a>，他曾是TypeScript团队的成员，长期致力于该语言的优化与发展。他的GitHub账户显示，他参与了TypeScript编译器和语言服务的多个项目，体现了他在技术领域的深厚积累。</p>
+<p>Ron在TypeScript团队工作了近十年，为其性能提升做出了显著贡献。根据<a href="https://javascript.plainenglish.io/he-made-typescript-10x-better-and-faster-8f7c4e7b27d1?gi=b312d0dec77a">一篇技术文章</a>，他的努力让TypeScript的构建速度和编辑器响应速度提升了10倍，这一成果被开发者广泛认可。可以说，Ron是TypeScript的“灵魂人物”，他的代码如同语言的DNA，深深嵌入其中。</p>
+<p>然而，2025年5月14日，微软宣布裁员6000人，作为组织调整的一部分，旨在适应动态市场。根据<a href="https://www.outlookbusiness.com/corporate/microsoft-lays-off-typescript-veteran-ron-buckton-amid-6000-job-cut-restructuring">微软裁员报道</a>，Ron不幸成为被解雇的员工之一。他在X上发文表示：“在微软工作了18年，其中十年都在TypeScript团队工作，不幸在最近的裁员中被解雇了。我需要几天时间来消化这个消息。感谢一路以来支持我的人。”这一消息引发了社区的广泛讨论，<a href="https://news.ycombinator.com/item?id=43978589">Hacker News上的讨论</a>中，有人表达了对微软决策的质疑，认为放走这样的人才令人遗憾。</p>
+<p>Ron的遭遇在网络上引发了诸多反应，网友的评论为故事增添了喜剧色彩。有人戏称：“Ron，你是TypeScript的英雄，任何公司都会抢着要你的！”也有人开玩笑：“微软真是瞎了眼，居然放走了这样的人才！”还有人调侃：“Ron，你现在有空了，不如来帮我优化一下我的个人网站吧？”这些评论既表达了对Ron的敬意，也通过幽默缓解了裁员带来的沉重感。</p>
+<p>Ron的职业生涯中，与TypeScript首席架构师Anders Hejlsberg的合作令人难忘。Anders是编程界的传奇人物，创造了Turbo Pascal、Delphi、JScript、C#和TypeScript等多款语言。根据<a href="https://www.linkedin.com/in/rbuckton/">Ron的职业经历</a>，他曾与Anders就TypeScript的未来方向展开无数次讨论。Anders曾对他说：“Ron，你对TypeScript的贡献无人能及，你就是这门语言的守护者。”然而，如今守护者却被自己的“孩子”抛弃，这其中的讽刺与无奈让人唏嘘。</p>
+<p><img src="/comments.png"></p>
+<p>Ron年近40，在编程界被视为大龄工程师。随着年龄增长，找一份合适的工作变得越来越难。根据<a href="https://news.ycombinator.com/item?id=43995492">行业分析</a>，Tech行业的竞争日益激烈，年轻工程师如雨后春笋般涌现，而老一辈工程师则面临被淘汰的风险。Ron坐在家中，看着窗外的风景，叹了口气。他深知，编程世界瞬息万变，今天的英雄，明天可能就成为昨日的黄花。即使为公司奉献了十几二十年，也可能在一夜之间被扫地出门。</p>
+<p>Ron的遭遇反映了Tech行业裁员潮对大龄工程师的冲击。根据<a href="https://www.latestly.com/socially/technology/microsoft-layoffs-ron-buckton-18-year-veteran-among-6000-affected-employees-says-need-to-take-a-few-days-to-process-6853885.html">最新报道</a>，微软的裁员涉及全球3%的员工，这一决策被认为是适应AI和数据中心投资的组织调整。然而，对于像Ron这样为公司贡献了近20年的老兵来说，这种调整显得冷酷无情。</p>
+<p>尽管如此，Ron并没有气馁。他决定利用这段时间，好好休息，陪陪家人，同时开始寻找新的机会。他相信，以他的能力和经验，一定会找到一个适合他的位置。或许，他还会继续为编程世界做出贡献，只是下一个舞台在哪里，还不得而知。</p>
+
+      
+    </div>
+    <footer class="article-footer">
+      
+
+      
+
+    </footer>
+  </div>
+  
+</article>
+  
+    <article id="post-the-state-of-simd-in-go" class="article article-type-post" itemscope
+  itemprop="blogPost">
+  <div class="article-meta">
+    <a href="/2025/02/01/the-state-of-simd-in-go/" class="article-date">
+  <time datetime="2025-02-01T15:39:40.000Z" itemprop="datePublished">2025年02月01日</time>
+</a>
+    
+    
+  <div class="article-author"> by smallnest</div>
+
+  </div>
+  <div class="article-inner">
+    
+    
+    <header class="article-header">
+      
+  
+    <h1 itemprop="name">
+      <a class="article-title" href="/2025/02/01/the-state-of-simd-in-go/">啥时候等到Go官方支持SIMD?</a>
+    </h1>
+  
+
+    </header>
+    
+    <div class="article-entry" itemprop="articleBody">
+      
+      
+      <img class="article-post-image" src="/images/logos/golang7.png">
+      
+      
+      <p>单指令多数据流（<code>SIMD</code>，Single Instruction Multiple Data）是一种并行计算技术，允许一条指令同时处理多个数据点。SIMD在现代CPU中广泛应用，能够显著提升计算密集型任务的性能，如图像处理、机器学习、科学计算等。随着Go语言在高性能计算领域的应用逐渐增多，SIMD支持成为了开发者关注的焦点。</p>
+<p>当前很多主流和新型的语言都有相应的<code>simd</code>库了，比如C++、Rust、Zig等，但Go语言的<code>simd</code>官方支持还一直在讨论中(<a href="https://github.com/golang/go/issues/67520">issue#67520</a>)。Go语言的设计目标是简单性和可移植性，而SIMD的实现通常需要针对不同的硬件架构进行优化，这与Go的设计目标存在一定冲突。因此，Go语言对SIMD的支持一直备受争议。<br>最近几周这个issue的讨论有活跃起来， 希望能快点支持。</p>
+      
+      <p class="article-more-link">
+        <a href="/2025/02/01/the-state-of-simd-in-go/#more">阅读全文</a>
       </p>
       
       
@@ -321,11 +560,11 @@
   
 </article>
   
-    <article id="post-The-Analects-of-Rob-Pike" class="article article-type-post" itemscope
+    <article id="post-scan-clickhouse-service" class="article article-type-post" itemscope
   itemprop="blogPost">
   <div class="article-meta">
-    <a href="/2024/06/10/The-Analects-of-Rob-Pike/" class="article-date">
-  <time datetime="2024-06-10T04:39:59.000Z" itemprop="datePublished">2024年06月10日</time>
+    <a href="/2025/01/31/scan-clickhouse-service/" class="article-date">
+  <time datetime="2025-01-31T04:02:33.000Z" itemprop="datePublished">2025年01月31日</time>
 </a>
     
     
@@ -339,269 +578,7 @@
       
   
     <h1 itemprop="name">
-      <a class="article-title" href="/2024/06/10/The-Analects-of-Rob-Pike/">Rob Pike 语录</a>
-    </h1>
-  
-
-    </header>
-    
-    <div class="article-entry" itemprop="articleBody">
-      
-      
-      
-      <h2 id="1-计算机领域里，没有什么问题是加一层间接寻址解决不了的。"><a href="#1-计算机领域里，没有什么问题是加一层间接寻址解决不了的。" class="headerlink" title="1. 计算机领域里，没有什么问题是加一层间接寻址解决不了的。"></a>1. 计算机领域里，没有什么问题是加一层间接寻址解决不了的。</h2><blockquote>
-<p>There&#39;s nothing in computing that can&#39;t be broken by another level of indirection.</p>
-</blockquote>
-<p>这是 Rob Pike 的修改版。</p>
-<p>经常 <code>level of insriection</code> 误引用为 <code>abstraction layer</code>。</p>
-<blockquote>
-<p>原始版本出自 <strong>Butler Lampson</strong><br>All problems in computer science can be solved by another level of indirection</p>
-<p>但是 <strong>David Wheeler</strong> 完成了下半句：<br>All problems in computer science can be solved by another level of indirection, except for the problem of too many layers of indirection.</p>
-<p>还有 Kevlin Henney 的下半句：<br>ll problems in computer science can be solved by another level of indirection, except for the problem of too many layers of indirection.&quot;</p>
-<p>From <a href="https://www2.dmst.aueb.gr/dds/pubs/inbook/beautiful_code/html/Spi07g.html">Beautiful Code: Another Level of Indirection </a></p>
-</blockquote>
-<p>这句话幽默地指出，在计算机编程中，通过引入额外的抽象层或中间层，几乎可以解决任何复杂的问题。这种思路在软件设计和架构中很常见。</p>
-      
-      <p class="article-more-link">
-        <a href="/2024/06/10/The-Analects-of-Rob-Pike/#more">阅读全文</a>
-      </p>
-      
-      
-    </div>
-    <footer class="article-footer">
-      
-
-      
-
-    </footer>
-  </div>
-  
-</article>
-  
-    <article id="post-rust-tips-81-90" class="article article-type-post" itemscope
-  itemprop="blogPost">
-  <div class="article-meta">
-    <a href="/2024/06/09/rust-tips-81-90/" class="article-date">
-  <time datetime="2024-06-09T03:36:28.000Z" itemprop="datePublished">2024年06月09日</time>
-</a>
-    
-    
-  <div class="article-author"> by smallnest</div>
-
-  </div>
-  <div class="article-inner">
-    
-    
-    <header class="article-header">
-      
-  
-    <h1 itemprop="name">
-      <a class="article-title" href="/2024/06/09/rust-tips-81-90/">Rust tips #81 ~ #90</a>
-    </h1>
-  
-
-    </header>
-    
-    <div class="article-entry" itemprop="articleBody">
-      
-      
-      <img class="article-post-image" src="/images/logos/rust.png">
-      
-      
-      <script>function show_answer(btn, x) { if (btn.value === "显示答案") { btn.value = "隐藏答案" } else { btn.value = "显示答案" } var as = document.getElementById(x); if (as.style.display === "none") { as.style.display = "block" } else { as.style.display = "none" } }</script>
-      <span id="more"></span>
-
-      
-    </div>
-    <footer class="article-footer">
-      
-  <ul class="article-tag-list" itemprop="keywords"><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/Rust/" rel="tag">Rust</a></li></ul>
-
-
-      
-
-    </footer>
-  </div>
-  
-</article>
-  
-    <article id="post-rust-tips-61-80" class="article article-type-post" itemscope
-  itemprop="blogPost">
-  <div class="article-meta">
-    <a href="/2024/06/09/rust-tips-61-80/" class="article-date">
-  <time datetime="2024-06-09T03:36:19.000Z" itemprop="datePublished">2024年06月09日</time>
-</a>
-    
-    
-  <div class="article-author"> by smallnest</div>
-
-  </div>
-  <div class="article-inner">
-    
-    
-    <header class="article-header">
-      
-  
-    <h1 itemprop="name">
-      <a class="article-title" href="/2024/06/09/rust-tips-61-80/">Rust tips #61 ~ #80</a>
-    </h1>
-  
-
-    </header>
-    
-    <div class="article-entry" itemprop="articleBody">
-      
-      
-      <img class="article-post-image" src="/images/logos/rust.png">
-      
-      
-      <h2 id="Tip-61"><a href="#Tip-61" class="headerlink" title="Tip #61"></a>Tip #61</h2><p>前几天有人问我关于智能指针的事。这里简单介绍一下 <code>Rc&lt;T&gt;</code> 智能指针的基础知识：</p>
-      
-      <p class="article-more-link">
-        <a href="/2024/06/09/rust-tips-61-80/#more">阅读全文</a>
-      </p>
-      
-      
-    </div>
-    <footer class="article-footer">
-      
-  <ul class="article-tag-list" itemprop="keywords"><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/Rust/" rel="tag">Rust</a></li></ul>
-
-
-      
-
-    </footer>
-  </div>
-  
-</article>
-  
-    <article id="post-rust-tips-41-60" class="article article-type-post" itemscope
-  itemprop="blogPost">
-  <div class="article-meta">
-    <a href="/2024/06/09/rust-tips-41-60/" class="article-date">
-  <time datetime="2024-06-09T03:36:11.000Z" itemprop="datePublished">2024年06月09日</time>
-</a>
-    
-    
-  <div class="article-author"> by smallnest</div>
-
-  </div>
-  <div class="article-inner">
-    
-    
-    <header class="article-header">
-      
-  
-    <h1 itemprop="name">
-      <a class="article-title" href="/2024/06/09/rust-tips-41-60/">Rust tips #41 ~ #60</a>
-    </h1>
-  
-
-    </header>
-    
-    <div class="article-entry" itemprop="articleBody">
-      
-      
-      <img class="article-post-image" src="/images/logos/rust.png">
-      
-      
-      <h2 id="Tip-41"><a href="#Tip-41" class="headerlink" title="Tip #41"></a>Tip #41</h2><p>类似于 Go 语言中的通道（Go 的 <code>channel</code>），Rust 中的 <code>std::sync::mpsc</code> 提供了一种线程间安全地读写数据的机制:</p>
-<figure class="highlight rust"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">use</span> std::sync::mpsc;</span><br><span class="line"><span class="keyword">use</span> std::thread;</span><br><span class="line"></span><br><span class="line"><span class="keyword">fn</span> <span class="title function_">main</span>() &#123;</span><br><span class="line">    <span class="keyword">let</span> (tx, rx) = mpsc::<span class="title function_ invoke__">channel</span>();</span><br><span class="line"></span><br><span class="line">    thread::<span class="title function_ invoke__">spawn</span>(<span class="keyword">move</span> || &#123;</span><br><span class="line">        <span class="keyword">let</span> <span class="variable">val</span> = <span class="type">String</span>::<span class="title function_ invoke__">from</span>(<span class="string">&quot;hi&quot;</span>);</span><br><span class="line">        tx.<span class="title function_ invoke__">send</span>(val).<span class="title function_ invoke__">unwrap</span>();</span><br><span class="line">    &#125;);</span><br><span class="line"></span><br><span class="line">    <span class="keyword">let</span> <span class="variable">received</span> = rx.<span class="title function_ invoke__">recv</span>().<span class="title function_ invoke__">unwrap</span>();</span><br><span class="line">    <span class="built_in">println!</span>(<span class="string">&quot;Got: &#123;&#125;&quot;</span>, received);</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
-<p>在这个例子中，我们创建了一个通道，然后在一个线程中发送了一个字符串。在主线程中，我们等待接收这个字符串并打印它。</p>
-      
-      <p class="article-more-link">
-        <a href="/2024/06/09/rust-tips-41-60/#more">阅读全文</a>
-      </p>
-      
-      
-    </div>
-    <footer class="article-footer">
-      
-  <ul class="article-tag-list" itemprop="keywords"><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/Rust/" rel="tag">Rust</a></li></ul>
-
-
-      
-
-    </footer>
-  </div>
-  
-</article>
-  
-    <article id="post-rust-tips-21-40" class="article article-type-post" itemscope
-  itemprop="blogPost">
-  <div class="article-meta">
-    <a href="/2024/06/08/rust-tips-21-40/" class="article-date">
-  <time datetime="2024-06-08T10:51:42.000Z" itemprop="datePublished">2024年06月08日</time>
-</a>
-    
-    
-  <div class="article-author"> by smallnest</div>
-
-  </div>
-  <div class="article-inner">
-    
-    
-    <header class="article-header">
-      
-  
-    <h1 itemprop="name">
-      <a class="article-title" href="/2024/06/08/rust-tips-21-40/">Rust tips #21 ~ #40</a>
-    </h1>
-  
-
-    </header>
-    
-    <div class="article-entry" itemprop="articleBody">
-      
-      
-      <img class="article-post-image" src="/images/logos/rust.png">
-      
-      
-      <h2 id="Tip-21"><a href="#Tip-21" class="headerlink" title="Tip #21"></a>Tip #21</h2><p>在 Rust 中，我们经常使用 <code>Clone()</code> 或 <code>Copy()</code>。这两者之间的区别是什么？</p>
-<ul>
-<li><p><code>Copy</code>：支持 <code>Copy</code> 的类型可以安全地通过字节复制的方式进行复制，可以类比 C 语言中的 <code>memcpy</code> 函数。</p>
-</li>
-<li><p><code>Clone</code>：支持 <code>Clone</code> 的类型也可以被复制，但它通常需要执行一些逻辑操作来完成深拷贝。</p>
-</li>
-</ul>
-      
-      <p class="article-more-link">
-        <a href="/2024/06/08/rust-tips-21-40/#more">阅读全文</a>
-      </p>
-      
-      
-    </div>
-    <footer class="article-footer">
-      
-  <ul class="article-tag-list" itemprop="keywords"><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/Rust/" rel="tag">Rust</a></li></ul>
-
-
-      
-
-    </footer>
-  </div>
-  
-</article>
-  
-    <article id="post-image-to-base64" class="article article-type-post" itemscope
-  itemprop="blogPost">
-  <div class="article-meta">
-    <a href="/2024/06/06/image-to-base64/" class="article-date">
-  <time datetime="2024-06-06T15:19:17.000Z" itemprop="datePublished">2024年06月06日</time>
-</a>
-    
-    
-  <div class="article-author"> by smallnest</div>
-
-  </div>
-  <div class="article-inner">
-    
-    
-    <header class="article-header">
-      
-  
-    <h1 itemprop="name">
-      <a class="article-title" href="/2024/06/06/image-to-base64/">如何将图片编码成base64?</a>
+      <a class="article-title" href="/2025/01/31/scan-clickhouse-service/">DeepSeek数据库暴露？扫描一下，应该不止此一家吧!</a>
     </h1>
   
 
@@ -613,10 +590,15 @@
       <img class="article-post-image" src="/images/logos/golang8.png">
       
       
-      <p>图片的 base64 编码在多种上下文中都很有用。当需要通过旨在处理文本数据的媒体存储或传输图片时，它通常会被使用，比如嵌入到网页或者通过 API 上传图片。这篇文章将介绍如何使用 Go 标准库得到任何图片的 base64 编码的值。</p>
+      <p>DeepSeek出街老火了，整个AI界都在热火朝天的讨论它。</p>
+<p>同时，安全界也没闲着，来自美国的攻击使它不得不通知中国大陆以外的手机号的注册，同时大家也对它的网站和服务安全性进行了审视，这不Wiz Research就发现它们的数据库面向公网暴露并且无需任何身份即可访问。这两个域名oauth2callback.deepseek.com:9000和dev.deepseek.com:9000。</p>
+<p>AI的核心技术既需要这些清北的天才去研究，产品也需要专业的人才去打磨。像DeepSeek这么专业的公司都可能出现这样的漏洞，相信互联网上这么数据库无密码暴露的实例也应该不在少数(实际只找到了2个)。</p>
+<p>基于上一篇《扫描全国的公网IP要多久》，我们改造一下代码，让它使用 <code>tcp_syn</code> 的方式探测clickhopuse的9000端口。</p>
+<p>首先声明，所有的技术都是为了给大家介绍使用Go语言开发底层的网络程序所做的演示，不是为了介绍安全和攻击方面的内容，所以也不会使用已经成熟的端口和IP扫描工具如zmap、rustscan、nmap、masscan、Advanced IP Scanner、Angry IP Scanner、unicornscan等工具。</p>
+<p>同时，也不会追求快速，我仅仅在家中的100M的网络中，使用一台10多年前的4核Linux机器进行测试，尽可能让它能出结果。我一般晚上启动它，早上吃过早餐后来查看结果。</p>
       
       <p class="article-more-link">
-        <a href="/2024/06/06/image-to-base64/#more">阅读全文</a>
+        <a href="/2025/01/31/scan-clickhouse-service/#more">阅读全文</a>
       </p>
       
       
@@ -633,13 +615,17 @@
   
 </article>
   
-    <article id="post-rust-tips-1-20" class="article article-type-post" itemscope
+    <article id="post-some-notes-about-go-io-fs-package" class="article article-type-post" itemscope
   itemprop="blogPost">
   <div class="article-meta">
-    <a href="/2024/06/06/rust-tips-1-20/" class="article-date">
-  <time datetime="2024-06-06T01:26:42.000Z" itemprop="datePublished">2024年06月06日</time>
+    <a href="/2025/01/30/some-notes-about-go-io-fs-package/" class="article-date">
+  <time datetime="2025-01-29T16:44:01.000Z" itemprop="datePublished">2025年01月30日</time>
 </a>
     
+  <div class="article-category">
+    <a class="article-category-link" href="/categories/Go/">Go</a>
+  </div>
+
     
   <div class="article-author"> by smallnest</div>
 
@@ -651,7 +637,7 @@
       
   
     <h1 itemprop="name">
-      <a class="article-title" href="/2024/06/06/rust-tips-1-20/">Rust tips #1 ~ #20</a>
+      <a class="article-title" href="/2025/01/30/some-notes-about-go-io-fs-package/">趁着假期， 快速了解 Go io/fs 包</a>
     </h1>
   
 
@@ -660,20 +646,20 @@
     <div class="article-entry" itemprop="articleBody">
       
       
-      <img class="article-post-image" src="/images/logos/rust.png">
+      <img class="article-post-image" src="/images/logos/golang8.png">
       
       
-      <h2 id="Tip-001"><a href="#Tip-001" class="headerlink" title="Tip #001"></a>Tip #001</h2><p>Rust 不支持静态 vec(<code>static vec</code>),但是最接近的是静态数组。例如,如果你想存储三个字符串的数组,可以尝试这样: <code> static STRINGS : [&amp;str;3] = [&quot;a&quot;, &quot;b&quot;, &quot;c&quot;]</code></p>
+      <p>Go 语言的 <code>io/fs</code> 包是 Go 1.16 版本引入的一个标准库包，它定义了文件系统的抽象接口。这个包提供了一种统一的方式来访问<strong>不同类型的文件系统</strong>，包括本地文件系统、内存文件系统、zip 文件等。</p>
       
       <p class="article-more-link">
-        <a href="/2024/06/06/rust-tips-1-20/#more">阅读全文</a>
+        <a href="/2025/01/30/some-notes-about-go-io-fs-package/#more">阅读全文</a>
       </p>
       
       
     </div>
     <footer class="article-footer">
       
-  <ul class="article-tag-list" itemprop="keywords"><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/Rust/" rel="tag">Rust</a></li></ul>
+  <ul class="article-tag-list" itemprop="keywords"><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/Go/" rel="tag">Go</a></li></ul>
 
 
       
@@ -683,11 +669,71 @@
   
 </article>
   
-    <article id="post-redka-redis-with-sqlite" class="article article-type-post" itemscope
+    <article id="post-how-long-to-scan-all-IPs-of-cn" class="article article-type-post" itemscope
   itemprop="blogPost">
   <div class="article-meta">
-    <a href="/2024/06/04/redka-redis-with-sqlite/" class="article-date">
-  <time datetime="2024-06-03T23:28:39.000Z" itemprop="datePublished">2024年06月04日</time>
+    <a href="/2025/01/27/how-long-to-scan-all-IPs-of-cn/" class="article-date">
+  <time datetime="2025-01-26T16:38:47.000Z" itemprop="datePublished">2025年01月27日</time>
+</a>
+    
+  <div class="article-category">
+    <a class="article-category-link" href="/categories/Go/">Go</a>
+  </div>
+
+    
+  <div class="article-author"> by smallnest</div>
+
+  </div>
+  <div class="article-inner">
+    
+    
+    <header class="article-header">
+      
+  
+    <h1 itemprop="name">
+      <a class="article-title" href="/2025/01/27/how-long-to-scan-all-IPs-of-cn/">扫描全国的公网IP需要多久？</a>
+    </h1>
+  
+
+    </header>
+    
+    <div class="article-entry" itemprop="articleBody">
+      
+      
+      <img class="article-post-image" src="/images/logos/golang8.png">
+      
+      
+      <p>自从加入百度负责物理网络的监控业务之后，我大部分的都是编写各种各样额度底层的网络程序。业余时间我也是编写一些有趣的网络程序，不仅仅是兴趣，也是为未来的某个业务探索一下技术方案。</p>
+<p>而且这次，我想知道，就在我这一个10年前的小mini机器4核机器上，在家庭网络中扫描全国(中国大陆)的所有的公网IP地址需要多少时间。</p>
+<p>利用它，我可以知道和全国各省市的运营商、云服务商的联通情况。有没有运营商的出口故障以及IP已没有被运营商或者有关部门劫持。</p>
+<p>TL;DR: 一共扫描了<strong>3亿</strong>个地址(343142912)，当前ping的通的IP <strong>592万</strong>个(5923768)，耗时<strong>1小时</strong>(1h2m57.973755197s)。</p>
+<p>这次我重构了以前的一个扫描公网IP的程序。先前的程序使用gopacket收发包，也使用gopacket组装包。但是gopacket很讨厌的的一个地方是它依赖libpcap库，没有办法在禁用CGO的情况下。</p>
+<p>事实上利用Go的扩展包icmp和ipv4,我们完全可以不使用gopacket实现这个功能，本文介绍具体的实现。</p>
+<p>程序的全部代码在：<a href="https://github.com/smallnest/fishfinder">https://github.com/smallnest/fishfinder</a></p>
+      
+      <p class="article-more-link">
+        <a href="/2025/01/27/how-long-to-scan-all-IPs-of-cn/#more">阅读全文</a>
+      </p>
+      
+      
+    </div>
+    <footer class="article-footer">
+      
+  <ul class="article-tag-list" itemprop="keywords"><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/Go/" rel="tag">Go</a></li></ul>
+
+
+      
+
+    </footer>
+  </div>
+  
+</article>
+  
+    <article id="post-go-internal-ds-4-ary-heap" class="article article-type-post" itemscope
+  itemprop="blogPost">
+  <div class="article-meta">
+    <a href="/2024/11/18/go-internal-ds-4-ary-heap/" class="article-date">
+  <time datetime="2024-11-18T14:47:50.000Z" itemprop="datePublished">2024年11月18日</time>
 </a>
     
     
@@ -701,7 +747,7 @@
       
   
     <h1 itemprop="name">
-      <a class="article-title" href="/2024/06/04/redka-redis-with-sqlite/">Redka - 父亲是Redis，母亲是SQLite</a>
+      <a class="article-title" href="/2024/11/18/go-internal-ds-4-ary-heap/">Go中秘而不宣的数据结构: 四叉堆，不是普通的二叉堆</a>
     </h1>
   
 
@@ -710,20 +756,20 @@
     <div class="article-entry" itemprop="articleBody">
       
       
+      <img class="article-post-image" src="/images/logos/golang8.png">
       
-      <p>Redka旨在使用SQLite重新实现Redis的优秀部分,同时保持与Redis API的兼容性。</p>
-<p>有意思的特性:</p>
+      
+      <p>Go语言中Timer以及相关的Ticker、time.After、time.AfterFunc 等定时器最终是以四叉堆的数据形式存放的。</p>
+<p>全局的 timer 堆也经历过三个阶段的重要升级。</p>
 <ul>
-<li>数据不必完全装载在内存中。</li>
-<li>支持ACID事务。</li>
-<li>使用SQL视图以便于内省和报告。</li>
-<li>同时提供进程内(Go API)和独立(RESP)服务器。</li>
-<li>兼容Redis的命令和线路协议。</li>
+<li>Go 1.9 版本之前，所有的计时器由全局唯一的四叉堆维护，goroutine间竞争激烈。</li>
+<li>Go 1.10 - 1.13，全局使用 64 个四叉堆维护全部的计时器，通过分片减少了竞争的压力，但是本质上还是没有解决 1.9 版本之前的问题</li>
+<li>Go 1.14 版本之后，每个 P 单独维护一个四叉堆，避免了goroutine的竞争。 (后面我们再介绍 per-P 的数据结构)</li>
 </ul>
-<p>Redia 并不期望完全达到 Redis 那么高的性能，但是性能上也并不会落后很多。它的主要功能还是 SQL + Redis 的功能，集成了两种优秀产品 SQLite 和 Redis 的盛世美颜。</p>
+<p>常见的堆(heap)常常以二叉堆的形式实现。可是为什么Go timer使用四叉堆呢？</p>
       
       <p class="article-more-link">
-        <a href="/2024/06/04/redka-redis-with-sqlite/#more">阅读全文</a>
+        <a href="/2024/11/18/go-internal-ds-4-ary-heap/#more">阅读全文</a>
       </p>
       
       
@@ -740,11 +786,11 @@
   
 </article>
   
-    <article id="post-command-dispacher-pattern" class="article article-type-post" itemscope
+    <article id="post-heapmap" class="article article-type-post" itemscope
   itemprop="blogPost">
   <div class="article-meta">
-    <a href="/2024/06/03/command-dispacher-pattern/" class="article-date">
-  <time datetime="2024-06-02T23:53:37.000Z" itemprop="datePublished">2024年06月03日</time>
+    <a href="/2024/11/17/heapmap/" class="article-date">
+  <time datetime="2024-11-17T09:17:13.000Z" itemprop="datePublished">2024年11月17日</time>
 </a>
     
     
@@ -758,7 +804,7 @@
       
   
     <h1 itemprop="name">
-      <a class="article-title" href="/2024/06/03/command-dispacher-pattern/">命令分发模式</a>
+      <a class="article-title" href="/2024/11/17/heapmap/">HeapMap, 一个混合功能的数据结构Go语言实现</a>
     </h1>
   
 
@@ -767,14 +813,63 @@
     <div class="article-entry" itemprop="articleBody">
       
       
+      <img class="article-post-image" src="/images/logos/golang8.png">
       
-      <p>命令分发模式 (command dispatcher pattern)不属于23种经典的设计模式。它是一种不太为人所知的设计模式,它主要用于构建可扩展、可插拔的系统架构,将请求与执行请求的操作对象解耦。它类似于命令模式(Command Pattern),但更加灵活和动态。</p>
-<p>虽然Command Dispatch Pattern不属于那23种经典模式,但它确实是一种很有价值的模式,可以应用于需要在运行时动态添加、修改或删除操作的系统中,使系统更加灵活和可扩展。</p>
-<p>这种模式通过允许方便的添加、替换或移除任何命令处理器, 非常的灵活，将命令调用和命令处理解耦。而且每个命令可以由单独的命令处理器处理，代码组织和维护也很方便。</p>
-<p>实际上，对于 Gopher 来讲，必然已经接触到这个模式了，只不过少有人指出或者梳理这种模式，但是在标准库和一些知名的项目中，其实已经自然的应用了，而且看起来整个架构也非常的清爽。</p>
+      
+      <p>今天在准备《秘而不宣》系列下一篇文章时，思绪飘散了，突然想到使用 Heap 的功能再加 HashTable (Map) 的功能，可以构造一种新的数据结构，然后把我聚合程序中的数据聚合数据结构替换掉，总之思绪翩翩。然后在网上搜了一下，这种数据结构其实早就有了，名字叫 <code>HeapMap</code>。</p>
       
       <p class="article-more-link">
-        <a href="/2024/06/03/command-dispacher-pattern/#more">阅读全文</a>
+        <a href="/2024/11/17/heapmap/#more">阅读全文</a>
+      </p>
+      
+      
+    </div>
+    <footer class="article-footer">
+      
+  <ul class="article-tag-list" itemprop="keywords"><li class="article-tag-list-item"><a class="article-tag-list-link" href="/tags/Go/" rel="tag">Go</a></li></ul>
+
+
+      
+
+    </footer>
+  </div>
+  
+</article>
+  
+    <article id="post-go-internal-ds-cacheline" class="article article-type-post" itemscope
+  itemprop="blogPost">
+  <div class="article-meta">
+    <a href="/2024/11/17/go-internal-ds-cacheline/" class="article-date">
+  <time datetime="2024-11-17T08:19:01.000Z" itemprop="datePublished">2024年11月17日</time>
+</a>
+    
+    
+  <div class="article-author"> by smallnest</div>
+
+  </div>
+  <div class="article-inner">
+    
+    
+    <header class="article-header">
+      
+  
+    <h1 itemprop="name">
+      <a class="article-title" href="/2024/11/17/go-internal-ds-cacheline/">Go中秘而不宣的数据结构 CacheLinePad：精细化优化</a>
+    </h1>
+  
+
+    </header>
+    
+    <div class="article-entry" itemprop="articleBody">
+      
+      
+      <img class="article-post-image" src="/images/logos/golang8.png">
+      
+      
+      <p>在现代多核处理器中，高效的缓存机制极大地提升了程序性能，而“伪共享”问题却常常导致缓存机制的低效。</p>
+      
+      <p class="article-more-link">
+        <a href="/2024/11/17/go-internal-ds-cacheline/#more">阅读全文</a>
       </p>
       
       
@@ -793,7 +888,7 @@
   
   
     <nav id="page-nav">
-      <a class="extend prev" rel="prev" href="/page/9/">&laquo; 上一页</a><a class="page-number" href="/">1</a><span class="space">&hellip;</span><a class="page-number" href="/page/8/">8</a><a class="page-number" href="/page/9/">9</a><span class="page-number current">10</span><a class="page-number" href="/page/11/">11</a><a class="page-number" href="/page/12/">12</a><span class="space">&hellip;</span><a class="page-number" href="/page/73/">73</a><a class="extend next" rel="next" href="/page/11/">下一页 &raquo;</a>
+      <a class="extend prev" rel="prev" href="/page/9/">&laquo; 上一页</a><a class="page-number" href="/">1</a><span class="space">&hellip;</span><a class="page-number" href="/page/8/">8</a><a class="page-number" href="/page/9/">9</a><span class="page-number current">10</span><a class="page-number" href="/page/11/">11</a><a class="page-number" href="/page/12/">12</a><span class="space">&hellip;</span><a class="page-number" href="/page/75/">75</a><a class="extend next" rel="next" href="/page/11/">下一页 &raquo;</a>
     </nav>
   
 </section>
@@ -856,7 +951,7 @@
   <div class="widget-wrap">
     <h3 class="widget-title">分类</h3>
     <div class="widget">
-      <ul class="category-list"><li class="category-list-item"><a class="category-list-link" href="/categories/AI/">AI</a><span class="category-list-count">21</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Android/">Android</a><span class="category-list-count">7</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/DOTNET/">DOTNET</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Docker/">Docker</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Go/">Go</a><span class="category-list-count">22</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Java/">Java</a><span class="category-list-count">41</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Linux/">Linux</a><span class="category-list-count">3</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Rust/">Rust</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Scala/">Scala</a><span class="category-list-count">13</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E5%89%8D%E7%AB%AF%E5%BC%80%E5%8F%91/">前端开发</a><span class="category-list-count">17</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E5%8C%BA%E5%9D%97%E9%93%BE/">区块链</a><span class="category-list-count">4</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E5%A4%A7%E6%95%B0%E6%8D%AE/">大数据</a><span class="category-list-count">54</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E5%B7%A5%E5%85%B7/">工具</a><span class="category-list-count">14</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E6%95%B0%E6%8D%AE%E5%BA%93/">数据库</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E6%9E%B6%E6%9E%84/">架构</a><span class="category-list-count">10</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E7%AE%97%E6%B3%95/">算法</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E7%BD%91%E7%BB%9C/">网络</a><span class="category-list-count">4</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E7%BD%91%E7%BB%9C%E7%BC%96%E7%A8%8B/">网络编程</a><span class="category-list-count">5</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E8%AF%BB%E4%B9%A6%E7%AC%94%E8%AE%B0/">读书笔记</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E8%BD%AF%E4%BB%B6%E5%B7%A5%E7%A8%8B/">软件工程</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E9%AB%98%E5%B9%B6%E5%8F%91%E7%BC%96%E7%A8%8B/">高并发编程</a><span class="category-list-count">8</span></li></ul>
+      <ul class="category-list"><li class="category-list-item"><a class="category-list-link" href="/categories/AI/">AI</a><span class="category-list-count">41</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Android/">Android</a><span class="category-list-count">7</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/DOTNET/">DOTNET</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Docker/">Docker</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Go/">Go</a><span class="category-list-count">22</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Java/">Java</a><span class="category-list-count">41</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Linux/">Linux</a><span class="category-list-count">3</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Rust/">Rust</a><span class="category-list-count">2</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/Scala/">Scala</a><span class="category-list-count">13</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E5%89%8D%E7%AB%AF%E5%BC%80%E5%8F%91/">前端开发</a><span class="category-list-count">17</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E5%8C%BA%E5%9D%97%E9%93%BE/">区块链</a><span class="category-list-count">4</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E5%A4%A7%E6%95%B0%E6%8D%AE/">大数据</a><span class="category-list-count">54</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E5%B7%A5%E5%85%B7/">工具</a><span class="category-list-count">14</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E6%95%B0%E6%8D%AE%E5%BA%93/">数据库</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E6%9E%B6%E6%9E%84/">架构</a><span class="category-list-count">10</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E7%AE%97%E6%B3%95/">算法</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E7%BD%91%E7%BB%9C/">网络</a><span class="category-list-count">4</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E7%BD%91%E7%BB%9C%E7%BC%96%E7%A8%8B/">网络编程</a><span class="category-list-count">5</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E8%AF%BB%E4%B9%A6%E7%AC%94%E8%AE%B0/">读书笔记</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E8%BD%AF%E4%BB%B6%E5%B7%A5%E7%A8%8B/">软件工程</a><span class="category-list-count">1</span></li><li class="category-list-item"><a class="category-list-link" href="/categories/%E9%AB%98%E5%B9%B6%E5%8F%91%E7%BC%96%E7%A8%8B/">高并发编程</a><span class="category-list-count">8</span></li></ul>
     </div>
   </div>
 
@@ -868,23 +963,23 @@
       <ul>
         
           <li>
-            <a href="/2026/06/26/open-decision-making-from-go-issue/">如何做决策 - 从 Go 的一个 issue 说起</a>
+            <a href="/2026/06/28/go-language-skills-ai-era-go-toolchain/">Go 语言技能：AI 时代的 Go 开发工具链</a>
           </li>
         
           <li>
-            <a href="/2026/06/25/go-seq-chained-pipeline-like-scala/">等了十年的 Go 链式管道，终于来了：seq 让你像写 Scala 一样写 Go</a>
+            <a href="/2026/06/28/refactoring-code-evolution-in-ai-era/">重构：AI 时代的代码进化</a>
           </li>
         
           <li>
-            <a href="/2026/06/23/2026-06-23-how-to-write-design-doc/">如何写好设计文档？</a>
+            <a href="/2026/06/28/uml-new-use-ai-understands-generated-code/">UML 新用途：让 AI 理解你生成的代码</a>
           </li>
         
           <li>
-            <a href="/2026/06/22/software-engineering-fifty-years-paradigm-shift/">01 引言：软件工程范式的五十年之变</a>
+            <a href="/2026/06/28/understand-anything-code-knowledge-graph/">Understand-Anything：代码知识图谱</a>
           </li>
         
           <li>
-            <a href="/2026/06/21/karpathy-half-year-no-code-prologue/">00 卷首语：当 Karpathy 说他半年没写一行代码</a>
+            <a href="/2026/06/28/anthropic-official-plugins-domain-knowledge-ai-agent/">Anthropic 官方插件：AI Agent 的领域知识插件</a>
           </li>
         
       </ul>
